@@ -145,6 +145,7 @@ class PkiKeyStore:
         self._enrolled: Dict[str, KeyStoreEntry] = {}
         self._enrolled_keys: Dict[str, bytes] = {}  # fingerprint → public key
         self._revocations: Dict[str, dict] = {}     # fingerprint → record
+        self.revocation_sequence = 0                # §5.2 monotonic state
 
     # -- root anchors (§6.3.1: shipped in the OS image) ---------------------
 
@@ -338,6 +339,7 @@ class PkiKeyStore:
                 fp: _b64(pk) for fp, pk in self._enrolled_keys.items()
             },
             "revocations": list(self._revocations.values()),
+            "revocation_sequence": self.revocation_sequence,
         }
         return json.dumps(data, indent=2)
 
@@ -353,6 +355,7 @@ class PkiKeyStore:
             self._enrolled_keys[fp] = _unb64(pk_b64)
         for r in data.get("revocations", []):
             self._revocations[r["fingerprint"]] = r
+        self.revocation_sequence = int(data.get("revocation_sequence", 0))
 
     def save(self, path: str) -> None:
         """Plaintext persistence — dev/test only (NOT §3.4 custody)."""
@@ -521,6 +524,27 @@ class RevocationList:
             "signature": bytes(signed.signature).hex(),
         })
 
+    def to_json(self) -> str:
+        """Wire form for the §5.1 channel: canonical payload + signatures."""
+        return json.dumps({
+            "sequence": self.sequence,
+            "generated_at": self.generated_at,
+            "entries": self.entries,
+            "signatures": self.signatures,
+        }, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_json(cls, text: str) -> "RevocationList":
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise PkiError("revocation list is not an object")
+        return cls(
+            sequence=data.get("sequence", 0),
+            generated_at=data.get("generated_at", 0.0),
+            entries=list(data.get("entries", [])),
+            signatures=list(data.get("signatures", [])),
+        )
+
     def canonical_bytes(self) -> bytes:
         payload = {
             "sequence": self.sequence,
@@ -585,6 +609,7 @@ def apply_revocation_list(
         store.revoke(entry["fingerprint"],
                      reason=entry.get("reason", ""),
                      seq_source=f"list#{new_list.sequence}")
+    store.revocation_sequence = new_list.sequence
     return new_list.sequence
 
 
@@ -602,6 +627,8 @@ class VerificationResult:
     stages: List[dict] = field(default_factory=list)
     fingerprint: Optional[str] = None
     publisher: Optional[str] = None
+    package_id: Optional[str] = None
+    version: Optional[str] = None
 
     def record(self, stage: str, outcome: str, detail: str = "") -> None:
         self.stages.append(
@@ -642,6 +669,8 @@ class VerificationPipeline:
             for required in ("package_id", "version"):
                 if not manifest.get(required):
                     raise ValueError(f"manifest missing {required!r}")
+            result.package_id = manifest["package_id"]
+            result.version = manifest["version"]
             result.record("1_parse_manifest", "ok",
                           f"{manifest['package_id']} {manifest['version']}")
             result.publisher = manifest.get("publisher")
@@ -724,6 +753,8 @@ class VerificationPipeline:
                     "reason": result.reason,
                     "fingerprint": result.fingerprint,
                     "publisher": result.publisher,
+                    "package_id": result.package_id,
+                    "version": result.version,
                     "stages": list(result.stages),
                     "at": time.time(),
                 })
@@ -731,6 +762,174 @@ class VerificationPipeline:
                 result.record("audit", "warn",
                               f"audit sink failed ({exc}); verdict unchanged")
         return result
+
+
+class PackageAuditChain:
+    """ADR-0018 scheme-2 hash chain over package events (NPS-028 §7).
+
+    Reuses the ContainerManager append_audit_event algorithm exactly — the
+    same salt-bearing content construction, the same SHA-256 chaining. The
+    construction is differentially pinned against ContainerManager in the
+    tests so the two implementations cannot drift.
+
+    §7.2: appending is best-effort in the pipeline (a sink failure never
+    changes a verdict); verify() is the tamper evidence — any modified,
+    reordered, or removed entry breaks the chain from that point on.
+    """
+
+    @staticmethod
+    def event_content(salt: str, prev_hash: str, op: str, ts: float,
+                      details: Optional[dict]) -> str:
+        """Byte-identical to ContainerManager._audit_event_content
+        (differentially pinned in the tests): scheme-2 tagged, pipe-
+        joined, repr(float(ts)) timestamps, canonical JSON details where
+        None and {} hash differently."""
+        return "2|" + "|".join((
+            salt, prev_hash, op, repr(float(ts)),
+            json.dumps(details, sort_keys=True, separators=(",", ":"),
+                       default=str)
+            if details is not None else "null",
+        ))
+
+    def __init__(self) -> None:
+        import secrets
+        import hashlib
+        self._hashlib = hashlib
+        self._salt = secrets.token_hex(16)
+        self._prev_hash: str = "GENESIS"
+        self.entries: List[dict] = []
+
+    def append(self, op: str, details: Optional[dict]) -> dict:
+        """Append one event; returns the entry (schema in NPS-028 §7.1)."""
+        ts = time.time()
+        content = self.event_content(self._salt, self._prev_hash, op, ts,
+                                     details)
+        entry_hash = self._hashlib.sha256(content.encode("utf-8")).hexdigest()
+        entry = {
+            "op": op,
+            "ts": ts,
+            "details": details or {},
+            "hash": entry_hash,
+        }
+        self.entries.append(entry)
+        self._prev_hash = entry_hash
+        return entry
+
+    def verify(self) -> bool:
+        """Recompute every hash; False on any tamper/reorder/removal."""
+        prev = "GENESIS"
+        for entry in self.entries:
+            content = self.event_content(self._salt, prev, entry["op"],
+                                         entry["ts"], entry["details"])
+            if self._hashlib.sha256(content.encode("utf-8")).hexdigest() != entry["hash"]:
+                return False
+            prev = entry["hash"]
+        return True
+
+    # -- persistence (header line carries the salt, then one event per
+    # line; without the salt the loaded chain could never re-verify) ----
+
+    def save_jsonl(self, path: str) -> None:
+        lines = [json.dumps({"salt": self._salt}, sort_keys=True,
+                            separators=(",", ":"))]
+        lines += [json.dumps(e, sort_keys=True) for e in self.entries]
+        _write_atomic(path, ("\n".join(lines) + "\n").encode("utf-8"))
+
+    @classmethod
+    def load_jsonl(cls, path: str) -> "PackageAuditChain":
+        chain = cls()
+        first = True
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                if first:
+                    chain._salt = data["salt"]
+                    first = False
+                else:
+                    chain.entries.append(data)
+        # Resume the chain head so appends continue from the loaded tail.
+        if chain.entries:
+            import hashlib
+            prev = "GENESIS"
+            for entry in chain.entries:
+                prev = hashlib.sha256(chain.event_content(
+                    chain._salt, prev, entry["op"], entry["ts"],
+                    entry["details"]).encode("utf-8")).hexdigest()
+            chain._prev_hash = prev
+        return chain
+
+    @staticmethod
+    def make_sink(chain: "PackageAuditChain") -> Callable[[dict], None]:
+        """A pipeline audit sink that appends §7.1 records to `chain`.
+
+        The record carries the package identity (package_id, version),
+        the decision and its reason, the resolved key fingerprint and
+        publisher, and the per-stage outcomes — everything §7.1 lists.
+        """
+
+        def sink(record: dict) -> None:
+            chain.append("package_verification", record)
+
+        return sink
+
+
+class RevocationFetcher:
+    """The §5.1 out-of-band transport abstraction.
+
+    The revocation channel MUST be independent of the package feed: a
+    fetcher is configured with its own source, and nothing in refresh
+    touches a repo object. Compromise of the package feed therefore
+    cannot suppress revocation delivery, and compromise of the channel
+    cannot suppress already-applied revocations.
+    """
+
+    def fetch(self) -> RevocationList:
+        raise NotImplementedError
+
+
+class FileRevocationFetcher(RevocationFetcher):
+    """Fetch a signed revocation list from a local out-of-band file."""
+
+    def __init__(self, channel_path: str) -> None:
+        self.channel_path = channel_path
+
+    def fetch(self) -> RevocationList:
+        with open(self.channel_path, "r", encoding="utf-8") as fh:
+            return RevocationList.from_json(fh.read())
+
+
+def refresh_revocations(store: PkiKeyStore, fetcher: RevocationFetcher
+                        ) -> Dict[str, object]:
+    """Pull the out-of-band revocation list and apply it (§5.1).
+
+    Never raises and never mutates the store on failure: a fetch failure
+    or an unauthentic/regressive list leaves the current revocation
+    state intact and reports the condition. Success requires an
+    authentic list (G4: any single root verifies) whose sequence is
+    strictly newer than what the store already has.
+    """
+    try:
+        rvl = fetcher.fetch()
+    except FileNotFoundError:
+        return {"outcome": "fetch_failed",
+                "reason": "no revocation list on the channel"}
+    except Exception as exc:  # noqa: BLE001
+        return {"outcome": "fetch_failed", "reason": str(exc)}
+
+    current = store.revocation_sequence
+    if rvl.sequence <= current:
+        return {"outcome": "replay_refused",
+                "reason": f"sequence {rvl.sequence} <= current {current}"}
+    try:
+        new_sequence = apply_revocation_list(store, rvl,
+                                             current_sequence=current)
+    except PkiError as exc:
+        return {"outcome": "replay_refused", "reason": str(exc)}
+    return {"outcome": "applied", "sequence": new_sequence,
+            "revoked": len(rvl.entries)}
 
 
 __all__ = [
@@ -742,6 +941,10 @@ __all__ = [
     "apply_revocation_list",
     "VerificationPipeline",
     "VerificationResult",
+    "PackageAuditChain",
+    "RevocationFetcher",
+    "FileRevocationFetcher",
+    "refresh_revocations",
     "TOUCHPOINT_INSTALL",
     "TOUCHPOINT_UPDATE",
     "TOUCHPOINT_RE_VERIFY",

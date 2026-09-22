@@ -139,7 +139,7 @@ marker), the canonical serialization explicitly deferred to §9,
 quorum confirmed (single-root MUST verify, any-root MAY sign), and
 the frozen/deferred parameter split recorded; §6.3.6 re-points at
 §6.7. REQ-SEC-0003's implementation gate opens
-- [x] NPS-028 Package PKI Implementation Surface — Draft (2026-09-21, the NPS-027 residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, SURFACE-PKI-0001..0004; exits Draft on implementation validation; the scheme is decided — NPS-026 v1.3.0 §6.7, D4 — and this document's fence narrows to the §6.7.3 canonical-serialization deferral). **v0.2.0 (2026-09-22)**: implementation STARTED — `backend/package_pki.py` implements the §3 key store (three collections, §3.3 field set, §3.5 uninstall-as-revocation), the §4 verification pipeline (one ordered path, per-stage outcomes, TOFU fail-closed, the §6.3.4 advisory/block split, §7.2 non-blocking audit sink), the §5 revocation list (root-signed, monotonic sequence, replay-refusing, atomic apply), and §6 enrollment + cross-signed rotation, with the §6.7.2 fingerprint spelling throughout (26 tests); remaining named increments: §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds — and §3.4 custody LANDED the same day (`save_locked`/`load_locked`: ADR-0023 envelope encryption, Argon2id-derived KEK never persisted in plaintext, AEAD contexts bound to the format magic, crate custody when present, fail-closed; plaintext persistence demoted to the marked dev/test path; 6 custody tests, 32 total; NPS-028 v0.3.0) and §3.2's store-layer authority enforcement landed the same session (every store written 0600 via atomic temp-rename — no world-readable intermediate ever exists — and loads refuse group/world-readable stores fail-closed, naming §3.2 and the fix; 4 authority tests, 36 total; NPS-028 v0.4.0; the container-side half — hosting the store behind the daemon's IPC — remains the daemon integration's named item)
+- [x] NPS-028 Package PKI Implementation Surface — Draft (2026-09-21, the NPS-027 residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, SURFACE-PKI-0001..0004; exits Draft on implementation validation; the scheme is decided — NPS-026 v1.3.0 §6.7, D4 — and this document's fence narrows to the §6.7.3 canonical-serialization deferral). **v0.2.0 (2026-09-22)**: implementation STARTED — `backend/package_pki.py` implements the §3 key store (three collections, §3.3 field set, §3.5 uninstall-as-revocation), the §4 verification pipeline (one ordered path, per-stage outcomes, TOFU fail-closed, the §6.3.4 advisory/block split, §7.2 non-blocking audit sink), the §5 revocation list (root-signed, monotonic sequence, replay-refusing, atomic apply), and §6 enrollment + cross-signed rotation, with the §6.7.2 fingerprint spelling throughout (26 tests); remaining named increments: §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds — and §3.4 custody LANDED the same day (`save_locked`/`load_locked`: ADR-0023 envelope encryption, Argon2id-derived KEK never persisted in plaintext, AEAD contexts bound to the format magic, crate custody when present, fail-closed; plaintext persistence demoted to the marked dev/test path; 6 custody tests, 32 total; NPS-028 v0.3.0) and §3.2's store-layer authority enforcement landed the same session (every store written 0600 via atomic temp-rename — no world-readable intermediate ever exists — and loads refuse group/world-readable stores fail-closed, naming §3.2 and the fix; 4 authority tests, 36 total; NPS-028 v0.4.0; the container-side half — hosting the store behind the daemon's IPC — remains the daemon integration's named item) — and §7 + §5.1 landed the same session as well (NPS-028 v0.5.0): `PackageAuditChain` reuses ContainerManager's scheme-2 chain byte-for-byte (differentially pinned against `_audit_event_content`), `make_sink` wires it to the pipeline under §7.2, the §5.1 fetcher's channel is independent of the package feed, and the store persists its `revocation_sequence`; 15 new tests, 51 total
 - [x] NPS-027 Package Trust Model — **Accepted** (2026-09-21; Threat Model Phase 7, 2026-08-12, completing Milestone 12; disposition of FIND-PACKAGE-001 plus 4 new findings closed via NPS-006 §6 amendment and REQ-SEC-0003..0006). **Review REGISTERED 2026-09-20, DECIDED ACCEPTED 2026-09-21 (decision log D2)** — second standing item on `AG_AGENDA.md` v1.3.0 for the next session; the spec existed since 2026-08-12 but was never scheduled (the next-actions audit found items 18/20 still calling for what it already is); acceptance closes the planned threat-model phase list and unblocks item 18's PKI-implementation residual; **the routed FIND-PACKAGE-003 key-trust design was decided the same day (D3 — the ADR-0014 mirror)**, landing as NPS-026 v1.2.0 §6.3 and closing REQ-SEC-0004
 
 ## Requirements Database
@@ -189,10 +189,19 @@ verification, and §6 enrollment + cross-signed rotation, all speaking
 the §6.7.2 fingerprint — and §3.4 custody landed the same day
 (`save_locked`/`load_locked`, ADR-0023 envelope encryption, the KEK
 never persisted in plaintext) and §3.2's store-layer authority
-enforcement (0600 atomic writes, loads refuse over-open stores) —
-remaining named increments: §3.2's daemon-side half (the store behind
-the daemon's IPC), §7 ADR-0018 audit wiring, §5.1
-transport, §5.3 bounds. The propose-
+enforcement (0600 atomic writes, loads refuse over-open stores) and
+the §7 ADR-0018 audit wiring (`PackageAuditChain`: the scheme-2 chain
+byte-identical to ContainerManager's and differentially pinned against
+it in the tests; §7.1 records carry the package identity + verdict +
+stages; JSONL persistence with the salt in the header; `make_sink`
+attaches it to the pipeline under the §7.2 never-changes-a-verdict
+rule) and §5.1's out-of-band transport (`RevocationFetcher` +
+`refresh_revocations`: the channel is independent of the package feed
+— feed compromise cannot suppress revocation delivery — and fetch
+failure/replay/unauthentic lists leave the store untouched; the store
+now persists its §5.2 sequence) — remaining named
+increments: §3.2's daemon-side half (the store behind
+the daemon's IPC), §5.3 bounds. The propose-
 side review package for the §6.2-reserved scheme is at
 `AG_BRIEF_NPS026_CRYPTO_SCHEME.md` — reviewed and **ACCEPTED**
 2026-09-22 (AG decision log D4: scheme accepted, G1's fingerprint

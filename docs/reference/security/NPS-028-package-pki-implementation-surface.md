@@ -1,7 +1,7 @@
 ---
 title: Package PKI Implementation Surface
 document_id: NPS-028
-version: 0.2.0
+version: 0.5.0
 status: Draft
 classification: Normative
 subsystem: security
@@ -49,12 +49,24 @@ path only; 32 tests, `tests/test_package_pki.py`), and §3.2's
 store-layer authority enforcement (every store is written 0600 via an
 atomic 0600 temp rename — no world-readable intermediate ever exists —
 and a load REFUSES a group/world-readable store fail-closed, naming
-§3.2 and the fix; 36 tests). Still to build, each a named increment:
-§3.2's daemon-side half (the store living behind the daemon's IPC so
+§3.2 and the fix; 36 tests), the §7 ADR-0018 audit wiring
+(`PackageAuditChain` reuses the ContainerManager scheme-2 hash chain
+byte-for-byte — differentially pinned against
+`ContainerManager._audit_event_content` in the tests — carrying §7.1
+records with the package identity, verdict, reason, fingerprint,
+publisher, and per-stage outcomes; `make_sink` wires it to the
+pipeline; the chain is salt-per-process, JSONL-persisted with the
+salt in the header line, and tamper/reorder/removal-evident on
+`verify()`), and §5.1's out-of-band transport (`RevocationFetcher` /
+`FileRevocationFetcher` plus `refresh_revocations`: the channel is
+configured independently of any package-feed object — feed compromise
+cannot suppress revocation delivery — and a fetch failure, replay, or
+unauthentic list leaves the store untouched). 51 tests. Still to
+build, each a named increment: §3.2's daemon-side half (the store
+living behind the daemon's IPC so
 package code never reaches the file at all — a deployment property
-this layer documents and the daemon must complete), the §7 ADR-0018
-audit-log wiring (the pipeline currently
-takes any sink), §5.1's out-of-band transport, and the §5.3 stale-list
+this layer documents and the daemon must complete), and the §5.3
+stale-list
 bounds (deferred to implementation validation by design). This
 document enumerates the components the remaining implementation must
 provide, the requirements each satisfies (REQ-SEC-0003..0006), the
@@ -271,6 +283,7 @@ moment implementation begins.
 | 0.2.0   | 2026-09-22 | The scheme was decided (NPS-026 v1.3.0 §6.7, D4) and implementation STARTED: `backend/package_pki.py` — the §3 key store (three collections, §3.3 fields, §3.5 uninstall-as-revocation), the §4 pipeline (one ordered path, per-stage outcomes, TOFU fail-closed, §6.3.4 advisory/block split, §7.2 non-blocking audit sink), the §5 revocation list (root-signed, monotonic, replay-refusing, atomic apply), §6 enrollment + cross-signed rotation, the §6.7.2 fingerprint spelling throughout; 26 tests. Remaining: §3.4 custody, §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
 | 0.3.0   | 2026-09-22 | §3.4 custody LANDED: `save_locked`/`load_locked` — ADR-0023 envelope encryption at rest (random per-file DEK AEAD-encrypts the canonical store; DEK wrapped by the Argon2id-derived KEK, which is never persisted in plaintext; AEAD contexts bind the format's magic so payloads cannot relocate between files or formats; crate custody when the keys crate is present, the documented floor otherwise; fail-closed — no secret, no custody file, and plaintext persistence demoted to the explicitly marked dev/test path). 6 custody tests (32 total). Remaining: §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
 | 0.4.0   | 2026-09-22 | §3.2 store-layer authority enforcement LANDED: every store write goes through a 0600 atomic temp-rename (no world-readable intermediate ever exists) and every load refuses a group/world-readable store fail-closed, naming §3.2 and the fix. 4 authority tests (36 total). Remaining: §3.2's daemon-side half (host the store behind the daemon's IPC), §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
+| 0.5.0   | 2026-09-22 | §7 ADR-0018 wiring + §5.1 transport LANDED: `PackageAuditChain` (the scheme-2 chain over package events, byte-identical to ContainerManager's construction and differentially pinned against it; §7.1 records carry package_id/version/verdict/reason/fingerprint/publisher/stages; salt-per-process with the salt persisted in the JSONL header so loaded chains re-verify; tamper/reorder/removal evidence via `verify()`; `make_sink` attaches it to the pipeline under §7.2's never-changes-a-verdict rule) and `RevocationFetcher`/`FileRevocationFetcher`/`refresh_revocations` (the §5.1 channel is configured independently of the package feed; fetch failure, replay, or unauthentic list leaves the store untouched; the store now persists its §5.2 `revocation_sequence` so monotonicity survives restarts). 15 new tests (51 total). Remaining: §3.2's daemon-side half, §5.3 bounds |
 
 ---
 **End of Document**

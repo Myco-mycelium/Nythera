@@ -471,5 +471,193 @@ class TestVerificationPipeline(unittest.TestCase):
                 MANIFEST, TREE, self.sig, self.kp.public_key, "download")
 
 
+class TestPackageAuditChain(unittest.TestCase):
+    """NPS-028 §7 — ADR-0018 reuse: the scheme-2 chain over package events."""
+
+    def setUp(self):
+        from backend.package_pki import PackageAuditChain
+        self.chain = PackageAuditChain()
+
+    def _populate(self):
+        self.chain.append("package_verification", {"package_id": "acme-app",
+                                                   "verdict": "approved"})
+        self.chain.append("package_verification", {"package_id": "zed-cli",
+                                                   "verdict": "denied",
+                                                   "reason": "TOFU"})
+        self.chain.append("key_rotation", {"from": "a", "to": "b"})
+
+    def test_verify_passes_on_untouched_chain(self):
+        self._populate()
+        self.assertTrue(self.chain.verify())
+
+    def test_tampered_details_break_the_chain(self):
+        self._populate()
+        self.chain.entries[1]["details"]["verdict"] = "approved"  # rewrite history
+        self.assertFalse(self.chain.verify())
+
+    def test_removed_entry_breaks_the_chain(self):
+        self._populate()
+        del self.chain.entries[0]
+        self.assertFalse(self.chain.verify())
+
+    def test_reordered_entries_break_the_chain(self):
+        self._populate()
+        self.chain.entries[0], self.chain.entries[1] = (self.chain.entries[1],
+                                                        self.chain.entries[0])
+        self.assertFalse(self.chain.verify())
+
+    def test_jsonl_roundtrip_preserves_tamper_evidence(self):
+        self._populate()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "audit.jsonl")
+            self.chain.save_jsonl(path)
+            loaded = type(self.chain).load_jsonl(path)
+        self.assertTrue(loaded.verify())
+        loaded.entries[0]["details"]["package_id"] = "forged"
+        self.assertFalse(loaded.verify())
+
+    def test_differential_pin_against_container_audit(self):
+        """The construction must never drift from ADR-0018's scheme 2
+        (the nui floor↔crate lesson: pin the equivalence)."""
+        from backend.container import ContainerManager
+        cases = [
+            ("salt1", "GENESIS", "package_verification", 1727000000.0,
+             {"package_id": "acme-app", "verdict": "approved"}),
+            ("salt2", "deadbeef", "key_rotation", 1.5, None),
+            ("salt3", "cafe", "package_verification", 0.0, {}),
+        ]
+        for salt, prev, op, ts, details in cases:
+            theirs = ContainerManager._audit_event_content(
+                salt, prev, op, ts, details)
+            ours = self.chain.event_content(salt, prev, op, ts, details)
+            self.assertEqual(ours, theirs)
+
+    def test_none_and_empty_details_hash_differently(self):
+        """Preserved from the container scheme on purpose."""
+        a = self.chain.event_content("s", "p", "op", 1.0, None)
+        b = self.chain.event_content("s", "p", "op", 1.0, {})
+        self.assertNotEqual(a, b)
+
+
+class TestAuditChainPipelineWiring(unittest.TestCase):
+    """§7.1 — the pipeline's records land in the tamper-evident chain."""
+
+    def setUp(self):
+        from backend.package_pki import PackageAuditChain, PkiKeyStore
+        self.chain_cls = PackageAuditChain
+        self.store = PkiKeyStore()
+        self.kp, self.sig = _sign()
+        self.store.enroll(self.kp.public_key, "acme",
+                          _confirmation(self.kp.fingerprint))
+        self.chain = PackageAuditChain()
+
+    def _run(self):
+        from backend.package_pki import VerificationPipeline
+        pipeline = VerificationPipeline(
+            self.store,
+            audit_sink=self.chain_cls.make_sink(self.chain))
+        return pipeline.run(MANIFEST, TREE, self.sig, self.kp.public_key,
+                            "install")
+
+    def test_record_carries_the_package_identity(self):
+        self._run()
+        self.assertEqual(len(self.chain.entries), 1)
+        record = self.chain.entries[0]["details"]
+        self.assertEqual(record["package_id"], "acme-app")
+        self.assertEqual(record["version"], "1.0.0")
+        self.assertEqual(record["verdict"], "approved")
+        self.assertEqual(record["fingerprint"], self.kp.fingerprint)
+        self.assertEqual(record["publisher"], "acme")
+
+    def test_chain_stays_tamper_evident_after_wiring(self):
+        self._run()
+        self.assertTrue(self.chain.verify())
+        self.chain.entries[0]["details"]["verdict"] = "denied"
+        self.assertFalse(self.chain.verify())
+
+    def test_sink_failure_still_leaves_verdict_alone(self):
+        """§7.2 holds through the chain wiring too."""
+        def exploding(record):
+            raise RuntimeError("audit backend down")
+        from backend.package_pki import VerificationPipeline
+        pipeline = VerificationPipeline(self.store, audit_sink=exploding)
+        result = pipeline.run(MANIFEST, TREE, self.sig, self.kp.public_key,
+                              "install")
+        self.assertEqual(result.verdict, "approved")
+
+
+class TestRevocationTransport(unittest.TestCase):
+    """NPS-028 §5.1 — out-of-band fetch, independent of the package feed."""
+
+    def setUp(self):
+        from backend.package_pki import PkiKeyStore
+        from backend.package_signing import SigningKeypair
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = PkiKeyStore()
+        self.root = SigningKeypair.generate()
+        self.store.add_root_anchor(self.root.public_key, "root-1")
+        self.victim, _ = _sign()
+        self.store.enroll(self.victim.public_key, "acme",
+                          _confirmation(self.victim.fingerprint))
+        self.store.revocation_sequence = 3  # prior lists already applied
+        self.channel = os.path.join(self.tmp.name, "revocations.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_channel(self, sequence):
+        from backend.package_pki import RevocationList
+        rvl = RevocationList(sequence=sequence, generated_at=1.0, entries=[
+            {"fingerprint": self.victim.fingerprint, "reason": "compromise"}])
+        rvl.sign_with_root(self.root.fingerprint, self.root.private_key)
+        with open(self.channel, "w", encoding="utf-8") as fh:
+            fh.write(rvl.to_json())
+
+    def _refresh(self):
+        from backend.package_pki import FileRevocationFetcher
+        from backend.package_pki import refresh_revocations
+        return refresh_revocations(
+            self.store, FileRevocationFetcher(self.channel))
+
+    def test_newer_authentic_list_applies(self):
+        self._write_channel(4)
+        self.assertEqual(self._refresh()["outcome"], "applied")
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "revoked")
+        self.assertEqual(self.store.revocation_sequence, 4)
+
+    def test_regressive_list_refused_store_intact(self):
+        self._write_channel(2)
+        outcome = self._refresh()
+        self.assertEqual(outcome["outcome"], "replay_refused")
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "trusted")
+
+    def test_missing_channel_fails_without_touching_the_store(self):
+        self.assertEqual(self._refresh()["outcome"], "fetch_failed")
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "trusted")
+
+    def test_unauthentic_list_refused_store_intact(self):
+        from backend.package_pki import RevocationList
+        rvl = RevocationList(sequence=9, generated_at=1.0, entries=[
+            {"fingerprint": self.victim.fingerprint, "reason": "x"}])
+        with open(self.channel, "w", encoding="utf-8") as fh:
+            fh.write(rvl.to_json())  # unsigned
+        outcome = self._refresh()
+        self.assertEqual(outcome["outcome"], "replay_refused")
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "trusted")
+
+    def test_channel_is_independent_of_the_package_feed(self):
+        """The fetcher's source is its own configuration; the refresh
+        call involves no repo/feed object at all, so feed compromise
+        cannot suppress revocation delivery."""
+        self._write_channel(4)
+        # No repo object exists in this test — only the channel file and
+        # the store. The applied result proves delivery works without one.
+        self.assertEqual(self._refresh()["outcome"], "applied")
+
+
 if __name__ == "__main__":
     unittest.main()
