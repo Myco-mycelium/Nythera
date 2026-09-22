@@ -15,10 +15,14 @@ event** (API, `event=schedule` and unfiltered both queried); due
 05:52, now 2 h 10 m past — inside the 8 h window Monday's data set
 (delays up to 5 h 49 m). Consistent with another scheduler-wide
 backlog: today's amd64 fire (due 03:00) had also not landed by 08:02.
-The two weekly ISO crons and the PAT watcher still show Monday's
-verified successes. **Re-check after 13:52 UTC and record the final
-verdict here — a no-show by then is a real finding** (recovery:
-workflow_dispatch, currently gated on the PAT Actions-write grant).
+Re-checked at 08:24 and 08:33 UTC — still zero runs; amd64's own grace
+deadline is 11:00 UTC, the watcher's is 13:52 UTC. The two weekly ISO
+crons and the PAT watcher still show Monday's verified successes.
+**Re-check after 13:52 UTC and record the final verdict here — a
+no-show by then is a real finding** (recovery: workflow_dispatch,
+currently gated on the PAT Actions-write grant — the drill was
+re-executed 08:15 UTC and failed exactly as documented: HTTP 403,
+"Resource not accessible by personal access token").
 
 **The gap the interim check exposed (closed same day):**
 `check_scheduled_runs.sh` never watched `scheduled-runs-watch.yml`
