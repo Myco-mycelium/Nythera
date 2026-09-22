@@ -1,7 +1,7 @@
 ---
 title: Package PKI Implementation Surface
 document_id: NPS-028
-version: 0.9.2
+version: 0.9.3
 status: Draft
 classification: Normative
 subsystem: security
@@ -90,10 +90,12 @@ interfaces it must offer, and the attack surfaces it will add. It does
 not restate the trust model; it turns it into a buildable checklist.
 
 It is a `Draft` **by dependency, not by deficiency**: its normative
-anchors (NPS-026 §6.3, NPS-027) are Accepted, but no implementation
-exists to validate section numbering, interface shapes, or the REQ
-coverage table against. Like NPS-026, it exits Draft on implementation
-validation (NPC-002 §5.1/§5.2). The concrete cryptographic scheme was
+anchors (NPS-026 §6.3, NPS-027) are Accepted, the implementation
+exists and has been validated against this document's normative claims
+(§10's mechanical evidence table, NPC-002 §5.1/§5.2) — what remains
+before this document exits Draft is NPS-026 §9's canonicalization
+decision (the one §6.7.3 deferral fencing §2) and the Architecture
+Group's acceptance review of the validated surface. The concrete cryptographic scheme was
 **reserved per NPC-002 §6.2** until the dedicated human review
 concluded 2026-09-22 (AG decision log D4): the decided scheme is now
 normative in NPS-026 §6.7 — this document's §2 fence narrows to the
@@ -299,10 +301,41 @@ part of this document.
 
 | REQ | Requirement (ledger wording) | Addressed by |
 |-----|------------------------------|--------------|
-| REQ-SEC-0003 | Signature-based authenticity per NPS-026 §6 | §4 stages 1–4; NPS-006 §6.3 |
-| REQ-SEC-0004 | User-enrollable, revocable keys; explicit first-install enrollment | §3, §5, §6 (the mechanism decided in AG decision log D3) |
+| REQ-SEC-0003 | Signature-based authenticity per NPS-026 §6 | §4 stages 1–4; NPS-006 §6.3 (implemented + validated, §10) |
+| REQ-SEC-0004 | User-enrollable, revocable keys; explicit first-install enrollment | §3, §5, §6 (the mechanism decided in AG decision log D3; implemented + validated, §10) |
 | REQ-SEC-0005 | Base/overlay provenance distinction | Out of scope here — NPS-006 §6.4 owns it; §4 stage 5 consumes its verdict |
-| REQ-SEC-0006 | Package events in the tamper-evident audit log | §7 |
+| REQ-SEC-0006 | Package events in the tamper-evident audit log | §7 (implemented + validated, §10) |
+
+## 10. Implementation Validation Record
+
+Recorded 2026-09-22, the same day the last mechanism wired in. Per
+NPC-002 §5.1/§5.2, every claim below was verified against the shipped
+tree by a mechanical probe (importable assertions, not prose), and
+every count is reproducible from `tests/`.
+
+| Normative claim (this document) | Evidence in the tree |
+|---------------------------------|----------------------|
+| §6.7.2 fingerprint = SHA-256(pub), full 64 lowercase hex | probe: `key_fingerprint` output equals the recomputed digest, 64 lowercase chars |
+| §3.1 exactly three collections + monotonic sequence state | probe: `_roots`/`_enrolled`/`_revocations`/`revocation_sequence` present; `tests.test_package_pki` §3 tests |
+| §3.2 store written 0600 via atomic rename; loads refuse group/world-readable | probe: mode check after `save`; `PkiError` raised on a 0640 store at `load` |
+| §3.4 custody envelope; unlock secret never at rest | probe: envelope fields (`magic`, scheme, KEK blob, wrapped DEK, payload) present; secret string absent from the custody file |
+| §3.2 `DaemonAuthority` unforgeable; allowlist excludes key reads | probe: direct construction raises; `enrolled_public_key_for`/`root_public_key_for` not in `IPC_ALLOWED_OPS` |
+| §4 the one ordered path, per-stage outcomes, fail-closed | probe: stages `1_parse_manifest` → `2_resolve_key` recorded in order, TOFU denial carries its reason |
+| §5.1 channel independent of the feed; failure never mutates the store | probe: refresh against a missing channel returns `fetch_failed`, sequence unchanged; the daemon loop is `FileRevocationFetcher`-shaped (path-only config) |
+| §5.2 replay-refusing atomic apply | `tests.test_package_pki` §5.2 tests (regressive list refused, store intact) |
+| §6.2 confirmation not skippable; spoof-refusing | probe: unconfirmed enrollment raises; spoofed-fingerprint confirmation raises in-process AND over the wire (`TestPkiIpcWireConventions`) |
+| §7 tamper-evident chain; §7.2 sink failure never changes a verdict | probe: `verify()` clean then false after an entry mutation; a raising sink degrades to an `audit: warn` stage record |
+| §3.2/§3.4 production assembly end-to-end | the 2026-09-22 daemon drill: custody-mandatory boot, IPC enrollment, SIGTERM persistence, restart survival (v0.9.1 revision entry) |
+
+Suite evidence: `tests.test_package_pki` **97 tests**, package-security
+set (`test_package_pki` + `test_package_repo` 16 + `test_package_signing`
+20 + `test_update_signing` 11 + `test_repo_journal_vfs` 69 + the
+scheduled-runs contract 4) **217 green** in one run; the PKI module
+verifies byte-identically from a clean `git worktree` checkout of the
+landed commit. The 15-claim probe above passed 15/15 (the one
+initially-failing probe row was a probe bug — it fed stage 1 an empty
+manifest, so the pipeline correctly never reached stage 2; the
+corrected probe confirms the ordered path).
 
 REQ-SEC-0005's exclusion is deliberate: this document's boundary is the
 signature/key machinery; overlay provenance is image verification and
@@ -325,6 +358,7 @@ moment implementation begins.
 | 0.9.0   | 2026-09-22 | The daemon's production process model LANDED (the last §3.2/§3.4 assembly item): `PkiDaemonRunner` — custody is MANDATORY on the production path (a runner without an unlock secret is a constructor error; a custody file with no secret at boot refuses to start), the store unlocks at boot (or is created on first start), the §7 chain resumes from its persisted salt header and re-verifies, and a clean stop persists custody + chain exactly once (idempotent); the `pki serve` CLI subcommand assembles it with signal-flag polling (not `signal.pause()` — the default disposition would kill the process mid-handler, skipping persistence) and installs as the `nyrqis-pki.service` systemd unit (DynamicUser, NoNewPrivileges, ReadOnlyPaths=/opt/nyrqis, StateDirectory for the custody store + audit chain, the unlock secret from the optional EnvironmentFile — without it the daemon exits by design); install.sh deploys the unit and the two-tree mirror rule is contract-pinned (5 new wiring tests, 84 total). Remaining: §5.3 bounds (frozen by design) |
 | 0.9.1   | 2026-09-22 | The end-to-end daemon drill (boot `pki serve` as a real subprocess, enroll over the §3.2 socket, SIGTERM, restart, verify persistence) FOUND a gap the transport's own tests had missed: no test ever exercised `enroll` over the wire, and JSON carries no bytes — the 64-char hex string arrived where the service demands 32 raw bytes, and the §6 confirmation dataclass arrived as a plain dict. The binary-over-JSON conventions are now explicit and fail-closed: named hex params (`public_key`) decode to bytes server-side (malformed hex = request failure, never a silent string pass-through), dataclass params (`confirmation`) rebuild from their field mapping (unknown fields = request failure), and `PkiIpcClient` hex-encodes bytes arguments on send. 5 new wire-convention tests (89 PKI total; 102 with the deployment guards). The drill itself passed end to end: custody-mandatory boot, IPC enrollment, spoof/hex/shape refusals, SIGTERM persistence (custody + salted §7 chain), restart survival |
 | 0.9.2   | 2026-09-22 | §5.1 wired into the daemon (the surface's last unwired mechanism): `PkiDaemonService.refresh_revocations` — the daemon's own authority drives the out-of-band refresh (callers cannot smuggle a fetcher through the IPC allowlist; the op is deliberately daemon-internal), applied lists are audit-chained as `pki_apply_revocations` with an out-of-band source marker and rejected lists as `pki_refresh_revocations` evidence (never an error path), and a service-level lock serializes the background refresh against in-process mutations; `PkiDaemonRunner` gained the background refresh loop — a channel-configured daemon thread (`FileRevocationFetcher`, independent of any package feed by construction) that fails open per §5.1 (a bad fetch or bad list never touches the store; the outcome is evidence) and is joinable at stop; `pki serve --revocation-channel/--refresh-interval` (disabled by default — an absent channel is an operator decision, not an omission) and the unit ships the channel path. 8 new tests (97 PKI total) |
+| 0.9.3   | 2026-09-22 | The implementation-validation pass RECORDED (§10, new): a mechanical 15-claim probe verifying this document's normative statements against the shipped tree — fingerprint spelling, the three collections, 0600 store writes and fail-closed loads, the custody envelope with no secret at rest, the unforgeable authority, the key-read exclusion from the IPC allowlist, the ordered §4 path with per-stage outcomes, §5.1's store-untouched-on-failure rule, §5.2 replay refusal, the §6.2 confirmation gates (in-process and over the wire), §7 tamper evidence, and §7.2's sink-failure rule — 15/15 after correcting one probe bug (the probe, not the pipeline, fed stage 1 an empty manifest). §9's coverage table now marks the implemented rows. This is the evidence base NPC-002 §5.1/§5.2 require; the document's remaining Draft dependency is NPS-026 §9's canonicalization decision, not implementation |
 
 ---
 **End of Document**
