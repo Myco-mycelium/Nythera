@@ -12,6 +12,14 @@ name: scheduled-runs-watch
 # silent for more than a day. Runs daily at 05:52 UTC — after the
 # PAT watcher's 05:37 fire (so its freshness is checkable) and well
 # clear of the top-of-hour queue that schedule delays feed on.
+#
+# Since 2026-09-22 the checker's WORKFLOWS list includes THIS
+# workflow: the watcher checks its own schedule too. Its own first
+# fire (due 05:52 UTC) had not landed by 08:02 UTC that day while the
+# script reported OK — because the script never looked at itself. When
+# running inside its own scheduled run, that run is excluded from the
+# judgement via GITHUB_RUN_ID (a fresh self-check has no prior run to
+# judge: that case is reported, not failed).
 
 on:
   schedule:

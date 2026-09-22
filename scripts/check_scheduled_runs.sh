@@ -4,7 +4,10 @@
 # (Mon 2026-09-21 06:00 UTC) and every later one are caught even when
 # nobody is watching. Also verifies the PAT-expiry watcher's scheduled
 # fires (its whole job is to go red BEFORE the PAT dies, so a missed
-# fire is itself a finding).
+# fire is itself a finding) — and, since 2026-09-22, the daily CI
+# watcher's own schedule (scheduled-runs-watch.yml, in WORKFLOWS
+# below): a cron that stops firing must be caught by the one script
+# whose whole purpose is catching that.
 #
 # Usage:
 #   scripts/check_scheduled_runs.sh            # human summary
@@ -27,8 +30,16 @@
 set -u
 
 REPO="Myco-mycelium/Nythera"
-WORKFLOWS="live-iso.yml live-iso-arm64.yml"
+# scheduled-runs-watch.yml — THIS checker's own CI job — is checked
+# like any other schedule. Found missing 2026-09-22: the watcher's own
+# first fire (due 05:52 UTC) had not landed by 08:02 UTC while this
+# script reported OK, because it never looked at itself.
+WORKFLOWS="live-iso.yml live-iso-arm64.yml scheduled-runs-watch.yml"
 WATCHER="pat-expiry-watch.yml"
+# The current run (set in Actions) is excluded from every check: the
+# watcher's latest scheduled run is often ITSELF, in_progress —
+# without the exclusion the watcher would fail on finding itself.
+CUR_RUN_ID="${GITHUB_RUN_ID:-0}"
 WATCH=0
 [ "${1:-}" = "--watch" ] && WATCH=1
 
@@ -61,14 +72,15 @@ fi
 
 FAIL=0
 
-# cron_epoch <cron-expr> <back|fwd> -> epoch of the most recent fire at
-# or before now (back), or of the first fire after now (fwd); 0 if none
-# within 8 days of walking. 5-field cron: minute hour day-of-month
-# month day-of-week (0=Sun), supporting * , - /. Pure-minute walking is
-# deliberately used over a cron library: no dependency beyond python3,
-# and the repo's crons are trivial shapes.
+# cron_epoch <cron-expr> <back|fwd> [anchor-epoch] -> epoch of the most
+# recent fire at or before the anchor (back; default: now), or of the
+# first fire after the anchor (fwd); 0 if none within 8 days of
+# walking. 5-field cron: minute hour day-of-month month day-of-week
+# (0=Sun), supporting * , - /. Pure-minute walking is deliberately used
+# over a cron library: no dependency beyond python3, and the repo's
+# crons are trivial shapes.
 cron_epoch() {
-  python3 - "$1" "$2" <<'PYEOF'
+  python3 - "$1" "$2" "${3:-}" <<'PYEOF'
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -96,6 +108,9 @@ dom_restricted, dow_restricted = f[2] != "*", f[4] != "*"
 dir_back = sys.argv[2] != "fwd"
 
 now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+if len(sys.argv) > 3 and sys.argv[3]:
+    now = datetime.fromtimestamp(int(sys.argv[3]), tz=timezone.utc)\
+          .replace(second=0, microsecond=0)
 step = -1 if dir_back else 1
 t = now
 for _ in range(8 * 24 * 60):  # 8 days of walking covers any weekly cron
@@ -127,7 +142,7 @@ crons_of() {
 check_workflow() { # workflow-file
   local wf="$1" json last status
   json="$(curl -s --max-time 30 "${NRC[@]}" \
-    "https://api.github.com/repos/$REPO/actions/workflows/$wf/runs?event=schedule&per_page=1")"
+    "https://api.github.com/repos/$REPO/actions/workflows/$wf/runs?event=schedule&per_page=10")"
   if ! echo "$json" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
     echo "::error::$wf: runs API query failed (invalid JSON) — network? token?"
     FAIL=1
@@ -139,11 +154,18 @@ check_workflow() { # workflow-file
   # via process substitution: a cron expression contains '*' fields and
   # MUST NEVER be word-split (glob expansion once turned every repo
   # root filename into a "cron expression" here).
-  local expected=0 next_due=0 c e
+  local expected=0 next_due=0 prev_fire=0 c e
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     e="$(cron_epoch "$c" back)"
-    if [ -n "$e" ] && [ "$e" -gt "$expected" ]; then expected="$e"; fi
+    if [ -n "$e" ] && [ "$e" -gt "$expected" ]; then
+      expected="$e"
+      # The fire immediately BEFORE the expected one — the staleness
+      # threshold when the expected fire's own grace has not expired
+      # (e.g. the watcher checking itself mid-run: the visible prior
+      # run legitimately covers that earlier fire, not this one).
+      prev_fire="$(cron_epoch "$c" back "$((e - 60))")"
+    fi
     e="$(cron_epoch "$c" fwd)"
     if [ -n "$e" ] && [ "$e" -gt 0 ] && { [ "$next_due" -eq 0 ] || [ "$e" -lt "$next_due" ]; }; then next_due="$e"; fi
   done < <(crons_of "$wf")
@@ -185,10 +207,48 @@ print(runs[0]['created_at'] if runs else '')")"
 
   status="$(echo "$json" | python3 -c "
 import json,sys
-r=json.load(sys.stdin)['workflow_runs'][0]
-print(f\"{r['status']}/{r['conclusion']} at {r['created_at']} ({r['head_sha'][:7]})\")")"
+runs=json.load(sys.stdin)['workflow_runs']
+r=next((x for x in runs if str(x['id']) != '$CUR_RUN_ID'), None)
+print(f\"{r['status']}/{r['conclusion']} at {r['created_at']} ({r['head_sha'][:7]})\" if r else '')")"
+  if [ -z "$status" ]; then
+    # Every listed run is the current one — the first fire of a NEW
+    # watcher checking itself: there is no prior run to judge yet.
+    echo "$wf schedule: only the current run exists (run id $CUR_RUN_ID) — nothing prior to judge"
+    return 0
+  fi
   echo "$wf schedule: $status"
-  echo "$json" | grep -q '"conclusion": *"failure"' && FAIL=1
+
+  # A red run is a finding; a MISSED FIRE is too. Checking only the
+  # conclusion passes forever on a stale success — the cron fires once,
+  # dies, and the week-old green run keeps every later check green.
+  # Rule: the latest completed scheduled run must cover the most recent
+  # expected fire whose grace window has expired — the expected fire
+  # itself once now >= expected + grace, otherwise the fire before it
+  # (the watcher checking itself mid-run sees its own run excluded, so
+  # its visible prior run legitimately covers that earlier fire). A
+  # prior run older than the threshold means a fire has no run.
+  local now_s created threshold
+  now_s="$(date -u +%s)"
+  created="$(echo "$status" | sed -n 's/.* at \(.*\) (.*/\1/p')"
+  created="$(date -u -d "$created" +%s 2>/dev/null || echo 0)"
+  if [ "$created" -gt 0 ] && [ "$expected" -gt 0 ]; then
+    if [ $((now_s - expected)) -ge $((WEEKLY_GRACE_HOURS * 3600)) ]; then
+      threshold=$expected
+    elif [ "${prev_fire:-0}" -gt 0 ]; then
+      threshold=$prev_fire
+    else
+      threshold=0
+    fi
+    if [ "$created" -lt "$threshold" ]; then
+      echo "::error::$wf latest scheduled run fired $(date -u -d "@$created" '+%Y-%m-%d %H:%M UTC') — before the expected fire $(date -u -d "@$threshold" '+%Y-%m-%d %H:%M UTC') (grace ${WEEKLY_GRACE_HOURS}h): a scheduled fire has no run"
+      FAIL=1
+    fi
+  fi
+
+  # The chosen run's failure counts; older failures superseded by a
+  # later success do not (the list is per_page=10 only to see past the
+  # current run when the watcher checks itself).
+  echo "$status" | grep -qE '^completed/(failure|timedout)' && FAIL=1
   return 0
 }
 

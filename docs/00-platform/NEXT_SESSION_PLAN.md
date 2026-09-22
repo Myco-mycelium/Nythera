@@ -8,16 +8,48 @@ date: 2026-09-19
 
 ## STANDING ITEM — Tue 2026-09-22 05:52 UTC: scheduled-runs-watch's first fire
 
-The new daily watcher (`scheduled-runs-watch.yml`, pushed 2026-09-21
-in `7ceb2c3`) fires for the first time Tuesday morning. Check via the
+**Interim verdict, 08:02 UTC (recorded same morning): NOT YET FIRED —
+within grace, and the check itself found a gap that is now closed.**
+The workflow is `active` on the default branch with **zero runs of any
+event** (API, `event=schedule` and unfiltered both queried); due
+05:52, now 2 h 10 m past — inside the 8 h window Monday's data set
+(delays up to 5 h 49 m). Consistent with another scheduler-wide
+backlog: today's amd64 fire (due 03:00) had also not landed by 08:02.
+The two weekly ISO crons and the PAT watcher still show Monday's
+verified successes. **Re-check after 13:52 UTC and record the final
+verdict here — a no-show by then is a real finding** (recovery:
+workflow_dispatch, currently gated on the PAT Actions-write grant).
+
+**The gap the interim check exposed (closed same day):**
+`check_scheduled_runs.sh` never watched `scheduled-runs-watch.yml`
+itself — the watcher's own cron could die silently while the script
+kept reporting OK. The script's `WORKFLOWS` list now includes it; its
+own in-progress run is excluded via `GITHUB_RUN_ID`; and run
+judgement is staleness-aware: the latest completed scheduled run must
+cover the most recent expected fire whose 8 h grace has expired
+(previously only the latest run's conclusion was checked, so a cron
+that fired once and died stayed green on a stale success forever).
+While the expected fire is still within grace, the threshold falls
+back to the fire before it — derived by walking back from the expected
+fire, not recomputed from now — so the watcher checking itself
+mid-cadence does not false-alarm on its own 24 h-old prior run.
+`TestScheduledRunsWatchContract` pins the self-coverage
+(`test_watcher_covers_itself_and_detects_a_dead_schedule`); contract
+file 67/67. A first-fire run of the self-check has nothing prior to
+judge and says so honestly instead of failing.
+
+Original item text (for the final verdict's expected content): the
+new daily watcher (`scheduled-runs-watch.yml`, pushed 2026-09-21 in
+`7ceb2c3`) fires for the first time Tuesday morning. Check via the
 API (`event=schedule` filter on the workflow's runs; the repo-side
-`scripts/check_scheduled_runs.sh` reports all three schedules) and
-record the verdict here. Expected content: arm64/arm64 weekly crons
-within their 8 h windows (arm64 due 06:00, amd64 due 03:00 — both
-already verified live Monday), PAT watcher fired 05:37, verdict
-SCHEDULED RUNS: OK. A red run Tuesday is a real finding: the watcher
-checks the state it just verified, so a failure would mean the
-schedule broke *after* Monday's confirmation.
+`scripts/check_scheduled_runs.sh` reports all four schedules now) and
+record the verdict here. Expected content: both weekly crons within
+their 8 h windows (arm64 due 06:00, amd64 due 03:00 — both already
+verified live Monday), PAT watcher fired 05:37, the watcher's own
+fire landed (now that it is watched), verdict SCHEDULED RUNS: OK. A
+red run Tuesday is a real finding: the watcher checks the state it
+just verified, so a failure would mean the schedule broke *after*
+Monday's confirmation.
 
 ## STANDING ITEM — CLOSED — Mon 2026-09-21 06:00 UTC: the arm64 cron's FIRST FIRE
 

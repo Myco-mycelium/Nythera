@@ -1121,11 +1121,36 @@ class TestScheduledRunsWatchContract(unittest.TestCase):
                       "watcher must suppress imminent fires (pre-fire CI run)")
 
     def test_watcher_covers_both_iso_workflows_and_the_pat_watcher(self):
-        self.assertIn('WORKFLOWS="live-iso.yml live-iso-arm64.yml"',
+        for wf in ("live-iso.yml", "live-iso-arm64.yml"):
+            self.assertIn(wf, self.script,
+                          f"watcher must check the {wf} refresh schedule")
+        self.assertIn('WATCHER="pat-expiry-watch.yml"',
                       self.script,
-                      "watcher must check both ISO-refresh schedules")
-        self.assertIn('WATCHER="pat-expiry-watch.yml"', self.script,
                       "watcher must check the PAT-expiry schedule")
+
+    def test_watcher_covers_itself_and_detects_a_dead_schedule(self):
+        # Found 2026-09-22: the watcher did not check its own schedule —
+        # its cron could die silently while it kept reporting OK. Two
+        # pins: the workflow list includes scheduled-runs-watch.yml, and
+        # the run-judgement logic is staleness-aware (a cron that fires
+        # once and dies must go red even though its last run stayed
+        # completed/success forever).
+        self.assertIn('scheduled-runs-watch.yml"', self.script,
+                      "the watcher must check its own schedule — a cron "
+                      "that stops firing must be caught by the script "
+                      "whose purpose is catching that")
+        self.assertIn("CUR_RUN_ID", self.script,
+                      "watcher must exclude its own in-progress run when "
+                      "checking itself")
+        self.assertIn("prev_fire", self.script,
+                      "staleness threshold must fall back to the fire "
+                      "before the expected one (grace not yet expired)")
+        self.assertIn("cron_epoch \"$c\" back \"$((e - 60))\"",
+                      self.script,
+                      "the previous fire is derived by walking back from "
+                      "the expected fire, not recomputed from now")
+        self.assertIn("scheduled fire has no run", self.script,
+                      "staleness failure must name the missed-fire reason")
 
     def test_ci_job_runs_the_watcher_daily(self):
         d = self.wf
