@@ -1,14 +1,14 @@
 ---
 title: Package PKI Implementation Surface
 document_id: NPS-028
-version: 0.1.0
+version: 0.2.0
 status: Draft
 classification: Normative
 subsystem: security
 owners:
   - Nyrqis Architecture
 created: 2026-09-21
-updated: 2026-09-21
+updated: 2026-09-22
 ai_assisted: true
 review_cycle: Per implementation milestone
 depends_on: [NTM-000, NPC-001, NPC-009, NPS-018, NPS-019, NPS-006, NPS-026, NPS-027, ADR-0018, ADR-0023]
@@ -27,15 +27,29 @@ the Architecture Group on 2026-09-21, decision log D3) and whose
 
 It exists because NPS-027's acceptance left a named residual: the
 planned threat-model phase list is closed, and the **trust machinery**
-— key store, enrollment, revocation, root set — has no implementation.
-The **signing half** is the exception and ships today: Ed25519
-manifest/delta signatures and a signed repository index
-(`backend/package_signing.py`, `backend/update_signing.py`,
-`backend/package_repo.py`; 37 tests). This document enumerates the
-components the remaining implementation must provide, the requirements
-each satisfies (REQ-SEC-0003..0006), the interfaces it must offer, and
-the attack surfaces it will add. It does not restate the trust model;
-it turns it into a buildable checklist.
+— key store, enrollment, revocation, root set — had no implementation.
+The **signing half** ships and always did: Ed25519 manifest/delta
+signatures and a signed repository index (`backend/package_signing.py`,
+`backend/update_signing.py`, `backend/package_repo.py`; 37 tests).
+**Implementation of the trust machinery has started (2026-09-22, the
+same day the scheme was decided):** `backend/package_pki.py` implements
+the §3 key store (three collections, §3.3 field set, §3.5
+uninstall-as-revocation semantics), the §4 verification pipeline (the
+one ordered path, per-stage outcomes, TOFU fail-closed resolution,
+the §6.3.4 advisory/block split, §7.2 non-blocking audit sink), the §5
+revocation list (root-set-signed, monotonic sequence, replay-refusing,
+atomic apply), and §6 enrollment + cross-signed rotation — with the
+§6.7.2 fingerprint spelling throughout (26 tests,
+`tests/test_package_pki.py`). Still to build, each a named increment:
+§3.4 custody (ADR-0023 envelope encryption at rest), daemon-authority
+enforcement of §3.2 (currently a deployment property, not an API
+property), the §7 ADR-0018 audit-log wiring (the pipeline currently
+takes any sink), §5.1's out-of-band transport, and the §5.3 stale-list
+bounds (deferred to implementation validation by design). This
+document enumerates the components the remaining implementation must
+provide, the requirements each satisfies (REQ-SEC-0003..0006), the
+interfaces it must offer, and the attack surfaces it will add. It does
+not restate the trust model; it turns it into a buildable checklist.
 
 It is a `Draft` **by dependency, not by deficiency**: its normative
 anchors (NPS-026 §6.3, NPS-027) are Accepted, but no implementation
@@ -237,6 +251,7 @@ moment implementation begins.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 0.1.0   | 2026-09-21 | Initial draft — the PKI implementation surface NPS-027's acceptance left as its residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, and the four new surfaces enumerated for the threat model's next pass |
+| 0.2.0   | 2026-09-22 | The scheme was decided (NPS-026 v1.3.0 §6.7, D4) and implementation STARTED: `backend/package_pki.py` — the §3 key store (three collections, §3.3 fields, §3.5 uninstall-as-revocation), the §4 pipeline (one ordered path, per-stage outcomes, TOFU fail-closed, §6.3.4 advisory/block split, §7.2 non-blocking audit sink), the §5 revocation list (root-signed, monotonic, replay-refusing, atomic apply), §6 enrollment + cross-signed rotation, the §6.7.2 fingerprint spelling throughout; 26 tests. Remaining: §3.4 custody, §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
 
 ---
 **End of Document**

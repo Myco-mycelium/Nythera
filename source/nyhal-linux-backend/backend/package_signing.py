@@ -28,6 +28,16 @@ Crypto primitives:
   - SHA-256 for hashing (used by PyNaCl internally)
   - XChaCha20-Poly1305 for key wrapping (existing KeyManager)
 
+Key identity (NPS-026 §6.7.2, AG decision log D4, 2026-09-22):
+  The key fingerprint is SHA-256(public key), displayed in FULL as 64
+  lowercase hex characters — one spelling everywhere (NPS-028 §3.3);
+  enrollment confirmations and audit records never truncate it. The
+  historical ``key_id`` (first 8 bytes of the raw key) is a legacy
+  form: it remains available as a deprecated alias equal to the
+  fingerprint, and persisted stores written by older versions are
+  re-keyed transparently on load (the fingerprint is derivable from
+  the stored public key).
+
 Fail-closed posture: PyNaCl is a hard dependency of this project
 (pyproject.toml). Without it, every signing/verification operation
 raises ``PackageSignError`` — there is deliberately NO stub fallback,
@@ -42,6 +52,7 @@ import hashlib
 import json
 import os
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -58,6 +69,30 @@ class PackageSignError(Exception):
     """Raised when package signing or verification fails."""
 
 
+class LegacyKeyAliasWarning(DeprecationWarning):
+    """The pre-D4 8-byte key_id alias was used; the fingerprint is canonical.
+
+    NPS-026 §6.7.2 (AG decision log D4, 2026-09-22) migrated key identity
+    to the SHA-256 fingerprint; code still reading ``key_id`` should move
+    to ``fingerprint``. A DeprecationWarning subclass so the migration is
+    visible under ``-W error::DeprecationWarning`` without breaking users.
+    """
+
+
+def key_fingerprint(public_key: bytes) -> str:
+    """The §6.7.2 fingerprint: SHA-256(public key), full 64 lowercase hex.
+
+    Decided by the 2026-09-22 crypto review (AG decision log D4): the
+    full 32-byte public key remains the identity; the fingerprint is
+    what enrollment UIs and audit records display, always in full —
+    the truncation-collision class is designed out, not mitigated.
+    Raises ``PackageSignError`` on a key that is not 32 bytes.
+    """
+    if len(public_key) != 32:
+        raise PackageSignError("Public key must be 32 bytes")
+    return hashlib.sha256(public_key).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Key management
 # ---------------------------------------------------------------------------
@@ -72,13 +107,28 @@ class SigningKeypair:
         32-byte Ed25519 public key (verify key).
     private_key : bytes
         32-byte Ed25519 seed (signing key seed).
-    key_id : str
-        Hex-encoded first 8 bytes of the public key (for identification).
+    fingerprint : str
+        SHA-256(public key), full 64 lowercase hex (NPS-026 §6.7.2).
+
+    ``key_id`` remains as a deprecated property alias equal to the
+    fingerprint (it historically held the first 8 raw key bytes; the
+    2026-09-22 review migrated it with this version marker).
     """
 
     public_key: bytes
     private_key: bytes
-    key_id: str
+    fingerprint: str
+
+    @property
+    def key_id(self) -> str:
+        """Deprecated alias for the fingerprint (legacy 8-byte form retired)."""
+        warnings.warn(
+            "SigningKeypair.key_id is the §6.7.2 fingerprint since D4 "
+            "(2026-09-22); use .fingerprint",
+            LegacyKeyAliasWarning,
+            stacklevel=2,
+        )
+        return self.fingerprint
 
     @classmethod
     def generate(cls) -> "SigningKeypair":
@@ -87,11 +137,11 @@ class SigningKeypair:
             raise PackageSignError("PyNaCl required for signing")
         sk = SigningKey.generate()
         pk = sk.verify_key
-        key_id = pk.encode(RawEncoder)[:8].hex()
+        public_key = pk.encode(RawEncoder)
         return cls(
-            public_key=pk.encode(RawEncoder),
+            public_key=public_key,
             private_key=bytes(sk),
-            key_id=key_id,
+            fingerprint=key_fingerprint(public_key),
         )
 
     @classmethod
@@ -102,12 +152,11 @@ class SigningKeypair:
         if len(private_key) != 32:
             raise PackageSignError("Private key must be 32 bytes")
         sk = SigningKey(private_key, encoder=RawEncoder)
-        pk = sk.verify_key
-        key_id = pk.encode(RawEncoder)[:8].hex()
+        public_key = sk.verify_key.encode(RawEncoder)
         return cls(
-            public_key=pk.encode(RawEncoder),
+            public_key=public_key,
             private_key=private_key,
-            key_id=key_id,
+            fingerprint=key_fingerprint(public_key),
         )
 
     @classmethod
@@ -118,11 +167,10 @@ class SigningKeypair:
         """
         if len(public_key) != 32:
             raise PackageSignError("Public key must be 32 bytes")
-        key_id = public_key[:8].hex()
         return cls(
             public_key=public_key,
             private_key=b"",
-            key_id=key_id,
+            fingerprint=key_fingerprint(public_key),
         )
 
     @property
@@ -131,10 +179,12 @@ class SigningKeypair:
         return len(self.private_key) == 32
 
     def to_dict(self) -> dict:
-        """Serialize to a JSON-compatible dict."""
+        """Serialize to a JSON-compatible dict (key_id_version 2 = §6.7.2)."""
         return {
             "public_key": base64.b64encode(self.public_key).decode(),
-            "key_id": self.key_id,
+            "fingerprint": self.fingerprint,
+            "key_id": self.fingerprint,
+            "key_id_version": 2,
         }
 
     def private_dict(self) -> dict:
@@ -142,7 +192,9 @@ class SigningKeypair:
         return {
             "private_key": base64.b64encode(self.private_key).decode(),
             "public_key": base64.b64encode(self.public_key).decode(),
-            "key_id": self.key_id,
+            "fingerprint": self.fingerprint,
+            "key_id": self.fingerprint,
+            "key_id_version": 2,
         }
 
 
@@ -264,13 +316,26 @@ class PackageSignature:
 
     public_key: bytes     # 32 bytes
     signature: bytes      # 64 bytes
-    key_id: str           # hex-encoded first 8 bytes of public key
+    fingerprint: str      # SHA-256(public key), full 64 lowercase hex (§6.7.2)
+
+    @property
+    def key_id(self) -> str:
+        """Deprecated alias for the fingerprint (legacy 8-byte form retired)."""
+        warnings.warn(
+            "PackageSignature.key_id is the §6.7.2 fingerprint since D4 "
+            "(2026-09-22); use .fingerprint",
+            LegacyKeyAliasWarning,
+            stacklevel=2,
+        )
+        return self.fingerprint
 
     def to_bytes(self) -> bytes:
         """Serialize to a compact binary format.
 
         Format: [1 byte version][32 bytes public_key][64 bytes signature]
-        Total: 97 bytes
+        Total: 97 bytes. The fingerprint is not serialized — it is
+        derived from the public key on load (one spelling, never stored
+        twice).
         """
         return bytes([0x01]) + self.public_key + self.signature
 
@@ -284,25 +349,33 @@ class PackageSignature:
             raise PackageSignError(f"Unknown signature version: {data[0]}")
         public_key = data[1:33]
         signature = data[33:97]
-        key_id = public_key[:8].hex()
-        return cls(public_key=public_key, signature=signature, key_id=key_id)
+        return cls(public_key=public_key, signature=signature,
+                   fingerprint=key_fingerprint(public_key))
 
     def to_dict(self) -> dict:
-        """Serialize to a JSON-compatible dict."""
+        """Serialize to a JSON-compatible dict (key_id_version 2 = §6.7.2)."""
         return {
             "version": 1,
             "public_key": base64.b64encode(self.public_key).decode(),
             "signature": base64.b64encode(self.signature).decode(),
-            "key_id": self.key_id,
+            "fingerprint": self.fingerprint,
+            "key_id": self.fingerprint,
+            "key_id_version": 2,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "PackageSignature":
-        """Deserialize from a JSON dict."""
+        """Deserialize from a JSON dict.
+
+        Accepts v1 (pre-D4, 8-byte ``key_id``) payloads: the fingerprint
+        is always derived from the public key, so a stale or absent
+        legacy field cannot poison the identity.
+        """
+        public_key = base64.b64decode(data["public_key"])
         return cls(
-            public_key=base64.b64decode(data["public_key"]),
+            public_key=public_key,
             signature=base64.b64decode(data["signature"]),
-            key_id=data.get("key_id", ""),
+            fingerprint=key_fingerprint(public_key),
         )
 
 
@@ -314,31 +387,35 @@ class TrustStore:
     """A store of trusted publisher public keys.
 
     Implements NPS-026 §6.3's trust anchor model: a platform trust
-    anchor plus user-enrollable keys.
+    anchor plus user-enrollable keys. Keys are indexed by the §6.7.2
+    fingerprint (SHA-256(public key), full 64 lowercase hex); stores
+    persisted by pre-D4 versions (8-byte key ids) are re-keyed
+    transparently on load.
     """
 
     def __init__(self) -> None:
-        self._trusted: dict = {}  # key_id → public_key
+        self._trusted: dict = {}  # fingerprint → public_key
 
     def add_trusted(self, public_key: bytes, key_id: Optional[str] = None) -> str:
         """Add a trusted public key.
 
-        Returns the key_id.
+        Returns the fingerprint. A caller-supplied ``key_id`` is
+        ignored (deprecated pre-D4 parameter, kept for signature
+        compatibility): the index key is always the §6.7.2 fingerprint.
         """
-        if len(public_key) != 32:
-            raise PackageSignError("Public key must be 32 bytes")
-        kid = key_id or public_key[:8].hex()
-        self._trusted[kid] = public_key
-        return kid
+        del key_id  # deprecated: the fingerprint is the only index key
+        fp = key_fingerprint(public_key)
+        self._trusted[fp] = public_key
+        return fp
 
-    def remove_trusted(self, key_id: str) -> bool:
+    def remove_trusted(self, fingerprint: str) -> bool:
         """Remove a trusted key. Returns True if it existed."""
-        return self._trusted.pop(key_id, None) is not None
+        return self._trusted.pop(fingerprint, None) is not None
 
     def is_trusted(self, public_key: bytes) -> bool:
         """Check if a public key is in the trust store."""
-        kid = public_key[:8].hex()
-        return kid in self._trusted and self._trusted[kid] == public_key
+        fp = key_fingerprint(public_key)
+        return fp in self._trusted and self._trusted[fp] == public_key
 
     def verify_against_trust(self, sig: PackageSignature) -> bool:
         """Verify a signature against the trust store.
@@ -350,26 +427,34 @@ class TrustStore:
         return self.is_trusted(sig.public_key)
 
     def list_trusted(self) -> list:
-        """List all trusted key IDs."""
+        """List all trusted fingerprints."""
         return list(self._trusted.keys())
 
     def save(self, path: str) -> None:
         """Save the trust store to a JSON file."""
         data = {
+            "key_id_version": 2,
             "trusted_keys": {
-                kid: base64.b64encode(pk).decode()
-                for kid, pk in self._trusted.items()
+                fp: base64.b64encode(pk).decode()
+                for fp, pk in self._trusted.items()
             }
         }
         Path(path).write_text(json.dumps(data, indent=2))
 
     @classmethod
     def load(cls, path: str) -> "TrustStore":
-        """Load a trust store from a JSON file."""
+        """Load a trust store from a JSON file.
+
+        Pre-D4 stores (8-byte ids, no version marker) are re-keyed to
+        the §6.7.2 fingerprint transparently — the fingerprint is
+        derivable from the stored public key, so no migration tool is
+        needed and no stored id can contradict the key it indexes.
+        """
         data = json.loads(Path(path).read_text())
         store = cls()
-        for kid, pk_b64 in data.get("trusted_keys", {}).items():
-            store._trusted[kid] = base64.b64decode(pk_b64)
+        for _kid, pk_b64 in data.get("trusted_keys", {}).items():
+            pk = base64.b64decode(pk_b64)
+            store._trusted[key_fingerprint(pk)] = pk
         return store
 
 
@@ -488,7 +573,7 @@ class PackageSigner:
             The generated key pair.
         """
         kp = SigningKeypair.generate()
-        key_id = key_id or kp.key_id
+        key_id = key_id or kp.fingerprint
 
         key_pair = KeyPair(
             key_id=key_id,
@@ -586,10 +671,12 @@ class PackageSigner:
 
 __all__ = [
     "SigningKeypair",
+    "key_fingerprint",
     "sign_package",
     "verify_package",
     "PackageSignature",
     "PackageSignError",
+    "LegacyKeyAliasWarning",
     "TrustStore",
     "HAS_NACL",
     "PackageSigner",

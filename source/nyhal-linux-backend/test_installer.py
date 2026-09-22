@@ -65,7 +65,7 @@ def _create_test_package(tmpdir, kp, name="test-app", version="1.0.0", sign=True
         sig_block = PackageSignature(
             public_key=kp.public_key,
             signature=sig_bytes,
-            key_id=kp.key_id,
+            fingerprint=kp.fingerprint,
         )
         (pkg_dir / "signature.json").write_text(json.dumps(sig_block.to_dict(), indent=2))
 

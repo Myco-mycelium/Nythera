@@ -296,7 +296,7 @@ class UpdateVerifier:
         signed = sk.sign(self._signature_payload(manifest))
         
         manifest.signature = bytes(signed.signature)
-        manifest.key_id = key_data.get("key_id", kp.key_id)
+        manifest.key_id = key_data.get("key_id", kp.fingerprint)
         manifest.timestamp = time.time()
         
         logger.info("Re-signed update for package %s with key %s",

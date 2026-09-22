@@ -1,0 +1,357 @@
+"""test_package_pki — Tests for the NPS-028 PKI implementation start.
+
+Covers: the key store (§3), the verification pipeline (§4), the
+revocation list (§5), and enrollment/rotation (§6) — all against the
+decided scheme (NPS-026 v1.3.0 §6.7, AG decision log D4): the §6.7.2
+fingerprint, single-root list verification, TOFU fail-closed resolution,
+and the §6.3.4 advisory/block split.
+
+References:
+    - NPS-028: Package PKI Implementation Surface
+    - NPS-026 v1.3.0 §6.7: the decided concrete scheme
+    - backend/package_pki.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+MANIFEST = json.dumps({
+    "package_id": "acme-app",
+    "version": "1.0.0",
+    "publisher": "acme",
+}).encode()
+TREE = b"merkle-root-bytes"
+
+
+def _sign(manifest: bytes = MANIFEST, tree: bytes = TREE):
+    from backend.package_signing import SigningKeypair, sign_package
+    kp = SigningKeypair.generate()
+    sig = sign_package(manifest, tree, kp)
+    return kp, sig
+
+
+def _cross_sign(signing_key, payload: bytes) -> bytes:
+    """Ed25519 signature over arbitrary bytes (for cross-signing)."""
+    from backend.package_signing import SigningKey, RawEncoder
+    sk = SigningKey(signing_key.private_key, encoder=RawEncoder)
+    return bytes(sk.sign(payload).signature)
+
+
+def _confirmation(fingerprint: str, actor: str = "operator",
+                  publisher: str = "acme", source: str = "sideload",
+                  confirmed: bool = True):
+    from backend.package_pki import EnrollmentConfirmation
+    return EnrollmentConfirmation(
+        confirmed=confirmed,
+        actor=actor,
+        publisher_identity=publisher,
+        fingerprint_shown=fingerprint,
+        source=source,
+    )
+
+
+class TestPkiKeyStore(unittest.TestCase):
+    """NPS-028 §3 — the key store."""
+
+    def setUp(self):
+        from backend.package_pki import PkiKeyStore
+        from backend.package_signing import SigningKeypair
+        self.store = PkiKeyStore()
+        self.root = SigningKeypair.generate()
+        self.store.add_root_anchor(self.root.public_key, "platform-root")
+
+    def test_enrollment_records_the_3_3_fields(self):
+        kp, _sig = _sign()
+        entry = self.store.enroll(
+            kp.public_key, "acme",
+            _confirmation(kp.fingerprint, publisher="acme"))
+        self.assertEqual(entry.publisher, "acme")
+        self.assertEqual(entry.fingerprint, kp.fingerprint)
+        self.assertEqual(len(entry.fingerprint), 64)
+        self.assertEqual(entry.source, "sideload")
+        self.assertEqual(entry.status, "trusted")
+        self.assertGreater(entry.enrolled_at, 0)
+
+    def test_enrollment_requires_a_confirmation(self):
+        kp, _ = _sign()
+        with self.assertRaises(Exception):
+            self.store.enroll(kp.public_key, "acme", None)
+        with self.assertRaises(Exception):
+            self.store.enroll(kp.public_key, "acme",
+                              _confirmation(kp.fingerprint, confirmed=False))
+
+    def test_enrollment_refuses_a_spoofed_confirmation(self):
+        """A confirmation showing a DIFFERENT fingerprint enrolls nothing."""
+        kp, _ = _sign()
+        with self.assertRaises(Exception):
+            self.store.enroll(
+                kp.public_key, "acme",
+                _confirmation("f" * 64))  # UI showed some other key
+        self.assertEqual(self.store.status_at(kp.fingerprint), "unknown")
+
+    def test_enrollment_requires_actor_and_source(self):
+        kp, _ = _sign()
+        with self.assertRaises(Exception):
+            self.store.enroll(
+                kp.public_key, "acme",
+                _confirmation(kp.fingerprint, actor=""))
+        with self.assertRaises(Exception):
+            self.store.enroll(
+                kp.public_key, "acme",
+                _confirmation(kp.fingerprint, source=""))
+
+    def test_double_enrollment_of_a_trusted_key_refused(self):
+        kp, _ = _sign()
+        self.store.enroll(kp.public_key, "acme", _confirmation(kp.fingerprint))
+        with self.assertRaises(Exception):
+            self.store.enroll(kp.public_key, "acme",
+                              _confirmation(kp.fingerprint))
+
+    def test_expiry_evaluated_at_verification_time(self):
+        kp, _ = _sign()
+        self.store.enroll(kp.public_key, "acme",
+                          _confirmation(kp.fingerprint),
+                          expires_at=1000.0)
+        self.assertEqual(self.store.status_at(kp.fingerprint, now=999.0),
+                         "trusted")
+        self.assertEqual(self.store.status_at(kp.fingerprint, now=1001.0),
+                         "expired")
+
+    def test_unenroll_behaves_as_revocation(self):
+        kp, _ = _sign()
+        self.store.enroll(kp.public_key, "acme", _confirmation(kp.fingerprint))
+        self.store.unenroll(kp.fingerprint)
+        self.assertEqual(self.store.status_at(kp.fingerprint), "revoked")
+        with self.assertRaises(Exception):
+            self.store.unenroll("a" * 64)  # never enrolled
+
+    def test_store_roundtrip(self):
+        kp, _ = _sign()
+        self.store.enroll(kp.public_key, "acme", _confirmation(kp.fingerprint))
+        self.store.revoke("b" * 64, reason="test")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "pki.json")
+            self.store.save(path)
+            loaded = type(self.store).load(path)
+        self.assertEqual(loaded.status_at(kp.fingerprint), "trusted")
+        self.assertEqual(loaded.status_at("b" * 64), "revoked")
+        self.assertEqual(loaded.root_fingerprints,
+                         [self.root.fingerprint])
+
+
+class TestRotation(unittest.TestCase):
+    """NPS-028 §6.3 / NPS-026 §6.3.5 — cross-signed rotation."""
+
+    def setUp(self):
+        from backend.package_pki import PkiKeyStore
+        from backend.package_signing import SigningKeypair
+        self.store = PkiKeyStore()
+        self.old_key = SigningKeypair.generate()
+        self.store.enroll(self.old_key.public_key, "acme",
+                          _confirmation(self.old_key.fingerprint))
+
+    def test_rotation_with_valid_cross_signature(self):
+        from backend.package_signing import SigningKeypair
+        new_key = SigningKeypair.generate()
+        cross = _cross_sign(self.old_key, new_key.public_key)
+        entry = self.store.rotate(
+            self.old_key.fingerprint, new_key.public_key, "acme",
+            _confirmation(new_key.fingerprint), cross)
+        self.assertEqual(entry.rotation_of, self.old_key.fingerprint)
+        self.assertEqual(self.store.status_at(new_key.fingerprint), "trusted")
+
+    def test_rotation_refuses_a_forged_cross_signature(self):
+        from backend.package_signing import SigningKeypair
+        new_key = SigningKeypair.generate()
+        other = SigningKeypair.generate()  # not the enrolled old key
+        forged = _cross_sign(other, new_key.public_key)
+        with self.assertRaises(Exception):
+            self.store.rotate(
+                self.old_key.fingerprint, new_key.public_key, "acme",
+                _confirmation(new_key.fingerprint), forged)
+        self.assertEqual(self.store.status_at(new_key.fingerprint), "unknown")
+
+    def test_rotation_requires_an_enrolled_predecessor(self):
+        from backend.package_signing import SigningKeypair
+        new_key = SigningKeypair.generate()
+        with self.assertRaises(Exception):
+            self.store.rotate(
+                "c" * 64, new_key.public_key, "acme",
+                _confirmation(new_key.fingerprint), b"\x00" * 64)
+
+
+class TestRevocationList(unittest.TestCase):
+    """NPS-028 §5 — distribution, §6.7.4 quorum rule."""
+
+    def setUp(self):
+        from backend.package_pki import PkiKeyStore, RevocationList
+        from backend.package_signing import SigningKeypair
+        self.store = PkiKeyStore()
+        self.root1 = SigningKeypair.generate()
+        self.root2 = SigningKeypair.generate()
+        self.store.add_root_anchor(self.root1.public_key, "root-1")
+        self.store.add_root_anchor(self.root2.public_key, "root-2")
+        self.victim, _ = _sign()
+        self.store.enroll(self.victim.public_key, "acme",
+                          _confirmation(self.victim.fingerprint))
+        self.list = RevocationList(sequence=1, generated_at=1.0, entries=[
+            {"fingerprint": self.victim.fingerprint, "reason": "compromise"}])
+
+    def test_single_root_signature_suffices(self):
+        """§6.7.4: authentic under ANY single platform root."""
+        self.list.sign_with_root(self.root2.fingerprint, self.root2.private_key)
+        self.assertTrue(self.list.verify_authentic(
+            {self.root2.fingerprint: self.root2.public_key}))
+
+    def test_unsigned_or_foreign_signed_list_rejected(self):
+        self.assertFalse(self.list.verify_authentic({}))
+        self.list.signatures.append({"root_fp": "f" * 64,
+                                     "signature": "00" * 64})
+        self.assertFalse(self.list.verify_authentic({}))
+
+    def test_apply_revokes_and_advances_sequence(self):
+        from backend.package_pki import apply_revocation_list
+        self.list.sign_with_root(self.root1.fingerprint, self.root1.private_key)
+        seq = apply_revocation_list(self.store, self.list, current_sequence=0)
+        self.assertEqual(seq, 1)
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "revoked")
+
+    def test_replay_refused_and_store_unchanged(self):
+        from backend.package_pki import apply_revocation_list
+        self.list.sign_with_root(self.root1.fingerprint, self.root1.private_key)
+        # First delivery applies cleanly.
+        apply_revocation_list(self.store, self.list, current_sequence=0)
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "revoked")
+        # The same list again is a replay: refused, and the refused
+        # application changes nothing further.
+        with self.assertRaises(Exception):
+            apply_revocation_list(self.store, self.list, current_sequence=1)
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "revoked")
+
+    def test_atomicity_malformed_entry_commits_nothing(self):
+        from backend.package_pki import RevocationList, apply_revocation_list
+        bad = RevocationList(sequence=2, generated_at=1.0, entries=[
+            {"reason": "no fingerprint field"}])  # type: ignore[dict-item]
+        bad.sign_with_root(self.root1.fingerprint, self.root1.private_key)
+        with self.assertRaises(Exception):
+            apply_revocation_list(self.store, bad, current_sequence=0)
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "trusted")
+
+
+class TestVerificationPipeline(unittest.TestCase):
+    """NPS-028 §4 — the single ordered path, §6.3.4 split, §7.2 audit."""
+
+    def setUp(self):
+        from backend.package_pki import PkiKeyStore
+        self.store = PkiKeyStore()
+        self.kp, self.sig = _sign()
+        self.store.enroll(self.kp.public_key, "acme",
+                          _confirmation(self.kp.fingerprint))
+        self.audit: list = []
+
+    def _pipeline(self):
+        from backend.package_pki import VerificationPipeline
+        return VerificationPipeline(self.store,
+                                    audit_sink=self.audit.append)
+
+    def test_full_path_approves_install(self):
+        result = self._pipeline().run(
+            MANIFEST, TREE, self.sig, self.kp.public_key, "install")
+        self.assertEqual(result.verdict, "approved")
+        outcomes = [(s["stage"], s["outcome"]) for s in result.stages]
+        self.assertIn(("4_verify_signature", "ok"), outcomes)
+        self.assertEqual(result.fingerprint, self.kp.fingerprint)
+        self.assertEqual(result.publisher, "acme")
+
+    def test_every_stage_recorded(self):
+        result = self._pipeline().run(
+            MANIFEST, TREE, self.sig, self.kp.public_key, "install")
+        stages = [s["stage"] for s in result.stages]
+        self.assertEqual(stages, ["1_parse_manifest", "2_resolve_key",
+                                  "3_key_status", "4_verify_signature",
+                                  "5_touchpoint"])
+
+    def test_unknown_key_fails_closed_tofu(self):
+        """Stage 2: the FIND-PACKAGE-003 attack dies here."""
+        stranger, sig = _sign()
+        result = self._pipeline().run(
+            MANIFEST, TREE, sig, stranger.public_key, "install")
+        self.assertEqual(result.verdict, "denied")
+        self.assertIn("TOFU rejection", result.reason)
+        self.assertIn("untrusted publisher", result.reason)
+
+    def test_expired_key_denied_at_install(self):
+        from backend.package_pki import PkiKeyStore, VerificationPipeline
+        kp, sig = _sign()
+        store = PkiKeyStore()
+        store.enroll(kp.public_key, "acme", _confirmation(kp.fingerprint),
+                     expires_at=1000.0)
+        result = VerificationPipeline(store).run(
+            MANIFEST, TREE, sig, kp.public_key, "install", now=2000.0)
+        self.assertEqual(result.verdict, "denied")
+        self.assertIn("expired", result.reason)
+
+    def test_revoked_key_blocks_install_but_advises_launch(self):
+        """§6.3.4: hard block at install, advisory at launch."""
+        self.store.revoke(self.kp.fingerprint, reason="compromise")
+        denied = self._pipeline().run(
+            MANIFEST, TREE, self.sig, self.kp.public_key, "install")
+        self.assertEqual(denied.verdict, "denied")
+        advisory = self._pipeline().run(
+            MANIFEST, TREE, self.sig, self.kp.public_key, "launch")
+        self.assertEqual(advisory.verdict, "advisory")
+
+    def test_tampered_content_denied(self):
+        result = self._pipeline().run(
+            b'{"package_id": "acme-app", "version": "9.9.9"}',
+            TREE, self.sig, self.kp.public_key, "install")
+        self.assertEqual(result.verdict, "denied")
+        self.assertIn("signature", result.reason)
+
+    def test_garbage_manifest_denied_at_stage_1(self):
+        result = self._pipeline().run(
+            b"not json", TREE, self.sig, self.kp.public_key, "install")
+        self.assertEqual(result.verdict, "denied")
+        self.assertEqual(result.stages[0]["stage"], "1_parse_manifest")
+        self.assertEqual(result.stages[0]["outcome"], "fail")
+
+    def test_audit_sink_failure_never_changes_the_verdict(self):
+        """§7.2: the audit trail is evidence, not a verification stage."""
+        def exploding_sink(record):
+            raise RuntimeError("audit backend down")
+        from backend.package_pki import VerificationPipeline
+        pipeline = VerificationPipeline(self.store, audit_sink=exploding_sink)
+        result = pipeline.run(
+            MANIFEST, TREE, self.sig, self.kp.public_key, "install")
+        self.assertEqual(result.verdict, "approved")
+        warns = [s for s in result.stages if s["outcome"] == "warn"]
+        self.assertEqual(len(warns), 1)
+
+    def test_audit_sink_receives_the_record(self):
+        self._pipeline().run(
+            MANIFEST, TREE, self.sig, self.kp.public_key, "install")
+        self.assertEqual(len(self.audit), 1)
+        self.assertEqual(self.audit[0]["verdict"], "approved")
+        self.assertEqual(self.audit[0]["fingerprint"], self.kp.fingerprint)
+
+    def test_unknown_touchpoint_refused(self):
+        with self.assertRaises(Exception):
+            self._pipeline().run(
+                MANIFEST, TREE, self.sig, self.kp.public_key, "download")
+
+
+if __name__ == "__main__":
+    unittest.main()

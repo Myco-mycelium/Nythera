@@ -102,7 +102,7 @@ def _sign_bytes(payload: bytes, keypair: SigningKeypair) -> Dict[str, Any]:
     sk = SigningKey(keypair.private_key, encoder=RawEncoder)
     signed = sk.sign(payload)
     return {
-        "key_id": keypair.key_id,
+        "key_id": keypair.fingerprint,
         "signature": signed.signature.hex(),
         "timestamp": time.time(),
     }

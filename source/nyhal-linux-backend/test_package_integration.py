@@ -63,7 +63,7 @@ def _create_package(tmpdir, kp, name, version, content=b"content"):
     sig_block = PackageSignature(
         public_key=kp.public_key,
         signature=sig_bytes,
-        key_id=kp.key_id,
+        fingerprint=kp.fingerprint,
     )
     (pkg_dir / "signature.json").write_text(json.dumps(sig_block.to_dict(), indent=2))
 
@@ -193,7 +193,7 @@ class TestTrustStoreIntegration(unittest.TestCase):
         loaded = TrustStore.load(self.trust_path)
         self.assertTrue(loaded.is_trusted(kp.public_key))
 
-        loaded.remove_trusted(kp.key_id)
+        loaded.remove_trusted(kp.fingerprint)
         loaded.save(self.trust_path)
 
         reloaded = TrustStore.load(self.trust_path)
@@ -216,7 +216,7 @@ class TestTrustStoreIntegration(unittest.TestCase):
         installer.install(str(pkg))
 
         # Remove key from trust store
-        store.remove_trusted(kp.key_id)
+        store.remove_trusted(kp.fingerprint)
         store.save(self.trust_path)
 
         # Try to install again — should fail

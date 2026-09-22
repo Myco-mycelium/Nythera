@@ -421,6 +421,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="pki-implementation-started",
+        pattern=r"package_pki",
+        description="NPS-028 v0.2.0 records the trust-machinery implementation start (backend/package_pki.py: key store, verification pipeline, revocation list, enrollment/rotation)",
+        check="path_contains",
+        check_args={
+            "needle": "class VerificationPipeline",
+            "files": ["source/nyhal-linux-backend/backend/package_pki.py"],
+        },
+    ),
+    Claim(
         claim_id="req-sec-0004-closed",
         pattern=r"REQ-SEC-0004",
         description="AG decision D3 (2026-09-21): REQ-SEC-0004 is recorded closed in the requirements ledger",
