@@ -914,6 +914,14 @@ class PkiIpcServer:
     single-line JSON {"ok": true, "result": ...} or
     {"ok": false, "error": ...}.
 
+    The wire is JSON, so BINARY arguments cross it as lowercase hex
+    strings — ``public_key`` on the enroll/rotate ops (the one binary
+    argument the allowlist carries; key material is never a RESPONSE).
+    The server decodes named hex fields back to bytes before the
+    service call, so the service sees exactly what the in-process
+    caller passes (the found-by-drill gap: undecoded, the store's
+    32-byte key check rejected the 64-char hex string).
+
     §3.2 on the wire: the ops are an explicit ALLOWLIST. Key-material
     reads are NOT on it — verification runs in the daemon's authority,
     and an installed package has no need (and no right) to export store
@@ -924,6 +932,51 @@ class PkiIpcServer:
     IPC_ALLOWED_OPS = frozenset({
         "status_for", "enroll", "rotate", "revoke", "apply_revocation_list",
     })
+
+    # JSON-decoded params carrying binary values as hex strings. The
+    # transport decodes these back to bytes before dispatch — an
+    # explicit convention, not a guess from shape (a 64-char string
+    # could otherwise be a hex key or a 64-char name).
+    HEX_ENCODED_PARAMS = frozenset({"public_key"})
+
+    # Structured params the transport rebuilds from their wire dict:
+    # JSON cannot carry a dataclass, so the enrollment confirmation
+    # crosses as its field mapping and is re-instantiated server-side.
+    # Unknown/missing fields fail the rebuild — the shape is part of
+    # the contract, not coerced silently.
+    DATACLASS_PARAMS = {
+        "confirmation": EnrollmentConfirmation,
+    }
+
+    @classmethod
+    def _decode_params(cls, params: dict) -> dict:
+        """Decode wire params into the shapes the service expects.
+
+        Binary params arrive as lowercase hex strings and are decoded
+        to bytes; dataclass params arrive as field mappings and are
+        re-instantiated. Anything malformed fails the request closed —
+        never silently passed through.
+        """
+        decoded = dict(params)
+        for name in cls.HEX_ENCODED_PARAMS:
+            value = decoded.get(name)
+            if isinstance(value, str):
+                try:
+                    decoded[name] = bytes.fromhex(value)
+                except ValueError as exc:
+                    raise PkiError(
+                        f"param {name!r} must be a lowercase hex string "
+                        f"(binary-over-JSON convention): {exc}")
+        for name, dc in cls.DATACLASS_PARAMS.items():
+            value = decoded.get(name)
+            if isinstance(value, dict):
+                try:
+                    decoded[name] = dc(**value)
+                except TypeError as exc:
+                    raise PkiError(
+                        f"param {name!r} does not match "
+                        f"{dc.__name__}'s fields: {exc}")
+        return decoded
 
     @staticmethod
     def _jsonable(result: object) -> object:
@@ -987,6 +1040,10 @@ class PkiIpcServer:
                         method = getattr(outer._service, op, None)
                         if method is None or op.startswith("_"):
                             raise PkiError(f"unknown op {op!r}")
+                        # Binary params arrive hex-encoded over JSON;
+                        # decode them so the service sees exactly what
+                        # an in-process caller would have passed.
+                        params = outer._decode_params(params)
                         # The connection's authority is supplied BY THE
                         # SERVER — a client cannot name or forge one.
                         result = method(authority, **params)
@@ -1054,6 +1111,10 @@ class PkiIpcClient:
     instantiate it freely, and everything it asks for still fails or
     succeeds exactly per §3.2's rules (read paths for verification,
     writes only through the daemon's own callers).
+
+    Binary-over-JSON convention: bytes arguments (``public_key`` on
+    enroll/rotate) are hex-encoded on send, so a caller may pass either
+    raw bytes (encoded here) or an already-hex string (passed through).
     """
 
     def __init__(self, socket_path: str, timeout: float = 5.0) -> None:
@@ -1066,7 +1127,14 @@ class PkiIpcClient:
 
     def call(self, op: str, **params: object) -> object:
         import json as _json
-        request = _json.dumps({"op": op, "params": params}) + "\n"
+        encoded = {}
+        for name, value in params.items():
+            if (name in PkiIpcServer.HEX_ENCODED_PARAMS
+                    and isinstance(value, (bytes, bytearray))):
+                encoded[name] = bytes(value).hex()
+            else:
+                encoded[name] = value
+        request = _json.dumps({"op": op, "params": encoded}) + "\n"
         self._sock.sendall(request.encode())
         line = self._rfile.readline()
         if not line:

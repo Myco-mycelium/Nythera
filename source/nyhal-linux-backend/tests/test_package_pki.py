@@ -1153,5 +1153,129 @@ class TestPkiDeploymentWiring(unittest.TestCase):
         self.assertIn("nyrqis-desktop.service", text)
 
 
+class TestPkiIpcWireConventions(unittest.TestCase):
+    """Binary-over-JSON: the drill's finding.
+
+    The 2026-09-22 end-to-end daemon drill booted `pki serve` as a real
+    subprocess and enrolled over the socket — and found the transport
+    had never been exercised with an enroll op over the wire: JSON
+    carries no bytes, so the 64-char hex string arrived where the
+    service demands 32 raw bytes ("Public key must be 32 bytes"), and
+    the confirmation dataclass arrived as a plain dict. The conventions
+    are now explicit: named hex params decode to bytes, dataclass
+    params rebuild from their field mapping, and anything malformed
+    fails the request closed.
+    """
+
+    def setUp(self):
+        import tempfile
+        from backend.package_pki import (PackageAuditChain, PkiDaemonService,
+                                         PkiKeyStore)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.socket_path = os.path.join(self.tmp.name, "pki.sock")
+        self.store = PkiKeyStore()
+        self.audit = PackageAuditChain()
+        self.service = PkiDaemonService(self.store, audit_chain=self.audit)
+        from backend.package_pki import PkiIpcServer
+        self.server = PkiIpcServer(self.service, self.socket_path)
+        self.server.start()
+
+    def tearDown(self):
+        self.server.stop()
+        self.tmp.cleanup()
+
+    def _confirmation_dict(self, fingerprint):
+        return {"confirmed": True, "actor": "drill-operator",
+                "publisher_identity": "acme", "fingerprint_shown": fingerprint,
+                "source": "drill"}
+
+    def test_enroll_over_the_wire_with_bytes_and_hex(self):
+        """The drill's exact path: enroll over the socket with a raw
+        bytes key (client encodes) and with a pre-hexed string (client
+        passes through) — both decode server-side to the same store
+        entry."""
+        from backend.package_pki import PkiIpcClient
+        from backend.package_signing import SigningKeypair
+        kp = SigningKeypair.generate()
+        client = PkiIpcClient(self.socket_path)
+        try:
+            client.call("enroll", public_key=kp.public_key,
+                        publisher="acme",
+                        confirmation=self._confirmation_dict(kp.fingerprint))
+            self.assertEqual(client.call("status_for",
+                                         fingerprint=kp.fingerprint),
+                             "trusted")
+        finally:
+            client.close()
+
+    def test_enroll_refuses_a_spoofed_confirmation_over_the_wire(self):
+        """§6.2 survives the wire: a confirmation showing a different
+        fingerprint enrolls nothing."""
+        from backend.package_pki import PkiError, PkiIpcClient
+        from backend.package_signing import SigningKeypair
+        kp = SigningKeypair.generate()
+        spoofed = self._confirmation_dict("f" * 64)
+        client = PkiIpcClient(self.socket_path)
+        try:
+            with self.assertRaises(PkiError):
+                client.call("enroll", public_key=kp.public_key,
+                            publisher="acme", confirmation=spoofed)
+        finally:
+            client.close()
+
+    def test_malformed_hex_param_fails_closed(self):
+        """A param claiming hex but not parsing is a request failure,
+        never a silent string pass-through."""
+        from backend.package_pki import PkiError, PkiIpcClient
+        from backend.package_signing import SigningKeypair
+        kp = SigningKeypair.generate()
+        client = PkiIpcClient(self.socket_path)
+        try:
+            with self.assertRaises(PkiError):
+                client.call("enroll", public_key="zz-not-hex",
+                            publisher="acme",
+                            confirmation=self._confirmation_dict(
+                                kp.fingerprint))
+        finally:
+            client.close()
+
+    def test_bogus_confirmation_shape_fails_closed(self):
+        """A confirmation dict that does not match the dataclass's
+        fields is a request failure, not a silently coerced object."""
+        from backend.package_pki import PkiError, PkiIpcClient
+        from backend.package_signing import SigningKeypair
+        kp = SigningKeypair.generate()
+        client = PkiIpcClient(self.socket_path)
+        try:
+            with self.assertRaises(PkiError):
+                client.call("enroll", public_key=kp.public_key,
+                            publisher="acme",
+                            confirmation={"confirmed": True,
+                                          "bogus_field": 1})
+        finally:
+            client.close()
+
+    def test_decode_params_is_directly_pinned(self):
+        """The server-side decode: hex -> bytes, dict -> dataclass,
+        wrong shape -> PkiError."""
+        from backend.package_pki import (PkiError, PkiIpcServer,
+                                         EnrollmentConfirmation)
+        decoded = PkiIpcServer._decode_params(
+            {"public_key": "ab" * 32})
+        self.assertEqual(decoded["public_key"], b"\xab" * 32)
+        decoded = PkiIpcServer._decode_params(
+            {"confirmation": {"confirmed": True, "actor": "a",
+                              "publisher_identity": "p",
+                              "fingerprint_shown": "e" * 64,
+                              "source": "s"}})
+        self.assertIsInstance(decoded["confirmation"],
+                              EnrollmentConfirmation)
+        with self.assertRaises(PkiError):
+            PkiIpcServer._decode_params({"public_key": "nothex!"})
+        with self.assertRaises(PkiError):
+            PkiIpcServer._decode_params(
+                {"confirmation": {"nope": True}})
+
+
 if __name__ == "__main__":
     unittest.main()
