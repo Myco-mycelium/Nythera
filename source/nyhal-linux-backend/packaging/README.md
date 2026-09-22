@@ -127,6 +127,17 @@ The store (`/var/lib/nyrqis/pki/store.custody.json`) and the audit
 chain (`/var/lib/nyrqis/pki/audit.jsonl`) persist across restarts;
 enrollments, revocations, and audit entries survive a reboot.
 
+The unit also configures the §5.1 **out-of-band revocation channel**
+(`--revocation-channel /var/lib/nyrqis/pki/revocations.json`): a
+platform-signed revocation list the daemon refreshes from in the
+background (every 300 s, `--refresh-interval`). The channel is
+independent of any package feed by construction — feed compromise
+cannot suppress revocation delivery — and a fetch failure, replay, or
+unauthentic list leaves the store untouched (the outcome lands in the
+audit chain as evidence). It must be provisioned out-of-band (e.g. a
+configuration-management drop-in); remove the flag to disable the
+background refresh and rely on operator IPC ops only.
+
 ## Configuration
 
 ### Backend Configuration

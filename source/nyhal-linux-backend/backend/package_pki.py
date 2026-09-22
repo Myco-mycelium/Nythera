@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -804,6 +805,11 @@ class PkiDaemonService:
                  audit_chain: Optional["PackageAuditChain"] = None) -> None:
         self._store = store
         self._audit = audit_chain
+        # Serializes the §5.1 background refresh against in-process
+        # service mutations touching the same store (both hold this for
+        # the store-touching critical section; stdlib Lock is fine — the
+        # section is short, no I/O inside except the fetch itself).
+        self._refresh_lock = threading.Lock()
 
     def _check(self, authority: object, op: str) -> None:
         if not isinstance(authority, DaemonAuthority):
@@ -888,6 +894,31 @@ class PkiDaemonService:
         self._audit_mutation("pki_apply_revocations", {
             "sequence": new_seq, "entries": len(new_list.entries)})
         return new_seq
+
+    # -- §5.1: the out-of-band refresh, as a service operation -----------
+
+    def refresh_revocations(self, authority: object,
+                            fetcher: RevocationFetcher) -> dict:
+        """Pull the out-of-band channel and apply it (§5.1).
+
+        The daemon's own authority drives the refresh — callers cannot
+        smuggle a fetcher through the IPC allowlist, and the result is
+        recorded in the §7 chain under the never-changes-a-verdict rule
+        (a fetch failure or replay refusal is evidence, not an error).
+        The channel stays configured independently of any package-feed
+        object: feed compromise cannot suppress revocation delivery.
+        """
+        self._check(authority, "refresh_revocations")
+        with self._refresh_lock:
+            outcome = refresh_revocations(self._store, fetcher)
+        if outcome.get("outcome") == "applied":
+            self._audit_mutation("pki_apply_revocations", {
+                "sequence": outcome.get("sequence"),
+                "entries": outcome.get("revoked", 0),
+                "source": "out_of_band_refresh"})
+        else:
+            self._audit_mutation("pki_refresh_revocations", outcome)
+        return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -1170,7 +1201,9 @@ class PkiDaemonRunner:
 
     def __init__(self, socket_path: str, store_path: str,
                  unlock_secret: str, audit_log_path: Optional[str] = None,
-                 timeout: float = 5.0) -> None:
+                 timeout: float = 5.0,
+                 revocation_channel: Optional[str] = None,
+                 refresh_interval: float = 300.0) -> None:
         if not unlock_secret:
             raise PkiError(
                 "PkiDaemonRunner refused: production custody requires an "
@@ -1181,6 +1214,16 @@ class PkiDaemonRunner:
         self._audit_log_path = audit_log_path
         self._timeout = timeout
         self._started = False
+        # §5.1: the out-of-band revocation channel. None disables the
+        # background refresh entirely (the operator's explicit choice,
+        # recorded here so an absent channel is a decision, not an
+        # omission); a configured channel is independent of any package
+        # feed by construction — FileRevocationFetcher takes only this
+        # path, so feed compromise cannot suppress delivery.
+        self._revocation_channel = revocation_channel
+        self._refresh_interval = max(1.0, float(refresh_interval))
+        self._refresh_stop: Optional[threading.Event] = None
+        self._refresh_thread: Optional[threading.Thread] = None
 
         if os.path.exists(store_path):
             self.store = PkiKeyStore.load_locked(store_path, unlock_secret)
@@ -1198,8 +1241,37 @@ class PkiDaemonRunner:
             raise PkiError("runner already started")
         self._server = PkiIpcServer(self.service, self._socket_path)
         self._server.start()
+        self._start_refresh_loop()
         self._started = True
         return self
+
+    def _start_refresh_loop(self) -> None:
+        """§5.1 background refresh: a daemon thread pulls the
+        out-of-band channel every ``refresh_interval`` seconds.
+
+        Fail-open by design (§5.1: fetch failure never touches the
+        store, and the outcome lands in the §7 chain as evidence); the
+        loop's own unexpected death is caught by the except-and-continue
+        so a bad interval computation can never kill the daemon's
+        revocation intake silently.
+        """
+        if not self._revocation_channel:
+            return
+        self._refresh_stop = threading.Event()
+
+        def _loop() -> None:
+            stop = self._refresh_stop
+            while stop is not None and not stop.wait(self._refresh_interval):
+                try:
+                    fetcher = FileRevocationFetcher(self._revocation_channel)
+                    self.service.refresh_revocations(
+                        self.service._authority, fetcher)
+                except Exception:  # noqa: BLE001 — §5.1/§7.2: evidence only
+                    continue
+
+        self._refresh_thread = threading.Thread(
+            target=_loop, name="pki-revocation-refresh", daemon=True)
+        self._refresh_thread.start()
 
     def stop(self) -> None:
         """Persist §3.4 custody + the §7 chain, then close the socket.
@@ -1207,6 +1279,12 @@ class PkiDaemonRunner:
         if not self._started:
             return
         self._started = False
+        if self._refresh_stop is not None:
+            self._refresh_stop.set()
+        if self._refresh_thread is not None:
+            self._refresh_thread.join(timeout=5.0)
+            self._refresh_thread = None
+            self._refresh_stop = None
         try:
             self.store.save_locked(self._store_path, self._secret)
             if self._audit_log_path:

@@ -830,6 +830,8 @@ def cmd_pki_serve(args) -> int:
         store_path=args.store,
         unlock_secret=secret,
         audit_log_path=args.audit_log or None,
+        revocation_channel=args.revocation_channel or None,
+        refresh_interval=args.refresh_interval,
     ).start()
     print(f"PKI daemon serving on {args.socket}")
     # serve_until_signal's pattern (signal handlers in the main thread
@@ -1145,6 +1147,19 @@ Examples:
         help="The store's unlock secret (or set NYRQIS_PKI_UNLOCK_SECRET "
              "via the EnvironmentFile) — REQUIRED: custody is mandatory "
              "on the production path (§3.4)"
+    )
+    pki_serve_parser.add_argument(
+        "--revocation-channel", default="",
+        help="The §5.1 out-of-band revocation-list file the daemon "
+             "refreshes from in the background (default: disabled — "
+             "revocations arrive only via the operator's IPC ops; the "
+             "channel MUST be independent of any package feed)"
+    )
+    pki_serve_parser.add_argument(
+        "--refresh-interval", type=float, default=300.0,
+        help="Seconds between §5.1 background revocation refreshes "
+             "(default: 300; floored at 1; ignored without "
+             "--revocation-channel)"
     )
     pki_serve_parser.set_defaults(func=cmd_pki_serve)
 

@@ -35,7 +35,12 @@ Type=simple
 # own runtime/state directories, the unlock secret from the optional
 # EnvironmentFile (the `-` prefix keeps the unit valid without it — but
 # the daemon itself will refuse custody-free operation and exit).
-ExecStart=/usr/bin/python3 /opt/nyrqis/nyhal-linux-backend/nyrqis_backend.py pki serve --socket /run/nyrqis/pki.sock --store /var/lib/nyrqis/pki/store.custody.json --audit-log /var/lib/nyrqis/pki/audit.jsonl
+# The §5.1 out-of-band revocation channel is a local file the daemon
+# refreshes from in the background (every 300 s by default). It must be
+# provisioned out-of-band (drop-in, feed-independent delivery — feed
+# compromise cannot suppress revocations). Remove the flag to disable
+# the background refresh; revocations then arrive only via IPC ops.
+ExecStart=/usr/bin/python3 /opt/nyrqis/nyhal-linux-backend/nyrqis_backend.py pki serve --socket /run/nyrqis/pki.sock --store /var/lib/nyrqis/pki/store.custody.json --audit-log /var/lib/nyrqis/pki/audit.jsonl --revocation-channel /var/lib/nyrqis/pki/revocations.json --refresh-interval 300
 Restart=on-failure
 RestartSec=2
 

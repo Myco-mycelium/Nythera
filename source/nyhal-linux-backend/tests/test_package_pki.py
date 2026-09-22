@@ -658,6 +658,45 @@ class TestRevocationTransport(unittest.TestCase):
         # the store. The applied result proves delivery works without one.
         self.assertEqual(self._refresh()["outcome"], "applied")
 
+    def test_service_refresh_revocations_audit_chains_the_outcome(self):
+        """§5.1 as a service op: the daemon's authority drives it, an
+        applied list is audit-chained as pki_apply_revocations with the
+        out-of-band source marker, and a rejected list is chained as
+        pki_refresh_revocations evidence — never an error path."""
+        from backend.package_pki import (DaemonAuthority, PkiDaemonService,
+                                         FileRevocationFetcher)
+        service = PkiDaemonService(self.store, audit_chain=self._make_chain())
+        authority = DaemonAuthority.mint()
+        service.bind(authority)
+        self._write_channel(4)
+        outcome = service.refresh_revocations(
+            authority, FileRevocationFetcher(self.channel))
+        self.assertEqual(outcome["outcome"], "applied")
+        self.assertEqual(self.store.status_at(self.victim.fingerprint),
+                         "revoked")
+        ops = [(e["op"], e["details"].get("source"))
+               for e in service._audit.entries]
+        self.assertIn(("pki_apply_revocations", "out_of_band_refresh"), ops)
+        # A rejected list is evidence, not an exception.
+        self._write_channel(2)  # regressive
+        outcome = service.refresh_revocations(
+            authority, FileRevocationFetcher(self.channel))
+        self.assertEqual(outcome["outcome"], "replay_refused")
+        ops = [e["op"] for e in service._audit.entries]
+        self.assertIn("pki_refresh_revocations", ops)
+
+    def test_service_refresh_without_authority_refused(self):
+        from backend.package_pki import (PkiError, PkiDaemonService,
+                                         FileRevocationFetcher)
+        service = PkiDaemonService(self.store, audit_chain=self._make_chain())
+        with self.assertRaises(PkiError):
+            service.refresh_revocations(
+                None, FileRevocationFetcher(self.channel))
+
+    def _make_chain(self):
+        from backend.package_pki import PackageAuditChain
+        return PackageAuditChain()
+
 
 class TestDaemonAuthorityService(unittest.TestCase):
     """NPS-028 §3.2 daemon-side half / SURFACE-PKI-0001: the store is
@@ -1275,6 +1314,136 @@ class TestPkiIpcWireConventions(unittest.TestCase):
         with self.assertRaises(PkiError):
             PkiIpcServer._decode_params(
                 {"confirmation": {"nope": True}})
+
+
+class TestPkiRevocationRefreshWiring(unittest.TestCase):
+    """§5.1 wired into the daemon: the service-level refresh (the
+    daemon's own authority, audit-chained outcomes) and the runner's
+    background loop (channel-configured, fail-open, joinable at stop).
+    The §5.1 rule under test throughout: a bad fetch or a bad list
+    NEVER touches the store — the outcome is evidence, not an error.
+    """
+
+    def setUp(self):
+        import tempfile
+        from backend.package_pki import PkiKeyStore
+        from backend.package_signing import SigningKeypair
+        self.tmp = tempfile.TemporaryDirectory()
+        os.chmod(self.tmp.name, 0o755)  # §3.2 bind needs a non-writable dir
+        self.channel = os.path.join(self.tmp.name, "revocations.json")
+        self.store_path = os.path.join(self.tmp.name, "store.custody")
+        self.root = SigningKeypair.generate()
+        self.victim, _ = _sign()
+        # Pre-seed the custody store the runner will boot from: the
+        # runner owns its store object, so the root anchor and the
+        # victim's enrollment must be in ITS store (a fixture-only
+        # enrollment verifies nothing about the daemon path).
+        seeded = PkiKeyStore()
+        seeded.add_root_anchor(self.root.public_key, "root-1")
+        seeded.enroll(self.victim.public_key, "acme",
+                      _confirmation(self.victim.fingerprint))
+        seeded.revocation_sequence = 3
+        seeded.save_locked(self.store_path, "refresh-passphrase")
+        self.store = seeded  # read-model mirror for the service-level tests
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_channel(self, sequence):
+        from backend.package_pki import RevocationList
+        rvl = RevocationList(sequence=sequence, generated_at=1.0, entries=[
+            {"fingerprint": self.victim.fingerprint, "reason": "compromise"}])
+        rvl.sign_with_root(self.root.fingerprint, self.root.private_key)
+        with open(self.channel, "w", encoding="utf-8") as fh:
+            fh.write(rvl.to_json())
+
+    def _runner(self, **overrides):
+        from backend.package_pki import PkiDaemonRunner
+        kwargs = dict(
+            socket_path=os.path.join(self.tmp.name, "pki.sock"),
+            store_path=self.store_path,
+            unlock_secret="refresh-passphrase",
+            audit_log_path=os.path.join(self.tmp.name, "audit.jsonl"),
+            revocation_channel=self.channel,
+            refresh_interval=0.2,
+        )
+        kwargs.update(overrides)
+        return PkiDaemonRunner(**kwargs)
+
+    def test_background_refresh_applies_a_newer_list(self):
+        """The loop pulls the channel on its interval; a newer
+        authentic list is applied and the runner's store reflects it
+        (the runner creates and owns its store — assert on it, not the
+        setUp fixture)."""
+        import time as _time
+        self._write_channel(4)
+        runner = self._runner().start()
+        try:
+            rstore = runner.store
+            deadline = _time.time() + 10
+            while _time.time() < deadline:
+                if rstore.status_at(self.victim.fingerprint) == "revoked":
+                    break
+                _time.sleep(0.1)
+            self.assertEqual(rstore.status_at(self.victim.fingerprint),
+                             "revoked")
+        finally:
+            runner.stop()
+
+    def test_background_refresh_survives_a_bad_channel(self):
+        """A missing/invalid channel must not kill the loop or the
+        daemon: the next tick recovers when the channel is good again."""
+        import time as _time
+        runner = self._runner().start()  # channel does not exist yet
+        try:
+            rstore = runner.store
+            _time.sleep(0.7)  # a few failing ticks
+            self._write_channel(4)
+            deadline = _time.time() + 10
+            while _time.time() < deadline:
+                if rstore.status_at(self.victim.fingerprint) == "revoked":
+                    break
+                _time.sleep(0.1)
+            self.assertEqual(rstore.status_at(self.victim.fingerprint),
+                             "revoked")
+        finally:
+            runner.stop()
+
+    def test_no_channel_means_no_refresh_thread(self):
+        """Without a configured channel the loop is disabled by
+        decision, not omission — no thread is started."""
+        runner = self._runner(revocation_channel=None).start()
+        try:
+            self.assertIsNone(runner._refresh_thread)
+        finally:
+            runner.stop()
+
+    def test_stop_joins_the_refresh_thread(self):
+        runner = self._runner().start()
+        thread = runner._refresh_thread
+        self.assertIsNotNone(thread)
+        runner.stop()
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(runner._refresh_thread)
+
+    def test_refresh_is_not_on_the_ipc_allowlist(self):
+        """Callers cannot smuggle a fetcher through the socket: the
+        refresh op is daemon-internal, driven by the daemon's own
+        authority."""
+        from backend.package_pki import PkiIpcServer
+        self.assertNotIn("refresh_revocations", PkiIpcServer.IPC_ALLOWED_OPS)
+
+    def test_unit_wires_the_revocation_channel(self):
+        """The deployed unit configures the out-of-band channel and its
+        refresh interval (two-tree rule checked by the wiring suite)."""
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "packaging", "systemd",
+            "nyrqis-pki.service")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("--revocation-channel /var/lib/nyrqis/pki/revocations.json",
+                      text)
+        self.assertIn("--refresh-interval 300", text)
 
 
 if __name__ == "__main__":
