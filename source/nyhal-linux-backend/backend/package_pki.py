@@ -25,15 +25,11 @@ Fail-closed posture: without PyNaCl every operation raises
 ``PackageSignError`` (no stub fallback — the shipped signing half's
 documented stance). Key material never appears in error messages.
 
-Honest scope: this is a START, not the finished surface. Not yet
-implemented (each is a named NPS-028 build item): §3.4 custody (the
-store persists as JSON; ADR-0023 envelope encryption at rest and the
-Rust-held KEK are the next increment), daemon-authority enforcement
-of §3.2 (currently a deployment property, not an API property), the
-§7 ADR-0018 audit-log wiring (the pipeline accepts any sink), the
-stale-list bounds of §5.3 (deferred to implementation validation by
-design), and the revocation list's transport (§5.1's out-of-band
-channel is a deployment concern).
+Honest scope: the surface's API + transport + production process model
+are implemented (§3, §4, §5, §6, §7, §3.2's authority + IPC + the
+PkiDaemonRunner boot/serve/persist cycle, §3.4 custody). Not yet
+implemented (a named NPS-028 build item): the stale-list bounds of
+§5.3 (deferred to implementation validation by design).
 """
 
 from __future__ import annotations
@@ -1087,6 +1083,76 @@ class PkiIpcClient:
             self._sock.close()
 
 
+class PkiDaemonRunner:
+    """The daemon's production process model for the PKI store (§3.2 +
+    §3.4 assembled): a custody-protected store, a persisted audit
+    chain, and the §3.2 IPC socket — booted, served, and stopped as one
+    unit, mirroring StatusServiceHost's boot pattern (unlock secret at
+    boot, fail-closed, clean stop that persists). Deployed by the
+    shipped `nyrqis-pki.service` systemd unit via `nyrqis_backend.py
+    pki serve`.
+
+    Custody is mandatory here — this is the production path, so a
+    runner without an unlock secret is a constructor error, and a
+    custody file that exists but has no secret at boot refuses to
+    start. On stop, the store and the audit chain are persisted (store
+    via save_locked, chain as salted JSONL), so a restart resumes with
+    every enrollment, revocation, and audit entry intact.
+    """
+
+    def __init__(self, socket_path: str, store_path: str,
+                 unlock_secret: str, audit_log_path: Optional[str] = None,
+                 timeout: float = 5.0) -> None:
+        if not unlock_secret:
+            raise PkiError(
+                "PkiDaemonRunner refused: production custody requires an "
+                "unlock secret (§3.4) — none provided")
+        self._socket_path = socket_path
+        self._store_path = store_path
+        self._secret = unlock_secret
+        self._audit_log_path = audit_log_path
+        self._timeout = timeout
+        self._started = False
+
+        if os.path.exists(store_path):
+            self.store = PkiKeyStore.load_locked(store_path, unlock_secret)
+        else:
+            self.store = PkiKeyStore()
+        if audit_log_path and os.path.exists(audit_log_path):
+            self.audit = PackageAuditChain.load_jsonl(audit_log_path)
+        else:
+            self.audit = PackageAuditChain()
+        self.service = PkiDaemonService(self.store, audit_chain=self.audit)
+        self._server: Optional[PkiIpcServer] = None
+
+    def start(self) -> "PkiDaemonRunner":
+        if self._started:
+            raise PkiError("runner already started")
+        self._server = PkiIpcServer(self.service, self._socket_path)
+        self._server.start()
+        self._started = True
+        return self
+
+    def stop(self) -> None:
+        """Persist §3.4 custody + the §7 chain, then close the socket.
+        Idempotent; persistence happens exactly once."""
+        if not self._started:
+            return
+        self._started = False
+        try:
+            self.store.save_locked(self._store_path, self._secret)
+            if self._audit_log_path:
+                self.audit.save_jsonl(self._audit_log_path)
+        finally:
+            if self._server is not None:
+                self._server.stop()
+                self._server = None
+
+    def client(self) -> PkiIpcClient:
+        """A client for tests/operators on the same machine."""
+        return PkiIpcClient(self._socket_path, timeout=self._timeout)
+
+
 # ---------------------------------------------------------------------------
 # NPS-028 §7 — the ADR-0018 tamper-evident audit chain (package events)
 # ---------------------------------------------------------------------------
@@ -1272,6 +1338,7 @@ __all__ = [
     "PkiDaemonService",
     "PkiIpcServer",
     "PkiIpcClient",
+    "PkiDaemonRunner",
     "PackageAuditChain",
     "RevocationFetcher",
     "FileRevocationFetcher",

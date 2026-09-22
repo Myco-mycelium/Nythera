@@ -1,7 +1,7 @@
 ---
 title: Package PKI Implementation Surface
 document_id: NPS-028
-version: 0.8.0
+version: 0.9.0
 status: Draft
 classification: Normative
 subsystem: security
@@ -72,12 +72,18 @@ identities — and an explicit op allowlist that excludes key-material
 reads; deployment hardening built in: 0600 socket mode, fail-closed
 refusal of group/world-writable socket directories, and SO_PEERCRED
 uid policy (daemon-uid-or-root) where the OS exposes it;
-72 tests total). Still to
-build, each a named increment: the §5.3
+72 tests total), and the daemon's production process model (`PkiDaemonRunner`
++ the `pki serve` CLI subcommand + the shipped `nyrqis-pki.service`
+systemd unit: custody is mandatory on the production path — a runner
+without an unlock secret is a constructor error and the daemon exits —
+the store unlocks at boot, the §7 chain resumes from its persisted
+salt header, a clean stop persists custody + chain exactly once, and
+the unit wires the §3.2 socket, the StateDirectory-backed custody
+store, and the unlock secret's EnvironmentFile; install.sh deploys the
+unit and the two-tree mirror rule is contract-pinned; 84 tests total).
+Still to build: the §5.3
 stale-list
-bounds (deferred to implementation validation by design), and the
-daemon's production process model (systemd service ownership, the
-store's custody secret at boot) — deployment, not surface. This
+bounds (deferred to implementation validation by design). This
 document enumerates the components the remaining implementation must
 provide, the requirements each satisfies (REQ-SEC-0003..0006), the
 interfaces it must offer, and the attack surfaces it will add. It does
@@ -316,6 +322,7 @@ moment implementation begins.
 | 0.6.0   | 2026-09-22 | §3.2's daemon-side API half LANDED (SURFACE-PKI-0001's first build): `DaemonAuthority` (unforgeable — direct construction raises, `mint()` is the daemon's only entry, OS-RNG secret, instances compare by secret) and `PkiDaemonService` (the store's ONLY supported interface: every read/write demands a valid — and once `bind()`ed, matching — authority and fails closed without one; no method returns the store, the key material, or an enumeration; enroll/rotate/revoke/apply-revocation-list mutations land in the §7 audit chain). §3.2's remaining piece is the physical IPC transport at daemon integration. 9 new tests (60 total). Remaining: §3.2's IPC transport, §5.3 bounds |
 | 0.7.0   | 2026-09-22 | §3.2's physical IPC transport LANDED (SURFACE-PKI-0001 complete at the API+transport layer): `PkiIpcServer`/`PkiIpcClient` — JSON-lines over a Unix domain socket. The server mints ONE `DaemonAuthority` at start (the daemon's identity) and binds the service to it; connections are wires, not identities, and no client ever sees a token. The ops are an explicit allowlist (`status_for`, `enroll`, `rotate`, `revoke`, `apply_revocation_list`) — key-material reads are NOT on it, because verification runs in the daemon's authority and an installed package has no need (and no right) to export store contents. Unknown and private-name ops refused; mutations over the wire stay audit-chained; the transport does not widen what the service allows. 8 new tests (68 total). Remaining: the production daemon deployment (peer-credential hardening, socket-directory permissions), §5.3 bounds |
 | 0.8.0   | 2026-09-22 | §3.2 deployment hardening LANDED in the transport: the socket file is chmod 0600 at bind (owner-only from the instant it exists); a group/world-writable socket directory is a fail-closed bind REFUSAL naming the fix (`chmod go-w`) — a writable directory lets a local attacker swap or shadow the socket; and where the OS exposes peer credentials (Linux SO_PEERCRED) connections from peers that are neither the daemon's uid nor root are dropped at `setup()`, with the 0600 mode as the documented floor on platforms without peer credentials. `stop()` made idempotent (no socket leak on shutdown). 4 new tests (72 total). Remaining: §5.3 bounds (frozen by design), the daemon's production process model (deployment, not surface) |
+| 0.9.0   | 2026-09-22 | The daemon's production process model LANDED (the last §3.2/§3.4 assembly item): `PkiDaemonRunner` — custody is MANDATORY on the production path (a runner without an unlock secret is a constructor error; a custody file with no secret at boot refuses to start), the store unlocks at boot (or is created on first start), the §7 chain resumes from its persisted salt header and re-verifies, and a clean stop persists custody + chain exactly once (idempotent); the `pki serve` CLI subcommand assembles it with signal-flag polling (not `signal.pause()` — the default disposition would kill the process mid-handler, skipping persistence) and installs as the `nyrqis-pki.service` systemd unit (DynamicUser, NoNewPrivileges, ReadOnlyPaths=/opt/nyrqis, StateDirectory for the custody store + audit chain, the unlock secret from the optional EnvironmentFile — without it the daemon exits by design); install.sh deploys the unit and the two-tree mirror rule is contract-pinned (5 new wiring tests, 84 total). Remaining: §5.3 bounds (frozen by design) |
 
 ---
 **End of Document**

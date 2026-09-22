@@ -132,14 +132,18 @@ case "$INSTALL_MODE" in
         if [[ -d /etc/systemd/system ]]; then
             cp "${SCRIPT_DIR}/systemd/nyrqis-backend.service" /etc/systemd/system/
             cp "${SCRIPT_DIR}/systemd/nyrqis-desktop.service" /etc/systemd/system/
+            cp "${SCRIPT_DIR}/systemd/nyrqis-pki.service" /etc/systemd/system/
             systemctl daemon-reload
             echo "  ✓ systemd units installed"
             echo "  To enable: sudo systemctl enable nyrqis-backend"
             echo "  To start:  sudo systemctl start nyrqis-backend"
+            echo "  PKI daemon (optional, custody-first): see packaging/README.md"
+            echo "  To enable: sudo systemctl enable --now nyrqis-pki"
         else
             echo "  ⚠ systemd not found — copy units manually:"
             echo "    ${SCRIPT_DIR}/systemd/nyrqis-backend.service → /etc/systemd/system/"
             echo "    ${SCRIPT_DIR}/systemd/nyrqis-desktop.service → /etc/systemd/system/"
+            echo "    ${SCRIPT_DIR}/systemd/nyrqis-pki.service → /etc/systemd/system/"
         fi
         echo ""
         echo "Creating directories..."

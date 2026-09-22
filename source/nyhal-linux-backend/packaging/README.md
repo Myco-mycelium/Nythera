@@ -81,6 +81,13 @@ sudo systemctl stop nyrqis-backend
 sudo systemctl restart nyrqis-backend
 ```
 
+The systemd tree (`packaging/systemd/`) ships three units:
+`nyrqis-backend.service`, `nyrqis-pki.service`, and
+`nyrqis-desktop.service` — the backend tree's copies are the source of
+truth and `install.sh` deploys all three (`systemd-analyze verify`
+clean; the two-tree mirror rule is contract-pinned in
+`tests/test_package_pki.py`).
+
 ### Desktop Session
 
 The desktop session runs as a user service:
@@ -94,6 +101,31 @@ systemctl --user start nyrqis-desktop
 systemctl --user status nyrqis-desktop
 journalctl --user -u nyrqis-desktop -f
 ```
+
+### Package-PKI Daemon (NPS-028)
+
+The PKI daemon serves the package trust store: the §3.4 custody store
+(ADR-0023 envelope encryption), the §7 tamper-evident audit chain, and
+the §3.2 authority-guarded IPC socket (`/run/nyrqis/pki.sock`, 0600).
+Custody is mandatory: without an unlock secret the daemon exits.
+
+```bash
+# One-time: create the unlock secret (0700 dir, 0600 file)
+sudo mkdir -p /etc/nyrqis && sudo chmod 0700 /etc/nyrqis
+echo 'NYRQIS_PKI_UNLOCK_SECRET=change-me' | sudo tee /etc/nyrqis/pki.env >/dev/null
+sudo chmod 0600 /etc/nyrqis/pki.env
+
+# Enable and start
+sudo systemctl enable --now nyrqis-pki
+
+# Status and logs
+sudo systemctl status nyrqis-pki
+journalctl -u nyrqis-pki -f
+```
+
+The store (`/var/lib/nyrqis/pki/store.custody.json`) and the audit
+chain (`/var/lib/nyrqis/pki/audit.jsonl`) persist across restarts;
+enrollments, revocations, and audit entries survive a reboot.
 
 ## Configuration
 
@@ -129,11 +161,15 @@ After installation:
 /var/lib/nyrqis/           # System data
 ├── vault/                 # Encrypted vault volumes
 │   └── ...
-└── packages/              # Installed packages
+├── packages/              # Installed packages
+└── pki/                   # Package trust store (NPS-028)
+    ├── store.custody.json # §3.4 custody store (envelope-encrypted)
+    └── audit.jsonl        # §7 tamper-evident audit chain
 
 /run/nyrqis/               # Runtime state
 ├── status.sock            # Main IPC socket
 ├── health.sock            # Health probe socket
+├── pki.sock               # §3.2 authority-guarded PKI IPC socket
 └── daemon-state.json      # Daemon identity
 
 ~/.nyrqis/                 # User data
@@ -149,14 +185,17 @@ After installation:
 ```bash
 # Stop services
 sudo systemctl stop nyrqis-backend
+sudo systemctl stop nyrqis-pki
 systemctl --user stop nyrqis-desktop
 
 # Disable services
 sudo systemctl disable nyrqis-backend
+sudo systemctl disable nyrqis-pki
 systemctl --user disable nyrqis-desktop
 
 # Remove systemd units
 sudo rm /etc/systemd/system/nyrqis-backend.service
+sudo rm /etc/systemd/system/nyrqis-pki.service
 sudo rm /etc/systemd/system/nyrqis-desktop.service
 sudo systemctl daemon-reload
 

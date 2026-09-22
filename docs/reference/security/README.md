@@ -33,4 +33,8 @@ scheme that implementation will use was decided 2026-09-22 — the
 NPC-002 §6.2-reserved dedicated human review concluded (AG decision
 log D4) and landed as NPS-026 v1.3.0 §6.7 (Ed25519 + SHA-256; the
 key fingerprint is SHA-256(public key), displayed in full 64 lowercase
-hex).
+hex). **Implementation is landed through the production process model
+(v0.9.0)**: key store, pipeline, revocation list + transport,
+enrollment/rotation, custody, daemon authority + IPC, audit chain,
+and the `PkiDaemonRunner`/`pki serve`/`nyrqis-pki.service` deployment
+unit — only the by-design §5.3 stale-list deferral remains.

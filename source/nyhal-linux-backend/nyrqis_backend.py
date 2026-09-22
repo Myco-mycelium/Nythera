@@ -813,6 +813,46 @@ def cmd_service_serve(args) -> int:
     return 0
 
 
+def cmd_pki_serve(args) -> int:
+    """Serve the package-PKI daemon until interrupted (NPS-028 §3.2).
+
+    Assembles the production process model: the §3.4 custody store
+    unlocked at boot (fail-closed — no secret, no daemon), the §7
+    tamper-evident audit chain persisted at stop, and the §3.2
+    authority-guarded IPC socket. Clean stop on SIGINT/SIGTERM.
+    """
+    setup_logging(args.verbose, syslog=getattr(args, "syslog", False))
+    from backend.package_pki import PkiDaemonRunner
+    secret = (args.unlock_secret
+              or os.environ.get("NYRQIS_PKI_UNLOCK_SECRET") or "")
+    runner = PkiDaemonRunner(
+        socket_path=args.socket,
+        store_path=args.store,
+        unlock_secret=secret,
+        audit_log_path=args.audit_log or None,
+    ).start()
+    print(f"PKI daemon serving on {args.socket}")
+    # serve_until_signal's pattern (signal handlers in the main thread
+    # set a flag; the main thread polls it — signal.pause() would let
+    # the default disposition kill the process mid-handler on the
+    # first delivery, skipping the custody+audit persistence).
+    stop = threading.Event()
+    def _handler(signum, frame):  # noqa: ARG001 - handler signature
+        stop.set()
+    old = {}
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            old[sig] = signal.signal(sig, _handler)
+        while not stop.is_set():
+            stop.wait(0.5)
+    finally:
+        for sig, prev in old.items():
+            signal.signal(sig, prev)
+        runner.stop()
+        print("PKI daemon stopped (custody + audit persisted).")
+    return 0
+
+
 def cmd_control(args) -> int:
     """Drive a running daemon's control plane (operator-only).
 
@@ -1075,6 +1115,38 @@ Examples:
         help="Per-sender spike absorption in tokens (default: 64)"
     )
     serve_parser.set_defaults(func=cmd_service_serve)
+
+    # PKI daemon (NPS-028 §3.2/§3.4): the production process model for
+    # the package trust store — custody-protected at rest (ADR-0023
+    # envelope), the §7 tamper-evident audit chain persisted beside it,
+    # and the authority-guarded IPC socket for package verification.
+    pki_parser = subparsers.add_parser(
+        "pki", help="Package PKI operations (NPS-028)")
+    pki_subparsers = pki_parser.add_subparsers(dest="pki_command")
+    pki_serve_parser = pki_subparsers.add_parser(
+        "serve", help="Serve the package-PKI daemon (trust store + "
+        "verification authority)")
+    pki_serve_parser.add_argument(
+        "--socket", default="/run/nyrqis/pki.sock",
+        help="The §3.2 IPC socket (default: /run/nyrqis/pki.sock)"
+    )
+    pki_serve_parser.add_argument(
+        "--store", default="/var/lib/nyrqis/pki/store.custody.json",
+        help="The §3.4 custody store path (default: "
+             "/var/lib/nyrqis/pki/store.custody.json)"
+    )
+    pki_serve_parser.add_argument(
+        "--audit-log", default="/var/lib/nyrqis/pki/audit.jsonl",
+        help="The §7 audit chain JSONL (default: "
+             "/var/lib/nyrqis/pki/audit.jsonl; disable with '')"
+    )
+    pki_serve_parser.add_argument(
+        "--unlock-secret", default="",
+        help="The store's unlock secret (or set NYRQIS_PKI_UNLOCK_SECRET "
+             "via the EnvironmentFile) — REQUIRED: custody is mandatory "
+             "on the production path (§3.4)"
+    )
+    pki_serve_parser.set_defaults(func=cmd_pki_serve)
 
     # Control commands (against a running daemon)
     control_parser = subparsers.add_parser(

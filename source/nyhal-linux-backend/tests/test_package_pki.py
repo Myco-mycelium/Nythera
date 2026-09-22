@@ -920,5 +920,238 @@ class TestPkiIpcTransport(unittest.TestCase):
         self.assertFalse(os.path.exists(self.socket_path))
 
 
+class TestPkiDaemonRunner(unittest.TestCase):
+    """§3.2 + §3.4 assembled: the daemon's production process model.
+
+    Mirrors StatusServiceHost's boot contract: unlock secret at boot
+    (fail-closed), serve, and a clean stop that persists custody + the
+    §7 chain so a restart resumes intact.
+    """
+
+    def setUp(self):
+        import tempfile
+        from backend.package_pki import PkiKeyStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.socket_path = os.path.join(self.tmp.name, "pki.sock")
+        self.store_path = os.path.join(self.tmp.name, "pki-store.custody")
+        self.audit_path = os.path.join(self.tmp.name, "pki-audit.jsonl")
+        self.secret = "boot-passphrase"
+        # A pre-existing custody store with an enrolled key.
+        kp, _ = _sign()
+        self.kp = kp
+        store = PkiKeyStore()
+        store.enroll(kp.public_key, "acme",
+                     _confirmation(kp.fingerprint))
+        store.save_locked(self.store_path, self.secret)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _runner(self, **overrides):
+        from backend.package_pki import PkiDaemonRunner
+        kwargs = dict(socket_path=self.socket_path,
+                      store_path=self.store_path,
+                      unlock_secret=self.secret,
+                      audit_log_path=self.audit_path)
+        kwargs.update(overrides)
+        return PkiDaemonRunner(**kwargs)
+
+    def test_no_secret_refused_at_boot(self):
+        """Production custody is mandatory — no secret, no runner."""
+        from backend.package_pki import PkiError
+        with self.assertRaises(PkiError):
+            self._runner(unlock_secret="")
+
+    def test_boot_loads_the_custody_store(self):
+        runner = self._runner().start()
+        try:
+            client = runner.client()
+            self.assertEqual(
+                client.call("status_for",
+                            fingerprint=self.kp.fingerprint),
+                "trusted")
+            client.close()
+        finally:
+            runner.stop()
+
+    def test_stop_persists_and_restart_resumes(self):
+        """The restart contract: revoke over IPC, stop, boot a fresh
+        runner on the same paths — the revocation survived."""
+        runner = self._runner().start()
+        client = runner.client()
+        client.call("revoke", fingerprint=self.kp.fingerprint,
+                    reason="compromise")
+        client.close()
+        runner.stop()
+
+        runner2 = self._runner().start()
+        try:
+            client2 = runner2.client()
+            self.assertEqual(
+                client2.call("status_for",
+                             fingerprint=self.kp.fingerprint),
+                "revoked")
+            client2.close()
+        finally:
+            runner2.stop()
+        # The §7 chain resumed too: the file carries the salt header +
+        # the one pki_revoke entry (the second run added nothing new).
+        with open(self.audit_path, encoding="utf-8") as fh:
+            lines = [l for l in fh.read().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 2)
+
+    def test_restart_resumes_the_audit_chain(self):
+        """A loaded chain re-verifies and new appends continue it."""
+        from backend.package_pki import PackageAuditChain
+        runner = self._runner().start()
+        runner.client().close()
+        runner.stop()
+        chain = PackageAuditChain.load_jsonl(self.audit_path)
+        self.assertTrue(chain.verify())
+        chain.append("post_restart", {"ok": True})
+        self.assertTrue(chain.verify())
+
+    def test_stop_is_idempotent(self):
+        runner = self._runner().start()
+        runner.stop()
+        runner.stop()
+        self.assertFalse(os.path.exists(self.socket_path))
+
+    def test_double_start_refused(self):
+        from backend.package_pki import PkiError
+        runner = self._runner().start()
+        try:
+            with self.assertRaises(PkiError):
+                runner.start()
+        finally:
+            runner.stop()
+
+    def test_audit_chain_survives_restart_without_duplication(self):
+        """Two run/stop cycles must not re-persist earlier entries."""
+        runner = self._runner().start()
+        client = runner.client()
+        client.call("revoke", fingerprint=self.kp.fingerprint, reason="x")
+        client.close()
+        runner.stop()
+        runner2 = self._runner().start()
+        runner2.stop()
+        with open(self.audit_path, encoding="utf-8") as fh:
+            entries = [json.loads(l) for l in fh if l.strip()][1:]
+        revoke_ops = [e for e in entries if e.get("op") == "pki_revoke"]
+        self.assertEqual(len(revoke_ops), 1)
+
+
+class TestPkiDeploymentWiring(unittest.TestCase):
+    """The production process model is wired for deployment: the CLI
+    subcommand and the systemd unit. Parsed, not transcribed — the
+    unit file is the single source of truth (the Session 10 drift
+    lesson: two copies nobody tested is how an installed system breaks).
+    """
+
+    BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    @classmethod
+    def _unit_text(cls):
+        path = os.path.join(cls.BACKEND_DIR, "packaging", "systemd",
+                            "nyrqis-pki.service")
+        with open(path, encoding="utf-8") as fh:
+            return path, fh.read()
+
+    def test_unit_exists_and_matches_both_trees(self):
+        """The two-tree rule: backend is the source of truth, the root
+        packaging/systemd/ copy is a byte-identical mirror."""
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))
+        backend_unit = os.path.join(
+            self.BACKEND_DIR, "packaging", "systemd", "nyrqis-pki.service")
+        root_unit = os.path.join(
+            repo_root, "packaging", "systemd", "nyrqis-pki.service")
+        self.assertTrue(os.path.isfile(backend_unit),
+                        f"missing backend-tree unit {backend_unit}")
+        self.assertTrue(os.path.isfile(root_unit),
+                        f"missing root-tree mirror {root_unit}")
+        with open(backend_unit, encoding="utf-8") as fh:
+            backend_text = fh.read()
+        with open(root_unit, encoding="utf-8") as fh:
+            root_text = fh.read()
+        self.assertEqual(
+            backend_text, root_text,
+            "the two nyrqis-pki.service copies diverged — sync them "
+            "(backend tree is the source of truth; install.sh deploys it)")
+
+    def test_cli_wires_pki_serve_subcommand(self):
+        """`pki serve` exists with the custody-mandatory flags the unit
+        passes, and the runner refuses a secret-less boot."""
+        import importlib
+        import argparse
+        mod = importlib.import_module("nyrqis_backend")
+        parser = mod.build_parser() if hasattr(mod, "build_parser") else None
+        if parser is None:
+            # The CLI builds its parser inside main(), which reads
+            # sys.argv — drive the real argv path with a probe.
+            import io, contextlib
+            buf = io.StringIO()
+            old_argv = sys.argv
+            sys.argv = ["nyrqis_backend.py", "pki", "serve", "--help"]
+            try:
+                with contextlib.redirect_stdout(buf):
+                    try:
+                        mod.main()
+                    except SystemExit:
+                        pass  # argparse exits 0 on --help
+            finally:
+                sys.argv = old_argv
+            out = buf.getvalue()
+            self.assertIn("--socket", out)
+            self.assertIn("--store", out)
+            self.assertIn("--audit-log", out)
+            self.assertIn("--unlock-secret", out)
+        else:
+            args = parser.parse_args(
+                ["pki", "serve", "--socket", "/tmp/s",
+                 "--store", "/tmp/st", "--unlock-secret", "x"])
+            self.assertEqual(args.socket, "/tmp/s")
+            self.assertEqual(args.unlock_secret, "x")
+
+    def test_unit_execstart_targets_pki_serve_with_custody_paths(self):
+        """The unit's ExecStart runs the real CLI with the custody store,
+        the audit chain, and the §3.2 socket — and the unlock secret
+        comes from the optional EnvironmentFile (custody is mandatory,
+        so the daemon exits without it)."""
+        _, text = self._unit_text()
+        self.assertIn("pki serve", text)
+        self.assertIn("nyrqis_backend.py", text)
+        self.assertIn("--socket /run/nyrqis/pki.sock", text)
+        self.assertIn("--store /var/lib/nyrqis/pki/store.custody.json", text)
+        self.assertIn("--audit-log /var/lib/nyrqis/pki/audit.jsonl", text)
+        self.assertIn("EnvironmentFile=-/etc/nyrqis/pki.env", text)
+        self.assertIn("StateDirectory=nyrqis", text)
+        self.assertIn("RuntimeDirectory=nyrqis", text)
+
+    def test_unit_hardening_matches_the_documented_posture(self):
+        """Unprivileged, no-new-privs, and the install tree read-only —
+        the same privilege posture the backend unit pins (the PKI daemon
+        launches no containers, so it can go further on namespaces)."""
+        _, text = self._unit_text()
+        self.assertIn("NoNewPrivileges=true", text)
+        self.assertTrue(
+            "DynamicUser=true" in text or "User=" in text,
+            "unit must not run as root")
+        self.assertIn("Restart=on-failure", text)
+        directives = [l.strip() for l in text.splitlines()
+                      if not l.lstrip().startswith(("#", ";"))]
+        self.assertNotIn("RestrictNamespaces=yes", directives)
+
+    def test_install_sh_deploys_the_pki_unit(self):
+        """install.sh deploys the backend tree's units — the PKI unit
+        must be on that list or the installed system silently lacks it."""
+        path = os.path.join(self.BACKEND_DIR, "packaging", "install.sh")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("nyrqis-pki.service", text)
+        self.assertIn("nyrqis-backend.service", text)
+        self.assertIn("nyrqis-desktop.service", text)
+
+
 if __name__ == "__main__":
     unittest.main()

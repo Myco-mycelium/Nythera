@@ -1,0 +1,69 @@
+# Nyrqis package-PKI daemon (NPS-028 §3.2/§3.4)
+#
+# Serves the package trust store as the daemon's authority: the §3.4
+# custody store (ADR-0023 envelope encryption; the unlock secret comes
+# from the optional EnvironmentFile, exactly like the vault's), the §7
+# tamper-evident audit chain, and the §3.2 IPC socket (0600, owner-only;
+# the daemon refuses to bind when the socket directory is group/world-
+# writable — see the journal for the chmod go-w fix if it does).
+#
+# Install (see packaging/README.md):
+#   sudo cp packaging/systemd/nyrqis-pki.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nyrqis-pki
+#
+# First-boot custody setup: create the unlock secret BEFORE enabling the
+# unit (custody is mandatory on the production path — the daemon exits
+# non-zero without it, by design):
+#
+#   sudo mkdir -p /etc/nyrqis && sudo chmod 0700 /etc/nyrqis
+#   echo 'NYRQIS_PKI_UNLOCK_SECRET=change-me' | sudo tee /etc/nyrqis/pki.env >/dev/null
+#   sudo chmod 0600 /etc/nyrqis/pki.env
+#
+# The store itself is created at first start (StateDirectory, chowned to
+# the service user by systemd) and custody-encrypted on every stop.
+
+[Unit]
+Description=Nyrqis package-PKI daemon (trust store + verification authority)
+Documentation=https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/security/NPS-028-package-pki-implementation-surface.md
+After=network.target
+PartOf=nyrqis-backend.service
+
+[Service]
+Type=simple
+# The PKI daemon shares the backend's process model: unprivileged, its
+# own runtime/state directories, the unlock secret from the optional
+# EnvironmentFile (the `-` prefix keeps the unit valid without it — but
+# the daemon itself will refuse custody-free operation and exit).
+ExecStart=/usr/bin/python3 /opt/nyrqis/nyhal-linux-backend/nyrqis_backend.py pki serve --socket /run/nyrqis/pki.sock --store /var/lib/nyrqis/pki/store.custody.json --audit-log /var/lib/nyrqis/pki/audit.jsonl
+Restart=on-failure
+RestartSec=2
+
+# Socket + store directories: created (and chowned to the service user)
+# by systemd. The runtime dir is removed on stop; the state dir PERSISTS
+# — the custody store and the §7 audit chain live here.
+RuntimeDirectory=nyrqis
+RuntimeDirectoryMode=0755
+StateDirectory=nyrqis
+StateDirectoryMode=0750
+
+# Unlock secret: read from /etc/nyrqis/pki.env if it exists. Without it
+# the daemon exits (§3.4 custody is mandatory in production).
+EnvironmentFile=-/etc/nyrqis/pki.env
+
+# Hardening: this daemon needs no namespaces, no devices, no /opt writes.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadOnlyPaths=/opt/nyrqis
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# Baseline privilege separation, same as the backend unit.
+DynamicUser=true
+
+[Install]
+WantedBy=multi-user.target
