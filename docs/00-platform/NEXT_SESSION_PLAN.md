@@ -6,21 +6,36 @@ date: 2026-09-19
 
 # Next Development Session Plan
 
-## STANDING ITEM — Tue 2026-09-22 05:52 UTC: scheduled-runs-watch's first fire
+## STANDING ITEM — CLOSED — Tue 2026-09-22 05:52 UTC: scheduled-runs-watch's FIRST FIRE
 
-**Interim verdict, 08:02 UTC (recorded same morning): NOT YET FIRED —
+**CLOSED — PASS.** The fire landed **10:23:02 UTC (4 h 31 m late)**
+and run [#1](https://github.com/Myco-mycelium/Nythera/actions/runs/35715668768)
+completed **success** by 10:23:16 UTC — an 8-second run, every step
+green. The run executed `0bebd1a`, today's tip INCLUDING the
+self-coverage fix pushed ~09:15 UTC, so the first fire live-verified
+the self-checking checker in CI (exercising its "first fire of a new
+watcher has nothing prior to judge" path honestly). The
+scheduler-backlog hypothesis is confirmed: the PAT watcher fired
+10:15:16 (4 h 38 m late) minutes earlier — the two dailies released
+from one backlog together, the measured envelope grew slightly
+(Monday's max was 5 h 49 m; both stayed inside the 8 h grace). The
+interim "not yet fired" readings (08:02–09:04 UTC, six checks) were
+calibration-correct, not findings.
+
+**Interim verdict, 08:02 UTC (kept — it is what found the gap): NOT YET FIRED —
 within grace, and the check itself found a gap that is now closed.**
 The workflow is `active` on the default branch with **zero runs of any
 event** (API, `event=schedule` and unfiltered both queried); due
 05:52, now 2 h 10 m past — inside the 8 h window Monday's data set
-(delays up to 5 h 49 m). Consistent with another scheduler-widebacklog. The two weekly ISO crons and the PAT watcher still show
-Monday's verified successes. **Re-check after 13:52 UTC and record the
-final verdict here — a no-show by then is a real finding** (recovery:
-workflow_dispatch, currently gated on the PAT Actions-write grant —
-the drill was re-executed 08:15 UTC and failed exactly as documented:
-HTTP 403, "Resource not accessible by personal access token").
-Re-checked at 08:24, 08:33, 08:45, 08:55 and 09:04 UTC — still zero
-runs; the watcher's grace deadline is 13:52 UTC.
+(delays up to 5 h 49 m). Consistent with another scheduler-wide
+backlog. The two weekly ISO crons and the PAT watcher still show
+Monday's verified successes. The plan was to re-check after 13:52 UTC
+and call a no-show a real finding — overtaken by events: the fire
+landed at 10:23, 3 h 29 m before that deadline. Re-checked at 08:24,
+08:33, 08:45, 08:55 and 09:04 UTC — still zero runs; the recovery
+path (workflow_dispatch) was re-drilled 08:15 UTC and failed exactly
+as documented: HTTP 403, "Resource not accessible by personal access
+token".
 
 **Correction (recorded 09:15 UTC, same day):** an earlier interim note
 here and in the 09:08 hygiene entry called the amd64 cron "due 03:00
@@ -31,8 +46,9 @@ watchers — pat-expiry-watch (05:37) and scheduled-runs-watch (05:52)
 — and BOTH were unfired as of 09:04 UTC. That is the evidence for the
 scheduler-wide-backlog hypothesis (weaker than Monday's three-schedule
 consistency, but real: one of the two missing schedules is the very
-workflow whose absence is under judgment). The PAT watcher's last
-successful fire remains Monday 11:01:33 UTC.
+workflow whose absence is under judgment). Both dailies then fired
+within 8 minutes of each other at 10:15/10:23 UTC, closing the item
+as PASS.
 
 **The gap the interim check exposed (closed same day):**
 `check_scheduled_runs.sh` never watched `scheduled-runs-watch.yml`
