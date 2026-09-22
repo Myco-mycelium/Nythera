@@ -332,7 +332,18 @@ the record, each item marked with its outcome.
   decision (G3) — gates the §6.7.3 fence, not this surface's
   mechanisms. Interlock: NPS-026 exits Draft through the same review
   sitting once on both documents (its §6 machinery and this §3–§7
-  implementation are two halves of one acceptance). DECISION-READY —
+  implementation are two halves of one acceptance). **NPS-026-side
+  evidence (same session):** its §6.7 scheme, §6.2 coverage rule, and
+  the signed-index/delta distribution machinery are implemented
+  (`package_signing.py`/`package_repo.py`/`update_signing.py`; 64
+  module tests) and verified by mechanical probe — 7/7 repo-half
+  claims (tamper-evident index refusal, untrusted-key refusal,
+  payload-swap detection, §9 delta publication) recorded in NPS-026
+  §1 + v1.3.1. What remains open there is exactly what its text
+  defers: §9.2/§9.3 serialization (§6.7.3), §10–§12's
+  transaction/streaming/rollback halves, §6.7.5's deferred
+  operational parameters — the Group may accept the §6/§7 machinery
+  while carrying those sections forward. DECISION-READY —
   no measurement, implementation, or drafting item remains ahead of
   the review.
 

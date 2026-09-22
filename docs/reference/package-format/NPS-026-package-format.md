@@ -31,6 +31,21 @@ serialization and the concrete signing scheme require implementation
 validation before `Accepted` (NPC-002 §5.1/§5.2). Closing Milestone 11
 gap category 7 (package format specification).
 
+**Implementation validation status (2026-09-22):** the signing scheme
+(§6.7.1), the fingerprint spelling (§6.7.2), the fail-closed posture
+(§6.7.5), the signature-coverage rule (§6.2), and the signed-index /
+delta distribution machinery (§8, §9.1's publish half) are implemented
+in `backend/package_signing.py`, `backend/package_repo.py`, and
+`backend/update_signing.py` — and verified against this document's
+claims by a mechanical probe (37 signing-half tests + 16 repo tests +
+11 update-signing tests; 7 repo-half claims incl. tamper-evident index
+refusal and untrusted-key refusal, 7/7). The §6.3 trust mechanism is
+implemented in `backend/package_pki.py` and validated per NPS-028 §10.
+What remains open is exactly what the text defers: the §9.2/§9.3
+serialization decision (§6.7.3's canonical byte form), §10–§12's
+transaction/streaming/rollback halves, and the deferred operational
+parameters of §6.7.5.
+
 On 2026-09-21 the Architecture Group decided the publisher key-trust
 mechanism (decision log D3, `AG_AGENDA.md`) and its §6.3 text below was
 reviewed and landed in the same sitting. On 2026-09-22 the NPC-002
@@ -345,6 +360,7 @@ retain-by-default rule unchanged.
 | 1.1.0   | 2026-09-18 | §13 (new): implementation findings from ADR-0022/0023 (NyVault) — volumes are NyFS images, integrity trees cover plaintext while vault AEAD covers at-rest (composition without re-encryption), streaming install into vaults inherits 32 KiB CALL paging and is commit-bound until write batching, uninstall maps onto creator-scoped volume lifecycle; §14: hardware-root convergence and registry-vocabulary open questions added. Closes the M14 Phase 1 "package format update" item |
 | 1.2.0   | 2026-09-21 | §6.3 expanded from the ADR-0014 pattern into the decided mechanism (AG decision log D3): 6.3.1 bundled platform root set + TOFU rejection, 6.3.2 protected-confirmation enrollment, 6.3.3 revocation inputs (expiry + out-of-band list), 6.3.4 advisory/block propagation split, 6.3.5 cross-signature rotation, 6.3.6 crypto reserved per NPC-002 §6.2; the 2026-09-20 non-normative pointer note replaced by the decision record. Closes REQ-SEC-0004 |
 | 1.3.0   | 2026-09-22 | §6.7 (new): the concrete crypto scheme — the NPC-002 §6.2-reserved dedicated human review concluded (AG decision log D4), working from `AG_BRIEF_NPS026_CRYPTO_SCHEME.md` with its tree claims re-verified same day. Primitives per role (Ed25519 + SHA-256; root-set-signed revocation lists; ADR-0023 envelope encryption for the key store; image-anchored root set), the key fingerprint decided as SHA-256(public key) displayed in full 64 lowercase hex (the shipped 8-byte `key_id` becomes a versioned migration), the canonical serialization explicitly deferred to §9, quorum semantics confirmed (single-root MUST verify, any-root MAY sign), and the frozen/deferred parameter split recorded. §6.3.6 re-points at §6.7; the reserve is removed |
+| 1.3.1   | 2026-09-22 | §1 records the implementation-validation status: the §6.7 scheme (Ed25519 signatures, SHA-256 fingerprint, fail-closed posture), §6.2's coverage rule, and the signed-index/delta distribution machinery (§8, §9.1's publish half) are implemented in `package_signing.py`/`package_repo.py`/`update_signing.py` and verified by mechanical probe — tamper-evident index refusal, untrusted-key refusal, payload-swap detection, §9 delta publication, 7/7 repo-half claims (37+16+11 module tests). The §6.3 mechanism's validation is NPS-028 §10. Open: §9.2/§9.3 serialization (§6.7.3), §10–§12's transaction/streaming/rollback halves, §6.7.5's deferred operational parameters |
 
 ---
 **End of Document**
