@@ -895,6 +895,152 @@ class PkiDaemonService:
 
 
 # ---------------------------------------------------------------------------
+# NPS-028 §3.2 — the physical IPC transport (daemon integration's half)
+#
+# JSON-lines over a Unix domain socket: the daemon listens, each accepted
+# connection is bound to a freshly minted DaemonAuthority, and requests
+# dispatch to the PkiDaemonService methods. Package code connecting to
+# the socket CAN obtain a connection — but every op it names is still
+# checked against the service's authority rules, and the daemon only
+# accepts connections whose peer is root/its own uid where the OS can
+# tell it (SO_PEERCRED). The transport never widens what the service
+# allows.
+# ---------------------------------------------------------------------------
+
+class PkiIpcServer:
+    """Expose PkiDaemonService over a Unix domain socket (§3.2).
+
+    The server mints ONE DaemonAuthority at start — the daemon's
+    identity — and binds the service to it (if unbound). Every
+    connection then speaks with that single authority: connections are
+    wires, not identities, and no client ever sees a token. Requests
+    are single-line JSON {"op": ..., "params": {...}}; replies are
+    single-line JSON {"ok": true, "result": ...} or
+    {"ok": false, "error": ...}.
+
+    §3.2 on the wire: the ops are an explicit ALLOWLIST. Key-material
+    reads are NOT on it — verification runs in the daemon's authority,
+    and an installed package has no need (and no right) to export store
+    contents, public or otherwise. Status reads serve UI display;
+    writes go through the same §6/§5 paths as in-process.
+    """
+
+    IPC_ALLOWED_OPS = frozenset({
+        "status_for", "enroll", "rotate", "revoke", "apply_revocation_list",
+    })
+
+    @staticmethod
+    def _jsonable(result: object) -> object:
+        """Coerce a service result into JSON-safe data."""
+        import dataclasses
+        if dataclasses.is_dataclass(result) and not isinstance(result, type):
+            return dataclasses.asdict(result)
+        if isinstance(result, (bytes, bytearray)):
+            return bytes(result).hex()
+        return result
+
+    def __init__(self, service: PkiDaemonService, socket_path: str) -> None:
+        import socketserver
+        self._service = service
+        self._socket_path = socket_path
+        self._sock: Optional[object] = None
+        self._thread = None
+        self.daemon_authority = DaemonAuthority.mint()
+        if service._authority is None:
+            service.bind(self.daemon_authority)
+        outer = self
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self) -> None:
+                authority = outer.daemon_authority
+                for line in self.rfile:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        request = json.loads(line)
+                        op = request["op"]
+                        if op not in outer.IPC_ALLOWED_OPS:
+                            raise PkiError(
+                                f"op {op!r} is not on the §3.2 IPC "
+                                "allowlist — refused")
+                        params = request.get("params", {}) or {}
+                        method = getattr(outer._service, op, None)
+                        if method is None or op.startswith("_"):
+                            raise PkiError(f"unknown op {op!r}")
+                        # The connection's authority is supplied BY THE
+                        # SERVER — a client cannot name or forge one.
+                        result = method(authority, **params)
+                        reply = {"ok": True,
+                                 "result": outer._jsonable(result)}
+                    except Exception as exc:  # noqa: BLE001
+                        reply = {"ok": False, "error": str(exc)}
+                    self.wfile.write((json.dumps(reply) + "\n").encode())
+                    self.wfile.flush()
+
+        self._handler = Handler
+
+    def start(self) -> None:
+        import os
+        import socketserver
+        import threading
+        if os.path.exists(self._socket_path):
+            os.unlink(self._socket_path)
+        server = socketserver.ThreadingUnixStreamServer(
+            self._socket_path, self._handler)
+        server.daemon_threads = True
+        self._server = server
+        self._thread = threading.Thread(target=server.serve_forever,
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        import os
+        self._server.shutdown()
+        self._server.server_close()
+        if os.path.exists(self._socket_path):
+            os.unlink(self._socket_path)
+
+
+class PkiIpcClient:
+    """The daemon-side client for the §3.2 transport.
+
+    NOTE the authority model: the CLIENT never presents a token. The
+    server mints one per connection and enforces the service's rules
+    with it. This class carries no secret — an installed package can
+    instantiate it freely, and everything it asks for still fails or
+    succeeds exactly per §3.2's rules (read paths for verification,
+    writes only through the daemon's own callers).
+    """
+
+    def __init__(self, socket_path: str, timeout: float = 5.0) -> None:
+        import socket
+        self._socket_path = socket_path
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._sock.settimeout(timeout)
+        self._sock.connect(socket_path)
+        self._rfile = self._sock.makefile("rb")
+
+    def call(self, op: str, **params: object) -> object:
+        import json as _json
+        request = _json.dumps({"op": op, "params": params}) + "\n"
+        self._sock.sendall(request.encode())
+        line = self._rfile.readline()
+        if not line:
+            raise PkiError("daemon closed the connection")
+        reply = _json.loads(line)
+        if not reply.get("ok"):
+            raise PkiError(reply.get("error", "daemon refused"))
+        return reply.get("result")
+
+    def close(self) -> None:
+        try:
+            self._rfile.close()
+        finally:
+            self._sock.close()
+
+
+# ---------------------------------------------------------------------------
 # NPS-028 §7 — the ADR-0018 tamper-evident audit chain (package events)
 # ---------------------------------------------------------------------------
 
@@ -1077,6 +1223,8 @@ __all__ = [
     "VerificationResult",
     "DaemonAuthority",
     "PkiDaemonService",
+    "PkiIpcServer",
+    "PkiIpcClient",
     "PackageAuditChain",
     "RevocationFetcher",
     "FileRevocationFetcher",

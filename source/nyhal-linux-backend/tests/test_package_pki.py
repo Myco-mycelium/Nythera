@@ -766,5 +766,123 @@ class TestDaemonAuthorityService(unittest.TestCase):
             authority, self.kp.fingerprint), "revoked")
 
 
+class TestPkiIpcTransport(unittest.TestCase):
+    """NPS-028 §3.2 physical transport: the service over a Unix socket.
+
+    The transport must not widen what the service allows: same-uid
+    clients get exactly the §3.2 rules, mutations stay audit-chained,
+    and the authority is server-minted (clients present nothing).
+    """
+
+    def setUp(self):
+        import tempfile
+        from backend.package_pki import (PackageAuditChain, PkiDaemonService,
+                                         PkiKeyStore)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.socket_path = os.path.join(self.tmp.name, "pki.sock")
+        self.store = PkiKeyStore()
+        self.kp, self.sig = _sign()
+        self.store.enroll(self.kp.public_key, "acme",
+                          _confirmation(self.kp.fingerprint))
+        self.audit = PackageAuditChain()
+        self.service = PkiDaemonService(self.store, audit_chain=self.audit)
+        from backend.package_pki import PkiIpcServer
+        self.server = PkiIpcServer(self.service, self.socket_path)
+        self.server.start()
+
+    def tearDown(self):
+        self.server.stop()
+        self.tmp.cleanup()
+
+    def _client(self):
+        from backend.package_pki import PkiIpcClient
+        return PkiIpcClient(self.socket_path)
+
+    def test_read_path_over_the_socket(self):
+        client = self._client()
+        try:
+            self.assertEqual(client.call("status_for",
+                                         fingerprint=self.kp.fingerprint),
+                             "trusted")
+        finally:
+            client.close()
+
+    def test_key_material_reads_are_not_on_the_ipc_allowlist(self):
+        """§3.2 on the wire: verification runs in the daemon; an installed
+        package has no need (and no right) to export key material."""
+        from backend.package_pki import PkiError
+        client = self._client()
+        try:
+            for op in ("enrolled_public_key_for", "root_public_key_for"):
+                with self.assertRaises(PkiError):
+                    client.call(op, fingerprint=self.kp.fingerprint)
+        finally:
+            client.close()
+
+    def test_revoke_over_the_socket_lands_in_the_audit_chain(self):
+        client = self._client()
+        try:
+            client.call("revoke", fingerprint=self.kp.fingerprint,
+                        reason="compromise")
+            self.assertEqual(client.call("status_for",
+                                         fingerprint=self.kp.fingerprint),
+                             "revoked")
+        finally:
+            client.close()
+        ops = [e["op"] for e in self.audit.entries]
+        self.assertIn("pki_revoke", ops)
+
+    def test_unknown_op_refused(self):
+        from backend.package_pki import PkiError
+        client = self._client()
+        try:
+            with self.assertRaises(PkiError):
+                client.call("export_store")
+        finally:
+            client.close()
+
+    def test_private_method_refused(self):
+        from backend.package_pki import PkiError
+        client = self._client()
+        try:
+            with self.assertRaises(PkiError):
+                client.call("_check")
+        finally:
+            client.close()
+
+    def test_transport_does_not_widen_the_service(self):
+        """An op the service would refuse in-process is refused over the
+        wire too — same fail-closed semantics, no transport bypass."""
+        from backend.package_pki import PkiError
+        client = self._client()
+        try:
+            with self.assertRaises(PkiError):
+                client.call("no_such_method_at_all")
+        finally:
+            client.close()
+
+    def test_multiple_connections_speak_with_the_daemons_identity(self):
+        """Connections are wires, not identities: every connection speaks
+        with the one server-minted daemon authority, and no client ever
+        sees a token."""
+        c1, c2 = self._client(), self._client()
+        try:
+            self.assertEqual(c1.call("status_for",
+                                     fingerprint=self.kp.fingerprint),
+                             "trusted")
+            self.assertEqual(c2.call("status_for",
+                                     fingerprint=self.kp.fingerprint),
+                             "trusted")
+        finally:
+            c1.close()
+            c2.close()
+
+    def test_server_mints_exactly_one_authority_and_binds_it(self):
+        from backend.package_pki import DaemonAuthority
+        self.assertIsInstance(self.server.daemon_authority, DaemonAuthority)
+        self.assertTrue(
+            self.service._authority.authorizes(self.server.daemon_authority))
+
+
 if __name__ == "__main__":
     unittest.main()
