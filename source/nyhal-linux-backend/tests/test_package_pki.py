@@ -659,5 +659,112 @@ class TestRevocationTransport(unittest.TestCase):
         self.assertEqual(self._refresh()["outcome"], "applied")
 
 
+class TestDaemonAuthorityService(unittest.TestCase):
+    """NPS-028 §3.2 daemon-side half / SURFACE-PKI-0001: the store is
+    reachable only through the authority-guarded daemon service."""
+
+    def setUp(self):
+        from backend.package_pki import (PkiDaemonService, PkiKeyStore,
+                                         PackageAuditChain)
+        self.store = PkiKeyStore()
+        self.kp, self.sig = _sign()
+        self.store.enroll(self.kp.public_key, "acme",
+                          _confirmation(self.kp.fingerprint))
+        self.service = PkiDaemonService(self.store,
+                                        audit_chain=PackageAuditChain())
+
+    def _mint(self):
+        from backend.package_pki import DaemonAuthority
+        return DaemonAuthority.mint()
+
+    def test_direct_construction_refused(self):
+        """The token cannot be forged by calling the constructor."""
+        from backend.package_pki import DaemonAuthority, PkiError
+        with self.assertRaises(PkiError):
+            DaemonAuthority(b"x" * 32)
+        with self.assertRaises(PkiError):
+            DaemonAuthority()
+
+    def test_minted_tokens_are_distinct_and_recognized(self):
+        a, b = self._mint(), self._mint()
+        self.assertFalse(a.authorizes(b))
+        self.assertTrue(a.authorizes(a))
+
+    def test_no_authority_no_read(self):
+        from backend.package_pki import PkiError
+        with self.assertRaises(PkiError):
+            self.service.status_for(None, self.kp.fingerprint)
+        with self.assertRaises(PkiError):
+            self.service.status_for("guess", self.kp.fingerprint)
+
+    def test_no_authority_no_write(self):
+        from backend.package_pki import PkiError
+        stranger, _ = _sign()
+        with self.assertRaises(PkiError):
+            self.service.enroll(None, stranger.public_key, "evil",
+                                _confirmation(stranger.fingerprint))
+        self.assertIsNone(self.store.enrolled_public_key(
+            stranger.fingerprint))
+
+    def test_valid_authority_reads_and_writes(self):
+        authority = self._mint()
+        self.service.bind(authority)
+        self.assertEqual(
+            self.service.status_for(authority, self.kp.fingerprint),
+            "trusted")
+        self.assertIsNotNone(self.service.enrolled_public_key_for(
+            authority, self.kp.fingerprint))
+        record = self.service.revoke(authority, self.kp.fingerprint,
+                                     reason="compromise")
+        self.assertEqual(record["fingerprint"], self.kp.fingerprint)
+        self.assertEqual(self.service.status_for(
+            authority, self.kp.fingerprint), "revoked")
+
+    def test_bind_pins_the_service_to_one_authority(self):
+        from backend.package_pki import PkiError
+        authority = self._mint()
+        self.service.bind(authority)
+        with self.assertRaises(PkiError):
+            self.service.bind(self._mint())
+        # A different (itself valid) token is now refused too.
+        with self.assertRaises(PkiError):
+            self.service.status_for(self._mint(), self.kp.fingerprint)
+        self.assertEqual(
+            self.service.status_for(authority, self.kp.fingerprint),
+            "trusted")
+
+    def test_mutation_attempts_land_in_the_audit_chain(self):
+        authority = self._mint()
+        self.service.bind(authority)
+        self.service.revoke(authority, self.kp.fingerprint, "x")
+        ops = [e["op"] for e in self.service._audit.entries]
+        self.assertIn("pki_revoke", ops)
+
+    def test_service_exposes_no_store_or_enumeration(self):
+        """§3.2: an installed package must not read, write, or enumerate
+        the store — the service offers no path that returns it."""
+        forbidden = ["store", "keys", "entries", "list", "export",
+                     "snapshot", "dump", "get_store"]
+        methods = [m for m in dir(self.service) if not m.startswith("_")]
+        for name in methods:
+            self.assertNotIn(name, forbidden,
+                             f"service leaks {name!r}")
+
+    def test_revocation_list_through_the_service(self):
+        from backend.package_pki import RevocationList
+        from backend.package_signing import SigningKeypair
+        root = SigningKeypair.generate()
+        self.store.add_root_anchor(root.public_key, "root-1")
+        rvl = RevocationList(sequence=1, generated_at=1.0, entries=[
+            {"fingerprint": self.kp.fingerprint, "reason": "compromise"}])
+        rvl.sign_with_root(root.fingerprint, root.private_key)
+        authority = self._mint()
+        self.service.bind(authority)
+        self.assertEqual(
+            self.service.apply_revocation_list(authority, rvl), 1)
+        self.assertEqual(self.service.status_for(
+            authority, self.kp.fingerprint), "revoked")
+
+
 if __name__ == "__main__":
     unittest.main()

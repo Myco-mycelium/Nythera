@@ -1,7 +1,7 @@
 ---
 title: Package PKI Implementation Surface
 document_id: NPS-028
-version: 0.5.0
+version: 0.6.0
 status: Draft
 classification: Normative
 subsystem: security
@@ -61,11 +61,14 @@ salt in the header line, and tamper/reorder/removal-evident on
 `FileRevocationFetcher` plus `refresh_revocations`: the channel is
 configured independently of any package-feed object — feed compromise
 cannot suppress revocation delivery — and a fetch failure, replay, or
-unauthentic list leaves the store untouched). 51 tests. Still to
-build, each a named increment: §3.2's daemon-side half (the store
-living behind the daemon's IPC so
-package code never reaches the file at all — a deployment property
-this layer documents and the daemon must complete), and the §5.3
+unauthentic list leaves the store untouched). 51 tests), and §3.2's daemon-side API half (`DaemonAuthority` +
+`PkiDaemonService`: the store's only supported interface, guarded by
+an unforgeable authority token the daemon mints — package code can
+present no authority, the service exposes no enumeration, and every
+mutation is audit-chained; 60 tests total). Still to
+build, each a named increment: §3.2's physical IPC transport (the
+daemon integration exposing the service across the process boundary
+so package code never reaches the file at all), and the §5.3
 stale-list
 bounds (deferred to implementation validation by design). This
 document enumerates the components the remaining implementation must
@@ -127,9 +130,15 @@ to read, write, or enumerate the store; verification runs in the
 daemon's authority, not the container's (the NPS-022 §4 lesson:
 capability enforcement must not live where the attacker's code runs).
 (Store-layer enforcement landed 2026-09-22: stores are written 0600
-atomically and loads refuse group/world-readable stores fail-closed;
-the container-side half — hosting the store behind the daemon's IPC —
-remains the daemon integration's responsibility.)
+atomically and loads refuse group/world-readable stores fail-closed.
+The API half of the container-side rule landed the same day:
+`PkiDaemonService` is the store's only supported interface — every
+read and write demands a `DaemonAuthority` token that only the daemon
+can mint (unforgeable constructor, OS-RNG secret) and fails closed
+without one, the service exposes no method that returns the store or
+enumerates entries, and mutations land in the §7 audit chain. What
+remains for daemon integration is the physical IPC transport exposing
+this service across the process boundary.)
 
 3.3. Key store entries **MUST** record: publisher identity, key
 fingerprint, enrollment source, enrollment timestamp, expiry date, and
@@ -284,6 +293,7 @@ moment implementation begins.
 | 0.3.0   | 2026-09-22 | §3.4 custody LANDED: `save_locked`/`load_locked` — ADR-0023 envelope encryption at rest (random per-file DEK AEAD-encrypts the canonical store; DEK wrapped by the Argon2id-derived KEK, which is never persisted in plaintext; AEAD contexts bind the format's magic so payloads cannot relocate between files or formats; crate custody when the keys crate is present, the documented floor otherwise; fail-closed — no secret, no custody file, and plaintext persistence demoted to the explicitly marked dev/test path). 6 custody tests (32 total). Remaining: §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
 | 0.4.0   | 2026-09-22 | §3.2 store-layer authority enforcement LANDED: every store write goes through a 0600 atomic temp-rename (no world-readable intermediate ever exists) and every load refuses a group/world-readable store fail-closed, naming §3.2 and the fix. 4 authority tests (36 total). Remaining: §3.2's daemon-side half (host the store behind the daemon's IPC), §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
 | 0.5.0   | 2026-09-22 | §7 ADR-0018 wiring + §5.1 transport LANDED: `PackageAuditChain` (the scheme-2 chain over package events, byte-identical to ContainerManager's construction and differentially pinned against it; §7.1 records carry package_id/version/verdict/reason/fingerprint/publisher/stages; salt-per-process with the salt persisted in the JSONL header so loaded chains re-verify; tamper/reorder/removal evidence via `verify()`; `make_sink` attaches it to the pipeline under §7.2's never-changes-a-verdict rule) and `RevocationFetcher`/`FileRevocationFetcher`/`refresh_revocations` (the §5.1 channel is configured independently of the package feed; fetch failure, replay, or unauthentic list leaves the store untouched; the store now persists its §5.2 `revocation_sequence` so monotonicity survives restarts). 15 new tests (51 total). Remaining: §3.2's daemon-side half, §5.3 bounds |
+| 0.6.0   | 2026-09-22 | §3.2's daemon-side API half LANDED (SURFACE-PKI-0001's first build): `DaemonAuthority` (unforgeable — direct construction raises, `mint()` is the daemon's only entry, OS-RNG secret, instances compare by secret) and `PkiDaemonService` (the store's ONLY supported interface: every read/write demands a valid — and once `bind()`ed, matching — authority and fails closed without one; no method returns the store, the key material, or an enumeration; enroll/rotate/revoke/apply-revocation-list mutations land in the §7 audit chain). §3.2's remaining piece is the physical IPC transport at daemon integration. 9 new tests (60 total). Remaining: §3.2's IPC transport, §5.3 bounds |
 
 ---
 **End of Document**
