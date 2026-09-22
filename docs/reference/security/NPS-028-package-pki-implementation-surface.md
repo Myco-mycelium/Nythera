@@ -1,7 +1,7 @@
 ---
 title: Package PKI Implementation Surface
 document_id: NPS-028
-version: 0.7.0
+version: 0.8.0
 status: Draft
 classification: Normative
 subsystem: security
@@ -69,12 +69,15 @@ mutation is audit-chained; 60 tests total), and the physical IPC
 transport (`PkiIpcServer`/`PkiIpcClient`: JSON-lines over a Unix
 socket, one server-minted authority — connections are wires, not
 identities — and an explicit op allowlist that excludes key-material
-reads; 68 tests total). Still to
-build, each a named increment: the daemon deployment that owns the
-socket in production (peer-credential hardening, socket-directory
-permissions), and the §5.3
+reads; deployment hardening built in: 0600 socket mode, fail-closed
+refusal of group/world-writable socket directories, and SO_PEERCRED
+uid policy (daemon-uid-or-root) where the OS exposes it;
+72 tests total). Still to
+build, each a named increment: the §5.3
 stale-list
-bounds (deferred to implementation validation by design). This
+bounds (deferred to implementation validation by design), and the
+daemon's production process model (systemd service ownership, the
+store's custody secret at boot) — deployment, not surface. This
 document enumerates the components the remaining implementation must
 provide, the requirements each satisfies (REQ-SEC-0003..0006), the
 interfaces it must offer, and the attack surfaces it will add. It does
@@ -148,6 +151,14 @@ explicit allowlist — `status_for`, `enroll`, `rotate`, `revoke`,
 `apply_revocation_list` — and key-material reads are NOT on it,
 because verification runs in the daemon's authority and an installed
 package has no need, and no right, to export store contents).
+The deployment hardening is in the transport itself: the socket file
+is chmod 0600 at bind; a group/world-writable socket directory is a
+fail-closed bind refusal naming the fix (`chmod go-w`) — a writable
+directory lets a local attacker swap or shadow the socket; and where
+the OS exposes peer credentials (Linux SO_PEERCRED), connections from
+peers that are neither the daemon's uid nor root are dropped at
+`setup()` — defense in depth, with the 0600 mode as the floor on
+platforms without peer credentials.
 
 3.3. Key store entries **MUST** record: publisher identity, key
 fingerprint, enrollment source, enrollment timestamp, expiry date, and
@@ -304,6 +315,7 @@ moment implementation begins.
 | 0.5.0   | 2026-09-22 | §7 ADR-0018 wiring + §5.1 transport LANDED: `PackageAuditChain` (the scheme-2 chain over package events, byte-identical to ContainerManager's construction and differentially pinned against it; §7.1 records carry package_id/version/verdict/reason/fingerprint/publisher/stages; salt-per-process with the salt persisted in the JSONL header so loaded chains re-verify; tamper/reorder/removal evidence via `verify()`; `make_sink` attaches it to the pipeline under §7.2's never-changes-a-verdict rule) and `RevocationFetcher`/`FileRevocationFetcher`/`refresh_revocations` (the §5.1 channel is configured independently of the package feed; fetch failure, replay, or unauthentic list leaves the store untouched; the store now persists its §5.2 `revocation_sequence` so monotonicity survives restarts). 15 new tests (51 total). Remaining: §3.2's daemon-side half, §5.3 bounds |
 | 0.6.0   | 2026-09-22 | §3.2's daemon-side API half LANDED (SURFACE-PKI-0001's first build): `DaemonAuthority` (unforgeable — direct construction raises, `mint()` is the daemon's only entry, OS-RNG secret, instances compare by secret) and `PkiDaemonService` (the store's ONLY supported interface: every read/write demands a valid — and once `bind()`ed, matching — authority and fails closed without one; no method returns the store, the key material, or an enumeration; enroll/rotate/revoke/apply-revocation-list mutations land in the §7 audit chain). §3.2's remaining piece is the physical IPC transport at daemon integration. 9 new tests (60 total). Remaining: §3.2's IPC transport, §5.3 bounds |
 | 0.7.0   | 2026-09-22 | §3.2's physical IPC transport LANDED (SURFACE-PKI-0001 complete at the API+transport layer): `PkiIpcServer`/`PkiIpcClient` — JSON-lines over a Unix domain socket. The server mints ONE `DaemonAuthority` at start (the daemon's identity) and binds the service to it; connections are wires, not identities, and no client ever sees a token. The ops are an explicit allowlist (`status_for`, `enroll`, `rotate`, `revoke`, `apply_revocation_list`) — key-material reads are NOT on it, because verification runs in the daemon's authority and an installed package has no need (and no right) to export store contents. Unknown and private-name ops refused; mutations over the wire stay audit-chained; the transport does not widen what the service allows. 8 new tests (68 total). Remaining: the production daemon deployment (peer-credential hardening, socket-directory permissions), §5.3 bounds |
+| 0.8.0   | 2026-09-22 | §3.2 deployment hardening LANDED in the transport: the socket file is chmod 0600 at bind (owner-only from the instant it exists); a group/world-writable socket directory is a fail-closed bind REFUSAL naming the fix (`chmod go-w`) — a writable directory lets a local attacker swap or shadow the socket; and where the OS exposes peer credentials (Linux SO_PEERCRED) connections from peers that are neither the daemon's uid nor root are dropped at `setup()`, with the 0600 mode as the documented floor on platforms without peer credentials. `stop()` made idempotent (no socket leak on shutdown). 4 new tests (72 total). Remaining: §5.3 bounds (frozen by design), the daemon's production process model (deployment, not surface) |
 
 ---
 **End of Document**

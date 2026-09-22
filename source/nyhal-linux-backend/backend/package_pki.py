@@ -940,17 +940,40 @@ class PkiIpcServer:
         return result
 
     def __init__(self, service: PkiDaemonService, socket_path: str) -> None:
+        import os
         import socketserver
         self._service = service
         self._socket_path = socket_path
         self._sock: Optional[object] = None
         self._thread = None
+        self._daemon_uid = os.geteuid()
         self.daemon_authority = DaemonAuthority.mint()
         if service._authority is None:
             service.bind(self.daemon_authority)
         outer = self
 
         class Handler(socketserver.StreamRequestHandler):
+            def setup(self) -> None:
+                super().setup()
+                # SO_PEERCRED (Linux): drop connections from peers that
+                # are neither the daemon's own uid nor root. On platforms
+                # without peer credentials the 0600 socket mode is the
+                # floor — defense in depth, not a single gate.
+                import socket as _socket
+                import struct
+                soc = getattr(_socket, "SO_PEERCRED", None)
+                if soc is None:
+                    return
+                try:
+                    size = struct.calcsize("3i")
+                    _pid, uid, _gid = struct.unpack(
+                        "3i", self.request.getsockopt(
+                            _socket.SOL_SOCKET, soc, size))
+                except OSError:
+                    return
+                if not outer._peer_uid_allowed(uid, outer._daemon_uid):
+                    self.close()
+
             def handle(self) -> None:
                 authority = outer.daemon_authority
                 for line in self.rfile:
@@ -980,15 +1003,35 @@ class PkiIpcServer:
 
         self._handler = Handler
 
+    @staticmethod
+    def _peer_uid_allowed(uid: int, daemon_uid: int) -> bool:
+        """The peer policy: the daemon itself, or root — nobody else."""
+        return uid == daemon_uid or uid == 0
+
     def start(self) -> None:
         import os
         import socketserver
         import threading
+
+        # §3.2 fail-closed on the bind location: a group/world-writable
+        # socket directory lets a local attacker swap or shadow the
+        # socket. Refuse to bind; name the fix.
+        socket_dir = os.path.dirname(os.path.abspath(self._socket_path))
+        import stat
+        dir_mode = os.stat(socket_dir).st_mode
+        if dir_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise PkiError(
+                f"socket directory {socket_dir!r} is group/world-writable "
+                "(§3.2) — refusing to bind; fix with chmod go-w")
+
         if os.path.exists(self._socket_path):
             os.unlink(self._socket_path)
         server = socketserver.ThreadingUnixStreamServer(
             self._socket_path, self._handler)
         server.daemon_threads = True
+        # The socket file itself is owner-only: a foreign-uid process on
+        # this machine cannot even attempt a connection.
+        os.chmod(self._socket_path, 0o600)
         self._server = server
         self._thread = threading.Thread(target=server.serve_forever,
                                         daemon=True)
@@ -996,8 +1039,12 @@ class PkiIpcServer:
 
     def stop(self) -> None:
         import os
-        self._server.shutdown()
-        self._server.server_close()
+        server = getattr(self, "_server", None)
+        if server is None:
+            return
+        if self._thread is not None and self._thread.is_alive():
+            server.shutdown()
+        server.server_close()
         if os.path.exists(self._socket_path):
             os.unlink(self._socket_path)
 

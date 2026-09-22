@@ -883,6 +883,42 @@ class TestPkiIpcTransport(unittest.TestCase):
         self.assertTrue(
             self.service._authority.authorizes(self.server.daemon_authority))
 
+    def test_socket_file_is_owner_only(self):
+        self.assertEqual(os.stat(self.socket_path).st_mode & 0o777, 0o600)
+
+    def test_group_writable_socket_dir_refused_fail_closed(self):
+        """§3.2 on the bind location: a group/world-writable directory
+        lets a local attacker swap or shadow the socket — refuse to
+        bind, naming the fix."""
+        import tempfile
+        import stat as _stat
+        from backend.package_pki import PkiError, PkiIpcServer
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, _stat.S_IRWXU | _stat.S_IWGRP | _stat.S_IXGRP
+                     | _stat.S_IXOTH)
+            try:
+                bad = PkiIpcServer(self.service,
+                                   os.path.join(tmp, "pki.sock"))
+                with self.assertRaises(PkiError) as caught:
+                    bad.start()
+                self.assertIn("chmod go-w", str(caught.exception))
+            finally:
+                os.chmod(tmp, _stat.S_IRWXU | _stat.S_IXOTH)
+
+    def test_peer_uid_policy(self):
+        from backend.package_pki import PkiIpcServer
+        daemon_uid = os.geteuid()
+        self.assertTrue(
+            PkiIpcServer._peer_uid_allowed(daemon_uid, daemon_uid))
+        self.assertTrue(PkiIpcServer._peer_uid_allowed(0, daemon_uid))
+        self.assertFalse(
+            PkiIpcServer._peer_uid_allowed(daemon_uid + 1, daemon_uid))
+
+    def test_stop_is_idempotent_and_never_leaks_the_socket(self):
+        self.server.stop()
+        self.server.stop()
+        self.assertFalse(os.path.exists(self.socket_path))
+
 
 if __name__ == "__main__":
     unittest.main()
