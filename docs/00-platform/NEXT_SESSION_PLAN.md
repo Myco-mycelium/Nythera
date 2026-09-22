@@ -13,17 +13,26 @@ within grace, and the check itself found a gap that is now closed.**
 The workflow is `active` on the default branch with **zero runs of any
 event** (API, `event=schedule` and unfiltered both queried); due
 05:52, now 2 h 10 m past — inside the 8 h window Monday's data set
-(delays up to 5 h 49 m). Consistent with another scheduler-wide
-backlog: today's amd64 fire (due 03:00) had also not landed by 08:02.
+(delays up to 5 h 49 m). Consistent with another scheduler-widebacklog. The two weekly ISO crons and the PAT watcher still show
+Monday's verified successes. **Re-check after 13:52 UTC and record the
+final verdict here — a no-show by then is a real finding** (recovery:
+workflow_dispatch, currently gated on the PAT Actions-write grant —
+the drill was re-executed 08:15 UTC and failed exactly as documented:
+HTTP 403, "Resource not accessible by personal access token").
 Re-checked at 08:24, 08:33, 08:45, 08:55 and 09:04 UTC — still zero
-runs; amd64's own grace deadline is 11:00 UTC, the watcher's is
-13:52 UTC. The two weekly ISO crons and the PAT watcher still show
-Monday's verified successes.
-**Re-check after 13:52 UTC and record the final verdict here — a
-no-show by then is a real finding** (recovery: workflow_dispatch,
-currently gated on the PAT Actions-write grant — the drill was
-re-executed 08:15 UTC and failed exactly as documented: HTTP 403,
-"Resource not accessible by personal access token").
+runs; the watcher's grace deadline is 13:52 UTC.
+
+**Correction (recorded 09:15 UTC, same day):** an earlier interim note
+here and in the 09:08 hygiene entry called the amd64 cron "due 03:00
+today" with an "11:00 UTC deadline" — wrong. `0 3 * * 1` is a MONDAY
+cron and Monday's fire already passed verification; nothing weekly is
+due today. The schedules actually due today are the two DAILY
+watchers — pat-expiry-watch (05:37) and scheduled-runs-watch (05:52)
+— and BOTH were unfired as of 09:04 UTC. That is the evidence for the
+scheduler-wide-backlog hypothesis (weaker than Monday's three-schedule
+consistency, but real: one of the two missing schedules is the very
+workflow whose absence is under judgment). The PAT watcher's last
+successful fire remains Monday 11:01:33 UTC.
 
 **The gap the interim check exposed (closed same day):**
 `check_scheduled_runs.sh` never watched `scheduled-runs-watch.yml`
