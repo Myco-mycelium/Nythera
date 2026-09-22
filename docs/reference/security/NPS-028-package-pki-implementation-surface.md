@@ -41,13 +41,16 @@ It is a `Draft` **by dependency, not by deficiency**: its normative
 anchors (NPS-026 §6.3, NPS-027) are Accepted, but no implementation
 exists to validate section numbering, interface shapes, or the REQ
 coverage table against. Like NPS-026, it exits Draft on implementation
-validation (NPC-002 §5.1/§5.2), and the concrete cryptographic scheme
-remains **reserved per NPC-002 §6.2** for dedicated human expert review
-— nothing in this document chooses algorithms, key sizes, or formats.
-The propose-side review package for that scheme is drafted at
+validation (NPC-002 §5.1/§5.2). The concrete cryptographic scheme was
+**reserved per NPC-002 §6.2** until the dedicated human review
+concluded 2026-09-22 (AG decision log D4): the decided scheme is now
+normative in NPS-026 §6.7 — this document's §2 fence narrows to the
+one deferral §6.7.3 makes (the canonical byte form, pending NPS-026
+§9). The
+propose-side review package remains at
 `docs/00-platform/AG_BRIEF_NPS026_CRYPTO_SCHEME.md` (grounded in the
-shipped Ed25519 implementation; the review, not this document,
-disposes it).
+shipped Ed25519 implementation; its tree claims were re-verified the
+day of the review).
 
 ## 2. Scope
 
@@ -67,7 +70,9 @@ Out of scope, explicitly: the package manager's dependency resolution,
 download, and transaction semantics (NPS-026 §10–§12's other halves, to
 be specified by that document's implementation pass); the `.nygi`
 image-format verification path beyond the signature stage (NPS-006 §6);
-and any concrete cryptographic primitive (NPC-002 §6.2 reserve).
+and any concrete cryptographic primitive except what NPS-026 §6.7
+freezes (§6.7.1 primitives, §6.7.2 fingerprint); the §6.7.3 canonical
+byte form remains open until NPS-026 §9 decides serialization.
 
 ## 3. The Key Store
 
@@ -90,7 +95,11 @@ capability enforcement must not live where the attacker's code runs).
 fingerprint, enrollment source, enrollment timestamp, expiry date, and
 current status (`trusted` / `expired` / `revoked`). The fingerprint is
 the identity used in the audit trail (§7) and the enrollment UI (§6) —
-one spelling everywhere.
+one spelling everywhere: **SHA-256(public key), displayed in full as
+64 lowercase hex characters** per NPS-026 §6.7.2 (enrollment
+confirmations and audit records show the full digest, never a
+truncation; the shipped 8-byte `key_id` is a legacy form migrating
+with a version marker).
 
 3.4. **Custody.** The store's own integrity **MUST** be protected
 equivalently to the vault key manager's custody model (ADR-0023:

@@ -388,6 +388,29 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="crypto-scheme-decided",
+        pattern=r"decision log D4",
+        description="AG decision D4 (2026-09-22): the concrete crypto scheme is accepted and normative in NPS-026 §6.7",
+        check="path_contains",
+        check_args={
+            "needle": "6.7.1.",
+            "files": ["docs/reference/package-format/NPS-026-package-format.md"],
+        },
+    ),
+    Claim(
+        claim_id="fingerprint-decided-64hex",
+        pattern=r"full 64 lowercase hex|64 lowercase hex",
+        description="The D4 review decided the fingerprint display form: SHA-256(public key), full 64 lowercase hex (NPS-026 §6.7.2 == NPS-028 §3.3)",
+        check="path_contains",
+        check_args={
+            "needle": "64 lowercase hex",
+            "files": [
+                "docs/reference/package-format/NPS-026-package-format.md",
+                "docs/reference/security/NPS-028-package-pki-implementation-surface.md",
+            ],
+        },
+    ),
+    Claim(
         claim_id="package-signing-shipped",
         pattern=r"signing half (already )?ships",
         description="NPS-028/REPOSITORY_STATE record the shipped Ed25519 signing half (package_signing.py)",

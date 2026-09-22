@@ -2,7 +2,7 @@
 title: AG Review Input — NPS-026 §6.3 Concrete Crypto Scheme (the NPC-002 §6.2 package)
 document_id: AG-BRIEF-2026-09-CRYPTO
 version: 1.0.0
-status: Proposal — suggest-side review input for the dedicated human crypto review (NPC-002 §6.2); not a decision
+status: Disposed — ACCEPTED by the dedicated human review 2026-09-22 (AG decision log D4); scheme text landed as NPS-026 v1.3.0 §6.7 the same day, with G1's display form amended to the full 64-hex fingerprint and G3's canonicalization deferred to NPS-026 §9
 owners: [Nyrqis Architecture]
 created: 2026-09-21
 ai_assisted: true

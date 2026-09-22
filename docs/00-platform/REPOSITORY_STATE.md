@@ -127,8 +127,19 @@ decided mechanism (AG decision log D3 — bundled platform root set,
 protected-confirmation enrollment, revocation inputs + expiry, the
 advisory/block propagation split, cross-signature rotation), closing
 `REQ-SEC-0004`; the concrete crypto scheme stays reserved per
-NPC-002 §6.2
-- [x] NPS-028 Package PKI Implementation Surface — Draft (2026-09-21, the NPS-027 residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, SURFACE-PKI-0001..0004; exits Draft on implementation validation, crypto reserved per NPC-002 §6.2)
+NPC-002 §6.2. **v1.3.0 (2026-09-22)**: §6.7 (new) — the NPC-002 §6.2
+reserve concluded (AG decision log D4, the dedicated human review sat
+with the brief's tree claims re-verified): primitives per role
+(Ed25519 + SHA-256; root-set-signed revocation lists; ADR-0023
+envelope encryption for the key store; image-anchored root set;
+RSA/ECDSA/novel constructions explicitly rejected), the key
+fingerprint decided as SHA-256(public key) displayed in FULL 64
+lowercase hex (the shipped 8-byte `key_id` migrates with a version
+marker), the canonical serialization explicitly deferred to §9,
+quorum confirmed (single-root MUST verify, any-root MAY sign), and
+the frozen/deferred parameter split recorded; §6.3.6 re-points at
+§6.7. REQ-SEC-0003's implementation gate opens
+- [x] NPS-028 Package PKI Implementation Surface — Draft (2026-09-21, the NPS-027 residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, SURFACE-PKI-0001..0004; exits Draft on implementation validation; the scheme is decided — NPS-026 v1.3.0 §6.7, D4 — and this document's fence narrows to the §6.7.3 canonical-serialization deferral)
 - [x] NPS-027 Package Trust Model — **Accepted** (2026-09-21; Threat Model Phase 7, 2026-08-12, completing Milestone 12; disposition of FIND-PACKAGE-001 plus 4 new findings closed via NPS-006 §6 amendment and REQ-SEC-0003..0006). **Review REGISTERED 2026-09-20, DECIDED ACCEPTED 2026-09-21 (decision log D2)** — second standing item on `AG_AGENDA.md` v1.3.0 for the next session; the spec existed since 2026-08-12 but was never scheduled (the next-actions audit found items 18/20 still calling for what it already is); acceptance closes the planned threat-model phase list and unblocks item 18's PKI-implementation residual; **the routed FIND-PACKAGE-003 key-trust design was decided the same day (D3 — the ADR-0014 mirror)**, landing as NPS-026 v1.2.0 §6.3 and closing REQ-SEC-0004
 
 ## Requirements Database
@@ -163,8 +174,9 @@ Draft: [`NPS-028`](../reference/security/NPS-028-package-pki-implementation-surf
 NPS-026 §6.3): key store, verification pipeline, revocation
 distribution, enrollment flow, audit trail, and the four new attack
 surfaces (SURFACE-PKI-0001..0004) enumerated for the threat model's
-next pass. The concrete crypto scheme stays reserved per NPC-002 §6.2;
-the document exits Draft on implementation validation.
+next pass. The concrete crypto scheme was decided 2026-09-22 (AG
+decision log D4) and is normative in NPS-026 v1.3.0 §6.7; the document
+exits Draft on implementation validation.
 
 **The signing half already ships** (found while drafting the crypto
 review package, 2026-09-21): Ed25519 package/delta signatures and a
@@ -173,9 +185,12 @@ signed repository index (`backend/package_signing.py`,
 fail-closed with no stub fallback). What does not exist is the trust
 machinery: key store, enrollment, revocation, root set. The propose-
 side review package for the §6.2-reserved scheme is at
-`AG_BRIEF_NPS026_CRYPTO_SCHEME.md` — a registered standing item on
-`AG_AGENDA.md`; the dedicated human review it requires is the owner's
-to convene.
+`AG_BRIEF_NPS026_CRYPTO_SCHEME.md` — reviewed and **ACCEPTED**
+2026-09-22 (AG decision log D4: scheme accepted, G1's fingerprint
+adopted with the display form amended to full 64-hex, G3's
+canonicalization deferred to §9, G4's quorum confirmed); the scheme
+text landed as NPS-026 v1.3.0 §6.7 the same day and the §6.2 reserve
+is removed.
 
 ## Object Registry
 Draft: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md)

@@ -28,4 +28,9 @@ package trust model (Phase 7 + NPS-026 §6.3) is drafted as
 verification pipeline, revocation channel, enrollment flow, audit
 trail, and the `SURFACE-PKI-0001..0004` entries the next threat-model
 pass will analyze. It is not a phase document; it is the build
-checklist the phases left as their residual.
+checklist the phases left as their residual. The concrete crypto
+scheme that implementation will use was decided 2026-09-22 — the
+NPC-002 §6.2-reserved dedicated human review concluded (AG decision
+log D4) and landed as NPS-026 v1.3.0 §6.7 (Ed25519 + SHA-256; the
+key fingerprint is SHA-256(public key), displayed in full 64 lowercase
+hex).

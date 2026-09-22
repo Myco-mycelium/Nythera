@@ -131,7 +131,7 @@ change process.
 
 | ID | Title | Status |
 |----|-------|--------|
-| NPS-026 | Nyrqis Package Format (.nypkg) | Draft (v1.2.0: §6.3 key-trust mechanism decided 2026-09-21 — AG decision log D3) |
+| NPS-026 | Nyrqis Package Format (.nypkg) | Draft (v1.3.0: §6.7 concrete crypto scheme decided 2026-09-22 — AG decision log D4; §6.3 key-trust mechanism decided 2026-09-21 — D3) |
 | NPS-027 | Package Trust Model | Accepted (2026-09-21 — AG decision log D2) |
 | NPS-028 | Package PKI Implementation Surface | Draft (2026-09-21 — the implementation surface for the accepted trust model; exits Draft on implementation validation) |
 
@@ -167,6 +167,7 @@ change process.
 | 1.23.0  | 2026-09-20 | ADR-0018 status cell corrected to Accepted — the 2026-09-19 review reconciliation ("status reconciled to Accepted everywhere") missed this table and the adr/README.md listing; caught by the docs premise audit |
 | 1.24.0  | 2026-09-20 | NPS-010 status cell corrected from Draft to Accepted — its frontmatter flipped in the sanctioned 2026-09-19 AG decision package (commit 4713c8f) but this table was not updated; caught by the frontmatter-vs-index status sweep |
 | 1.25.0  | 2026-09-21 | AG standing items decided: NPS-027 **Accepted** (D2 — the planned threat-model phase list closes); NPS-026 v1.2.0 records the decided §6.3 publisher key-trust mechanism (D3 — the ADR-0014 mirror), closing REQ-SEC-0004; ADR-0009's dynamic-shares follow-on decided static-default-retained (D1) |
+| 1.27.0  | 2026-09-22 | The NPC-002 §6.2-reserved concrete crypto review concluded (D4 — scheme ACCEPTED): NPS-026 v1.3.0 lands §6.7 (primitives per role, the SHA-256/full-64-hex fingerprint, G3 deferred to §9, quorum confirmed, freeze/defer split recorded); NPS-028's fence narrows to the §6.7.3 deferral; REQ-SEC-0003's implementation gate opens |
 | 1.26.0  | 2026-09-21 | Add NPS-028 (Package PKI Implementation Surface, Draft) — the key store, verification pipeline, revocation channel, enrollment flow, and audit trail the accepted NPS-027/NPS-026 §6.3 trust model needs built; also reconciles this table's NPS-010 cell which still read Draft after its sanctioned 2026-09-19 acceptance |
 
 ---

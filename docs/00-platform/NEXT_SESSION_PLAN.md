@@ -27,12 +27,18 @@ become 204, and `PAT_EXPIRES_AT` should be set (the pat-expiry-watch
 run may then honestly go red if the new expiry is ≤7 days out — set a
 fresh date when rotating).
 
-**Also queued behind the human calendar:** the NPC-002 §6.2 crypto
-review (`AG_BRIEF_NPS026_CRYPTO_SCHEME.md` v1.0.0) is registered and
-review-ready; its tree claims were re-verified 2026-09-22 (G1's
-`[:8].hex()` key_id, the 10/16/11 test counts, the fail-closed
-posture, the corrected NPS-028 fence, the reserved note intact in
-NPS-026) — the dedicated human review is the owner's to convene.
+**Decided 2026-09-22 (D4) — no longer queued:** the NPC-002 §6.2
+crypto review sat with the repo operator (per the D1–D3 precedent)
+working from the verified brief, and ACCEPTED the scheme: primitives
+as proposed (Ed25519 + SHA-256 per role, RSA/ECDSA/novel constructions
+rejected), G1 adopted with the display form amended to the FULL
+64-hex SHA-256 fingerprint (no truncation anywhere), G3's
+canonicalization deferred to §9, G4's quorum confirmed (single-root
+MUST verify, any-root MAY sign), freeze/defer split adopted. Landed as
+NPS-026 v1.3.0 §6.7 the same day; §6.3.6 re-points at §6.7; NPS-028's
+fence narrows to the §6.7.3 deferral; REQ-SEC-0003's implementation
+gate opens. NPS-026's remaining gate to `Accepted` is implementation
+validation only.
 
 ## STANDING ITEM — CLOSED — Tue 2026-09-22 05:52 UTC: scheduled-runs-watch's FIRST FIRE
 

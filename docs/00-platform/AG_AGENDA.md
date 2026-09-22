@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.5.0
-status: Disposed — decisions recorded 2026-09-19 and 2026-09-21 (see the decision log); all three standing items decided 2026-09-21 (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted) — no standing items remain
+version: 1.6.0
+status: Disposed — decisions recorded 2026-09-19, 2026-09-21 and 2026-09-22 (see the decision log); all registered standing items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7) — no standing items remain
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -204,26 +204,29 @@ the tree.
 | D1 dynamic shares as the default | Static default retained, dynamic opt-in normative (Option A per the pre-read) — nothing remains open in the rate-limiting space | Architecture Group (decision input: repo operator via recorded session) | 2026-09-21 |
 | D2 NPS-027 Package Trust Model | **Accepted** (Option A per the pre-read) — closes the planned threat-model phase list formally; FIND-PACKAGE-003's design decision owned by NPS-026's review and exercised the same day (D3) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-21 |
 | D3 publisher key trust (REQ-SEC-0004) | The full ADR-0014 mirror adopted (Option A per the pre-read): bundled platform root set, protected-confirmation enrollment, revocation via platform list + expiry with the advisory/block propagation split (advisory at launch, hard block at install/update/verify), cross-signature rotation; concrete crypto scheme stays reserved per NPC-002 §6.2. Draft §6.3 amendment text reviewed and landed as NPS-026 v1.2.0 §6.3 the same day | Architecture Group (decision input: repo operator via recorded session) | 2026-09-21 |
+| D4 concrete crypto scheme (the NPC-002 §6.2 reserve) | **Accepted** — the dedicated human review sat 2026-09-22 (decision input: repo operator, working from `AG_BRIEF_NPS026_CRYPTO_SCHEME.md` with its tree claims re-verified that day) and decided: primitives per role as proposed (Ed25519 + SHA-256; root-set-signed revocation lists; ADR-0023 envelope encryption for the key store; image-anchored root set; RSA/ECDSA/novel constructions explicitly rejected); **G1 adopted with the display form amended — fingerprint = SHA-256(public key) displayed in FULL 64 lowercase hex** (no truncation anywhere; the shipped 8-byte `key_id` migrates with a version marker); **G3 deferred to NPS-026 §9** (canonical byte form stays implementation-local until serialization is decided; no interoperability claims until frozen); **G4 confirmed** (single-root MUST-verify for revocation authenticity, any-root quorum MAY sign); the freeze/defer split adopted (freeze: primitive set, fingerprint, fail-closed posture, one-pipeline rule; defer: list cadence, root membership, rotation cadence, serialization). Scheme text landed as NPS-026 v1.3.0 §6.7 the same day; §6.3.6 re-points at §6.7; NPS-028's fence narrows to the §6.7.3 deferral; REQ-SEC-0003's implementation gate opens | Architecture Group (decision input: repo operator via recorded session) | 2026-09-22 |
 
 ---
 
 ## Standing items
 
-**Registered 2026-09-21 (after the D1/D2/D3 session):**
+**Registered 2026-09-21 (after the D1/D2/D3 session) — DECIDED 2026-09-22 (D4):**
 
 - **NPS-026 §6.2 — the concrete crypto-scheme review (review input
-  READY).** The propose-side package is at
+  READY → review CONCLUDED, scheme ACCEPTED).** The propose-side
+  package is at
   `AG_BRIEF_NPS026_CRYPTO_SCHEME.md` (v1.0.0): Ed25519 + SHA-256 per
   role, grounded in the Ed25519 signing half that already ships
   (`package_signing.py`/`update_signing.py`/`package_repo.py`, 37
   tests), with four recorded gaps (G1 fingerprint definition being the
   real decision) and an explicit freeze/defer split. NPC-002 §6.2
-  requires **dedicated human expert review** — this is that review's
-  input, not its outcome. On a positive review the scheme text lands
-  as an NPS-026 v1.3.0 amendment (§6.7) with the reserve removed;
-  a negative review returns objections to the brief, not the trust
-  model. NPS-026's path to `Accepted` waits on this review's
-  conclusion.
+  required **dedicated human expert review** — that review sat
+  2026-09-22 (repo operator via recorded session, tree claims
+  re-verified before it sat) and decided per decision-log row D4:
+  scheme accepted, G1 adopted with full-64-hex display, G3 deferred to
+  §9, G4 confirmed. Landed as NPS-026 v1.3.0 §6.7 the same day; the
+  reserve is removed and NPS-026's remaining gate to `Accepted` is
+  implementation validation only.
 
 **Decided 2026-09-21 — the session that worked from the registered list below:**
 

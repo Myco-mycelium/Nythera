@@ -1,14 +1,14 @@
 ---
 title: Nyrqis Package Format (.nypkg)
 document_id: NPS-026
-version: 1.2.0
+version: 1.3.0
 status: Draft
 classification: Normative
 subsystem: storage
 owners:
   - Nyrqis Architecture
 created: 2026-08-12
-updated: 2026-09-21
+updated: 2026-09-22
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NTM-000, NPC-001, ADR-0004, NPS-004, NPS-005, NPS-006, NPS-010]
@@ -33,17 +33,19 @@ gap category 7 (package format specification).
 
 On 2026-09-21 the Architecture Group decided the publisher key-trust
 mechanism (decision log D3, `AG_AGENDA.md`) and its §6.3 text below was
-reviewed and landed in the same sitting — the last open *design* this
-document was waiting on. What remains before `Accepted` is the NPC-002
-§6.2 reserved concrete crypto review and implementation validation.
-The implementation surface for that machinery — key store, verification
-pipeline, revocation channel, enrollment flow, audit trail — is drafted
-as [`NPS-028`](../security/NPS-028-package-pki-implementation-surface.md).
-The propose-side review package for the §6.2-reserved concrete crypto
-scheme — grounded in the Ed25519 signing half that already ships
-(`package_signing.py`/`update_signing.py`/`package_repo.py`) — is at
-`docs/00-platform/AG_BRIEF_NPS026_CRYPTO_SCHEME.md`, awaiting the
-dedicated human review this section's reserve requires.
+reviewed and landed in the same sitting. On 2026-09-22 the NPC-002
+§6.2-reserved concrete crypto review concluded (decision log D4): the
+scheme text is normative in §6.7 below. What remains before `Accepted`
+is implementation validation (NPC-002 §5.1/§5.2) — including the §9
+serialization decision §6.7.3 explicitly defers the canonical byte
+form to. The implementation surface for the trust machinery — key
+store, verification pipeline, revocation channel, enrollment flow,
+audit trail — is drafted as
+[`NPS-028`](../security/NPS-028-package-pki-implementation-surface.md).
+The review's propose-side package
+(`docs/00-platform/AG_BRIEF_NPS026_CRYPTO_SCHEME.md`) records the
+evidence the review worked from; its tree claims were re-verified
+2026-09-22 before the review sat.
 
 ## 2. Scope
 
@@ -144,8 +146,66 @@ already-installed content; a rotation that cannot cross-sign requires
 fresh user enrollment per 6.3.2.
 
 6.3.6. Conformance scope. The signature scheme, algorithms, and
-key parameters for all of the above are out of scope of this section —
-reserved per NPC-002 §6.2 for dedicated human review.
+key parameters for all of the above are specified in §6.7 (the
+NPC-002 §6.2 reserved review concluded 2026-09-22, AG decision log
+D4); this section defines the trust mechanism, §6.7 the scheme that
+implements it.
+
+6.7. Concrete scheme (reviewed). The NPC-002 §6.2-reserved dedicated
+human review concluded 2026-09-22 (AG decision log D4), working from
+the propose-side package `AG_BRIEF_NPS026_CRYPTO_SCHEME.md` whose
+tree claims were re-verified the same day. The scheme is deliberately
+boring by design; the review attacked the composition and parameters.
+
+6.7.1. Primitives, per role. Manifest and package signatures:
+**Ed25519** (PureEdDSA, RFC 8032) over a **SHA-256** digest of the
+canonical manifest + integrity trees — deterministic (no nonce
+failure mode), misuse-resistant, the right shape for a
+publisher-signs / many-devices-verify asymmetry. Revocation-list
+authenticity: an **Ed25519 signature by the platform root set** over
+the canonical list + monotonic sequence number (§6.3.3's structural
+replay rule stands). Key-store at-rest integrity: envelope encryption
+via the **ADR-0023 key manager** (Rust-held KEK, XChaCha20-Poly1305
+wrapping) — one custody story for the trust anchors' material. Root
+set distribution: anchors in the OS image, verified by the image's
+own integrity machinery (NPS-006 §6) — no network trust at first
+boot. Explicitly rejected: RSA (signature size, parameter burden),
+ECDSA over NIST curves (nonce fragility; Ed25519 subsumes it), any
+novel or homegrown construction. SHA-256 is the one hash everywhere
+(shared with §7).
+
+6.7.2. Key identity and fingerprint. The full 32-byte Ed25519 public
+key is the identity. The fingerprint is **SHA-256(public key),
+published and displayed in full as 64 lowercase hex characters** —
+one spelling everywhere (NPS-028 §3.3); enrollment confirmations
+(§6.3.2) and audit records display the full digest, never a
+truncation. The shipped `key_id` (first 8 bytes of the raw key) is a
+legacy form: implementations migrate to the hash-based fingerprint
+with a version marker, keeping raw-key verification semantics
+unchanged.
+
+6.7.3. Canonical serialization (deferred). The byte form the
+signature covers is implementation-local until §9 decides binary vs.
+structured text serialization; the scheme text records the deferral
+explicitly rather than freezing a form §9 would immediately
+supersede. Independent implementations **MUST NOT** claim
+interoperability until the canonical form is frozen.
+
+6.7.4. Quorum semantics. A revocation list is authentic if it
+verifies under **any single platform root** (single-root MUST-verify
+rule); the root set **MAY** sign revocations by quorum. The root-set
+document (keys + sequence + signature) is defined alongside the
+revocation-list format (NPS-028 §5).
+
+6.7.5. Frozen vs. deferred parameters. **Frozen at review:** the
+primitive set (Ed25519 + SHA-256 + XChaCha20-Poly1305 wrapping via
+ADR-0023), the §6.7.2 fingerprint, the fail-closed posture as a
+normative requirement (no forgeable stub fallback — the shipped
+signing half's documented stance), and the one-verification-pipeline
+rule (NPS-028 §4). **Deferred to implementation validation:**
+revocation-list cadence and stale-list bounds (NPS-028 §5.3), the
+root set's initial membership, key-rotation operational cadence, and
+the §6.7.3 canonical serialization (until §9 decides).
 
 6.4. A package **MAY** be updated only by a publisher able to produce a
 valid signature for the update (see §8); update and original signatures
@@ -284,6 +344,7 @@ retain-by-default rule unchanged.
 | 1.0.0   | 2026-08-12 | Initial draft — package structure, signed manifests, integrity trees, deltas, streaming install, rollback, dependencies; closing Milestone 11 gap category 7 and threat-model finding FIND-PACKAGE-001 |
 | 1.1.0   | 2026-09-18 | §13 (new): implementation findings from ADR-0022/0023 (NyVault) — volumes are NyFS images, integrity trees cover plaintext while vault AEAD covers at-rest (composition without re-encryption), streaming install into vaults inherits 32 KiB CALL paging and is commit-bound until write batching, uninstall maps onto creator-scoped volume lifecycle; §14: hardware-root convergence and registry-vocabulary open questions added. Closes the M14 Phase 1 "package format update" item |
 | 1.2.0   | 2026-09-21 | §6.3 expanded from the ADR-0014 pattern into the decided mechanism (AG decision log D3): 6.3.1 bundled platform root set + TOFU rejection, 6.3.2 protected-confirmation enrollment, 6.3.3 revocation inputs (expiry + out-of-band list), 6.3.4 advisory/block propagation split, 6.3.5 cross-signature rotation, 6.3.6 crypto reserved per NPC-002 §6.2; the 2026-09-20 non-normative pointer note replaced by the decision record. Closes REQ-SEC-0004 |
+| 1.3.0   | 2026-09-22 | §6.7 (new): the concrete crypto scheme — the NPC-002 §6.2-reserved dedicated human review concluded (AG decision log D4), working from `AG_BRIEF_NPS026_CRYPTO_SCHEME.md` with its tree claims re-verified same day. Primitives per role (Ed25519 + SHA-256; root-set-signed revocation lists; ADR-0023 envelope encryption for the key store; image-anchored root set), the key fingerprint decided as SHA-256(public key) displayed in full 64 lowercase hex (the shipped 8-byte `key_id` becomes a versioned migration), the canonical serialization explicitly deferred to §9, quorum semantics confirmed (single-root MUST verify, any-root MAY sign), and the frozen/deferred parameter split recorded. §6.3.6 re-points at §6.7; the reserve is removed |
 
 ---
 **End of Document**
