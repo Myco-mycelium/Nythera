@@ -139,7 +139,7 @@ marker), the canonical serialization explicitly deferred to §9,
 quorum confirmed (single-root MUST verify, any-root MAY sign), and
 the frozen/deferred parameter split recorded; §6.3.6 re-points at
 §6.7. REQ-SEC-0003's implementation gate opens
-- [x] NPS-028 Package PKI Implementation Surface — Draft (2026-09-21, the NPS-027 residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, SURFACE-PKI-0001..0004; exits Draft on implementation validation; the scheme is decided — NPS-026 v1.3.0 §6.7, D4 — and this document's fence narrows to the §6.7.3 canonical-serialization deferral). **v0.2.0 (2026-09-22)**: implementation STARTED — `backend/package_pki.py` implements the §3 key store (three collections, §3.3 field set, §3.5 uninstall-as-revocation), the §4 verification pipeline (one ordered path, per-stage outcomes, TOFU fail-closed, the §6.3.4 advisory/block split, §7.2 non-blocking audit sink), the §5 revocation list (root-signed, monotonic sequence, replay-refusing, atomic apply), and §6 enrollment + cross-signed rotation, with the §6.7.2 fingerprint spelling throughout (26 tests); remaining named increments: §3.4 custody, §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds
+- [x] NPS-028 Package PKI Implementation Surface — Draft (2026-09-21, the NPS-027 residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, SURFACE-PKI-0001..0004; exits Draft on implementation validation; the scheme is decided — NPS-026 v1.3.0 §6.7, D4 — and this document's fence narrows to the §6.7.3 canonical-serialization deferral). **v0.2.0 (2026-09-22)**: implementation STARTED — `backend/package_pki.py` implements the §3 key store (three collections, §3.3 field set, §3.5 uninstall-as-revocation), the §4 verification pipeline (one ordered path, per-stage outcomes, TOFU fail-closed, the §6.3.4 advisory/block split, §7.2 non-blocking audit sink), the §5 revocation list (root-signed, monotonic sequence, replay-refusing, atomic apply), and §6 enrollment + cross-signed rotation, with the §6.7.2 fingerprint spelling throughout (26 tests); remaining named increments: §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds — and §3.4 custody LANDED the same day (`save_locked`/`load_locked`: ADR-0023 envelope encryption, Argon2id-derived KEK never persisted in plaintext, AEAD contexts bound to the format magic, crate custody when present, fail-closed; plaintext persistence demoted to the marked dev/test path; 6 custody tests, 32 total; NPS-028 v0.3.0)
 - [x] NPS-027 Package Trust Model — **Accepted** (2026-09-21; Threat Model Phase 7, 2026-08-12, completing Milestone 12; disposition of FIND-PACKAGE-001 plus 4 new findings closed via NPS-006 §6 amendment and REQ-SEC-0003..0006). **Review REGISTERED 2026-09-20, DECIDED ACCEPTED 2026-09-21 (decision log D2)** — second standing item on `AG_AGENDA.md` v1.3.0 for the next session; the spec existed since 2026-08-12 but was never scheduled (the next-actions audit found items 18/20 still calling for what it already is); acceptance closes the planned threat-model phase list and unblocks item 18's PKI-implementation residual; **the routed FIND-PACKAGE-003 key-trust design was decided the same day (D3 — the ADR-0014 mirror)**, landing as NPS-026 v1.2.0 §6.3 and closing REQ-SEC-0004
 
 ## Requirements Database
@@ -186,9 +186,11 @@ fail-closed with no stub fallback). **The trust machinery's
 implementation started 2026-09-22** (`backend/package_pki.py`): the
 §3 key store, §4 verification pipeline, §5 revocation-list
 verification, and §6 enrollment + cross-signed rotation, all speaking
-the §6.7.2 fingerprint — remaining named increments: §3.4 ADR-0023
-custody, §3.2 daemon-authority enforcement, §7 ADR-0018 audit wiring,
-§5.1 transport, §5.3 bounds. The propose-
+the §6.7.2 fingerprint — and §3.4 custody landed the same day
+(`save_locked`/`load_locked`, ADR-0023 envelope encryption, the KEK
+never persisted in plaintext) — remaining named increments: §3.2
+daemon-authority enforcement, §7 ADR-0018 audit wiring, §5.1
+transport, §5.3 bounds. The propose-
 side review package for the §6.2-reserved scheme is at
 `AG_BRIEF_NPS026_CRYPTO_SCHEME.md` — reviewed and **ACCEPTED**
 2026-09-22 (AG decision log D4: scheme accepted, G1's fingerprint

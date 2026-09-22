@@ -251,6 +251,72 @@ class TestRevocationList(unittest.TestCase):
                          "trusted")
 
 
+class TestCustody(unittest.TestCase):
+    """NPS-028 §3.4 — the store's at-rest custody (ADR-0023 envelope)."""
+
+    def setUp(self):
+        from backend.package_pki import PkiKeyStore
+        from backend.package_signing import SigningKeypair
+        self.store = PkiKeyStore()
+        self.root = SigningKeypair.generate()
+        self.store.add_root_anchor(self.root.public_key, "platform-root")
+        self.kp, _ = _sign()
+        self.store.enroll(self.kp.public_key, "acme",
+                          _confirmation(self.kp.fingerprint))
+        self.tmpdir = tempfile.mkdtemp(prefix="nyrqis-pki-custody-")
+        self.path = os.path.join(self.tmpdir, "pki.locked")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_locked_roundtrip_preserves_state(self):
+        self.store.save_locked(self.path, "operator-secret")
+        loaded = type(self.store).load_locked(self.path, "operator-secret")
+        self.assertEqual(loaded.status_at(self.kp.fingerprint), "trusted")
+        self.assertEqual(loaded.root_fingerprints, [self.root.fingerprint])
+
+    def test_locked_file_is_envelope_only(self):
+        """No schema marker, no publisher data, no fingerprint in the clear."""
+        self.store.save_locked(self.path, "operator-secret")
+        raw = open(self.path).read()
+        self.assertIn("NYRQIS-PKI-STORE", raw)          # the magic, not data
+        self.assertNotIn("nyrqis-pki-store", raw)       # schema marker absent
+        self.assertNotIn("acme", raw)
+        self.assertNotIn(self.kp.fingerprint, raw)
+        self.assertNotIn("trusted", raw)
+
+    def test_wrong_unlock_secret_refused(self):
+        self.store.save_locked(self.path, "operator-secret")
+        with self.assertRaises(Exception):
+            type(self.store).load_locked(self.path, "wrong-secret")
+
+    def test_tampered_payload_refused(self):
+        self.store.save_locked(self.path, "operator-secret")
+        doc = json.loads(open(self.path).read())
+        blob = bytearray(__import__("base64").b64decode(doc["payload"]))
+        blob[0] ^= 0x01
+        doc["payload"] = __import__("base64").b64encode(bytes(blob)).decode()
+        with open(self.path, "w") as fh:
+            json.dump(doc, fh)
+        with self.assertRaises(Exception):
+            type(self.store).load_locked(self.path, "operator-secret")
+
+    def test_custody_requires_a_secret(self):
+        with self.assertRaises(Exception):
+            self.store.save_locked(self.path, "")
+        with self.assertRaises(Exception):
+            type(self.store).load_locked(self.path, "")
+
+    def test_plaintext_save_stays_the_marked_dev_path(self):
+        """save()/load() keep working for tests — visibly not custody."""
+        plain = os.path.join(self.tmpdir, "pki.plain")
+        self.store.save(plain)
+        raw = open(plain).read()
+        self.assertIn("nyrqis-pki-store", raw)
+        self.assertNotIn("NYRQIS-PKI-STORE", raw)
+
+
 class TestVerificationPipeline(unittest.TestCase):
     """NPS-028 §4 — the single ordered path, §6.3.4 split, §7.2 audit."""
 

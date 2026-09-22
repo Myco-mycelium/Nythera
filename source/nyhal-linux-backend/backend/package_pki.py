@@ -311,9 +311,22 @@ class PkiKeyStore:
     def list_enrolled(self) -> List[KeyStoreEntry]:
         return list(self._enrolled.values())
 
-    # -- persistence (JSON; §3.4 custody is the named next increment) --------
+    # -- persistence ----------------------------------------------------------
+    #
+    # Two forms:
+    #   save()/load()            — plaintext JSON, the dev/test path. NOT
+    #                              §3.4-compliant; never for production.
+    #   save_locked()/load_locked() — the §3.4 custody path: the store's
+    #                              canonical form is envelope-encrypted
+    #                              (ADR-0023 — a random per-file DEK,
+    #                              AEAD-wrapped by the operator-secret-
+    #                              derived KEK, which is never persisted;
+    #                              crate-custody when the keys crate is
+    #                              present, the documented floor
+    #                              otherwise). Fail-closed: no secret, no
+    #                              custody file.
 
-    def save(self, path: str) -> None:
+    def _canonical_json(self) -> str:
         data = {
             "schema": "nyrqis-pki-store",
             "version": 1,
@@ -326,26 +339,114 @@ class PkiKeyStore:
             },
             "revocations": list(self._revocations.values()),
         }
+        return json.dumps(data, indent=2)
+
+    def _load_canonical_json(self, data: dict) -> None:
+        if data.get("schema") != "nyrqis-pki-store":
+            raise PkiError("not a pki store")
+        for fp, pk_b64 in data.get("root_anchors", {}).items():
+            self._roots[fp] = _unb64(pk_b64)
+        for e in data.get("enrolled", []):
+            entry = KeyStoreEntry.from_dict(e)
+            self._enrolled[entry.fingerprint] = entry
+        for fp, pk_b64 in data.get("enrolled_keys", {}).items():
+            self._enrolled_keys[fp] = _unb64(pk_b64)
+        for r in data.get("revocations", []):
+            self._revocations[r["fingerprint"]] = r
+
+    def save(self, path: str) -> None:
+        """Plaintext persistence — dev/test only (NOT §3.4 custody)."""
         tmp = f"{path}.tmp"
-        Path(tmp).write_text(json.dumps(data, indent=2))
+        Path(tmp).write_text(self._canonical_json())
         os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: str) -> "PkiKeyStore":
+        """Load a plaintext (dev/test) store."""
         data = json.loads(Path(path).read_text())
-        if data.get("schema") != "nyrqis-pki-store":
-            raise PkiError(f"{path} is not a pki store")
         store = cls()
-        for fp, pk_b64 in data.get("root_anchors", {}).items():
-            store._roots[fp] = _unb64(pk_b64)
-        for e in data.get("enrolled", []):
-            entry = KeyStoreEntry.from_dict(e)
-            store._enrolled[entry.fingerprint] = entry
-        for fp, pk_b64 in data.get("enrolled_keys", {}).items():
-            store._enrolled_keys[fp] = _unb64(pk_b64)
-        for r in data.get("revocations", []):
-            store._revocations[r["fingerprint"]] = r
+        store._load_canonical_json(data)
         return store
+
+    # -- §3.4 custody (ADR-0023 envelope encryption at rest) -----------------
+
+    def save_locked(self, path: str, unlock_secret: str) -> None:
+        """Persist the store under §3.4 custody.
+
+        Envelope model (ADR-0023): a random per-file 32-byte DEK
+        AEAD-encrypts the canonical store; the DEK is AEAD-wrapped by
+        the KEK, which is derived from the operator's unlock secret via
+        Argon2id and only ever persisted as the 110-byte KEK envelope
+        (salt + KDF parameters + check value) — never in plaintext.
+        The KEK handles stay daemon-side when the keys crate is
+        present. Both AEAD contexts bind the store format's magic, so
+        payloads cannot be relocated between files or formats.
+        """
+        if not unlock_secret:
+            raise PkiError(
+                "custody save refused: no unlock secret (§3.4 is "
+                "fail-closed — there is deliberately no plaintext-at-rest "
+                "production path)")
+        if not HAS_NACL:
+            raise PackageSignError("PyNaCl required for custody")
+        from backend import keys as keys_mod
+        from pathlib import Path as _Path
+        secret = unlock_secret.encode()
+        ad = _CUSTODY_AD
+        salt = os.urandom(keys_mod.SALT_LEN)
+        kek_blob = keys_mod.make_blob_any(secret, salt=salt)
+        handle = keys_mod.unlock(kek_blob, secret)
+        try:
+            dek = os.urandom(keys_mod.DEK_LEN)
+            wrapped_dek = keys_mod.wrap(handle, ad, dek)
+            payload = self._canonical_json().encode()
+            ct = keys_mod.block_encrypt_any(
+                dek, os.urandom(keys_mod.NONCE_LEN), ad, payload)
+        finally:
+            keys_mod.shred(handle)
+        doc = {
+            "magic": _CUSTODY_MAGIC,
+            "custody": "adr0023-envelope-v1",
+            "kek_blob": _b64(kek_blob),
+            "wrapped_dek": _b64(wrapped_dek),
+            "payload": _b64(ct),
+        }
+        tmp = f"{path}.tmp"
+        Path(tmp).write_text(json.dumps(doc, indent=2))
+        os.replace(tmp, path)
+
+    @classmethod
+    def load_locked(cls, path: str, unlock_secret: str) -> "PkiKeyStore":
+        """Load a §3.4 custody store (the inverse of ``save_locked``)."""
+        if not unlock_secret:
+            raise PkiError("custody load refused: no unlock secret")
+        if not HAS_NACL:
+            raise PackageSignError("PyNaCl required for custody")
+        from backend import keys as keys_mod
+        doc = json.loads(Path(path).read_text())
+        if doc.get("magic") != _CUSTODY_MAGIC:
+            raise PkiError(f"{path} is not a custody-protected pki store")
+        if doc.get("custody") != "adr0023-envelope-v1":
+            raise PkiError(
+                f"unknown custody scheme: {doc.get('custody')!r}")
+        secret = unlock_secret.encode()
+        ad = _CUSTODY_AD
+        kek_blob = _unb64(doc["kek_blob"])
+        handle = keys_mod.unlock(kek_blob, secret)
+        try:
+            dek = keys_mod.unwrap(handle, ad, _unb64(doc["wrapped_dek"]))
+            payload = keys_mod.block_decrypt_any(
+                dek, ad, _unb64(doc["payload"]))
+        finally:
+            keys_mod.shred(handle)
+        data = json.loads(payload.decode())
+        store = cls()
+        store._load_canonical_json(data)
+        return store
+
+
+_CUSTODY_MAGIC = "NYRQIS-PKI-STORE"
+_CUSTODY_AD = b"nyrqis-pki-store-v1"   # the AEAD context binding
 
 
 def _b64(data: bytes) -> str:
