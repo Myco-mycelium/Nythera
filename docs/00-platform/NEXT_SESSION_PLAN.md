@@ -6,6 +6,34 @@ date: 2026-09-19
 
 # Next Development Session Plan
 
+## STANDING ITEM — Wed 2026-09-23 05:37/05:52 UTC: the dailies' second fires — one-day backlog or a trend?
+
+Tuesday's dailies both fired ~4.5 h late (PAT watcher 10:15:16, the
+new watcher 10:23:02) — inside the 8 h grace but a worse median than
+Monday's mixed evidence suggested for a quiet day. Wednesday answers
+whether that was a one-day scheduler backlog or the new normal:
+check both dailies (API `event=schedule` filter, or the checker —
+which now covers all four schedules including itself) and record the
+verdict here. Pass = both fired within grace, completed success, and
+the checker reports SCHEDULED RUNS: OK. A missed fire now has three
+independent catchers: the checker's expected-fire logic, its new
+staleness rule, and the daily CI job itself.
+
+**Carried trigger — post-rotation dispatch verification:** if the PAT
+has been rotated by then (grants re-verified MISSING at 10:36 UTC
+Tue), the first dispatch drill is the followup that verifies the
+recovery path end to end — the 08:15 UTC drill's HTTP 403 should
+become 204, and `PAT_EXPIRES_AT` should be set (the pat-expiry-watch
+run may then honestly go red if the new expiry is ≤7 days out — set a
+fresh date when rotating).
+
+**Also queued behind the human calendar:** the NPC-002 §6.2 crypto
+review (`AG_BRIEF_NPS026_CRYPTO_SCHEME.md` v1.0.0) is registered and
+review-ready; its tree claims were re-verified 2026-09-22 (G1's
+`[:8].hex()` key_id, the 10/16/11 test counts, the fail-closed
+posture, the corrected NPS-028 fence, the reserved note intact in
+NPS-026) — the dedicated human review is the owner's to convene.
+
 ## STANDING ITEM — CLOSED — Tue 2026-09-22 05:52 UTC: scheduled-runs-watch's FIRST FIRE
 
 **CLOSED — PASS.** The fire landed **10:23:02 UTC (4 h 31 m late)**
