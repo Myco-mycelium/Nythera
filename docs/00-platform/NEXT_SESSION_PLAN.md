@@ -15,9 +15,10 @@ event** (API, `event=schedule` and unfiltered both queried); due
 05:52, now 2 h 10 m past — inside the 8 h window Monday's data set
 (delays up to 5 h 49 m). Consistent with another scheduler-wide
 backlog: today's amd64 fire (due 03:00) had also not landed by 08:02.
-Re-checked at 08:24 and 08:33 UTC — still zero runs; amd64's own grace
-deadline is 11:00 UTC, the watcher's is 13:52 UTC. The two weekly ISO
-crons and the PAT watcher still show Monday's verified successes.
+Re-checked at 08:24, 08:33, 08:45, 08:55 and 09:04 UTC — still zero
+runs; amd64's own grace deadline is 11:00 UTC, the watcher's is
+13:52 UTC. The two weekly ISO crons and the PAT watcher still show
+Monday's verified successes.
 **Re-check after 13:52 UTC and record the final verdict here — a
 no-show by then is a real finding** (recovery: workflow_dispatch,
 currently gated on the PAT Actions-write grant — the drill was
@@ -94,6 +95,15 @@ Pass = `live-iso-arm64.yml schedule: completed/success`. A failed fire
 is self-describing (`::error::` annotations, no auth needed); re-fire
 options are dispatch (needs Actions RW — currently 403) or a no-op tag
 push, whichever the failure diagnosis supports.
+
+## Session 13 (2026-09-22) — THE WATCHER WATCHES ITSELF: a first-fire interim verdict found the blind spot in the tool built to close the last one
+
+| Item | Status |
+|------|--------|
+| **The interim check on the standing item did what the check exists to do — and caught the checker** | ✅ Recording the interim verdict on `scheduled-runs-watch.yml`'s first fire (due 05:52 UTC; zero runs of any event at 08:02 UTC — inside the 8 h grace Monday's data set) exposed that `check_scheduled_runs.sh` never watched its own workflow: the daily watcher's cron could die silently while the script reported SCHEDULED RUNS: OK forever. Closed the same morning (`e02528e`): `scheduled-runs-watch.yml` joined the `WORKFLOWS` list; the script's own in-progress run is excluded via `GITHUB_RUN_ID`; and run judgement went staleness-aware — the latest completed scheduled run must cover the most recent expected fire whose grace has expired, because conclusion-only checking passes forever on a stale success (cron fires once, dies, week-old green run keeps every later check green). The within-grace threshold falls back to the fire BEFORE the expected one — walked back from the expected fire via a `cron_epoch` anchor, not recomputed from now — so a self-check mid-cadence does not false-alarm on its own 24 h-old prior run (the exact class of misjudgement the arm64 post-mortem warned about) |
+| Contract pinning and verification | ✅ `TestScheduledRunsWatchContract` gained `test_watcher_covers_itself_and_detects_a_dead_schedule` (file 66 → 67; all 4 in the class, 67 in the file). The dead-schedule rule was exercised on synthetic data (dead weekly cron → `::error::…a scheduled fire has no run`), the `cron_epoch` anchor verified against all three repo crons, created_at extraction + GNU date parse verified against a real API value, and the checker verified live (exit 0). Full suite re-run: `unittest discover` **6,384 OK / 4 environmental skips**, `run_tests.sh` **19/19 suites**; premises 20/20, `mkdocs build --strict` clean, drift OK |
+| **The first fire itself: six spaced checks, still zero runs — final verdict time-gated, not concluded** | ✅ Checked 08:02, 08:24, 08:33, 08:45, 08:55, 09:04 UTC — the workflow never fired and today's amd64 fire (due 03:00) also has not landed: consistent with another scheduler-wide backlog (Monday ran ~5.5 h late), but NOT a verdict. The honest boundary: **the final verdict requires a check after 13:52 UTC** (the 8 h grace deadline). A no-show by then is a real finding; the recovery path is the manual dispatch, which was re-drilled this session and failed exactly as documented |
+| The dispatch drill re-run (the third followup) | ✅ Executed 08:15 UTC: HTTP **403**, `"Resource not accessible by personal access token"` — byte-identical to the documented blocker. Grant state re-verified (`verify_pat_grants.sh`: Actions write MISSING, Variables write MISSING). The fix is one owner browser step (mint the fine-grained PAT with Contents/Workflows/Actions/Variables/PR = RW) followed by `scripts/rotate_push_pat.sh` (hidden-stdin paste, validate-then-swap ordering) — the token must never pass through chat, which is why this stays an owner action and why the drill stays a recorded 403 until then |
 
 ## Session 12 (2026-09-18) — THE MEASUREMENT PASSES CLOSE THE BACKLOG; THE REVIEW GETS ONE AGENDA
 
