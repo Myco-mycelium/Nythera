@@ -440,6 +440,58 @@ CLAIMS: list[Claim] = [
             "files": ["docs/reference/requirements/REQUIREMENTS.md"],
         },
     ),
+    # --- The 2026-09-22 implementation session: the trust machinery is
+    # built, drilled, and validated; pin the validated state ---
+    Claim(
+        claim_id="pki-process-model-landed",
+        pattern=r"PkiDaemonRunner",
+        description="NPS-028 v0.9.0: the daemon's production process model landed (PkiDaemonRunner + pki serve + the nyrqis-pki.service unit)",
+        check="path_contains",
+        check_args={
+            "needle": "class PkiDaemonRunner",
+            "files": ["source/nyhal-linux-backend/backend/package_pki.py"],
+        },
+    ),
+    Claim(
+        claim_id="pki-unit-ships",
+        pattern=r"nyrqis-pki\.service",
+        description="NPS-028 v0.9.0: the PKI systemd unit ships in the backend tree (the two-tree mirror rule is contract-pinned)",
+        check="path_contains",
+        check_args={
+            "needle": "pki serve",
+            "files": ["source/nyhal-linux-backend/packaging/systemd/nyrqis-pki.service"],
+        },
+    ),
+    Claim(
+        claim_id="pki-validation-record",
+        pattern=r"Implementation Validation Record",
+        description="NPS-028 v0.9.3: §10 records the 15-claim mechanical validation of the surface's normative statements",
+        check="path_contains",
+        check_args={
+            "needle": "## 10. Implementation Validation Record",
+            "files": ["docs/reference/security/NPS-028-package-pki-implementation-surface.md"],
+        },
+    ),
+    Claim(
+        claim_id="pki-review-registered",
+        pattern=r"AG_AGENDA v1\.7\.0",
+        description="The NPS-028 acceptance review is registered on AG_AGENDA v1.7.0 as the platform's standing item",
+        check="path_contains",
+        check_args={
+            "needle": "Standing items — registered 2026-09-22",
+            "files": ["docs/00-platform/AG_AGENDA.md"],
+        },
+    ),
+    Claim(
+        claim_id="nps026-validation-status",
+        pattern=r"NPS-026 v1\.3\.1",
+        description="NPS-026 v1.3.1: §1 records the §6/§7 machinery's implementation-validation status (the AG interlock's other half)",
+        check="path_contains",
+        check_args={
+            "needle": "Implementation validation status (2026-09-22)",
+            "files": ["docs/reference/package-format/NPS-026-package-format.md"],
+        },
+    ),
 ]
 
 
