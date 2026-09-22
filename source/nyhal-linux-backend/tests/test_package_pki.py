@@ -317,6 +317,58 @@ class TestCustody(unittest.TestCase):
         self.assertNotIn("NYRQIS-PKI-STORE", raw)
 
 
+class TestDaemonAuthority(unittest.TestCase):
+    """NPS-028 §3.2 — the store layer's daemon-authority enforcement."""
+
+    def setUp(self):
+        from backend.package_pki import PkiKeyStore
+        from backend.package_signing import SigningKeypair
+        self.store = PkiKeyStore()
+        self.root = SigningKeypair.generate()
+        self.store.add_root_anchor(self.root.public_key, "platform-root")
+        self.tmpdir = tempfile.mkdtemp(prefix="nyrqis-pki-authority-")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_saved_stores_are_owner_only(self):
+        for name, save in (
+                ("plain", lambda p: self.store.save(p)),
+                ("locked", lambda p: self.store.save_locked(p, "s"))):
+            path = os.path.join(self.tmpdir, name)
+            save(path)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600, name)
+            self.assertFalse(os.path.exists(f"{path}.tmp"),
+                             f"{name}: no temp file may persist")
+
+    def test_load_refuses_a_group_readable_store(self):
+        path = os.path.join(self.tmpdir, "open-plain")
+        self.store.save(path)
+        os.chmod(path, 0o644)
+        with self.assertRaises(Exception) as ctx:
+            type(self.store).load(path)
+        self.assertIn("§3.2", str(ctx.exception))
+
+    def test_load_locked_refuses_a_group_readable_store(self):
+        path = os.path.join(self.tmpdir, "open-locked")
+        self.store.save_locked(path, "secret")
+        os.chmod(path, 0o664)
+        with self.assertRaises(Exception) as ctx:
+            type(self.store).load_locked(path, "secret")
+        self.assertIn("§3.2", str(ctx.exception))
+
+    def test_chmod_back_to_0600_restores_the_load(self):
+        path = os.path.join(self.tmpdir, "fixed")
+        self.store.save(path)
+        os.chmod(path, 0o644)
+        with self.assertRaises(Exception):
+            type(self.store).load(path)
+        os.chmod(path, 0o600)
+        loaded = type(self.store).load(path)
+        self.assertEqual(loaded.root_fingerprints, [self.root.fingerprint])
+
+
 class TestVerificationPipeline(unittest.TestCase):
     """NPS-028 §4 — the single ordered path, §6.3.4 split, §7.2 audit."""
 

@@ -45,10 +45,15 @@ random per-file DEK AEAD-encrypts the canonical store, wrapped by the
 Argon2id-derived KEK that is never persisted in plaintext; crate
 custody when the keys crate is present; fail-closed — no secret, no
 custody file; plaintext `save`/`load` remain as the marked dev/test
-path only; 32 tests, `tests/test_package_pki.py`). Still to build,
-each a named increment: daemon-authority
-enforcement of §3.2 (currently a deployment property, not an API
-property), the §7 ADR-0018 audit-log wiring (the pipeline currently
+path only; 32 tests, `tests/test_package_pki.py`), and §3.2's
+store-layer authority enforcement (every store is written 0600 via an
+atomic 0600 temp rename — no world-readable intermediate ever exists —
+and a load REFUSES a group/world-readable store fail-closed, naming
+§3.2 and the fix; 36 tests). Still to build, each a named increment:
+§3.2's daemon-side half (the store living behind the daemon's IPC so
+package code never reaches the file at all — a deployment property
+this layer documents and the daemon must complete), the §7 ADR-0018
+audit-log wiring (the pipeline currently
 takes any sink), §5.1's out-of-band transport, and the §5.3 stale-list
 bounds (deferred to implementation validation by design). This
 document enumerates the components the remaining implementation must
@@ -109,6 +114,10 @@ and revocation-update paths. An installed package **MUST NOT** be able
 to read, write, or enumerate the store; verification runs in the
 daemon's authority, not the container's (the NPS-022 §4 lesson:
 capability enforcement must not live where the attacker's code runs).
+(Store-layer enforcement landed 2026-09-22: stores are written 0600
+atomically and loads refuse group/world-readable stores fail-closed;
+the container-side half — hosting the store behind the daemon's IPC —
+remains the daemon integration's responsibility.)
 
 3.3. Key store entries **MUST** record: publisher identity, key
 fingerprint, enrollment source, enrollment timestamp, expiry date, and
@@ -261,6 +270,7 @@ moment implementation begins.
 | 0.1.0   | 2026-09-21 | Initial draft — the PKI implementation surface NPS-027's acceptance left as its residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, and the four new surfaces enumerated for the threat model's next pass |
 | 0.2.0   | 2026-09-22 | The scheme was decided (NPS-026 v1.3.0 §6.7, D4) and implementation STARTED: `backend/package_pki.py` — the §3 key store (three collections, §3.3 fields, §3.5 uninstall-as-revocation), the §4 pipeline (one ordered path, per-stage outcomes, TOFU fail-closed, §6.3.4 advisory/block split, §7.2 non-blocking audit sink), the §5 revocation list (root-signed, monotonic, replay-refusing, atomic apply), §6 enrollment + cross-signed rotation, the §6.7.2 fingerprint spelling throughout; 26 tests. Remaining: §3.4 custody, §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
 | 0.3.0   | 2026-09-22 | §3.4 custody LANDED: `save_locked`/`load_locked` — ADR-0023 envelope encryption at rest (random per-file DEK AEAD-encrypts the canonical store; DEK wrapped by the Argon2id-derived KEK, which is never persisted in plaintext; AEAD contexts bind the format's magic so payloads cannot relocate between files or formats; crate custody when the keys crate is present, the documented floor otherwise; fail-closed — no secret, no custody file, and plaintext persistence demoted to the explicitly marked dev/test path). 6 custody tests (32 total). Remaining: §3.2 daemon-authority enforcement, §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
+| 0.4.0   | 2026-09-22 | §3.2 store-layer authority enforcement LANDED: every store write goes through a 0600 atomic temp-rename (no world-readable intermediate ever exists) and every load refuses a group/world-readable store fail-closed, naming §3.2 and the fix. 4 authority tests (36 total). Remaining: §3.2's daemon-side half (host the store behind the daemon's IPC), §7 ADR-0018 wiring, §5.1 transport, §5.3 bounds |
 
 ---
 **End of Document**

@@ -356,13 +356,12 @@ class PkiKeyStore:
 
     def save(self, path: str) -> None:
         """Plaintext persistence — dev/test only (NOT §3.4 custody)."""
-        tmp = f"{path}.tmp"
-        Path(tmp).write_text(self._canonical_json())
-        os.replace(tmp, path)
+        _write_atomic(path, self._canonical_json().encode())
 
     @classmethod
     def load(cls, path: str) -> "PkiKeyStore":
         """Load a plaintext (dev/test) store."""
+        _assert_daemon_authority(path)
         data = json.loads(Path(path).read_text())
         store = cls()
         store._load_canonical_json(data)
@@ -411,13 +410,12 @@ class PkiKeyStore:
             "wrapped_dek": _b64(wrapped_dek),
             "payload": _b64(ct),
         }
-        tmp = f"{path}.tmp"
-        Path(tmp).write_text(json.dumps(doc, indent=2))
-        os.replace(tmp, path)
+        _write_atomic(path, json.dumps(doc, indent=2).encode())
 
     @classmethod
     def load_locked(cls, path: str, unlock_secret: str) -> "PkiKeyStore":
         """Load a §3.4 custody store (the inverse of ``save_locked``)."""
+        _assert_daemon_authority(path)
         if not unlock_secret:
             raise PkiError("custody load refused: no unlock secret")
         if not HAS_NACL:
@@ -447,6 +445,44 @@ class PkiKeyStore:
 
 _CUSTODY_MAGIC = "NYRQIS-PKI-STORE"
 _CUSTODY_AD = b"nyrqis-pki-store-v1"   # the AEAD context binding
+
+
+def _write_atomic(path: str, data: bytes) -> None:
+    """Write via a 0600 temp file and an atomic rename (§3.2's store-layer
+    authority: the store is owner-only from the instant it first exists,
+    and there is never a world-readable intermediate)."""
+    fd = os.open(f"{path}.tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        try:
+            os.unlink(f"{path}.tmp")
+        except OSError:
+            pass
+        raise
+    os.replace(f"{path}.tmp", path)
+
+
+def _assert_daemon_authority(path: str) -> None:
+    """§3.2's store-layer check: the store MUST be owner-only.
+
+    A store that is group- or world-readable fails the load (fail-closed
+    — an over-open store is a §3.2 violation to fix, not a condition to
+    tolerate). The container-side half of §3.2 (the store living where
+    package code cannot reach it at all) remains the daemon's deployment
+    responsibility: the store belongs under the daemon's state directory
+    on the daemon's account.
+    """
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError as exc:
+        raise PkiError(f"store unavailable: {exc}")
+    if mode & 0o077:
+        raise PkiError(
+            f"{path} is group/world-accessible (mode {oct(mode)}) — "
+            "refusing per NPS-028 §3.2 (daemon authority): chmod 600 "
+            "and re-load")
 
 
 def _b64(data: bytes) -> str:
