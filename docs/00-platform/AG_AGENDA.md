@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.6.0
-status: Disposed — decisions recorded 2026-09-19, 2026-09-21 and 2026-09-22 (see the decision log); all registered standing items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7) — no standing items remain
+version: 1.7.0
+status: One standing item registered 2026-09-22 (evening): the NPS-028 acceptance review (implementation complete + validated, §10 evidence attached; decision-ready). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -304,6 +304,37 @@ the record, each item marked with its outcome.
   policy-shaped call. The concrete crypto scheme stays reserved per
   NPC-002 §6.2, and the mechanism text lands via NPS-026's amendment on
   its path to `Accepted` — so this decision and D2's unblock each other.
+
+---
+
+## Standing items — registered 2026-09-22 (evening session)
+
+- **NPS-028 — Package PKI Implementation Surface (Draft → review for
+  Acceptance; implementation COMPLETE + VALIDATED).** Registered after
+  the 2026-09-22 implementation session landed the surface in full:
+  the §3 key store, §4 verification pipeline (TOFU fail-closed, one
+  ordered path), §5 revocation list + the §5.1 out-of-band daemon
+  wiring, §6 enrollment + cross-signed rotation, §7 ADR-0018 audit
+  chain, §3.2's authority/IPC/deployment stack (the
+  `nyrqis-pki.service` unit), and §3.4 custody — with an end-to-end
+  daemon drill and a mechanical validation probe on record. The
+  evidence the Group reviews: **NPS-028 §10** (the 15-claim
+  normative-claims table, 15/15, every row backed by an importable
+  assertion or a named test module), the suite record (package-security
+  set 217 green in one run; PKI module 97, byte-identically verified
+  from a clean worktree checkout), and the drill/v0.9.1 revision entry
+  (a real wire gap found and closed — the transport's write path was
+  never wire-tested until the drill caught it). What the session
+  judges: (1) Accept the validated surface (or name amendments); (2)
+  confirm the §5.3 stale-list deferral stays frozen-by-design until
+  implementation validation needs it; (3) note that the document's
+  one remaining substantive dependency — NPS-026 §9's canonicalization
+  decision (G3) — gates the §6.7.3 fence, not this surface's
+  mechanisms. Interlock: NPS-026 exits Draft through the same review
+  sitting once on both documents (its §6 machinery and this §3–§7
+  implementation are two halves of one acceptance). DECISION-READY —
+  no measurement, implementation, or drafting item remains ahead of
+  the review.
 
 ---
 
