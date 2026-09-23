@@ -6,7 +6,8 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
 2026-09-23 (second-fire standing item CLOSED — PASS, 10:22 UTC; Thursday's
-third-fire item registered; session records pushed to origin main — see
+third-fire item registered; M11's "remaining" backlog reconciled — all four
+deliverables landed by 2026-09-06; session records pushed to origin main — see
 `NEXT_SESSION_PLAN.md`)
 
 ## Current Milestone
@@ -41,10 +42,17 @@ Public API (API-001), ABI (ABI-001), and Package Format (NPS-026,
 including the digital-signature design closing `FIND-PACKAGE-001`) now
 exist as `Draft` documents; first Tutorials and How-To guides are
 published; and every stale category/reference index placeholder has been
-replaced with a real index. Still remaining from Milestone 11's
+replaced with a real index. ~~Still remaining from Milestone 11's
 prioritized backlog: governance expansion, build architecture docs,
-performance budgets, and developer onboarding — see
-`007-PROJECT_ROADMAP.md`.
+performance budgets, and developer onboarding~~ — **reconciled 2026-09-23:
+all four landed by 2026-09-06** (`NPC-010`, `BUILD-001`, `PERF-001` v1.1.0,
+`TUT-003`; the roadmap's M11 items 8–11 struck — the performance-budget
+numbers themselves still await real hardware). One open finding from the
+same pass: TWO divergent build-architecture documents exist (`BUILD-001`
+Draft in `docs/reference/build/` vs `BUILD-ARCH` Accepted in
+`docs/00-platform/`, both claiming NPC-007 gap 9) — the canonical-ID choice
+is recorded for the Architecture Group, not made unilaterally (see
+`NEXT_SESSION_PLAN.md`).
 
 ## Governance Documents
 

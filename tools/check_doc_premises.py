@@ -192,6 +192,23 @@ def _check_dir_absent(paths: list[str], args: dict) -> tuple[str, str]:
     return "fail", f"{label} now exists ({', '.join(present)}); the 'not yet built' premise is stale"
 
 
+def _check_all_paths_exist(paths: list[str], args: dict) -> tuple[str, str]:
+    """Every recorded evidence file still exists on disk.
+
+    Unlike ``path_contains``, the assertion is existence itself — for
+    claims of the form "these deliverables exist under these IDs". The
+    ``files`` in check_args list the paths that must ALL be present; a
+    missing file fails the claim (the recorded premise is stale).
+    """
+    targets = [str(f) for f in args.get("files", [])]
+    if not targets:
+        return "warn", "no files configured for the existence claim"
+    missing = [rel for rel in targets if not (REPO_ROOT / rel).exists()]
+    if missing:
+        return "fail", f"files recorded as existing are gone: {', '.join(missing)}"
+    return "ok", f"all {len(targets)} recorded file(s) exist"
+
+
 def _check_frontmatter_status(paths: list[str], args: dict) -> tuple[str, str]:
     """A document's frontmatter status equals the recorded decided state.
 
@@ -224,6 +241,7 @@ CHECKS = {
     "crate_exists": _check_crate_exists,
     "path_contains": _check_path_contains,
     "dir_absent": _check_dir_absent,
+    "all_paths_exist": _check_all_paths_exist,
     "frontmatter_status": _check_frontmatter_status,
 }
 
@@ -490,6 +508,42 @@ CLAIMS: list[Claim] = [
         check_args={
             "needle": "Implementation validation status (2026-09-22)",
             "files": ["docs/reference/package-format/NPS-026-package-format.md"],
+        },
+    ),
+    # --- The 2026-09-23 docs-backlog pass: the M11 "remaining" list was
+    # stale (all four deliverables landed by 2026-09-06); pin the files ---
+    Claim(
+        claim_id="m11-gap-docs-exist",
+        pattern=r"M11 gap category",
+        description="The four M11 backlog deliverables exist on disk (NPC-010, BUILD-001, PERF-001, TUT-003) — the 'still remaining' lists are reconciled",
+        check="all_paths_exist",
+        check_args={
+            "files": [
+                "docs/00-platform/008-GOVERNANCE_EXPANSION.md",
+                "docs/reference/build/BUILD_ARCHITECTURE.md",
+                "docs/reference/build/PERFORMANCE_BUDGETS.md",
+                "docs/tutorials/developer-onboarding.md",
+            ],
+        },
+    ),
+    Claim(
+        claim_id="build-architecture-dual-doc",
+        pattern=r"BUILD-ARCH",
+        description="The build-architecture deliverable exists under TWO document_ids (BUILD-ARCH Accepted in docs/00-platform vs BUILD-001 Draft in docs/reference/build) — a recorded open finding for the Architecture Group, kept loud until reconciled",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: BUILD-ARCH",
+            "files": ["docs/00-platform/BUILD_ARCHITECTURE.md"],
+        },
+    ),
+    Claim(
+        claim_id="nps028-remaining-draft-deps",
+        pattern=r"remaining Draft dependency",
+        description="NPS-028 v0.9.3 §1: the surface's remaining Draft dependency is only NPS-026 §9's canonicalization decision plus the Group's acceptance review",
+        check="path_contains",
+        check_args={
+            "needle": "remaining Draft dependency is NPS-026 §9's canonicalization decision, not implementation",
+            "files": ["docs/reference/security/NPS-028-package-pki-implementation-surface.md"],
         },
     ),
 ]

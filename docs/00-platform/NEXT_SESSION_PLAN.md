@@ -41,6 +41,23 @@ confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
 
+## SESSION ITEM — Wed 2026-09-23 10:41 UTC: the docs-backlog pass struck three silently-completed M11 items — and found two live documents diverging
+
+The M11 "remaining" backlog list (governance expansion, build architecture,
+performance budgets, developer onboarding) was stale: ALL FOUR deliverables
+existed by 2026-09-06 — the 2026-09-20 next-actions audit had already struck
+item 19 with exactly this finding, but the roadmap's M11 gap checklist and
+REPOSITORY_STATE's Current Milestone paragraph still carried the old text (the
+exact TODO-staleness class that audit named as still needing a human pass; this
+IS that pass). Verified on disk, then reconciled:
+
+| Item | Status |
+|------|--------|
+| **The four deliverables verified against their files** | ✅ `docs/00-platform/008-GOVERNANCE_EXPANSION.md` (NPC-010, Draft), `docs/reference/build/BUILD_ARCHITECTURE.md` (BUILD-001, Draft), `docs/reference/build/PERFORMANCE_BUDGETS.md` (PERF-001 v1.1.0 — includes §2.3's §35 container-resource-limit data), `docs/tutorials/developer-onboarding.md` (TUT-003, Draft). Roadmap M11 items 8/9/10/11 now marked done with the 2026-09-20 audit as evidence; REPOSITORY_STATE's paragraph struck the stale "still remaining" list |
+| **The performance-budget item is not fully closed — and says so** | ✅ The roadmap checkbox is struck only as far as its text already scoped it (2026-09-18 note): methodology shipped, §35 data landed, the budget-NUMBERS themselves still require real hardware. Marking it done beyond its own wording would fabricate closure |
+| **NEW FINDING — two build-architecture documents diverge** | ✅ `docs/00-platform/BUILD_ARCHITECTURE.md` (`document_id: BUILD-ARCH`, **status: Accepted**, 2026-09-01, front-matter claims `satisfies: [NPC-007 gap 9]`) vs `docs/reference/build/BUILD_ARCHITECTURE.md` (`document_id: BUILD-001`, **Draft**, 2026-09-06, the copy the roadmap/TUT-003/sdk cite; ALSO claims gap 9 in its closing line). Bodies differ materially (531 diff lines). Which ID is canonical — and whether the 00-platform Accepted copy is the unsanctioned-flip class already flagged for ADR-0019/0025/0026 — is an Architecture-Group call; recorded as an open finding, NOT reconciled unilaterally. TUT-003's `depends_on: [NPC-003, NPC-010, BUILD-001]` remains valid against BUILD-001 |
+| **The registry mechanism absorbed the session** | ✅ Three new pins (28 → 31): `m11-gap-docs-exist` (all four deliverables under their IDs), `build-architecture-dual-doc` (the two paths + two document_ids, keeping the finding loud), `nps028-remaining-draft-deps` (v0.9.3's §1 close-out). 31/31 green |
+
 ## STANDING ITEM — CLOSED — Wed 2026-09-23 05:37/05:52 UTC: the dailies' second fires — one-day backlog or a trend?
 
 Tuesday's dailies both fired ~4.5 h late (PAT watcher 10:15:16, the

@@ -1,13 +1,13 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.11.0
+version: 1.12.0
 status: Draft
 classification: Informative
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-08-12
+updated: 2026-09-23
 ai_assisted: true
 review_cycle: Quarterly
 depends_on: [NTM-000, NPC-003]
@@ -165,7 +165,9 @@ of a prior milestone by itself.
 
 **Gap categories — prioritized per the review's own "what I would focus
 on next" ordering. Items 2 and 4–7 were started as `Draft` documents in
-the 2026-08-12 backlog pass; items 8–11 remain unbuilt:**
+the 2026-08-12 backlog pass; items 8–11 landed by 2026-09-06 (struck
+2026-09-23 after the on-disk verification, per the 2026-09-20 next-actions
+audit's item-19 finding):**
 1. [~] Security architecture and threat model (`docs/reference/security/`) — **in progress as Milestone 12**, phased; see below
 2. [~] Object Registry — **Draft**: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md) (Workspace, Window, Application, Package, Capability, Game, Mod, Controller, GPU, Notification, AI Conversation, Device, Service; Identity flagged pending its own NPS) with fields, lifecycle, permissions, serialization, relationships
 3. [ ] Capability Registry — ongoing by design (NPS-011 §5), not a discrete milestone item; already at 25 entries
@@ -173,10 +175,10 @@ the 2026-08-12 backlog pass; items 8–11 remain unbuilt:**
 5. [~] ABI specification — **Draft**: [`ABI-001`](../reference/abi/ABI-001-binary-compatibility.md) (calling conventions, binary compatibility, symbol versioning, plugin ABI, driver ABI, runtime ABI; concrete layouts deferred)
 6. [~] Architecture diagrams — started: boot sequence, NyHAL architecture, container lifecycle, capability grant flow, package mount lifecycle under [`docs/diagrams/`](../diagrams/README.md); object graph, capability graph, scheduler, memory manager, game package layering, AI, identity, update pipeline still planned
 7. [~] Package format specification — **Draft**: [`NPS-026`](../reference/package-format/NPS-026-package-format.md) (manifest, digital signatures, compression, delta updates, integrity tree, streaming install, rollback, dependency resolution). **Priority elevated above its list position**: M12 Phase 2's `FIND-PACKAGE-001` found `.nygi` integrity relies on checksums alone (NPS-006 §6), which don't establish publisher authenticity — NPS-026's signature design is the response.
-8. [ ] Governance expansion — RFC process, release process, deprecation policy, versioning policy, branching strategy, commit conventions, ADR workflow (some of this already exists in NPC-001/003; the review's ask is to make it a dedicated, fuller treatment)
-9. [ ] Build architecture (`docs/reference/build/`) — toolchain, build graph, cross-compilation, reproducible builds, CI stages, artifact signing
-10. [ ] Performance engineering budgets — startup targets, memory budgets, IPC latency, filesystem performance, gaming targets, AI inference targets (methodology already exists in `tests/BENCHMARK_PLAN.md`; the review's ask is target *numbers*, which still require real hardware and are not fabricated ahead of that)
-11. [ ] Developer onboarding — install prerequisites, build docs, coding standards, repository tour, first-contribution guide, debugging, testing, documentation style
+8. [x] Governance expansion — **landed 2026-09-06 as `NPC-010`** ([`008-GOVERNANCE_EXPANSION.md`](008-GOVERNANCE_EXPANSION.md), Draft): RFC process, release process, deprecation policy, versioning policy, branching strategy, commit conventions, ADR workflow
+9. [x] Build architecture — **landed 2026-09-06 as `BUILD-001`** ([`docs/reference/build/BUILD_ARCHITECTURE.md`](../reference/build/BUILD_ARCHITECTURE.md), Draft): toolchain, build graph, cross-compilation, reproducible builds, CI stages, artifact signing. **Open finding (2026-09-23):** a second, divergent copy exists (`docs/00-platform/BUILD_ARCHITECTURE.md`, `document_id: BUILD-ARCH`, marked Accepted 2026-09-01, also claiming gap 9) — which ID is canonical is an Architecture-Group call; see `NEXT_SESSION_PLAN.md`
+10. [~] Performance engineering budgets — **methodology + first-pass data landed** (`PERF-001` v1.1.0, [`docs/reference/build/PERFORMANCE_BUDGETS.md`](../reference/build/PERFORMANCE_BUDGETS.md); §2.3 carries the §35 container-resource-limit findings, with the broader data in `tests/BENCHMARK_RESULTS.md`); the remaining scope is unchanged — target *numbers* require real hardware and are not fabricated ahead of that
+11. [x] Developer onboarding — **landed 2026-09-06 as `TUT-003`** ([`docs/tutorials/developer-onboarding.md`](../tutorials/developer-onboarding.md), Draft): install prerequisites, first build, coding standards, repository tour, first contribution, debugging, testing
 
 An "Identity subsystem" and "Update pipeline" were mentioned by the review
 under diagrams/object-registry but have no corresponding NPS document yet
@@ -215,6 +217,7 @@ starting from scratch. Full phase table and links:
 | 1.9.0   | 2026-08-12 | M11 backlog pass: Object Registry (NPS-025), Public API (API-001), ABI (ABI-001), Package Format (NPS-026), and first architecture diagrams + Tutorials/How-To guides landed as Drafts; gaps 8–11 (governance expansion, build architecture, performance budgets, developer onboarding) remain unbuilt |
 | 1.10.0  | 2026-08-12 | Record first-pass benchmark data (tests/BENCHMARK_RESULTS.md): IPC latency (NPS-003 §6.1), token-bucket defaults (ADR-0009), NyFS ops-layer proxy (ADR-0016) — data collected, gates not declared met |
 | 1.11.0  | 2026-08-12 | M12 Phase 7 complete (Package Trust Model, NPS-027) — threat model milestone finished; Zstd level-sweep first-pass data recorded (tests/BENCHMARK_RESULTS.md §2) |
+| 1.12.0  | 2026-09-23 | M11 gap checklist reconciled against the 2026-09-20 next-actions audit: items 8/9/11 struck (NPC-010, BUILD-001, TUT-003 landed 2026-09-06), item 10 marked [~] (methodology + §35 data shipped, budget numbers await real hardware); NEW open finding — two divergent build-architecture documents (`BUILD-001` Draft vs `BUILD-ARCH` Accepted, both claiming gap 9), canonical-ID choice recorded for the Architecture Group |
 
 ### M13 — Display Server Integration
 
