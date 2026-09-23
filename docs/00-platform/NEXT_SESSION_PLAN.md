@@ -6,6 +6,36 @@ date: 2026-09-19
 
 # Next Development Session Plan
 
+## STANDING ITEM — Thu 2026-09-24 05:37/05:52 UTC: the dailies' third fires — does the 10:02–11:49 band hold a fourth day?
+
+Wednesday closed the trend question: the scheduler-wide lag is the stable
+pattern — every daily fire in repo history landed in a 10:02–11:49 UTC band
+(Sun 10:02, Mon 11:01/11:49, Tue 10:15/10:23, Wed 10:14/10:18), median ~4.5 h
+late, all inside the 8 h grace, with three consecutive SCHEDULED RUNS: OK
+verdicts. Thursday's fires are therefore a confirmation point, not a question
+of whether they fire: check both dailies after they land (API `event=schedule`
+filter, or the checker) and record the verdict here. Pass = both fired within
+grace, completed success, and `scripts/check_scheduled_runs.sh` exits 0. A fire
+outside the measured 10:02–11:49 band extends the envelope and is worth a note
+even in grace; a no-show past 13:52 UTC is a real finding (three independent
+catchers: the checker's expected-fire logic, its staleness rule, the daily CI
+job).
+
+**Carried trigger — post-rotation dispatch verification:** re-verified 10:27 UTC
+Wed — grants still MISSING (Actions write 403 on dispatch, Variables write 403);
+the PAT has NOT been rotated. The trigger stays: once the owner mints the
+fine-grained PAT (Contents/Workflows/Actions/Variables/PR = RW — a browser step
+that must never pass through chat) and runs `scripts/rotate_push_pat.sh`, the
+first dispatch drill is the followup that verifies the recovery path end to
+end — the 08:15 UTC drill's HTTP 403 should become 204, and `PAT_EXPIRES_AT`
+should be set (the pat-expiry-watch run may then honestly go red if the new
+expiry is ≤7 days out — set a fresh date when rotating).
+
+**Also carried:** the session's records (this item included) were pushed to
+origin main the same morning — Thursday's fires are the first scheduled runs to
+execute a remote tip that includes the watcher's own contract pins and both
+verdict records; if the run shas still read pre-push, the push did not land.
+
 ## STANDING ITEM — CLOSED — Wed 2026-09-23 05:37/05:52 UTC: the dailies' second fires — one-day backlog or a trend?
 
 Tuesday's dailies both fired ~4.5 h late (PAT watcher 10:15:16, the
