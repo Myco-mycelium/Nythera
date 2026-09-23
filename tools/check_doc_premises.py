@@ -626,6 +626,16 @@ CLAIMS: list[Claim] = [
             "files": ["source/nyhal-linux-backend/tests/test_debug_bundle.py"],
         },
     ),
+    Claim(
+        claim_id="ctl-payload-surface-pinned",
+        pattern=r"test_nyrqisctl_payload_surface",
+        description="CR-0037: the nyrqisctl parse→payload surface is pinned — the stray mid-build_payload raise (~300 unreachable commands since 4bb68bb) is removed and the sweep test forbids the class; audit-chain-summary registered, alert-summary un-hijacked",
+        check="path_contains",
+        check_args={
+            "needle": "def test_every_registered_command_resolves_to_a_payload",
+            "files": ["source/nyhal-linux-backend/tests/test_nyrqisctl_payload_surface.py"],
+        },
+    ),
 ]
 
 

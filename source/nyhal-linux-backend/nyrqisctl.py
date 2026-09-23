@@ -3429,8 +3429,14 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "delete_slo",
             "name": args.name,
         }
-    raise ValueError(f"unknown command: {command!r}")
 
+    # Removed 2026-09-23: a stray unconditional `raise ValueError(...)`
+    # sat HERE since the CLI's first commit (4bb68bb), cutting off ~300
+    # payload branches that follow (audit chains, SLOs, GPU, RBAC,
+    # chaos, mesh, canary, capacity, tracing, topology, ...) — those
+    # commands parsed fine but crashed with "unknown command" at
+    # runtime. The function's real terminator is the raise before
+    # `def _fmt_bytes`. Pinned by tests/test_nyrqisctl_payload_surface.py.
     if command == "analyze-resource-usage":
         return {
             "service": "control",
@@ -4765,7 +4771,7 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "chain_id": args.chain_id,
             "index": args.index,
         }
-    if command == "audit-summary":
+    if command == "audit-chain-summary":
         return {
             "service": "control",
             "op": "get_audit_summary",
@@ -13911,8 +13917,20 @@ def build_parser() -> argparse.ArgumentParser:
     ae.add_argument("--index", type=int, required=True)
     ae.set_defaults(command="audit-entry")
 
-    asum.add_argument("--chain-id", required=True)
-    asum.set_defaults(command="audit-summary")
+    # Fixed 2026-09-23: this block previously MUTATED the `asum`
+    # variable (alert-summary's parser, line ~10336) instead of
+    # creating its own — it bolted a required --chain-id onto
+    # alert-summary, hijacked its command default to "audit-summary"
+    # (breaking `nyrqisctl alert-summary` outright), and left the
+    # chain summary reachable only through the container variant's
+    # "audit-summary" build_payload branch. The chain summary now has
+    # its own command name and parser.
+    acs = sub.add_parser(
+        "audit-chain-summary",
+        help="Audit hash-chain summary (by chain id; ADR-0018 "
+             "machinery)")
+    acs.add_argument("--chain-id", required=True)
+    acs.set_defaults(command="audit-chain-summary")
 
     eac = sub.add_parser("export-audit-chain", help="Export audit chain")
     eac.add_argument("--chain-id", required=True)

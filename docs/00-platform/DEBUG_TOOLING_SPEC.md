@@ -1,7 +1,7 @@
 ---
 title: Debug Tooling — `nyrqisctl debug` (design note for the M14 Phase 3 item)
 document_id: DBG-001
-version: 0.3.0
+version: 0.3.1
 status: Draft
 classification: Informative
 owners:
@@ -100,14 +100,18 @@ operator-local).
    inside each container's detail). Second, the chain-head path is
    served by `--chain-id ID`: the existing `get_audit_summary` /
    `verify_audit_chain` ops run per supplied id and land in
-   `audit-chains.json`. There is no chain-LISTING op, so ids are
+   `audit-chains.json`. There is no   chain-LISTING op, so ids are
    operator-supplied — auto-discovery would be new daemon surface and
    stays out of scope. Bonus find of the same class as the
-   PackageManager duplicate-method bug: `build_payload` maps
-   `"audit-summary"` twice (container variant first-wins shadows the
-   chain variant), so the bundle composes the chain ops' wire shapes
-   directly — the shadow is recorded here, not silently relied on or
-   unilaterally fixed (it is outside this document's surface).
+   PackageManager duplicate-method bug, **now repaired (CR-0037):**
+   the chain summary had never had its own command — the registration
+   block reused alert-summary's parser variable, breaking
+   `nyrqisctl alert-summary` outright, and the same commit series had
+   left a stray unconditional `raise ValueError` mid-`build_payload`
+   that made ~300 registered commands crash with "unknown command".
+   The chain summary is now `audit-chain-summary --chain-id`,
+   alert-summary is restored, and the whole parse→payload surface is
+   pinned by `test_nyrqisctl_payload_surface.py`.
 4. *No `state.json` summary.* Surfacing the daemon state file's
    summary touches the recovery-manifest disclosure rule; deferred
    until that surface is decided rather than risked in a convenience
@@ -149,10 +153,12 @@ this rider when there is demand.
    `CAP-DEBUG-ATTACH` and the launcher-mediated attach channel (this
    note is the pre-read). The roadmap item stays OPEN for Phase B —
    striking it as done would be false.
-3. The `build_payload` duplicate `"audit-summary"` mapping (deviation
-   3) should be fixed in `nyrqisctl` proper — one rename or explicit
-   dispatch — by whoever owns the CLI surface; the bundle does not
-   depend on it either way.
+3. ~~The `build_payload` duplicate `"audit-summary"` mapping~~ —
+   **repaired (v0.3.1, CR-0037)**: the chain summary has its own
+   `audit-chain-summary` command; the stray mid-function raise that
+   killed ~300 further commands is gone; the surface is pinned by a
+   sweep test. The bundle still composes the ops' wire shapes
+   directly, so it never depended on the fix either way.
 
 ## Revision History
 
@@ -161,3 +167,4 @@ this rider when there is demand.
 | 0.1.0   | 2026-09-23 | Initial draft — surface audit, three-phase split, the trust case for the attach channel |
 | 0.2.0   | 2026-09-23 | Phase A + Phase C rider landed; §3/§5 rewritten as built with four recorded deviations; §6 updated — Phase B stays Group-gated, item stays open |
 | 0.3.0   | 2026-09-23 | Deviations 2+3 resolved: redaction default-on (--redact/--no-redact); per-container audit trails (correcting a real wire-contract violation the scripted tests had masked); --chain-id summary+verification capture; the build_payload "audit-summary" shadow recorded for its owner |
+| 0.3.1   | 2026-09-23 | The recorded shadow repaired (CR-0037): audit-chain-summary command registered properly, alert-summary un-hijacked, the stray mid-build_payload raise removed (~300 commands were unreachable since the CLI's first commit), parse→payload surface pinned by test_nyrqisctl_payload_surface.py |
