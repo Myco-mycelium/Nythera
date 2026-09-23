@@ -135,12 +135,12 @@ mediated recommendation.** What was decided:
   implementation lands**.
 - Every attach/detach session remains audit-chained (ADR-0018).
 
-Not yet landed (the D7 implementation work items, in order): the
-NPS-021 addendum; NPS-011 v1.4.0's registry entry; the launcher's
-manifest-class plumbing and debug-image staging; the
-`nyrqisctl containers debug` op family. The "step-through,
-breakpoints" roadmap wording now has a decided design behind it; the
-roadmap item stays `[~]` until the implementation lands.
+Not yet landed (the D7 implementation work items, in order): ~~the
+NPS-021 addendum; NPS-011 v1.4.0's registry entry~~ **done 2026-09-23**
+(see §4.1's addendum note); the launcher's manifest-class plumbing and
+debug-image staging; the `nyrqisctl containers debug` op family. The
+"step-through, breakpoints" roadmap wording now has a decided design
+behind it; the roadmap item stays `[~]` until the implementation lands.
 
 ### The original Phase B proposal (retained for the record)
 

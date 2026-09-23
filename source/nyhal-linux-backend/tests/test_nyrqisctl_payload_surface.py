@@ -58,9 +58,10 @@ class PayloadSurfaceTests(unittest.TestCase):
         with "unknown command" is the stray-raise / unmapped-command
         class — forbidden. Other exceptions are tolerated ONLY as
         lenient-namespace artifacts: TypeError/AttributeError from
-        payloads that coerce attrs, and ValueError subclasses
-        (JSONDecodeError) from the two commands whose payloads read
-        stdin/files (event-log-compress, event-log-import) — those are
+        payloads that coerce attrs, ValueError subclasses
+        (JSONDecodeError) or pytest's captured-stdin OSError from the
+        two commands whose payloads read stdin/files
+        (event-log-compress, event-log-import) — those are
         mapped commands with real I/O, not unreachable branches.
         """
         registered = _registered_commands()
@@ -76,6 +77,14 @@ class PayloadSurfaceTests(unittest.TestCase):
                     dead.append(name)
             except (TypeError, AttributeError):
                 pass
+            except OSError as exc:
+                # pytest's captured-stdin artifact from the two
+                # stdin-reading payloads — probe noise, not an
+                # unreachable branch. Any other OSError re-raises.
+                if "stdin" in str(exc) or "captured" in str(exc):
+                    pass
+                else:
+                    raise
         self.assertEqual(dead, [],
                          "commands registered by build_parser but "
                          "unreachable in build_payload: %r" % dead)

@@ -1,14 +1,14 @@
 ---
 title: Privilege Boundaries and Capability Escalation Analysis
 document_id: NPS-021
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Normative
 subsystem: security
 owners:
   - Nyrqis Architecture
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-09-23
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, NPC-009, NPS-018, NPS-019, NPS-020, NPS-010, NPS-011]
@@ -34,6 +34,15 @@ It does not re-litigate `FIND-BACKEND-001` (a NyHAL backend actually
 enforcing what NyCore assumes) — that belongs to Phase 4 (Container
 Escape Analysis & Runtime Isolation), since it's a backend-conformance
 question, not a capability-model question.
+
+**2026-09-23 addendum (v1.1.0):** §4.8 and §5.5 extend the analysis to
+the debug-attach surface decided by the Architecture Group (AG decision
+log **D7**, AG_AGENDA §"Standing items, registered 2026-09-23"): the
+`CAP-DEBUG-ATTACH` capability and the `debug: true` manifest class,
+with the seccomp profile's ptrace denial relaxed for that manifest class
+only. This addendum is the precondition D7 itself set: NPS-021
+"requires an escalation-pass addendum over the new surface before
+implementation lands."
 
 ## 3. Privilege Boundary Map
 
@@ -120,6 +129,74 @@ unverified claim (implementation doesn't exist yet).
   project's threat model scopes technical controls, not organizational
   ones, and conflating them would blur where a fix actually belongs).
 
+### 4.8 New surface (D7): the debug attach channel — ptrace relaxation inside debug-class containers
+
+**The surface, precisely:** AG decision log **D7** (2026-09-23) adds a
+`debug: true` manifest class plus a `CAP-DEBUG-ATTACH` capability
+(NPS-011 v1.4.0), with debugpy (Python) / gdbserver (Rust) running
+**inside** the debugged container and the seccomp profile's ptrace
+denial relaxed **for that manifest class only** — a named,
+capability-gated exception to the `FIND-BACKEND-002` hardening. This
+section extends the attack tree to that surface before the
+implementation lands, per D7's own precondition.
+
+**Why the relaxation is bounded — three fences, in enforcement order:**
+
+1. **The PID namespace fence (structural, already in place):**
+   containers run in their own PID namespaces (the backend's direct
+   `unshare(2)`/`fork(2)` launch path, `backend/container.py`; the
+   legacy `unshare(1)` path shares the property). `ptrace(2)`
+   attach is scoped to processes the tracer can see; a debugger
+   *inside* the container can therefore only trace processes within
+   that same PID namespace — never sibling containers, never host
+   processes — regardless of the seccomp change. What the relaxation
+   restores is intra-container introspection: visibility comparable to
+   what the container's own root already has over its own processes.
+2. **The construction-time gate (to be built):** the ptrace denial
+   lives in `_ALWAYS_DENY` (`backend/seccomp.py`) — syscalls "denied
+   regardless of what capabilities a container holds." A runtime
+   capability hook would contradict that invariant and add a
+   per-syscall evaluation to race against. The exception MUST instead
+   be a **manifest-class-conditional policy construction**: the debug
+   class builds its policy with ptrace/process_vm_readv/
+   process_vm_writev omitted from the always-deny set. The gate is
+   then evaluated exactly once, at policy construction, from the
+   manifest — there is no runtime flag to flip.
+3. **The authorization fence (unchanged):** default-deny operator
+   authorization at the IPC layer (NPS-011 §4.3, NPS-010 §4.2) applies
+   to every control op touching debug-class containers; attach-class
+   operations are operator-only (the same posture the `nui-validate`
+   op already has). The only known container-entry channel today is
+   operator-mediated exec; D7 does not change that.
+
+**Attack-tree nodes this surface adds:**
+
+- **Attack the manifest:** a production workload declares `debug: true`
+  (or has it retrofitted) to inherit the relaxed posture. Manifest
+  evaluation (NPS-010 §4.2) binds what was validated to what runs —
+  `FIND-CAPABILITY-001`'s atomicity requirement applies to the class
+  declaration exactly as it does to capability grants — and the debug
+  class MUST be user-visible at evaluation time, not silently accepted.
+- **Attack the grant:** `CAP-DEBUG-ATTACH` treated as ceremonial —
+  granted by habit the way §5.4's soft paths arise. §5.5's requirements
+  close this by making the entry denied-by-default and class-conditional.
+- **Attack the relaxation's scope:** a debug-class container used as a
+  stepping stone. The PID-namespace fence caps what ptrace itself can
+  reach; lateral movement toward sibling containers or the host would
+  require the §3 boundaries to fail *independently* of this change. No
+  new cross-container path is opened by D7.
+- **Attack the tooling:** debugpy/gdbserver are network listeners by
+  nature, inside the boundary. `CAP-NETWORK-LISTEN` (High tier,
+  prompt-required) applies to any non-loopback debug endpoint; the
+  honest default is loopback-only binding inside the container.
+
+**Cross-cutting — the `FIND-BACKEND-002` relationship:** the hardening
+that denied ptrace did so as a static always-deny list; D7 creates the
+platform's first named exception to it. The exception must be as loud
+as the denial: the policy-construction site carries the D7 citation,
+and the class name is greppable in the builder — never a bare boolean
+flag passed through an unmarked code path.
+
 ## 5. Deep-Dive Analysis
 
 ### 5.1 `FIND-CAPABILITY-001` — Capability Definition Race
@@ -194,6 +271,54 @@ finding with a runtime fix. Recorded here so it isn't lost, tracked
 against `NPC-008` rather than against a capability-enforcement mechanism
 that wouldn't be the right tool for this particular risk.
 
+### 5.5 `FIND-CAPABILITY-006` — The Debug-Class Manifest as a Privilege Gradient
+
+**The gap, precisely:** D7's `debug: true` manifest class plus
+`CAP-DEBUG-ATTACH` create a second manifest class whose isolation is
+deliberately weaker, entered by a single boolean in the manifest. The
+capability model's own history is the warning: classes that begin as
+developer conveniences drift into production postures (§5.4's lesson —
+process facts outlive their justifications). If debug-class is merely
+advisory metadata, the ptrace relaxation is a load-bearing flag that
+nobody is accountable for.
+
+**Why this matters:** unlike `FIND-CAPABILITY-004`'s over-grant (one
+capability at the wrong granularity), this is an over-grant at the
+**policy-construction layer**: the container's entire syscall posture
+differs by a manifest boolean. It is the widest single-bit privilege
+gradient in the platform, and it is being added *by decision* — which
+is exactly why it must be made visible, gated, and auditable now rather
+than after debug containers are normalized.
+
+**Resolution — requirements the implementation MUST satisfy** (the
+registry entry is applied in §6):
+
+1. `CAP-DEBUG-ATTACH` is registered **High** risk tier, default grant
+   **"Denied by default; debug manifest class only; operator-only
+   operations"** — the first capability whose grantability is
+   conditional on a manifest class (§2's entry format accommodates it
+   in the Default Grant field).
+2. The debug manifest class MUST be visible in every surface that
+   reports container state (status, containers list, the debug
+   bundle's meta): a debug-class container is never indistinguishable
+   from a production one in operator tooling.
+3. The seccomp relaxation MUST be constructed at policy-build time
+   from the manifest class — never a runtime per-syscall evaluation
+   against a shared static profile — keeping the gate inside the
+   audited construction site (§4.8, fence 2).
+4. Debug tooling endpoints MUST default to loopback-only binding
+   inside the container; any wider binding additionally requires
+   `CAP-NETWORK-LISTEN` per its own registry entry.
+5. The hash-chained audit log (ADR-0018) MUST record the manifest
+   class at evaluation time, so that "this container ran debug-class"
+   is tamper-evidently part of the very trail the debug tooling
+   captures (DBG-001 Phase A `--chain-id`).
+
+**Severity:** High/High as a design requirement — the mitigations are
+cheap now (class visibility, a construction-time gate, one registry
+row) and expensive later (retrofitting visibility after the class is
+deployed).
+
 ## 6. Resolutions Applied This Pass
 
 | Finding | Resolution | Where |
@@ -203,6 +328,7 @@ that wouldn't be the right tool for this particular risk.
 | `FIND-CAPABILITY-003` | Formalized as an individually-testable requirement | `REQ-IPC-0004` |
 | `FIND-CAPABILITY-004` | `CAP-MEDIA-LIBRARY` split into `CAP-MEDIA-IMAGES`, `CAP-MEDIA-VIDEO`, `CAP-MEDIA-AUDIO` | `NPS-011` v1.3.0 |
 | `FIND-CAPABILITY-005` | Recorded, not resolved technically — flagged for a future `NPC-008` governance revision | This document only |
+| `FIND-CAPABILITY-006` | `CAP-DEBUG-ATTACH` registered (High tier, denied-by-default, debug-manifest-class-only, operator-only ops); debug class user-visible in state surfaces; seccomp relaxation construction-time only; loopback-default debug endpoints; manifest class recorded in the audit chain | `NPS-011` v1.4.0, this document §4.8/§5.5, AG decision log D7 |
 
 All five findings from this phase have a disposition; none are left as a
 bare observation with nowhere to go, per NPS-018 §8.
@@ -212,6 +338,7 @@ bare observation with nowhere to go, per NPS-018 §8.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-13 | Initial draft — Phase 3 of the threat model (privilege boundaries and capability escalation) |
+| 1.1.0   | 2026-09-23 | D7 addendum: §4.8 analyzes the debug-attach surface (PID-namespace fence, construction-time seccomp gate, authorization fence, attack nodes); §5.5 adds `FIND-CAPABILITY-006` (the debug-class privilege gradient) with the requirements the implementation MUST satisfy. Precondition for the D7 implementation landing |
 
 ---
 **End of Document**

@@ -666,6 +666,26 @@ CLAIMS: list[Claim] = [
             "files": ["docs/00-platform/AG_BRIEF_DEBUG_ATTACH.md"],
         },
     ),
+    Claim(
+        claim_id="debug-attach-escalation-pass",
+        pattern=r"CAP-DEBUG-ATTACH",
+        description="D7's precondition met: NPS-021 v1.1.0's addendum (§4.8 surface analysis — the PID-namespace fence verified from backend/container.py, the construction-time seccomp gate required because _ALWAYS_DENY is static, the operator-only authorization fence; §5.5 FIND-CAPABILITY-006 with five MUST requirements) — design requirements only, no implementation claimed",
+        check="path_contains",
+        check_args={
+            "needle": "FIND-CAPABILITY-006",
+            "files": ["docs/reference/security/NPS-021-privilege-and-escalation-analysis.md"],
+        },
+    ),
+    Claim(
+        claim_id="cap-debug-attach-registered",
+        pattern=r"CAP-DEBUG-ATTACH",
+        description="NPS-011 v1.4.0 registers CAP-DEBUG-ATTACH — the first class-conditional capability (High tier, denied by default, debug-manifest-class-only, operator-only ops) — with §4.4 making the class rule normative: necessary never sufficient, reject at manifest evaluation, user-visible declaration",
+        check="path_contains",
+        check_args={
+            "needle": "4.4. **Class-conditional default grants.**",
+            "files": ["docs/reference/capability-registry/NPS-011-capability-registry.md"],
+        },
+    ),
 ]
 
 

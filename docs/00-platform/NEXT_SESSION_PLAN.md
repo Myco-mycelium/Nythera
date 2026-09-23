@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.18.0
+version: 6.18.1
 date: 2026-09-23
 ---
 
@@ -40,6 +40,15 @@ Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
 confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
+
+## SESSION ITEM — Wed 2026-09-23 (late afternoon): the D7 preconditions landed — the escalation addendum and the registry entry, with the analysis's load-bearing fact verified first
+
+| Item | Status |
+|------|--------|
+| **The load-bearing fact verified before writing the addendum** | ✅ Two checks shaped the whole analysis: (1) containers run in their **own PID namespaces** (the backend's direct `unshare(2)`/`fork(2)` launch path) — `ptrace` attach is namespace-scoped by the kernel, so the D7 relaxation restores *intra-container* introspection only and opens **no cross-container path** regardless of the seccomp change; (2) the ptrace denial is a **static** `_ALWAYS_DENY` list ("denied regardless of what capabilities a container holds") — so a runtime capability hook would contradict that invariant and race; the exception MUST be a **manifest-class-conditional policy construction**, gate evaluated once at policy build. Both facts are pinned in the addendum with their sources (`backend/container.py`, `backend/seccomp.py`) |
+| **NPS-021 v1.1.0 — the D7 precondition itself** | ✅ §4.8 extends the attack tree to the debug-attach surface: three fences in enforcement order (PID namespace / construction-time gate / operator-only authorization) and four attack nodes (attack the manifest, attack the grant, attack the relaxation's scope, attack the tooling — debugpy/gdbserver are network listeners; loopback-only is the honest default, anything wider needs `CAP-NETWORK-LISTEN`). §5.5 adds `FIND-CAPABILITY-006` — the debug-class manifest as the platform's **widest single-bit privilege gradient** — with five MUST requirements (High/denied-by-default/class-conditional entry; class visible in every state surface; relaxation construction-time only; loopback-default endpoints; manifest class recorded in the ADR-0018 audit chain). §6 resolution row + revision history. Explicitly scoped: design requirements only — no implementation claimed |
+| **NPS-011 v1.4.0 — the registry entry** | ✅ `CAP-DEBUG-ATTACH`: the first capability whose grantability is **conditional on a manifest class** — High tier, denied by default, debug-manifest-class-only, operator-only operations, with the PID-namespace scope stated in the description. New §4.4 makes the class rule normative: the class is a **necessary, never sufficient** condition; a request from a non-debug manifest MUST be rejected at manifest *evaluation* (visible earliest), not merely denied at grant; the debug declaration MUST be user-visible. `depends_on` gains NPS-021; revision row cites D7 + FIND-CAPABILITY-006 |
+| **Reconciliations** | ✅ DBG-001 §4's work-item list: the first two of four struck as done (launcher plumbing + `containers debug` ops remain). AG_AGENDA v2.1.0: the D7 record carries the precondition-satisfied note and its status line now says "NPS-021 addendum (v1.1.0) and NPS-011 v1.4.0 landed 2026-09-23". Spec index v1.36.0 records the pass. Process note, recorded for honesty: the NPS-021 front-matter edit was first applied as a full-file overwrite that truncated the document — caught immediately and reverted via `git checkout` before any other edit, then re-applied as targeted edits |
 
 ## SESSION ITEM — Wed 2026-09-23 (afternoon): the ungated M14 Phase 3 items worked the honest way — audited, wired, and shipped where the evidence carried
 

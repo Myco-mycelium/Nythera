@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.35.0
+version: 1.36.0
 status: Draft
 classification: Reference
 owners:
@@ -185,6 +185,7 @@ change process.
 | 1.33.0  | 2026-09-23 | The debug-attach decision registered on AG_AGENDA v1.9.0 as the Group's third standing item: AG-BRIEF-DBG-PHASEB (v1.0.0) — surface audit (the only entry today is host-side nsenter exec; no CAP-DEBUG-ATTACH in NPS-011 §3), regulatory frame (NPS-011 §4.3/§5, ADR-0018, NPS-021 pass), three options (A launcher-mediated operator-only recommended; B in-container sidecar; C observational close), downstream sized. Also: the .nstudio design gate (`scripts/check_nstudio_designs.sh`) wired into the docs workflow |
 | 1.34.0  | 2026-09-23 | **The AG sitting decided (D5–D7):** D5 — NPS-028 **Accepted** with amendments (§5.3 thaw trigger named; decision-day evidence in §1; the §6.7.3 fence remains recorded); D6 — **BUILD-ARCH canonical** (v2.0.0: BUILD-001's policy absorbed, crate tables refreshed to 18 crates/305 tests, the Accepted marking D6-sanctioned, the docs/reference/build copy removed, citations re-pointed); D7 — **debug attach via developer-mode manifests (Option B)**: CAP-DEBUG-ATTACH + a `debug: true` manifest class, ptrace relaxation inside debugged containers, NPS-011 v1.4.0 + NPS-021 addendum to follow — implementation, not yet landed |
 | 1.35.0  | 2026-09-23 | D5/D6/D7 landed across the tree: NPS-028 v1.0.0 (Accepted + amendments), BUILD-ARCH v2.0.0 (canonical, merged, refreshed), TUT-003 depends_on + sdk citations re-pointed to BUILD-ARCH, DBG-001 v0.4.0 (Phase B decided, work items listed), AG_AGENDA v2.0.0 (all three standing items decided), the duality premise pin replaced by build-architecture-unified |
+| 1.36.0  | 2026-09-23 | D7 preconditions landed: NPS-021 v1.1.0 (§4.8 debug-attach surface analysis — the PID-namespace fence, the construction-time seccomp gate, the authorization fence; §5.5 FIND-CAPABILITY-006 with five MUST requirements) and NPS-011 v1.4.0 (`CAP-DEBUG-ATTACH`: High tier, denied by default, class-conditional per new §4.4, operator-only ops); AG_AGENDA v2.1.0 (D7 record updated); DBG-001 work-items list updated |
 | 1.28.0  | 2026-09-22 | NPS-028's implementation COMPLETE + validated (v0.9.0–v0.9.3): the production process model (PkiDaemonRunner + pki serve + nyrqis-pki.service), the daemon drill (found + closed the binary-over-JSON wire gap), §5.1's out-of-band daemon wiring, and §10's 15-claim validation record (NPC-002 §5.1/§5.2 evidence); the NPS-028 acceptance review registered on AG_AGENDA v1.7.0 as the platform's one standing item |
 | 1.26.0  | 2026-09-21 | Add NPS-028 (Package PKI Implementation Surface, Draft) — the key store, verification pipeline, revocation channel, enrollment flow, and audit trail the accepted NPS-027/NPS-026 §6.3 trust model needs built; also reconciles this table's NPS-010 cell which still read Draft after its sanctioned 2026-09-19 acceptance |
 

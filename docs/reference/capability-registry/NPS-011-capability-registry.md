@@ -1,14 +1,14 @@
 ---
 title: Capability Registry
 document_id: NPS-011
-version: 1.3.0
+version: 1.4.0
 status: Accepted
 classification: Normative
 subsystem: security
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-07-13
+updated: 2026-09-23
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NTM-000, NPC-001, NPS-002, NPS-008, NPS-010]
@@ -73,6 +73,7 @@ Every capability class **MUST** be recorded with:
 | `CAP-MEDIA-AUDIO` | Read the user's audio library | Medium | `android.permission.READ_MEDIA_AUDIO` | Prompt required |
 | `CAP-NEAR-FIELD` | Access NFC hardware | Medium | `android.permission.NFC` | Prompt required |
 | `CAP-BIOMETRIC` | Request biometric authentication (fingerprint/face) via the platform's own prompt, without exposing raw biometric data to the application | Low | `android.permission.USE_BIOMETRIC` | Default grant (the OS-owned prompt itself, not raw sensor access, is what's exposed) |
+| `CAP-DEBUG-ATTACH` | Attach debugger tooling (debugpy/gdbserver) to processes **within the same container** — PID-namespace-scoped, per NPS-021 §4.8; requires the `debug: true` manifest class, whose seccomp ptrace denial is relaxed at policy-construction time for that class only (NPS-021 §4.8, fence 2) | High | — | Denied by default; debug manifest class only; operator-only operations (AG decision log D7; NPS-021 §5.5) |
 
 ## 4. Default Grant Behavior
 
@@ -90,6 +91,20 @@ not revoked it.
 standard prompt flow; they require an explicit administrative or
 developer-mode action, since their Risk Tier reflects platform-level
 rather than per-app-data risk.
+
+4.4. **Class-conditional default grants.** One capability is grantable
+**only** to manifests that declare a specific manifest class:
+`CAP-DEBUG-ATTACH` is grantable only to containers whose manifest
+declares `debug: true` (the developer-mode class of AG decision log
+D7). The manifest class is a **necessary** condition, never a
+sufficient one: for a qualifying manifest the capability is still
+denied by default and MUST be requested explicitly and evaluated under
+the operator-only authorization posture of NPS-010. A request for
+`CAP-DEBUG-ATTACH` from a manifest that does not declare `debug: true`
+MUST be rejected at manifest evaluation (NPS-010 §4.2) as invalid —
+not merely denied at grant time — so the mismatch is visible at the
+earliest check, and the debug-class declaration itself MUST be
+user-visible at evaluation time (NPS-021 §5.5, requirement 2).
 
 ## 5. Adding a New Capability
 
@@ -132,6 +147,7 @@ added here, rather than approximated.
 | 1.1.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 | 1.2.0   | 2026-07-13 | Add `CAP-CONTACTS`, `CAP-CALENDAR`, `CAP-TELEPHONY`, `CAP-SMS`, `CAP-SENSORS`, `CAP-MEDIA-LIBRARY`, `CAP-NEAR-FIELD`, `CAP-BIOMETRIC` — expanding Android permission mapping per §6, still intentionally incomplete |
 | 1.3.0   | 2026-07-13 | Split `CAP-MEDIA-LIBRARY` into `CAP-MEDIA-IMAGES`/`CAP-MEDIA-VIDEO`/`CAP-MEDIA-AUDIO`, closing threat model finding FIND-CAPABILITY-004 (NPS-021 §5.3): the single coarse capability could over-grant relative to a narrower Android permission request |
+| 1.4.0   | 2026-09-23 | Add `CAP-DEBUG-ATTACH` (High tier, denied by default, debug-manifest-class-only, operator-only operations) and §4.4's class-conditional grant rule, per AG decision log D7 and the NPS-021 v1.1.0 escalation-pass addendum (FIND-CAPABILITY-006) — D7's precondition before any debug-attach implementation lands. NPS-021 is cited in-body rather than added to `depends_on`: the registry is a leaf of the citation DAG (documents depend on it, it depends on none of its dependents), and adding the edge would cycle through NPS-018 |
 
 ---
 **End of Document**

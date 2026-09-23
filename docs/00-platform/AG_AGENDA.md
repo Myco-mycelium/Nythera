@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 2.0.0
-status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; NPS-011 v1.4.0 + NPS-021 addendum to follow; implementation NOT yet landed). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
+version: 2.1.0
+status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -445,6 +445,15 @@ The registered text below is retained for the record.
   the capability entry, the manifest class, and the relaxation's
   gate; the implementation (launcher plumbing, image staging, IPC
   ops) is a new work item and is NOT landed in the decision commit.
+  **D7 precondition satisfied 2026-09-23:** the NPS-021 v1.1.0
+  addendum (§4.8 surface analysis: the PID-namespace fence, the
+  construction-time seccomp gate, the authorization fence, the attack
+  nodes; §5.5 `FIND-CAPABILITY-006` with five MUST requirements) and
+  the NPS-011 v1.4.0 entry (High tier, denied-by-default,
+  class-conditional per new §4.4, operator-only ops) are landed.
+  Remaining before any attach session runs: launcher manifest-class
+  plumbing, debug-image staging, the `nyrqisctl containers debug` op
+  family.
 
 The registered text below is retained for the record.
 
