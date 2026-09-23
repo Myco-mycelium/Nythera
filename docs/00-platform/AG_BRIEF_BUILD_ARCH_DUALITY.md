@@ -1,8 +1,8 @@
 ---
 title: AG Review Input — BUILD-001 vs BUILD-ARCH (the build-architecture duality)
 document_id: AG-BRIEF-2026-09-BUILDARCH
-version: 1.0.0
-status: Suggest-side — awaiting the Architecture Group decision (registered AG_AGENDA v1.8.0, 2026-09-23)
+version: 1.0.1
+status: Suggest-side — awaiting the Architecture Group decision (registered AG_AGENDA v1.8.0, 2026-09-23); v1.0.1 corrects the Python-floor row after the shipped-metadata check (pyproject >=3.10; CI runs 3.11+3.12) and adds the verified merge kit
 owners: [Nyrqis Architecture]
 created: 2026-09-23
 ai_assisted: true
@@ -70,7 +70,21 @@ centers of gravity**:
 | Python floor | `python3.12+` | `python3 ≥ 3.10.0` |
 | Virtual environments | "no virtual environments for production" | documents venv as built-in support |
 | Windows target | `x86_64-pc-windows-msvc` (translation layer, future) | absent from the target table |
-| Crate inventory | prose list, no versions | 18-crate table with ABI versions + test counts (2026-09-01 vintage — the per-crate counts no longer match the current tree, e.g. the compositor crate's own suite has grown an order beyond its table row) |
+| Crate inventory | prose list, no versions | 18-crate table with ABI versions + test counts (2026-09-01 vintage — per-crate counts no longer match the tree: grep-level `#[test]` total is **305 today vs the table's 121**; compositor alone is 67 vs its table row of 8) |
+
+**Correction (v1.0.1 — the evidence pass caught this brief's own first
+draft):** on the Python floor, the shipped metadata sides with
+**BUILD-ARCH**: `source/nyhal-linux-backend/pyproject.toml` declares
+`requires-python = ">=3.10"`, and CI itself runs **3.11 and 3.12**
+(`ci.yml` lines 102/111/637/664) — so BUILD-001's `python3.12+` is
+wrong as a *floor* (3.11 is exercised in CI right now), while
+BUILD-ARCH's `≥ 3.10.0` matches `pyproject.toml` verbatim. The venv
+row downgrades to reconcilable: BUILD-001 states a *production*
+posture; BUILD-ARCH's table is a *development toolchain* listing —
+not a real conflict. Lesson recorded: a pre-read's contradiction
+table is itself a claim set and must be verified against the tree
+like any other — the first draft asserted the opposite on its
+strongest-looking row.
 
 Neither document cites the other. A reader following links from the
 sdk or TUT-003 lands on BUILD-001 and never learns BUILD-ARCH exists;
@@ -104,7 +118,7 @@ practical content; remove the BUILD-ARCH copy.**
 |---|---|
 | Zero citation breakage | the roadmap, TUT-003, and the sdk already cite BUILD-001 |
 | The practical reference (crate graph, per-crate tables, build commands) is real value that should not be lost | fold it into BUILD-001 as new sections (verified against the tree at merge time — the stale test counts are corrected by the act of merging) |
-| The contradictions resolve in one direction | BUILD-001's 3.12 floor and no-venv posture match ADR-0020's platform-boundary principle and the backend's own practice; BUILD-ARCH's 3.10/venv text predates it |
+| The contradictions resolve in one direction — but NOT the one v1.0.0 drafted | the shipped metadata (corrected above) means the merge must **correct BUILD-001's toolchain table from `pyproject.toml`** (`>=3.10`, CI 3.11/3.12), not absorb BUILD-ARCH's rows wholesale; the practical reference proved the more current source on the floor |
 | The Accepted marking disappears with the file | no retroactive record needed for a deleted document; if the merged content deserves Accepted, the Group grants it to BUILD-001 forward, on its own evidence |
 | Cost | one merge pass + one file deletion; the `build-architecture-dual-doc` premise pin is updated to assert the duality is *resolved* (single document_id) |
 
@@ -144,7 +158,33 @@ copy removed; no decision record existed for BUILD-ARCH's Accepted
 marking; the marking is dissolved with the file" — plus the premise-pin
 update.
 
-## 6. Downstream touch points if the decision lands
+## 6. The merge kit (verified 2026-09-23 — ready only if Option A is accepted)
+
+Not executed here: the merge is the Group's decision to unleash, and
+pre-empting it would repeat the unsanctioned-flip class on the other
+side. What this section adds is the verification work the merge will
+need, done once so the decision session can size the whole item:
+
+- **The per-crate test table, corrected to today** (grep-level
+  `#[test]` counts, 2026-09-23): compositor 67, wayland 27, nyui 26,
+  ipcd 24, egl 16, seccomp 15, container 14, nyruntime 14, syscalls
+  14, gbm 15, drm 8, keys 8, nycore 8, launcher 10, nyfs 10, ipc 11,
+  transport 5, vulkan 13 — total **305** vs the 2026-09-01 table's
+  121. Exact counts belong to the merge pass (the table should cite
+  the contract suite, not a grep).
+- **The toolchain rows to correct in BUILD-001**: Python floor
+  `>=3.10` per `pyproject.toml` (CI exercises 3.11 + 3.12); the
+  no-venv production posture stays as written — it is policy, not a
+  contradiction.
+- **A host-hygiene find the practical doc's own commands exposed:** a
+  literal `*` directory exists at `source/nyhal-linux-backend/rust/*`
+  (empty, untracked, created 2026-08-16 — a failed shell expansion).
+  BUILD-ARCH's documented `for crate in */` build loops would descend
+  into it and abort at `cargo build` — the practical reference's
+  commands fail on this host today. The merge pass must re-verify
+  every documented command; the directory is removed in this commit.
+
+## 7. Downstream touch points if the decision lands
 
 Whichever option the Group picks, these follow automatically and are
 listed so the decision session can size the work: the roadmap's M11
@@ -154,7 +194,7 @@ mentions (only if B), the `build-architecture-dual-doc` premise pin in
 `tools/check_doc_premises.py`, and `NEXT_SESSION_PLAN.md`'s session
 item. None blocks the decision itself.
 
-## 7. What the reviewer is asked to decide
+## 8. What the reviewer is asked to decide
 
 1. Canonical document_id (the options ledger above).
 2. The other copy's disposition (merge-and-remove / re-point / split).
