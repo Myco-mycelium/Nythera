@@ -6,7 +6,7 @@ date: 2026-09-19
 
 # Next Development Session Plan
 
-## STANDING ITEM — Wed 2026-09-23 05:37/05:52 UTC: the dailies' second fires — one-day backlog or a trend?
+## STANDING ITEM — CLOSED — Wed 2026-09-23 05:37/05:52 UTC: the dailies' second fires — one-day backlog or a trend?
 
 Tuesday's dailies both fired ~4.5 h late (PAT watcher 10:15:16, the
 new watcher 10:23:02) — inside the 8 h grace but a worse median than
@@ -37,6 +37,31 @@ been rotated, so the post-rotation dispatch verification stays pending. Tree
 re-verified this morning: `TestScheduledRunsWatchContract` 4/4, premises 28/28.
 **The final verdict is time-gated, not concluded: a check after 13:52 UTC decides**
 (a no-show by then is a real finding — three independent catchers stand ready).
+
+**CLOSED — PASS. Final verdict 10:22:58 UTC (the 13:52 UTC deadline never needed
+to arrive).** Spaced checks at 07:41, 07:51, 08:00, 08:29, 08:38, 08:46, 08:55,
+09:03, 09:12, 09:21, 09:29, 09:38, 09:46, 09:55 and 10:03/10:12 UTC all read not-
+yet-fired (token-authenticated 4-minute polling after the anonymous quota trip at
+08:00); the fires were detected 10:21:09 UTC. Both dailies fired within grace and
+completed success: the PAT watcher [#35847610394](https://github.com/Myco-mycelium/Nythera/actions/runs/35847610394)
+landed **10:14:10 UTC (4 h 37 m late)** and the self-checking watcher
+[#35848038737](https://github.com/Myco-mycelium/Nythera/actions/runs/35848038737)
+landed **10:18:31 UTC (4 h 27 m late)** — the pair released ~4 minutes apart
+again, both green. Both runs executed the pushed tip `7629c35` (verified via `git ls-remote`):
+honest note — the local repo carries eight unpushed commits (this record's
+`aa9ab9d` and the seven session-13 commits before it), and CI schedules execute
+the remote default branch, so the sha lags local by design until the operator
+pushes. `scripts/check_scheduled_runs.sh` at 10:22:58 UTC:
+**SCHEDULED RUNS: OK (exit 0)** — the third consecutive clean daily verdict and
+the second fire of the watcher checking itself. **The trend question is answered:
+the scheduler-wide lag is the stable pattern, not a one-day backlog** — every
+daily fire in the repo's history has landed in a 10:02–11:49 UTC band (Sun 10:02,
+Mon 11:01/11:49, Tue 10:15/10:23, Wed 10:14/10:18), median ~4.5 h late, with
+day-to-day drift of minutes and no missed-fire catcher ever tripping; the 8 h
+grace remains correctly sized. Operational note for manual verdict checks:
+anonymous API polling rate-limits hard at 60 req/h (KeyError noise mid-poll at
+08:00) — repeated checks should source the token from the 0600 credential store
+as the checker itself does.
 
 **Carried trigger — post-rotation dispatch verification:** if the PAT
 has been rotated by then (grants re-verified MISSING at 10:36 UTC

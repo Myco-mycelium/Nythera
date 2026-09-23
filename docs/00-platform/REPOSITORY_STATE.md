@@ -5,9 +5,9 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-09-23 (dailies' second-fire interim check — NOT YET FIRED at 07:20 UTC,
-within grace; final verdict time-gated to after 13:52 UTC — see
-`NEXT_SESSION_PLAN.md`)
+2026-09-23 (dailies' second-fire standing item CLOSED — PASS, 10:22 UTC: both
+fired within grace, completed success, SCHEDULED RUNS: OK; the daily scheduler
+lag is confirmed as the stable pattern — see `NEXT_SESSION_PLAN.md`)
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
