@@ -537,6 +537,26 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="nps029-identity-nps-exists",
+        pattern=r"NPS-029",
+        description="The Identity subsystem has its own NPS (NPS-029, Draft) — NPS-025 §4.14's placeholder is resolved",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: NPS-029",
+            "files": ["docs/reference/nps/NPS-029-identity-and-user-data-separation.md"],
+        },
+    ),
+    Claim(
+        claim_id="nps025-identity-resolved",
+        pattern=r"NPS-025",
+        description="NPS-025 v1.1.0 records §4.14 as resolved by NPS-029 — no object type remains a placeholder",
+        check="path_contains",
+        check_args={
+            "needle": "No object type remains a placeholder in this catalogue",
+            "files": ["docs/reference/object-registry/NPS-025-object-registry.md"],
+        },
+    ),
+    Claim(
         claim_id="nps028-remaining-draft-deps",
         pattern=r"remaining Draft dependency",
         description="NPS-028 v0.9.3 §1: the surface's remaining Draft dependency is only NPS-026 §9's canonicalization decision plus the Group's acceptance review",

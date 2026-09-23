@@ -1,14 +1,14 @@
 ---
 title: Object Registry
 document_id: NPS-025
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Normative
 subsystem: core-architecture
 owners:
   - Nyrqis Architecture
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-09-23
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NTM-000, NPC-001, NPS-004, NPS-006, NPS-009, NPS-010, NPS-011, NPS-012, NPS-013, NPS-014, NPS-015]
@@ -202,17 +202,20 @@ suggested for implementation and not yet normatively required.
 | **Permissions** | Each service runs as a container with its own granted capability set (NPS-010). |
 | **Relationships** | Composes the runtime; referenced by `Application` (4.3) and the boot sequence. |
 
-### 4.14 Identity *(placeholder — requires its own NPS)*
+### 4.14 Identity — RESOLVED by NPS-029 (v1.1.0, 2026-09-23)
 
 The roadmap (NPC-007, Milestone 11) and the external review both surfaced
 an **Identity subsystem** (user accounts, authentication, per-user data
-separation) that has **no governing NPS yet**. This entry is deliberately
-a placeholder: rather than specify identity objects here by indirection,
-an Identity subsystem **SHOULD** get its own NPS (per the roadmap's rule
-that new subsystems get their own NPS before being specified elsewhere),
-at which point the object type(s) it defines — at minimum a `User` object
-with ownership relationships to Workspaces, Packages, and per-user data
-(NPC-001 §10) — **MUST** be added to this catalogue.
+separation) that had no governing NPS. The gap is now closed: the
+Identity subsystem's own specification exists as
+[`NPS-029`](../nps/NPS-029-identity-and-user-data-separation.md), whose
+§4 defines the **`User`** and **`Session`** object types per this
+catalogue's entry format. Per §4.14's original instruction, the types
+NPS-029 defines are registered by that document's landing (this v1.1.0
+revision records the resolution); consult NPS-029 for their fields,
+lifecycle, permissions, and relationships. Ownership of Workspaces,
+Packages, and per-user data by a User (NPC-001 §10) is normative
+there. No object type remains a placeholder in this catalogue.
 
 ## 5. Serialization and Evolution
 
@@ -228,8 +231,9 @@ migration guide under `docs/how-to/` (NPC-001 §7).
 
 - Whether the registry is a single service or one per trust boundary is
   undecided; the boot sequence references a single capability/service
-  registry (NPS-001 §5 Stage 5) which is assumed here.- The `Identity` entry (§4.14) is unresolved by design pending its own
-  NPS.
+  registry (NPS-001 §5 Stage 5) which is assumed here.- ~~The `Identity` entry (§4.14) is unresolved by design pending its
+  own NPS~~ — resolved 2026-09-23: `NPS-029` now governs the Identity
+  subsystem and its `User`/`Session` object types.
 - Object ID format (globally unique vs. per-registry unique) is settled in
   ABI-001 §5.3 (globally unique within a device); this entry is retained
   only for the record.
@@ -239,6 +243,7 @@ migration guide under `docs/how-to/` (NPC-001 §7).
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-08-12 | Initial draft — object type catalogue, closing Milestone 11 gap category 2 (Object Registry) |
+| 1.1.0   | 2026-09-23 | §4.14 resolved: the Identity subsystem now has its own NPS (`NPS-029`), whose `User`/`Session` types join the catalogue per the placeholder's instruction |
 
 ---
 **End of Document**

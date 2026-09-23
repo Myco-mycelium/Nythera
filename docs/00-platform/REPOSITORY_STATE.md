@@ -8,8 +8,9 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-09-23 (second-fire standing item CLOSED — PASS, 10:22 UTC; Thursday's
 third-fire item registered; M11's "remaining" backlog reconciled — all four
 deliverables landed by 2026-09-06; the BUILD-001/BUILD-ARCH duality registered
-on AG_AGENDA v1.8.0; session records pushed to origin main — see
-`NEXT_SESSION_PLAN.md`)
+on AG_AGENDA v1.8.0 and briefed; NPS-029 Identity drafted — NPS-025 §4.14's
+placeholder resolved; three new architecture diagrams; session records pushed
+to origin main — see `NEXT_SESSION_PLAN.md`)
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -131,7 +132,8 @@ NPS-027 left this column 2026-09-21 on its D2 acceptance).
 - [x] NPS-022 Container Escape Analysis and Runtime Isolation — Draft (Threat Model Phase 4, grounded in the real Linux Backend code; found capability enforcement covers only IPC send/call, not direct syscalls — the most severe finding to date, flagged as the implementation's top priority)
 - [x] NPS-023 Secure Boot Threat Model — Draft (Threat Model Phase 5, first full pass on TB-BOOT; found zero Secure Boot status visibility on the Linux Backend and unvalidated boot-phase transitions; a measured-boot/TPM gap logged as not fixable by amendment)
 - [x] NPS-024 AI Threat Model — Draft (Threat Model Phase 6, first full pass on TB-AI, no implementation exists yet; found the suggest-vs-act boundary's confirmation UI isn't required to be unspoofable — the most conceptually significant finding since Phase 4's capability-enforcement gap)
-- [x] NPS-025 Object Registry — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 2; 14 object types catalogued, Identity flagged pending its own NPS)
+- [x] NPS-025 Object Registry — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 2; 14 object types catalogued, ~~Identity flagged pending its own NPS~~ resolved 2026-09-23 by NPS-029 v1.0.0, whose User/Session types join the catalogue as v1.1.0)
+- [ ] NPS-029 Identity and User Data Separation — **Draft** (2026-09-23, closing the NPS-025 §4.14 gap and the external review's identity-surface finding): User/Session objects, authentication rules (unspoofable login surface per NPS-015 §5.2's class, vault-custody credential storage per ADR-0022/0023, audited failures), per-user data separation via ownership stamps + per-User NyFS volumes — deny-by-default cross-User access through ordinary capability grants only; no new kernel surface; three candidate surfaces/findings recorded for the threat model's next pass
 - [x] NPS-026 Package Format (.nypkg) — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 7 and FIND-PACKAGE-001; signed manifests + integrity trees proposed, concrete crypto scheme pending dedicated human review per NPC-002 §6.2). **v1.1.0 (2026-09-18)**: §13 records the implementation findings from ADR-0022/0023 (NyVault) — volumes are NyFS images, integrity trees (plaintext) compose with vault AEAD (at-rest) without re-encryption, streaming install into vaults inherits 32 KiB CALL paging and is commit-bound until write batching, uninstall maps onto creator-scoped volume lifecycle; §14 adds the hardware-root-convergence and registry-vocabulary open questions. Closes the M14 Phase 1 package-format-update item. **v1.2.0
 (2026-09-21)**: §6.3 expanded from the ADR-0014 pattern into the
 decided mechanism (AG decision log D3 — bundled platform root set,

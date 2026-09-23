@@ -169,7 +169,7 @@ the 2026-08-12 backlog pass; items 8–11 landed by 2026-09-06 (struck
 2026-09-23 after the on-disk verification, per the 2026-09-20 next-actions
 audit's item-19 finding):**
 1. [~] Security architecture and threat model (`docs/reference/security/`) — **in progress as Milestone 12**, phased; see below
-2. [~] Object Registry — **Draft**: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md) (Workspace, Window, Application, Package, Capability, Game, Mod, Controller, GPU, Notification, AI Conversation, Device, Service; Identity flagged pending its own NPS) with fields, lifecycle, permissions, serialization, relationships
+2. [~] Object Registry — **Draft**: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md) (Workspace, Window, Application, Package, Capability, Game, Mod, Controller, GPU, Notification, AI Conversation, Device, Service; Identity — resolved 2026-09-23 by [`NPS-029`](../reference/nps/NPS-029-identity-and-user-data-separation.md), whose User/Session types join the catalogue in NPS-025 v1.1.0) with fields, lifecycle, permissions, serialization, relationships
 3. [ ] Capability Registry — ongoing by design (NPS-011 §5), not a discrete milestone item; already at 25 entries
 4. [~] Public API specification — **Draft**: [`API-001`](../reference/api/API-001-public-api.md) (NyHAL, NyCore, Runtime, Package, Filesystem, Window, AI, Gaming, Plugin areas; exact signatures deferred to implementation)
 5. [~] ABI specification — **Draft**: [`ABI-001`](../reference/abi/ABI-001-binary-compatibility.md) (calling conventions, binary compatibility, symbol versioning, plugin ABI, driver ABI, runtime ABI; concrete layouts deferred)

@@ -132,6 +132,7 @@ nav:
       - Object Registry:
           - Index: reference/object-registry/README.md
           - NPS-025 Object Registry: reference/object-registry/NPS-025-object-registry.md
+      - NPS-029 Identity and User Data Separation: reference/nps/NPS-029-identity-and-user-data-separation.md
       - API:
           - Index: reference/api/README.md
           - API-001 Public API: reference/api/API-001-public-api.md
@@ -170,6 +171,9 @@ nav:
       - NyHAL Architecture: diagrams/nyhal-architecture.md
       - Container Lifecycle: diagrams/container-lifecycle.md
       - Capability Grant Flow: diagrams/capability-grant-flow.md
+      - Capability Graph: diagrams/capability-graph.md
+      - Object Graph: diagrams/object-graph.md
+      - Scheduler Structure: diagrams/scheduler-structure.md
       - Package Mount Lifecycle: diagrams/package-mount-lifecycle.md
   - Assets: assets/README.md
   - Reference Indexes:

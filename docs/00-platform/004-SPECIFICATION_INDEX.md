@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.29.0
+version: 1.30.0
 status: Draft
 classification: Reference
 owners:
@@ -94,6 +94,7 @@ index.
 | NPS-026 | Nyrqis Package Format (.nypkg) | storage | Draft |
 | NPS-027 | Package Trust Model | security | Accepted |
 | NPS-028 | Package PKI Implementation Surface | security | Draft |
+| NPS-029 | Identity and User Data Separation | core-architecture | Draft |
 
 Following the Milestone 9 Architecture Group review and the 2026-09-19/21
 AG sessions, 15 of 28 NPS documents and 22 of 27 ADRs are `Accepted`
@@ -174,6 +175,7 @@ change process.
 | 1.24.0  | 2026-09-20 | NPS-010 status cell corrected from Draft to Accepted — its frontmatter flipped in the sanctioned 2026-09-19 AG decision package (commit 4713c8f) but this table was not updated; caught by the frontmatter-vs-index status sweep |
 | 1.25.0  | 2026-09-21 | AG standing items decided: NPS-027 **Accepted** (D2 — the planned threat-model phase list closes); NPS-026 v1.2.0 records the decided §6.3 publisher key-trust mechanism (D3 — the ADR-0014 mirror), closing REQ-SEC-0004; ADR-0009's dynamic-shares follow-on decided static-default-retained (D1) |
 | 1.27.0  | 2026-09-22 | The NPC-002 §6.2-reserved concrete crypto review concluded (D4 — scheme ACCEPTED): NPS-026 v1.3.0 lands §6.7 (primitives per role, the SHA-256/full-64-hex fingerprint, G3 deferred to §9, quorum confirmed, freeze/defer split recorded); NPS-028's fence narrows to the §6.7.3 deferral; REQ-SEC-0003's implementation gate opens |
+| 1.30.0  | 2026-09-23 | Add NPS-029 (Identity and User Data Separation, Draft) — User/Session objects, authentication rules (unspoofable login surface, vault-custody credential storage), per-user data separation via ownership stamps + per-User NyFS volumes with deny-by-default cross-User access; resolves NPS-025 §4.14's placeholder (NPS-025 v1.1.0) and unblocks the identity-subsystem diagram |
 | 1.29.0  | 2026-09-23 | The build-architecture duality registered on AG_AGENDA v1.8.0 as the Group's second standing item: BUILD-001 (Draft, docs/reference/build) vs BUILD-ARCH (Accepted, docs/00-platform), both claiming NPC-007 gap 9 — canonical-ID choice + the Accepted marking's missing decision record are the Group's calls; index table names the duality |
 | 1.28.0  | 2026-09-22 | NPS-028's implementation COMPLETE + validated (v0.9.0–v0.9.3): the production process model (PkiDaemonRunner + pki serve + nyrqis-pki.service), the daemon drill (found + closed the binary-over-JSON wire gap), §5.1's out-of-band daemon wiring, and §10's 15-claim validation record (NPC-002 §5.1/§5.2 evidence); the NPS-028 acceptance review registered on AG_AGENDA v1.7.0 as the platform's one standing item |
 | 1.26.0  | 2026-09-21 | Add NPS-028 (Package PKI Implementation Surface, Draft) — the key store, verification pipeline, revocation channel, enrollment flow, and audit trail the accepted NPS-027/NPS-026 §6.3 trust model needs built; also reconciles this table's NPS-010 cell which still read Draft after its sanctioned 2026-09-19 acceptance |
