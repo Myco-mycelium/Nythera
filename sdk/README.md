@@ -156,6 +156,6 @@ python3 -B test_backend.py
 ## References
 
 - [ADR-0020](../docs/reference/adr/ADR-0020-implementation-languages.md): Implementation languages
-- [BUILD-001](../docs/reference/build/BUILD_ARCHITECTURE.md): Build architecture
+- [BUILD-ARCH](../docs/00-platform/BUILD_ARCHITECTURE.md): Build architecture (canonical per AG decision D6 — formerly split as BUILD-001/BUILD-ARCH)
 - [TUT-003](../docs/tutorials/developer-onboarding.md): Developer onboarding
 - [NPC-010](../docs/00-platform/008-GOVERNANCE_EXPANSION.md): Governance expansion

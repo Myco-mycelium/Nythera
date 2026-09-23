@@ -11,7 +11,7 @@ Usage:
 
 References:
     - NPC-003: Engineering Handbook
-    - BUILD-001: Build Architecture
+    - BUILD-ARCH: Build Architecture (canonical, AG decision D6)
 """
 
 from __future__ import annotations

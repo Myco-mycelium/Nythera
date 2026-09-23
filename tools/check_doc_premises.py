@@ -520,20 +520,30 @@ CLAIMS: list[Claim] = [
         check_args={
             "files": [
                 "docs/00-platform/008-GOVERNANCE_EXPANSION.md",
-                "docs/reference/build/BUILD_ARCHITECTURE.md",
+                "docs/00-platform/BUILD_ARCHITECTURE.md",
                 "docs/reference/build/PERFORMANCE_BUDGETS.md",
                 "docs/tutorials/developer-onboarding.md",
             ],
         },
     ),
     Claim(
-        claim_id="build-architecture-dual-doc",
+        claim_id="build-architecture-unified",
         pattern=r"BUILD-ARCH",
-        description="The build-architecture deliverable exists under TWO document_ids (BUILD-ARCH Accepted in docs/00-platform vs BUILD-001 Draft in docs/reference/build) — a recorded open finding for the Architecture Group, kept loud until reconciled",
+        description="D6 resolved the duality: BUILD-ARCH is the single canonical build-architecture document (docs/00-platform, Accepted, D6-sanctioned; BUILD-001's policy absorbed and the copy removed; TUT-003/sdk/roadmap citations re-pointed)",
         check="path_contains",
         check_args={
-            "needle": "document_id: BUILD-ARCH",
+            "needle": "CANONICAL (AG decision log D6, 2026-09-23)",
             "files": ["docs/00-platform/BUILD_ARCHITECTURE.md"],
+        },
+    ),
+    Claim(
+        claim_id="nps028-accepted",
+        pattern=r"NPS-028",
+        description="D5 accepted NPS-028 (v1.0.0, Accepted) with amendments: §5.3's deferral tightened to a named thaw trigger; the decision-day evidence recorded in §1",
+        check="path_contains",
+        check_args={
+            "needle": "ACCEPTED 2026-09-23 (AG decision log D5) — with amendments",
+            "files": ["docs/reference/security/NPS-028-package-pki-implementation-surface.md"],
         },
     ),
     Claim(
@@ -589,10 +599,10 @@ CLAIMS: list[Claim] = [
     Claim(
         claim_id="nps028-remaining-draft-deps",
         pattern=r"remaining Draft dependency",
-        description="NPS-028 v0.9.3 §1: the surface's remaining Draft dependency is only NPS-026 §9's canonicalization decision plus the Group's acceptance review",
+        description="NPS-028's 0.9.3 revision row: the validation evidence base recorded 2026-09-22 — retained after D5 acceptance; the surface is now Accepted (see nps028-accepted)",
         check="path_contains",
         check_args={
-            "needle": "remaining Draft dependency is NPS-026 §9's canonicalization decision, not implementation",
+            "needle": "the document's remaining Draft dependency is NPS-026 §9's canonicalization decision, not implementation",
             "files": ["docs/reference/security/NPS-028-package-pki-implementation-surface.md"],
         },
     ),

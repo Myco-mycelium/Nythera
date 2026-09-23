@@ -1,14 +1,14 @@
 ---
 title: Package PKI Implementation Surface
 document_id: NPS-028
-version: 0.9.3
-status: Draft
+version: 1.0.0
+status: Accepted
 classification: Normative
 subsystem: security
 owners:
   - Nyrqis Architecture
 created: 2026-09-21
-updated: 2026-09-22
+updated: 2026-09-23
 ai_assisted: true
 review_cycle: Per implementation milestone
 depends_on: [NTM-000, NPC-001, NPC-009, NPS-018, NPS-019, NPS-006, NPS-026, NPS-027, ADR-0018, ADR-0023]
@@ -89,13 +89,34 @@ provide, the requirements each satisfies (REQ-SEC-0003..0006), the
 interfaces it must offer, and the attack surfaces it will add. It does
 not restate the trust model; it turns it into a buildable checklist.
 
-It is a `Draft` **by dependency, not by deficiency**: its normative
+**ACCEPTED 2026-09-23 (AG decision log D5) — with amendments.** The
+Architecture Group's review of the validated surface (§10's 15/15
+normative-claims probe, the 217-green package-security run, the
+daemon drill that found and closed the §3.2 wire gap) concluded:
+accepted with two named amendments, both landed in this revision:
+
+1. **§5.3's deferral is tightened** from frozen-by-design to a named
+   thaw trigger: the stale-list posture bounds enter when a real
+   revocation channel is configured on a running deployment (the
+   `pki serve --revocation-channel` path), with the bound measured
+   from that channel's actual delivery cadence — the bounds remain
+   unwritten until then, but the thaw is no longer open-ended.
+2. **§1/§10 carry the decision-day evidence record**: the acceptance
+   rests on the evidence as of 2026-09-23 (the full suite at 6,525
+   green / 4 environmental skips, the PKI module at 97 tests, and the
+   surface now coexisting with the client-side incident-bundle
+   tooling), superseding the 2026-09-22 snapshot.
+
+The prior text is retained below for the record. It is ~~a `Draft`
+**by dependency, not by deficiency**~~: its normative
 anchors (NPS-026 §6.3, NPS-027) are Accepted, the implementation
 exists and has been validated against this document's normative claims
-(§10's mechanical evidence table, NPC-002 §5.1/§5.2) — what remains
-before this document exits Draft is NPS-026 §9's canonicalization
-decision (the one §6.7.3 deferral fencing §2) and the Architecture
-Group's acceptance review of the validated surface. The concrete cryptographic scheme was
+(§10's mechanical evidence table, NPC-002 §5.1/§5.2) — what remained
+before this document exited Draft was NPS-026 §9's canonicalization
+decision (the one §6.7.3 deferral fencing §2 — still recorded as the
+surface's known open fence, gating §6.7.3's wording, not the
+mechanisms accepted today) and the Architecture
+Group's acceptance review of the validated surface ~~(now concluded, D5)~~. The concrete cryptographic scheme was
 **reserved per NPC-002 §6.2** until the dedicated human review
 concluded 2026-09-22 (AG decision log D4): the decided scheme is now
 normative in NPS-026 §6.7 — this document's §2 fence narrows to the
@@ -234,9 +255,12 @@ atomically.
 
 5.3. Delivery cadence and the stale-list posture (how long a client may
 operate on a list older than N) are **implementation validation
-questions**: the bounds belong to this document's path out of Draft,
-informed by real channel behavior, and are intentionally not invented
-here.
+questions**: the bounds are intentionally not invented here. **Amended
+2026-09-23 (D5):** the thaw trigger is now named — the bounds enter
+this document when a real revocation channel is configured on a
+running deployment (`pki serve --revocation-channel`), with the bound
+derived from that channel's measured delivery cadence. Until then the
+bounds remain unwritten, but the deferral is no longer open-ended.
 
 ## 6. Publisher Key Enrollment
 
@@ -359,6 +383,7 @@ moment implementation begins.
 | 0.9.1   | 2026-09-22 | The end-to-end daemon drill (boot `pki serve` as a real subprocess, enroll over the §3.2 socket, SIGTERM, restart, verify persistence) FOUND a gap the transport's own tests had missed: no test ever exercised `enroll` over the wire, and JSON carries no bytes — the 64-char hex string arrived where the service demands 32 raw bytes, and the §6 confirmation dataclass arrived as a plain dict. The binary-over-JSON conventions are now explicit and fail-closed: named hex params (`public_key`) decode to bytes server-side (malformed hex = request failure, never a silent string pass-through), dataclass params (`confirmation`) rebuild from their field mapping (unknown fields = request failure), and `PkiIpcClient` hex-encodes bytes arguments on send. 5 new wire-convention tests (89 PKI total; 102 with the deployment guards). The drill itself passed end to end: custody-mandatory boot, IPC enrollment, spoof/hex/shape refusals, SIGTERM persistence (custody + salted §7 chain), restart survival |
 | 0.9.2   | 2026-09-22 | §5.1 wired into the daemon (the surface's last unwired mechanism): `PkiDaemonService.refresh_revocations` — the daemon's own authority drives the out-of-band refresh (callers cannot smuggle a fetcher through the IPC allowlist; the op is deliberately daemon-internal), applied lists are audit-chained as `pki_apply_revocations` with an out-of-band source marker and rejected lists as `pki_refresh_revocations` evidence (never an error path), and a service-level lock serializes the background refresh against in-process mutations; `PkiDaemonRunner` gained the background refresh loop — a channel-configured daemon thread (`FileRevocationFetcher`, independent of any package feed by construction) that fails open per §5.1 (a bad fetch or bad list never touches the store; the outcome is evidence) and is joinable at stop; `pki serve --revocation-channel/--refresh-interval` (disabled by default — an absent channel is an operator decision, not an omission) and the unit ships the channel path. 8 new tests (97 PKI total) |
 | 0.9.3   | 2026-09-22 | The implementation-validation pass RECORDED (§10, new): a mechanical 15-claim probe verifying this document's normative statements against the shipped tree — fingerprint spelling, the three collections, 0600 store writes and fail-closed loads, the custody envelope with no secret at rest, the unforgeable authority, the key-read exclusion from the IPC allowlist, the ordered §4 path with per-stage outcomes, §5.1's store-untouched-on-failure rule, §5.2 replay refusal, the §6.2 confirmation gates (in-process and over the wire), §7 tamper evidence, and §7.2's sink-failure rule — 15/15 after correcting one probe bug (the probe, not the pipeline, fed stage 1 an empty manifest). §9's coverage table now marks the implemented rows. This is the evidence base NPC-002 §5.1/§5.2 require; the document's remaining Draft dependency is NPS-026 §9's canonicalization decision, not implementation |
+| 1.0.0   | 2026-09-23 | **ACCEPTED (AG decision log D5) — with amendments.** The review sat on the §10 evidence (15/15 probe, 217-green package-security run, the drill-closed wire gap). Amendments landed: §5.3's deferral tightened to a named thaw trigger (bounds enter when a real revocation channel runs in production, derived from its measured cadence); §1 carries the decision-day evidence snapshot (suite 6,525 green, PKI module 97). The NPS-026 §9 canonicalization fence remains recorded — it gates §6.7.3's wording, not the accepted mechanisms |
 
 ---
 **End of Document**

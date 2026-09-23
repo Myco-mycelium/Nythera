@@ -1,7 +1,7 @@
 ---
 title: Debug Tooling — `nyrqisctl debug` (design note for the M14 Phase 3 item)
 document_id: DBG-001
-version: 0.3.1
+version: 0.4.0
 status: Draft
 classification: Informative
 owners:
@@ -117,11 +117,36 @@ operator-local).
    until that surface is decided rather than risked in a convenience
    loop.
 
-## 4. Proposed design — Phase B: container-side attach (gated)
+## 4. Phase B — container-side attach: DECIDED (D7), not yet implemented
+
+**The Group decided 2026-09-23 (AG decision log D7): Option B — the
+developer-mode manifest class — overriding this note's launcher-
+mediated recommendation.** What was decided:
+
+- A `debug: true` manifest class plus a `CAP-DEBUG-ATTACH` capability
+  (NPS-011 v1.4.0 to add the entry).
+- debugpy (Python) / gdbserver (Rust) run **inside** the debugged
+  container; the container's seccomp profile's ptrace denial is
+  relaxed **for that manifest class only** — a named,
+  capability-gated exception to the FIND-BACKEND-002 hardening.
+- The isolation widening is accepted with eyes open (the brief's
+  ledger): debug and production images diverge, and NPS-021 requires
+  an escalation-pass addendum over the new surface **before
+  implementation lands**.
+- Every attach/detach session remains audit-chained (ADR-0018).
+
+Not yet landed (the D7 implementation work items, in order): the
+NPS-021 addendum; NPS-011 v1.4.0's registry entry; the launcher's
+manifest-class plumbing and debug-image staging; the
+`nyrqisctl containers debug` op family. The "step-through,
+breakpoints" roadmap wording now has a decided design behind it; the
+roadmap item stays `[~]` until the implementation lands.
+
+### The original Phase B proposal (retained for the record)
 
 An `attach` path — `nyrqisctl containers debug <id>` — that enters the
 container's namespace with a debugger. This one **is** a new trust
-surface and needs the Group:
+surface and needed the Group:
 
 - A container's isolation is the product (NPS-010, NPS-017); an
   attach channel is a deliberate isolation hole, even operator-only.
@@ -134,6 +159,10 @@ surface and needs the Group:
   `debugpy`/`pdb` over the attach channel; for the Rust crates it is
   a `gdb`/`lldb` attach (the crates ship cdylibs — symbols are
   already present in debug builds).
+
+The Group chose the in-container variant (D7) over this
+launcher-mediated shape — the debuggee container is where the
+debugger runs.
 
 ## 5. Phase C as built: NUI introspection rider
 
@@ -168,3 +197,4 @@ this rider when there is demand.
 | 0.2.0   | 2026-09-23 | Phase A + Phase C rider landed; §3/§5 rewritten as built with four recorded deviations; §6 updated — Phase B stays Group-gated, item stays open |
 | 0.3.0   | 2026-09-23 | Deviations 2+3 resolved: redaction default-on (--redact/--no-redact); per-container audit trails (correcting a real wire-contract violation the scripted tests had masked); --chain-id summary+verification capture; the build_payload "audit-summary" shadow recorded for its owner |
 | 0.3.1   | 2026-09-23 | The recorded shadow repaired (CR-0037): audit-chain-summary command registered properly, alert-summary un-hijacked, the stray mid-build_payload raise removed (~300 commands were unreachable since the CLI's first commit), parse→payload surface pinned by test_nyrqisctl_payload_surface.py |
+| 0.4.0   | 2026-09-23 | **Phase B DECIDED (D7): developer-mode manifests (Option B)** — debug:true class + CAP-DEBUG-ATTACH, in-container debugpy/gdbserver, ptrace relaxation for the manifest class only, NPS-021 addendum before implementation; §4 rewritten as decided with the original proposal retained; implementation work items listed, none landed yet |

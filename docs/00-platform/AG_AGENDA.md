@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.9.0
-status: Three standing items registered (NPS-028 acceptance review 2026-09-22 — implementation complete + validated, §10 evidence attached; BUILD-001/BUILD-ARCH document duality 2026-09-23 — the build-architecture deliverable exists twice under two document_ids; debug attach 2026-09-23 — DBG-001 Phase B's CAP-DEBUG-ATTACH container-attach channel, briefed with three options). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
+version: 2.0.0
+status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; NPS-011 v1.4.0 + NPS-021 addendum to follow; implementation NOT yet landed). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -307,7 +307,26 @@ the record, each item marked with its outcome.
 
 ---
 
-## Standing items — registered 2026-09-22 (evening session)
+## Standing items — registered 2026-09-22 (evening session) — DECIDED 2026-09-23 (D5)
+
+- **NPS-028 — Package PKI Implementation Surface — ACCEPTED WITH
+  AMENDMENTS (D5).** The review sat on the §10 evidence (the 15/15
+  normative-claims probe, the 217-green package-security run, the
+  drill-closed wire gap). Two amendments named and landed same-day in
+  NPS-028 v1.0.0: (1) §5.3's stale-list deferral is tightened from
+  frozen-by-design to a named thaw trigger — the bounds enter when a
+  real revocation channel is configured on a running deployment
+  (`pki serve --revocation-channel`), derived from that channel's
+  measured cadence; (2) §1 records the decision-day evidence snapshot
+  (suite 6,525 green / 4 environmental skips, PKI module 97),
+  superseding the 2026-09-22 figures. The NPS-026 §9
+  canonicalization fence remains recorded — per D5 it gates §6.7.3's
+  wording, not the accepted mechanisms. The NPS-026 interlock
+  (exiting Draft through the same sitting) is NOT exercised by D5 —
+  NPS-026's own Draft path still runs through its §9/§10–§12
+  deferred halves.
+
+The registered text below is retained for the record.
 
 - **NPS-028 — Package PKI Implementation Surface (Draft → review for
   Acceptance; implementation COMPLETE + VALIDATED).** Registered after
@@ -349,7 +368,26 @@ the record, each item marked with its outcome.
 
 ---
 
-## Standing items — registered 2026-09-23 (docs-backlog session)
+## Standing items — registered 2026-09-23 (docs-backlog session) — DECIDED 2026-09-23 (D6)
+
+- **BUILD-001 vs BUILD-ARCH — DECIDED (D6): BUILD-ARCH canonical,
+  Option B.** The Group picked the detailed practical reference over
+  the brief's recommendation: BUILD-ARCH (`docs/00-platform/`) is the
+  single canonical build-architecture document, its `Accepted`
+  marking **sanctioned retroactively by D6 itself** (the
+  ADR-0022/0023 remedy — no prior record existed), BUILD-001's policy
+  content (platform-language matrix with the corrected ≥3.10 floor,
+  cross-compilation targets incl. Windows, reproducible-build MUSTs
+  and the double-build recipe, artifact signing, stage timeouts,
+  build budgets) is **absorbed** into BUILD-ARCH v2.0.0, whose stale
+  crate tables were refreshed at merge (18 code crates, 305 tests,
+  verified 2026-09-23), the `docs/reference/build/` copy is
+  **removed**, and the four citations re-pointed (TUT-003
+  `depends_on`, sdk README + cli.py, the roadmap). The
+  `build-architecture-dual-doc` premise pin is replaced by
+  `build-architecture-unified`.
+
+The registered text below is retained for the record.
 
 - **BUILD-001 vs BUILD-ARCH — the build-architecture deliverable exists
   twice under two document_ids; pick the canonical one and dispose of
@@ -390,7 +428,25 @@ the record, each item marked with its outcome.
   DECISION-READY — purely judgment; no measurement,
   implementation, or drafting item stands ahead of it.
 
-## Standing items — registered 2026-09-23 (debug-tooling session)
+## Standing items — registered 2026-09-23 (debug-tooling session) — DECIDED 2026-09-23 (D7)
+
+- **DBG-001 Phase B — the container debug attach channel — DECIDED
+  (D7): Option B, developer-mode manifests.** The Group overrode the
+  brief's recommendation and chose the developer-workflow-first
+  design: a `debug: true` manifest class plus `CAP-DEBUG-ATTACH`
+  (NPS-011 v1.4.0), with debugpy/gdbserver **inside** the debugged
+  container and the seccomp profile's ptrace denial relaxed for that
+  manifest class only. Consequences the Group accepts (from the
+  brief's own ledger): the isolation boundary is deliberately widened
+  for debug-class containers, FIND-BACKEND-002's hardening gains a
+  named, capability-gated exception, debug and production images
+  diverge, and NPS-021 requires an escalation-pass addendum over the
+  new surface before implementation lands. Scope of what D7 decides:
+  the capability entry, the manifest class, and the relaxation's
+  gate; the implementation (launcher plumbing, image staging, IPC
+  ops) is a new work item and is NOT landed in the decision commit.
+
+The registered text below is retained for the record.
 
 - **DBG-001 Phase B — the container debug attach channel: accept the
   `CAP-DEBUG-ATTACH` capability and the launcher-mediated attach

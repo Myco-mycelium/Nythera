@@ -10,7 +10,7 @@ created: 2026-09-06
 updated: 2026-09-06
 ai_assisted: true
 review_cycle: Quarterly
-depends_on: [NPC-003, NPC-010, BUILD-001]
+depends_on: [NPC-003, NPC-010, BUILD-ARCH]
 ---
 
 # TUT-003 — Developer Onboarding

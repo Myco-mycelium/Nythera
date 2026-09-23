@@ -1,22 +1,37 @@
 ---
 title: Build Architecture Specification
 document_id: BUILD-ARCH
-version: 1.0.0
+version: 2.0.0
 status: Accepted
-owners: [Nyrqis Engineering]
+owners: [Nyrqis Architecture]
 created: 2026-09-01
-updated: 2026-09-01
-depends_on: [ADR-0012, ADR-0020, NPS-017]
+updated: 2026-09-23
+depends_on: [ADR-0012, ADR-0020, NPS-017, NPC-003]
 satisfies: [NPC-007 gap 9]
 ---
 
 # Build Architecture Specification
 
+> **CANONICAL (AG decision log D6, 2026-09-23).** The
+> build-architecture deliverable previously existed twice — this
+> document (`BUILD-ARCH`, Accepted) and `BUILD-001` (Draft,
+> 2026-09-06, the copy the roadmap/TUT-003/sdk cited). The Group
+> decided the duality in favor of this document and ordered the
+> other copy's policy content absorbed here and the file removed.
+> The `Accepted` marking is **sanctioned retroactively by D6 itself**
+> (the ADR-0022/0023 remedy — the marking had no prior Group record).
+> The absorbed policy sections are marked with their origin; the
+> toolchain rows and crate tables were re-verified against the tree
+> at merge time (2026-09-23), which refreshed the 2026-09-01-vintage
+> numbers.
+
 ## Overview
 
-This document specifies the build architecture for the Nyrqis Linux Backend.
-It covers toolchain requirements, crate dependency graph, cross-compilation
-targets, CI/CD pipeline, and reproducible build guidelines.
+This document specifies the build architecture for the Nyrqis Linux
+Backend. It covers toolchain requirements, build policy
+(reproducible builds, artifact signing, build budgets), the crate
+dependency graph, cross-compilation targets, the CI/CD pipeline,
+and testing strategy. It satisfies NPC-007 gap 9.
 
 ## Toolchain Requirements
 
@@ -33,9 +48,9 @@ targets, CI/CD pipeline, and reproducible build guidelines.
 
 | Component | Version | Notes |
 |-----------|---------|-------|
-| python3 | ≥ 3.10.0 | Main backend language |
+| python3 | ≥ 3.10.0 | Main backend language (`pyproject.toml` `requires-python = ">=3.10"`; CI exercises 3.11 and 3.12) |
 | pip | ≥ 22.0 | Package management |
-| venv | built-in | Virtual environment support |
+| venv | built-in | Virtual environment support (development; the production posture below) |
 
 ### System Libraries
 
@@ -45,6 +60,73 @@ targets, CI/CD pipeline, and reproducible build guidelines.
 | libwayland | libwayland-dev | Wayland client libraries |
 | libseccomp | libseccomp-dev | seccomp-BPF filtering |
 | libfuse | libfuse-dev | FUSE filesystem support |
+
+### Platform Languages *(absorbed from BUILD-001 §1.1, corrected)*
+
+Per ADR-0020, the platform uses:
+
+| Language | Role | Toolchain |
+|----------|------|-----------|
+| **Rust** | Performance-critical paths | `rustc` 1.75+, `cargo` |
+| **C++** | Kernel, system services | `g++` 12+ or `clang++` 16+ |
+| **C** | Low-level interfaces | `gcc` 12+ or `clang` 16+ |
+| **Python** | Tooling, tests, reference floor | `python3 ≥ 3.10` (CI: 3.11, 3.12) — the floor per `pyproject.toml`, not 3.12 |
+
+The production posture on Python remains **system Python, no virtual
+environments for production** (policy, absorbed from BUILD-001 §1.2);
+venv support is a development convenience.
+
+## Build Policy *(absorbed from BUILD-001 §3–§5)*
+
+### Reproducible Builds
+
+All release builds **MUST** be reproducible:
+
+1. **Deterministic output**: Same input → same output (bit-for-bit)
+2. **Hermetic builds**: No network access during build
+3. **Pinned dependencies**: All versions locked in lockfiles
+
+Measures (absorbed, cross-checked with this document's own build
+flags):
+
+- **Cargo.lock**: Committed to repository; crates build with
+  `--locked` and `CARGO_INCREMENTAL=0`
+- **requirements.txt**: Pinned Python dependencies
+- **Docker images**: Pinned base images with SHA256 digests
+- **Build scripts**: No timestamps or random data in output
+
+Verification recipe (build twice, compare hashes):
+
+```bash
+cargo build --release
+sha256sum target/release/libnyrqis_*.so > build1.sha256
+cargo clean
+cargo build --release
+sha256sum target/release/libnyrqis_*.so > build2.sha256
+diff build1.sha256 build2.sha256
+```
+
+### Artifact Signing
+
+- **Code signing**: GPG signatures for release tarballs
+- **Package signing**: Ed25519 for `.nypkg` packages — normative in
+  NPS-026 §6 and implemented (`backend/package_signing.py`,
+  `backend/package_pki.py`; the PKI implementation surface NPS-028 is
+  Accepted as of D5)
+- **Container signing**: Cosign for OCI images (future)
+
+Signing keys live in CI/CD secrets, never in the repository; rotation
+is annual with a 30-day overlap; public keys are published in the
+repository.
+
+### Build Time Budgets *(absorbed from BUILD-001 §6.1)*
+
+| Component | Target | Current |
+|-----------|--------|---------|
+| Rust crates (all) | < 5 min | ~3 min |
+| Python package | < 2 min | ~1 min |
+| Documentation | < 1 min | ~30 sec |
+| Full CI pipeline | < 30 min | ~25 min |
 
 ## Crate Dependency Graph
 
@@ -73,36 +155,45 @@ targets, CI/CD pipeline, and reproducible build guidelines.
 │  │ (FUSE)   │  │ (loop)   │  │ (NUI)    │  │ (display)│   │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
 │                                                             │
-│  ┌──────────┐                                               │
-│  │ gbm      │                                               │
-│  │ (GPU)    │                                               │
-│  └──────────┘                                               │
+│  ┌──────────┐  ┌──────────┐                                │
+│  │ gbm      │  │ drm/egl/ │                                │
+│  │ (GPU)    │  │ vulkan   │                                │
+│  └──────────┘  └──────────┘                                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Crate Versions
+### Crate Versions and Test Counts *(re-verified 2026-09-23)*
+
+Counts are grep-level `#[test]` occurrences — the honest floor; exact
+suite counts belong to `cargo test`. 18 code crates plus the
+`README.md`; launcher is the sole `binary` crate.
 
 | Crate | ABI Version | Output | Tests |
 |-------|-------------|--------|-------|
-| nycore | 1.0.0 | cdylib | 0 (library) |
-| seccomp | 1.2.0 | cdylib | 5 |
-| syscalls | 1.2.0 | cdylib | 8 |
-| keys | 1.0.0 | cdylib | 4 |
-| container | 1.0.0 | cdylib | 10 |
-| launcher | 1.0.0 | binary | 6 |
-| ipc | 1.0.0 | cdylib | 3 |
-| ipcd | 1.0.0 | binary | 5 |
-| transport | 1.0.0 | cdylib | 3 |
-| nyfs | 1.0.0 | cdylib | 4 |
-| nyruntime | 1.0.0 | cdylib | 2 |
-| nyui | 1.0.0 | cdylib | 3 |
-| wayland | 1.2.0 | cdylib | 19 |
-| gbm | 1.0.0 | cdylib | 14 |
-| drm | 1.0.0 | cdylib | 7 |
-| egl | 1.0.0 | cdylib | 10 |
-| compositor | 0.1.0 | cdylib | 8 |
-| vulkan | 0.1.0 | cdylib | 10 |
-| **Total** | | | **121** |
+| compositor | 0.1.0 | cdylib | 67 |
+| wayland | 0.1.0 | cdylib | 27 |
+| nyui | 0.1.0 | cdylib | 26 |
+| ipcd | 1.0.0 | binary | 24 |
+| egl | 0.1.0 | cdylib | 16 |
+| gbm | 0.1.0 | cdylib | 15 |
+| seccomp | 0.1.0 | cdylib | 15 |
+| container | 0.1.0 | cdylib | 14 |
+| nyruntime | 0.1.0 | cdylib | 14 |
+| syscalls | 0.1.0 | cdylib | 14 |
+| ipc | 0.1.0 | cdylib | 11 |
+| launcher | 1.0.0 | binary | 10 |
+| nyfs | 0.1.0 | cdylib | 10 |
+| vulkan | 0.1.0 | cdylib | 13 |
+| drm | 0.1.0 | cdylib | 8 |
+| keys | 0.1.0 | cdylib | 8 |
+| nycore | 0.1.0 | cdylib | 8 |
+| transport | 0.1.0 | cdylib | 5 |
+| **Total** | | | **305** |
+
+(The 2026-09-01 table's 18-crate/121-test figures are superseded —
+compositor alone was 8 then, 67 now. The `nycore` ABI version listed
+in the old table as 1.0.0 is 0.1.0 in its `Cargo.toml`; launcher/ipcd
+carry 1.0.0.)
 
 ## Build Commands
 
@@ -148,6 +239,19 @@ for crate in */; do
 done
 ```
 
+### Cross-Compilation Targets *(absorbed from BUILD-001 §1.3)*
+
+| Target | Triple | Notes |
+|--------|--------|-------|
+| x86_64 Linux | `x86_64-unknown-linux-gnu` | Primary development target |
+| ARM64 Linux | `aarch64-unknown-linux-gnu` | Raspberry Pi, phones |
+| x86_64 Windows | `x86_64-pc-windows-msvc` | Windows compatibility layer (future, per ADR-0005's translation-layer approach) |
+| RISC-V 64 | `riscv64gc-unknown-linux-gnu` | Future hardware |
+
+Cross-compilation uses Docker containers with pre-configured
+toolchains. (The Windows target row is restored by the merge — the
+2026-09-01 table omitted it.)
+
 ## CI/CD Pipeline
 
 ### Workflow Jobs
@@ -156,16 +260,17 @@ done
 |-----|---------|--------------|
 | ci | push to main | Build + test all Rust crates + Python tests |
 | arm64-conformance | push to main | Cross-compile for aarch64 + run conformance tests |
-| docs | push to main (docs/) | Build MkDocs site + deploy to GitHub Pages |
+| docs | push to main (docs/) | Build MkDocs site + run the doc/design gates |
 
 ### CI Job Details
 
 #### `ci` (main pipeline)
 
-1. **Rust crate builds** — 14 crates built with `cargo build --release`
-2. **Rust crate tests** — 14 crate test suites (86 tests total)
+1. **Rust crate builds** — 18 crates built with `cargo build --release`
+2. **Rust crate tests** — per-crate test suites (305 `#[test]` as of
+   2026-09-23)
 3. **FFI conformance gates** — Python tests run with Rust crate loaded
-4. **Python backend tests** — 2,500+ unit tests
+4. **Python backend tests** — 6,500+ tests
 5. **Performance benchmarks** — Latency and throughput measurements
 6. **Code generator validation** — Verify generated code matches spec
 
@@ -176,8 +281,11 @@ done
 
 #### `docs`
 
-1. **Build site** — `mkdocs build --strict`
-2. **Deploy** — Upload to GitHub Pages
+1. **Check depends_on cycles** + **recorded doc premises**
+2. **`.nstudio` design gate** — every shipped shell design validated
+   through the real import gate (2026-09-23)
+3. **Build site** — `mkdocs build --strict`
+4. **Deploy** — Upload to GitHub Pages
 
 ### Required Gates
 
@@ -198,60 +306,17 @@ The following jobs are required for merge:
 - `Performance benchmarks`
 - `Code generator validation`
 
-## Reproducible Builds
+### Stage Timeouts *(absorbed from BUILD-001 §4.2)*
 
-### Deterministic Output
-
-All Rust crates are built with:
-- `--release` profile (optimization level 3)
-- `--locked` flag (uses Cargo.lock exactly)
-- `CARGO_INCREMENTAL=0` (no incremental compilation)
-
-### Cargo.lock
-
-The `Cargo.lock` file is committed to the repository to ensure
-deterministic dependency resolution.
-
-### Feature Flags
-
-No feature flags are used by default. All crates build with their
-default feature set.
+| Stage | Timeout |
+|-------|---------|
+| Lint | 5 min |
+| Build | 15 min |
+| Test | 30 min |
+| Security | 10 min |
+| Release | 20 min |
 
 ## Testing Strategy
-
-### Python Tests
-
-| Category | Count | Description |
-|----------|-------|-------------|
-| Backend primitives | 2,500 | Container, IPC, storage, lifecycle |
-| Package signing | 31 | Ed25519 signing/verification |
-| Package installer | 17 | Install/uninstall/verify |
-| Package integration | 11 | End-to-end signing + install |
-| SDL2 Wayland | 21 | Compositor integration |
-| **Total** | **2,580** | |
-
-### Rust Tests
-
-| Crate | Tests | Description |
-|-------|-------|-------------|
-| wayland | 19 | Wayland protocol, FFI, output detection |
-| gbm | 14 | GBM buffer allocation |
-| drm | 7 | DRM atomic modesetting |
-| egl | 10 | EGL OpenGL ES rendering |
-| vulkan | 10 | Vulkan rendering |
-| compositor | 8 | Wayland compositor |
-| container | 10 | Container lifecycle |
-| syscalls | 8 | Clone/launch |
-| launcher | 6 | Process management |
-| seccomp | 5 | seccomp-BPF |
-| ipcd | 5 | IPC serving loop |
-| keys | 4 | Key management |
-| nyfs | 4 | FUSE operations |
-| ipc | 3 | IPC codec |
-| transport | 3 | Network transport |
-| nyui | 3 | NUI document parsing |
-| nyruntime | 2 | Runtime loop |
-| **Total** | **121** | |
 
 ### Conformance Testing
 
@@ -281,24 +346,12 @@ target/release/
 └── nyrqis_ipcd              (binary)
 ```
 
-### Python Packages
+## Revision History
 
-```
-source/nyhal-linux-backend/
-├── backend/
-│   ├── container.py
-│   ├── installer.py
-│   ├── keys.py
-│   ├── package_signing.py
-│   └── ...
-├── ui/
-│   ├── compositor_sdl.py
-│   ├── desktop_session.py
-│   ├── wayland_codec.py
-│   ├── wayland_display.py
-│   └── ...
-└── test_*.py
-```
+| Version | Date | Change |
+|---------|------|--------|
+| 1.0.0 | 2026-09-01 | Initial build architecture specification (18 crates, 121 tests — the figures of that date) |
+| 2.0.0 | 2026-09-23 | **CANONICAL (AG decision log D6)**: BUILD-001's policy content absorbed (platform-language matrix with the corrected 3.10 floor, cross-compilation targets incl. the Windows row, reproducible-build MUSTs + verification recipe, artifact signing, stage timeouts, build budgets); its `Accepted` marking sanctioned retroactively by D6 (no prior record existed — the ADR-0022/0023 remedy); the `docs/reference/build/` copy removed and its citations re-pointed here; crate table refreshed to 2026-09-23 (18 code crates, 305 tests) |
 
 ## References
 
@@ -306,3 +359,7 @@ source/nyhal-linux-backend/
 - ADR-0020: Implementation languages and the platform boundary
 - NPS-017: NyHAL Kernel Abstraction Layer and Backend Contract
 - NPC-007: Build architecture specification (gap 9)
+- `AG_BRIEF_BUILD_ARCH_DUALITY.md`: the duality finding and options
+  ledger that D6 decided
+
+**End of Document**
