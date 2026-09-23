@@ -636,6 +636,26 @@ CLAIMS: list[Claim] = [
             "files": ["source/nyhal-linux-backend/tests/test_nyrqisctl_payload_surface.py"],
         },
     ),
+    Claim(
+        claim_id="nstudio-design-gate",
+        pattern=r"check_nstudio_designs",
+        description="The .nstudio design gate is wired into the docs workflow — every shipped design is validated through the real import gate on every docs-relevant push; the fail-closed contract (annotation + diagnostics on failure, zero-designs = finding) is pinned by TestCheckNstudioDesigns",
+        check="path_contains",
+        check_args={
+            "needle": "check_nstudio_designs.sh",
+            "files": [".github/workflows/docs.yml"],
+        },
+    ),
+    Claim(
+        claim_id="debug-attach-brief-registered",
+        pattern=r"CAP-DEBUG-ATTACH",
+        description="The debug-attach decision is registered on AG_AGENDA v1.9.0 as the Group's third standing item — briefed by AG_BRIEF_DEBUG_ATTACH v1.0.0 (three options, recommends launcher-mediated operator-only attach); Phase B is NOT implemented, it is decision-ready",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: AG-BRIEF-DBG-PHASEB",
+            "files": ["docs/00-platform/AG_BRIEF_DEBUG_ATTACH.md"],
+        },
+    ),
 ]
 
 

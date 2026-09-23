@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.8.0
-status: Two standing items registered (NPS-028 acceptance review 2026-09-22 — implementation complete + validated, §10 evidence attached; BUILD-001/BUILD-ARCH document duality 2026-09-23 — the build-architecture deliverable exists twice under two document_ids). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
+version: 1.9.0
+status: Three standing items registered (NPS-028 acceptance review 2026-09-22 — implementation complete + validated, §10 evidence attached; BUILD-001/BUILD-ARCH document duality 2026-09-23 — the build-architecture deliverable exists twice under two document_ids; debug attach 2026-09-23 — DBG-001 Phase B's CAP-DEBUG-ATTACH container-attach channel, briefed with three options). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -389,6 +389,36 @@ the record, each item marked with its outcome.
   the unsanctioned Accepted marking with the file).
   DECISION-READY — purely judgment; no measurement,
   implementation, or drafting item stands ahead of it.
+
+## Standing items — registered 2026-09-23 (debug-tooling session)
+
+- **DBG-001 Phase B — the container debug attach channel: accept the
+  `CAP-DEBUG-ATTACH` capability and the launcher-mediated attach
+  design, or close the item as observational-only.** The M14 Phase 3
+  debug-tooling item's last ungated piece: Phase A (incident bundle)
+  and the Phase C rider landed 2026-09-23 client-side with no new
+  daemon surface; Phase B is the part that genuinely needs the Group,
+  because an attach path is a deliberate entry into the namespace
+  isolation that NPS-017 §4 and NPS-021 have already paid to
+  harden. The pre-read (`AG_BRIEF_DEBUG_ATTACH.md` v1.0.0 —
+  AI-drafted, suggest-side, D3/D4 format) carries the verified
+  evidence (the only entry today is host-side `container_exec` via
+  nsenter; no `CAP-DEBUG-ATTACH` in NPS-011 §3's registry; the
+  seccomp profile denies ptrace by design), the regulatory frame any
+  option must satisfy (NPS-011 §4.3/§5, ADR-0018 chaining, an
+  NPS-021 escalation pass), and three options with consequences
+  ledgers: **A** launcher-mediated attach, operator-only, denied by
+  default, debugger staged from the host (recommended — the
+  isolation boundary moves host-ward, where the operator already
+  sits; reuses the `container_exec` mediation pattern); **B**
+  developer-mode sidecar with debugpy/gdbserver inside the container
+  (rejected in the brief: requires ptrace relaxation, puts debugger
+  binaries inside the boundary, and creates debug-vs-prod image
+  divergence — the trade the threat model exists to scrutinize);
+  **C** no attach — extend Phase A's observational surface and close
+  the item honestly. Downstream if accepted: NPS-011 v1.4.0, an
+  NPS-021 addendum, a new authority-guarded op family, and the
+  roadmap item strikes as done. DECISION-READY — purely judgment.
 
 ---
 

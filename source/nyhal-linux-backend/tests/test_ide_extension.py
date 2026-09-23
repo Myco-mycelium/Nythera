@@ -14,8 +14,11 @@ failure surfaces.
 
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import unittest
 
 _BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -173,6 +176,110 @@ console.log(JSON.stringify({
         self.assertEqual(diags[0]["code"], "schema-version")
         self.assertEqual(diags[0]["severity"], "error")
         self.assertIn("unsupported schema version", diags[0]["message"])
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(_BACKEND))
+CHECKER = os.path.join(REPO_ROOT, "scripts", "check_nstudio_designs.sh")
+WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "docs.yml")
+
+
+class TestCheckNstudioDesigns(unittest.TestCase):
+    """The CI design gate's fail-closed contract, exercised against
+    sandbox trees (never the real checkout's files)."""
+
+    def _sandbox(self, designs, validator_body=None):
+        """Build a fake backend tree: nst_validate.py + the given
+        design files. The stub validator echoes the behavior the real
+        one would have for this scenario."""
+        root = tempfile.mkdtemp(prefix="nst-gate-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        os.makedirs(os.path.join(root, "shell"))
+        validator_body = validator_body or (
+            "import json,sys\n"
+            "args=sys.argv[1:]\n"
+            "json.dump([], sys.stdout)\n"
+        )
+        with open(os.path.join(root, "nst_validate.py"), "w") as fh:
+            fh.write(validator_body)
+        for name in designs:
+            path = os.path.join(root, "shell", name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as fh:
+                fh.write('{"version": "1.0.0"}')
+        return root
+
+    def _run(self, *args):
+        return subprocess.run(
+            ["bash", CHECKER, *args],
+            capture_output=True, text=True, timeout=60)
+
+    @unittest.skipUnless(os.path.exists(CHECKER),
+                         "checker script not present")
+    def test_clean_tree_passes(self):
+        root = self._sandbox(["shell/a.nstudio", "shell/b.nstudio"])
+        proc = self._run(root)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("NSTUDIO DESIGNS: OK", proc.stdout)
+        self.assertIn("2 document", proc.stdout)
+
+    @unittest.skipUnless(os.path.exists(CHECKER),
+                         "checker script not present")
+    def test_failing_design_exits_1_with_annotation_and_diagnostics(self):
+        """The fail-closed path that the first draft got wrong: the
+        diagnostics JSON AND the ::error:: annotation must both reach
+        the log (a silent failure annotates nothing)."""
+        stub = (
+            "import json,sys\n"
+            "json.dump([{\"file\": \"x.nstudio\", \"line\": 1, "
+            "\"column\": 1, \"severity\": \"error\", "
+            "\"code\": \"validation\", \"message\": \"bad\"}], "
+            "sys.stdout)\n"
+        )
+        root = self._sandbox(["shell/bad.nstudio"], validator_body=stub)
+        proc = self._run(root)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("::error::", proc.stdout)
+        self.assertIn("\"code\": \"validation\"", proc.stdout)
+
+    @unittest.skipUnless(os.path.exists(CHECKER),
+                         "checker script not present")
+    def test_zero_designs_is_a_finding(self):
+        root = self._sandbox([])
+        proc = self._run(root)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("::error::", proc.stdout)
+        self.assertIn("mass deletion", proc.stdout)
+
+    @unittest.skipUnless(os.path.exists(CHECKER),
+                         "checker script not present")
+    def test_missing_validator_fails_closed(self):
+        root = self._sandbox(["shell/a.nstudio"])
+        os.remove(os.path.join(root, "nst_validate.py"))
+        proc = self._run(root)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("::error::", proc.stdout)
+
+    @unittest.skipUnless(os.path.exists(CHECKER),
+                         "checker script not present")
+    def test_unparseable_validator_output_is_a_gate_failure(self):
+        stub = "import sys\nsys.stdout.write('not json')\n"
+        root = self._sandbox(["shell/a.nstudio"], validator_body=stub)
+        proc = self._run(root)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("::error::", proc.stdout)
+
+    @unittest.skipUnless(os.path.exists(CHECKER),
+                         "checker script not present")
+    def test_real_tree_passes_and_workflow_wires_the_gate(self):
+        """The real checkout's 13 shipped designs pass the REAL
+        validator, and the docs workflow actually runs the gate on the
+        paths that can break it."""
+        proc = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        text = open(WORKFLOW).read()
+        self.assertIn("check_nstudio_designs.sh", text)
+        self.assertIn('"source/nyhal-linux-backend/shell/**"', text)
+        self.assertIn('"source/nyhal-linux-backend/nst_validate.py"', text)
 
 
 if __name__ == "__main__":

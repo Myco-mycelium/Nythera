@@ -7,6 +7,9 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "tools/**"
+      - "scripts/**"
+      - "source/nyhal-linux-backend/shell/**"
+      - "source/nyhal-linux-backend/nst_validate.py"
       - ".github/workflows/docs.yml"
   pull_request:
     branches: [main]
@@ -14,6 +17,9 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "tools/**"
+      - "scripts/**"
+      - "source/nyhal-linux-backend/shell/**"
+      - "source/nyhal-linux-backend/nst_validate.py"
   workflow_dispatch:
 
 permissions:
@@ -44,6 +50,9 @@ jobs:
 
       - name: Check recorded doc premises
         run: python3 tools/check_doc_premises.py
+
+      - name: Check .nstudio design documents (NFS-001 import gate)
+        run: bash scripts/check_nstudio_designs.sh
 
       - name: Build site
         run: mkdocs build --strict
