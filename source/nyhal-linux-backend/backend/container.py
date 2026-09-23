@@ -97,6 +97,14 @@ class ContainerConfig:
     # the conformance consequence.
     strict_seccomp: bool = True
     default_deny: bool = True   # default-deny allowlist posture (NPS-017 §5.1)
+    # Debug manifest class (AG decision log D7; NPS-011 v1.4.0 §4.4).
+    # Declares this container as a developer-mode debug target: enables
+    # requesting CAP-DEBUG-ATTACH and builds the seccomp policy WITHOUT
+    # the ptrace-family denial (construction-time only, NPS-021 §4.8
+    # fence 2). The class must be user-visible in every state surface
+    # (NPS-021 §5.5 req 2) — a debug container is never indistinguishable
+    # from a production one in operator tooling.
+    debug_class: bool = False
     network: bool = False  # own network namespace (loopback only), opt-in
     app_path: Optional[str] = None  # Nyrqis application path (.napp binary)
     # Overlay filesystem: when ``rootfs`` is set, the container gets a
@@ -2331,10 +2339,36 @@ class ContainerManager:
             if not allowed:
                 raise ValueError(f"Quota exceeded for {owner}: {reason}")
 
+        # Manifest evaluation (NPS-011 §4.4): a request for a
+        # class-conditional capability without its manifest class is
+        # INVALID — rejected here, at the earliest check, not merely
+        # denied (or silently stripped) at grant time.
+        from backend.capability import Capability, CapabilityManager
+        for name in (config.capabilities or []):
+            try:
+                cap = Capability(name)
+            except ValueError:
+                continue  # unknown names stay inert (unchanged behavior)
+            required = CapabilityManager._CLASS_CONDITIONAL.get(cap)
+            if required and not getattr(config, required, False):
+                raise ValueError(
+                    f"invalid manifest: {cap.value} requires "
+                    f"{required}=true (NPS-011 §4.4)"
+                )
+
         container = Container(config)
         self.containers[container.id] = container
-        self._record_event("created", container.id,
-                           f"hostname={config.hostname}")
+        # Record the declared manifest class (NPS-021 §5.5 req 2: visible
+        # and auditable; NPS-011 §4.4: the class is the NECESSARY
+        # condition for class-conditional grants — without this
+        # declaration, a later grant_capability(CAP_DEBUG_ATTACH) raises).
+        if self.capability_manager is not None:
+            self.capability_manager.declare_container_class(
+                container.id, debug_class=bool(config.debug_class))
+        self._record_event(
+            "created", container.id,
+            f"hostname={config.hostname}"
+            + (" debug_class=true" if config.debug_class else ""))
         logger.info(f"Created container {container.id}")
         return container
     
@@ -15554,6 +15588,7 @@ class ContainerManager:
                 },
                 "seccomp": container.config.seccomp,
                 "default_deny": container.config.default_deny,
+                "debug_class": container.config.debug_class,
                 "network": container.config.network,
                 "rootfs": container.config.rootfs,
                 "capabilities": container.config.capabilities,
@@ -15628,6 +15663,7 @@ class ContainerManager:
             ),
             seccomp=cfg_data.get("seccomp", True),
             default_deny=cfg_data.get("default_deny", True),
+            debug_class=cfg_data.get("debug_class", False),
             network=cfg_data.get("network", False),
             rootfs=cfg_data.get("rootfs"),
             capabilities=cfg_data.get("capabilities", []),
@@ -36271,9 +36307,13 @@ class ContainerManager:
         caps = sorted(set(caps))
         arch = SyscallArch.from_machine()
         if container.config.default_deny:
-            policy = build_allowlist_policy(caps, arch=arch)
+            policy = build_allowlist_policy(
+                caps, arch=arch,
+                debug_class=bool(container.config.debug_class))
         else:
-            policy = build_policy(caps, arch=arch)
+            policy = build_policy(
+                caps, arch=arch,
+                debug_class=bool(container.config.debug_class))
         program = build_program(policy)
         fd, path = tempfile.mkstemp(prefix="nyrqis-bpf-", suffix=".bpf")
         try:
@@ -36330,7 +36370,13 @@ class ContainerManager:
         fd, path = tempfile.mkstemp(prefix="nyrqis-policy-", suffix=".json")
         os.close(fd)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"capabilities": sorted(set(caps))}, fh)
+            json.dump({
+                "capabilities": sorted(set(caps)),
+                # D7: the manifest class rides the policy file so the
+                # in-container launcher rebuilds the SAME policy the
+                # daemon compiled — including the debug relaxation.
+                "debug_class": bool(container.config.debug_class),
+            }, fh)
         os.chmod(path, 0o600)
         self._policy_files.append(path)
         return path

@@ -83,7 +83,7 @@ import struct
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # The launcher always runs from the backend directory (container.py passes
 # its absolute path), so the sibling modules are importable.
@@ -200,15 +200,25 @@ def bring_loopback_up() -> bool:
         sock.close()
 
 
-def load_capabilities(policy_file: str) -> Optional[list]:
+def load_capabilities(policy_file: str) -> Tuple[Optional[list], bool]:
+    """Load the capability list AND the debug-class flag from the
+    container's policy file.
+
+    D7 (NPS-021 §4.8 fence 2): the class rides the policy file so the
+    in-container rebuild produces the SAME policy the daemon compiled —
+    including the ptrace-family relaxation for debug-class containers.
+    Returns ``(caps_or_None, debug_class)``; caps is None on read
+    failure.
+    """
     """Load the capability set from the policy file."""
     try:
         raw = Path(policy_file).read_text(encoding="utf-8")
         data = json.loads(raw)
-        return list(data.get("capabilities", []))
+        return (list(data.get("capabilities", [])),
+                bool(data.get("debug_class", False)))
     except (OSError, ValueError) as e:
         logger.error("failed to load policy file %s: %s", policy_file, e)
-        return None
+        return (None, False)
 
 
 def apply_seccomp(
@@ -219,7 +229,7 @@ def apply_seccomp(
         logger.warning("no policy file provided — data-plane enforcement OFF")
         return False
 
-    caps = load_capabilities(policy_file)
+    caps, debug_class = load_capabilities(policy_file)
     if caps is None:
         if strict:
             sys.exit(4)
@@ -227,9 +237,11 @@ def apply_seccomp(
 
     try:
         if default_deny:
-            policy = build_allowlist_policy(caps, arch=arch)
+            policy = build_allowlist_policy(
+                caps, arch=arch, debug_class=debug_class)
         else:
-            policy = build_policy(caps, arch=arch)
+            policy = build_policy(
+                caps, arch=arch, debug_class=debug_class)
     except Exception as e:  # ValueError from the policy builders
         logger.error("failed to build seccomp policy: %s", e)
         if strict:

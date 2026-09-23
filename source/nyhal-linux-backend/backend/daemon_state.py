@@ -149,6 +149,12 @@ class DaemonStateFile:
                 "state": getattr(getattr(c, "state", None), "value", None),
                 "pid": getattr(c, "pid", None),
                 "created_at": getattr(c, "created_at", None),
+                # D7 / NPS-021 §5.5 req 2: the class is visible in every
+                # state surface — a debug container is never
+                # indistinguishable from a production one.
+                "debug_class": bool(
+                    getattr(getattr(c, "config", None), "debug_class",
+                            False)),
             })
         return out
 

@@ -2384,6 +2384,9 @@ class ControlService:
                 name=request.get("name"),
                 command=command,
                 capabilities=list(request.get("capabilities") or []),
+                # D7: the debug manifest class (NPS-011 §4.4). Creation
+                # rejects CAP-DEBUG-ATTACH requests without it.
+                debug_class=bool(request.get("debug_class", False)),
                 network=bool(request.get("network", False)),
                 limits=ResourceLimits(
                     memory_mb=int(request.get("memory_mb") or 256),

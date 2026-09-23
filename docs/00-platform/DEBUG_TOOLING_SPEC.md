@@ -1,7 +1,7 @@
 ---
 title: Debug Tooling — `nyrqisctl debug` (design note for the M14 Phase 3 item)
 document_id: DBG-001
-version: 0.4.0
+version: 0.6.0
 status: Draft
 classification: Informative
 owners:
@@ -136,11 +136,64 @@ mediated recommendation.** What was decided:
 - Every attach/detach session remains audit-chained (ADR-0018).
 
 Not yet landed (the D7 implementation work items, in order): ~~the
-NPS-021 addendum; NPS-011 v1.4.0's registry entry~~ **done 2026-09-23**
-(see §4.1's addendum note); the launcher's manifest-class plumbing and
-debug-image staging; the `nyrqisctl containers debug` op family. The
-"step-through, breakpoints" roadmap wording now has a decided design
-behind it; the roadmap item stays `[~]` until the implementation lands.
+NPS-021 addendum; NPS-011 v1.4.0's registry entry~~ **done 2026-09-23**;
+~~the launcher's manifest-class plumbing~~ **done 2026-09-23, same day
+as the §4.1 review (see below)**; debug-image staging; the
+`nyrqisctl containers debug` op family. The "step-through, breakpoints"
+roadmap wording now has a decided design AND its manifest-class
+foundation behind it; the roadmap item stays `[~]` until the attach
+channel itself lands.
+
+### 4.1 Design review against NPS-021 §5.5 (2026-09-23)
+
+Before any code lands, each of §5.5's five MUST requirements is mapped
+to the concrete enforcement site it will live in (sites verified against
+the tree, not assumed):
+
+| # | Requirement (NPS-021 §5.5) | Enforcement site (verified) | Fit |
+|---|---|---|---|
+| 1 | High / denied-by-default / class-conditional / operator-only | `Capability` enum gains `CAP_DEBUG_ATTACH`; the class condition is enforced in the **grant path** — `CapabilityManager` gains a class-requirements map so the check is centralized and testable, and container creation validates the request against the manifest class | Fits; open implementation choice recorded below |
+| 2 | Class visible in every state surface | The container state builders (status/inspect reply, containers list, the debug bundle's `meta.json`) each gain an explicit debug-class field | Fits; a pure addition to existing reply shapes |
+| 3 | Relaxation construction-time only | `build_policy`/`build_allowlist_policy` currently take only `capabilities` and apply/subtract the static `_ALWAYS_DENY`; both gain a **keyword-only `debug_class=False`** parameter that, when True, admits the ptrace family at *policy build*. Independent confirmation: seccomp filters are one-shot (the `reload_policy` docstring) — a runtime relaxation is not even mechanically available | Fits; the parameter is the loud, citable gate §4.8 fence 2 demands |
+| 4 | Loopback-default debug endpoints | Containers already default to an isolated loopback-only network namespace; loopback binding inside the container is therefore the free default, and any wider binding requires `CAP-NETWORK-BIND` (High, prompt-required) per its own registry row | Fits; no new mechanism — the requirement becomes a default argument + validation in the future attach ops |
+| 5 | Manifest class in the audit chain | `CapabilityGrant` (the grant audit trail) gains the container's class; the ADR-0018 chained entries for evaluation/grant/attach events carry the class field | Fits; a field addition at already-audited events |
+
+§4.4's evaluation-time rejection maps to container creation: a requested
+`CAP-DEBUG-ATTACH` without `debug: true` is an **invalid manifest**
+(rejected at creation), not a capability silently stripped later.
+
+**Recorded implementation choice (open until Phase B-i lands):** where
+the class-conditional guard lives — (a) centralized in
+`CapabilityManager` (one testable enforcement point; the manager needs
+the container's class passed in) or (b) at each container.py grant call
+site (no manager API change; the check scatters). The review recommends
+(a); the implementation picks one and says so.
+
+**Resolution (2026-09-23, same day): the manifest-class plumbing is
+LANDED, and the choice was (a)** — the guard is centralized in
+`CapabilityManager` (`_CLASS_CONDITIONAL` map + a `container_classes`
+registry the container manager feeds via `declare_container_class`).
+As-built, pinned by `tests/test_debug_manifest_class.py` (16 tests):
+`ContainerConfig.debug_class`; `create()` rejects `CAP-DEBUG-ATTACH`
+requests without the class ("invalid manifest", per §4.4); the class
+survives spawn (only `reset_container` clears it, with the grants);
+`build_policy`/`build_allowlist_policy` gained keyword-only
+`debug_class=False` (construction-time gate, both enforcement modes,
+arch-safe via the deny/allow skip of arch-absent names); the class
+rides the policy JSON so the in-container launcher rebuilds the SAME
+policy (a test proves daemon-side and launcher-side policies agree,
+ptrace-family included); the class is visible in the state dict, the
+daemon-state manifest, the checkpoint round-trip, and the creation
+event (`debug_class=true`); the IPC create handler passes the flag
+through. Unknown capability names stay inert (unchanged behavior).
+Still open: debug-image staging, the `containers debug` op family —
+and the D7-required NPS-021 addendum requirements 1/5 (operator-only
+ops posture, class-in-audit-chain field) bind those work items.
+
+**Deliberately out of scope here, per D7's own fence:** launcher
+manifest-class plumbing, debug-image staging, and the
+`nyrqisctl containers debug` op family are separate work items — this
+review decides *where* requirements bind, not *when* the channel ships.
 
 ### The original Phase B proposal (retained for the record)
 

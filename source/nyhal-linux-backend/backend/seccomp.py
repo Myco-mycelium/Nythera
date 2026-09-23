@@ -364,6 +364,18 @@ _ALWAYS_DENY = [
     "perf_event_open", "bpf", "userfaultfd", "kcmp", "chroot",
 ]
 
+# The ONE named exception to the always-deny list (AG decision log D7,
+# 2026-09-23): debug-class manifests (``debug: true`` + CAP-DEBUG-ATTACH,
+# NPS-011 v1.4.0) build their policy WITHOUT the ptrace family denied.
+# Construction-time only (NPS-021 §4.8, fence 2): the class is a policy-
+# build parameter — there is no runtime capability hook, and none may be
+# added without violating this list's invariant. The PID-namespace fence
+# (NPS-021 §4.8, fence 1) bounds what this restores: ptrace attach is
+# namespace-scoped by the kernel, so a debugger inside the container can
+# only trace processes in that same namespace — the relaxation restores
+# intra-container introspection, never cross-container reach.
+_DEBUG_RELAXED_SYSCALLS = ("ptrace", "process_vm_readv", "process_vm_writev")
+
 # Capability -> syscall families. A container that lacks the capability
 # has the listed syscalls denied. Maps the backend's internal capability
 # names (backend/capability.py) to the syscall vocabulary.
@@ -649,6 +661,7 @@ def policy_from_json(data: Dict) -> SeccompPolicy:
 def build_policy(
     capabilities: Set[str],
     arch: Optional[SyscallArch] = None,
+    debug_class: bool = False,
 ) -> SeccompPolicy:
     """Build a seccomp policy from a set of granted capabilities.
 
@@ -656,12 +669,21 @@ def build_policy(
         capabilities: The container's granted capability *names* (the
             ``Capability`` enum values from ``backend/capability.py``).
         arch: Target architecture; defaults to the running machine.
+        debug_class: True only for debug-class manifests (``debug: true``,
+            AG decision log D7). Relaxes the ptrace-family denial from
+            the always-deny list at POLICY BUILD (NPS-021 §4.8, fence 2)
+            — the gate is evaluated exactly once, here; there is no
+            runtime flag. Every other always-deny syscall stays denied.
 
     Returns:
         A ``SeccompPolicy`` encoding what the capability set permits.
     """
     policy = SeccompPolicy(arch=arch or SyscallArch.from_machine())
-    policy.deny(*_ALWAYS_DENY)
+    if debug_class:
+        policy.deny(
+            *(n for n in _ALWAYS_DENY if n not in _DEBUG_RELAXED_SYSCALLS))
+    else:
+        policy.deny(*_ALWAYS_DENY)
 
     caps = set(capabilities)
 
@@ -701,6 +723,7 @@ def build_policy(
 def build_allowlist_policy(
     capabilities: Set[str],
     arch: Optional[SyscallArch] = None,
+    debug_class: bool = False,
 ) -> SeccompPolicy:
     """Build a *default-deny* (allowlist) policy from a capability set.
 
@@ -719,12 +742,25 @@ def build_allowlist_policy(
     Args:
         capabilities: The container's granted capability *names*.
         arch: Target architecture; defaults to the running machine.
+        debug_class: True only for debug-class manifests (``debug: true``,
+            AG decision log D7). Relaxes the ptrace-family denial at
+            POLICY BUILD (NPS-021 §4.8, fence 2): in default-deny mode
+            the family needs an explicit allow — it was never in the
+            baseline, because the static list denied it unconditionally.
     """
     policy = SeccompPolicy(
         arch=arch or SyscallArch.from_machine(),
         default_action=SECCOMP_RET_ERRNO | EPERM,
     )
-    policy.allow(*(set(_BASELINE_ALLOW) - set(_ALWAYS_DENY)))
+    if debug_class:
+        policy.allow(
+            *(set(_BASELINE_ALLOW) -
+              (set(_ALWAYS_DENY) - set(_DEBUG_RELAXED_SYSCALLS))))
+        # Explicit allow: the family is not in the baseline (it was
+        # always denied), so leaving it un-subtracted is not enough.
+        policy.allow(*_DEBUG_RELAXED_SYSCALLS)
+    else:
+        policy.allow(*(set(_BASELINE_ALLOW) - set(_ALWAYS_DENY)))
 
     caps = set(capabilities)
     from backend.capability import Capability

@@ -686,6 +686,17 @@ CLAIMS: list[Claim] = [
             "files": ["docs/reference/capability-registry/NPS-011-capability-registry.md"],
         },
     ),
+    Claim(
+        claim_id="debug-manifest-class-landed",
+        pattern=r"debug_class",
+        description="D7 manifest-class plumbing LANDED per the §4.1 review: ContainerConfig.debug_class; create() rejects CAP-DEBUG-ATTACH without the class (NPS-011 §4.4 evaluation-time rejection); the grant guard centralized in CapabilityManager._CLASS_CONDITIONAL; build_policy/build_allowlist_policy keyword-only debug_class (construction-time ptrace-relaxation gate, NPS-021 §4.8 fence 2); the class rides the policy JSON (launcher rebuilds the same policy); visible in state dict, daemon-state manifest, checkpoint, creation event; pinned by tests/test_debug_manifest_class.py (16 tests)",
+        check="path_contains",
+        check_args={
+            "needle": "_CLASS_CONDITIONAL",
+            "files": ["source/nyhal-linux-backend/backend/capability.py",
+                      "source/nyhal-linux-backend/tests/test_debug_manifest_class.py"],
+        },
+    ),
 ]
 
 

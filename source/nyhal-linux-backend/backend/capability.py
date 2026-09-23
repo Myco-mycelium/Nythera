@@ -76,6 +76,14 @@ class Capability(enum.Enum):
     # Storage capabilities (NyVault, ADR-0022)
     CAP_STORAGE_VOLUME = "CAP_STORAGE_VOLUME"  # Create/open named storage volumes
 
+    # Debug attach (NPS-011 v1.4.0, AG decision log D7).
+    # The first class-conditional capability: grantable ONLY to containers
+    # whose manifest declares the debug class (debug_class=True). PID-
+    # namespace-scoped per NPS-021 §4.8 — a debugger inside the container
+    # can only trace processes in that same namespace. Denied by default;
+    # operator-only operations.
+    CAP_DEBUG_ATTACH = "CAP_DEBUG_ATTACH"  # In-container debugger attach (debug class only)
+
 
 @dataclass
 class CapabilityGrant:
@@ -103,7 +111,34 @@ class CapabilityManager:
         self.grants: Dict[str, Set[Capability]] = {}
         # Map: container_id -> List[CapabilityGrant] (for audit trail)
         self.audit_trail: Dict[str, List[CapabilityGrant]] = {}
+        # Map: container_id -> declared manifest-class flags.
+        # NPS-021 §5.5 requirement 2: the debug class is declared at
+        # manifest evaluation and recorded here so class-conditional
+        # grants (CAP_DEBUG_ATTACH) have an authoritative source.
+        self.container_classes: Dict[str, Dict[str, bool]] = {}
         logger.info("CapabilityManager initialized")
+    
+    def declare_container_class(self, container_id: str,
+                                **class_flags: bool) -> None:
+        """Record a container's declared manifest class (D7).
+
+        Called from container creation after manifest evaluation, so the
+        class declaration is visible and auditable (NPS-021 §5.5 req 2)
+        and class-conditional grants have a source of truth.
+        """
+        self.container_classes.setdefault(container_id, {}).update(class_flags)
+    
+    def container_class(self, container_id: str) -> Dict[str, bool]:
+        """Get a container's declared manifest-class flags (read-only copy)."""
+        return dict(self.container_classes.get(container_id, {}))
+    
+    # Class-conditional capabilities (NPS-011 §4.4): capability -> the
+    # manifest-class flag it requires. The class is a NECESSARY, never a
+    # sufficient condition (the capability is still denied by default and
+    # must be explicitly requested).
+    _CLASS_CONDITIONAL: Dict[Capability, str] = {
+        Capability.CAP_DEBUG_ATTACH: "debug_class",
+    }
     
     def grant_capability(self, container_id: str, capability: Capability) -> None:
         """Grant a capability to a container.
@@ -114,7 +149,21 @@ class CapabilityManager:
         Args:
             container_id: The container to grant the capability to
             capability: The capability to grant
+
+        Raises:
+            ValueError: For a class-conditional capability whose required
+                manifest class was not declared for this container
+                (NPS-011 §4.4: rejected, not silently stripped).
         """
+        required_class = self._CLASS_CONDITIONAL.get(capability)
+        if required_class is not None:
+            declared = self.container_classes.get(container_id, {})
+            if not declared.get(required_class, False):
+                raise ValueError(
+                    f"{capability.value} requires the {required_class!r} "
+                    f"manifest class (NPS-011 §4.4); container "
+                    f"{container_id} did not declare it"
+                )
         if container_id not in self.grants:
             self.grants[container_id] = set()
             self.audit_trail[container_id] = []
@@ -261,6 +310,10 @@ class CapabilityManager:
         if container_id in self.grants:
             self.grants[container_id].clear()
             logger.info(f"Reset all capabilities for container {container_id}")
+        # Manifest-class declarations are cleared with the grants: the
+        # class died with the container. Not guarded by the grants check —
+        # a class may be declared before any grant exists (creation order).
+        self.container_classes.pop(container_id, None)
     
     def get_default_capabilities(self) -> Set[Capability]:
         """Get the default set of capabilities for a new container.

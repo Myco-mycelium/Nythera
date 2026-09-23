@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.18.1
+version: 6.18.2
 date: 2026-09-23
 ---
 
@@ -40,6 +40,16 @@ Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
 confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
+
+## SESSION ITEM — Wed 2026-09-23 (evening): the D7 manifest-class plumbing landed — review first, then code, every requirement site-verified before it was written
+
+| Item | Status |
+|------|--------|
+| **Thursday gate re-checked, honestly armed** | ✅ 16:19 UTC, still Wednesday: today's fires already PASS (10:18/10:14Z scheduled runs), tomorrow morning remains the verdict point — nothing fabricated |
+| **The §5.5 design review came BEFORE code (DBG-001 v0.5.0 §4.1)** | ✅ All five NPS-021 §5.5 MUST requirements mapped to their verified enforcement sites: (1) the class-conditional grant → the grant path, centralized in `CapabilityManager`; (2) state visibility → the three reply builders; (3) construction-time relaxation → `build_policy`/`build_allowlist_policy`, with independent confirmation from `reload_policy`'s docstring (seccomp filters are one-shot — a runtime relaxation is not even mechanically available); (4) loopback defaults → already the platform default (isolated loopback-only netns); (5) class-in-audit-chain → the grant audit-trail records, binding the future ops work items. One open choice recorded (guard centralized vs scattered) — and RESOLVED same day: (a), centralized |
+| **The D7 manifest-class plumbing LANDED (DBG-001 v0.6.0, pinned 16 ways)** | ✅ `ContainerConfig.debug_class`; `create()` rejects `CAP-DEBUG-ATTACH` without the class ("invalid manifest", per NPS-011 §4.4 — rejected at the earliest check, unknown names stay inert); `CapabilityManager._CLASS_CONDITIONAL` + `declare_container_class`/`container_class`, grant raises `ValueError` without the class, `reset_container` clears class-with-grants; `build_policy`/`build_allowlist_policy` keyword-only `debug_class=False` — the ptrace family omitted from the deny set / explicitly allowed in default-deny mode, every OTHER always-deny syscall untouched, arch-safe; the class rides the policy JSON so the in-container launcher rebuilds the SAME policy (a test proves daemon-side and launcher-side allowlists are identical, ptrace included); visibility in the state dict, daemon-state manifest, checkpoint round-trip, and the creation event; IPC create passthrough. **Pinned by `tests/test_debug_manifest_class.py` (16 tests)** |
+| **Test-side lessons, recorded because they are the honest details** | ✅ Three first-draft test failures, all test bugs, all diagnosed against ground truth: `_events` is a RingBuffer (`get_lines()`, not iterable); `chroot` has no x86_64 number in the syscall table — `deny()` legitimately skips arch-absent names, so the invariant is "every always-deny name that EXISTS on this arch stays denied"; the daemon/launcher parity test must use the policy FILE's caps (spawn defaults), not the raw config list. A fourth subtlety was caught pre-test by the implementation itself: default-deny mode needs an explicit ptrace-family allow (the family was never in the baseline — un-subtracting is not enough there) |
+| **Reconciliations** | ✅ DBG-001 v0.6.0 (work-items list updated: manifest-class plumbing struck done; staging + ops remain); spec index v1.37.0; premise pin `debug-manifest-class-landed` |
 
 ## SESSION ITEM — Wed 2026-09-23 (late afternoon): the D7 preconditions landed — the escalation addendum and the registry entry, with the analysis's load-bearing fact verified first
 
