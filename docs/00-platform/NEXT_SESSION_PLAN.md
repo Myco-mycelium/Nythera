@@ -21,20 +21,25 @@ even in grace; a no-show past 13:52 UTC is a real finding (three independent
 catchers: the checker's expected-fire logic, its staleness rule, the daily CI
 job).
 
-**Carried trigger — post-rotation dispatch verification:** re-verified 10:27 UTC
-Wed — grants still MISSING (Actions write 403 on dispatch, Variables write 403);
-the PAT has NOT been rotated. The trigger stays: once the owner mints the
+**Carried trigger — post-rotation dispatch verification:** re-verified THREE times
+Wed — 07:10, 10:27 and 10:38:47 UTC, grants still MISSING every time (Actions
+write 403 on dispatch, Variables write 403); the PAT has NOT been rotated. The
+drill's pre-rotation evidence is therefore fresh all day (dispatch → HTTP 403,
+byte-consistent with every prior execution); 204 remains the expected
+post-rotation result and the drill CANNOT run until the owner mints the
 fine-grained PAT (Contents/Workflows/Actions/Variables/PR = RW — a browser step
-that must never pass through chat) and runs `scripts/rotate_push_pat.sh`, the
-first dispatch drill is the followup that verifies the recovery path end to
-end — the 08:15 UTC drill's HTTP 403 should become 204, and `PAT_EXPIRES_AT`
-should be set (the pat-expiry-watch run may then honestly go red if the new
-expiry is ≤7 days out — set a fresh date when rotating).
+that must never pass through chat) and runs `scripts/rotate_push_pat.sh`.
+`PAT_EXPIRES_AT` should be set when rotating (the pat-expiry-watch run may then
+honestly go red if the new expiry is ≤7 days out — set a fresh date).
 
 **Also carried:** the session's records (this item included) were pushed to
 origin main the same morning — Thursday's fires are the first scheduled runs to
 execute a remote tip that includes the watcher's own contract pins and both
 verdict records; if the run shas still read pre-push, the push did not land.
+Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
+confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
+completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
+#35849078488).
 
 ## STANDING ITEM — CLOSED — Wed 2026-09-23 05:37/05:52 UTC: the dailies' second fires — one-day backlog or a trend?
 
