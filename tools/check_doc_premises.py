@@ -547,13 +547,23 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
-        claim_id="pkg-manager-simulated",
+        claim_id="pkg-manager-real-wiring",
         pattern=r"PackageManager",
-        description="The package-manager UI integration is real code but a SIMULATED store (sample data, instant operations) — the roadmap records the wiring gap honestly, not as done",
+        description="The package manager now wires the REAL store: signed-index catalogue load (fail-closed), delta-driven UPDATABLE, checksum-verified install/update with tamper-refusal — pinned by tests/test_package_manager_store.py",
         check="path_contains",
         check_args={
-            "needle": "def _create_sample_data",
+            "needle": "def _load_from_repo",
             "files": ["source/nyhal-linux-backend/ui/package_manager.py"],
+        },
+    ),
+    Claim(
+        claim_id="pkg-manager-store-tests",
+        pattern=r"test_package_manager_store",
+        description="The store-wiring test module exists (8 tests: verified load, tamper-refusal, unsigned-repo fallback, sample marking)",
+        check="path_contains",
+        check_args={
+            "needle": "class TestPackageManagerStoreWiring",
+            "files": ["source/nyhal-linux-backend/tests/test_package_manager_store.py"],
         },
     ),
     Claim(

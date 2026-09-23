@@ -129,7 +129,8 @@ class Repository:
 
 
 class PackageManager:
-    def __init__(self):
+    def __init__(self, repo_root: Optional[str] = None,
+                 trust_store_path: Optional[str] = None):
         self.packages: List[Package] = []
         self.operations: List[PackageOperation] = []
         self.repositories: List[Repository] = []
@@ -142,9 +143,21 @@ class PackageManager:
         self._selected_pkg: Optional[Package] = None
         self._view: str = "all"
         self._callbacks: list = []
-        self._create_sample_data()
+        self._repo = None
+        self._trust_store_path = trust_store_path
+        self._source: str = "sample"
+        loaded = False
+        if repo_root and trust_store_path:
+            loaded = self._load_from_repo(repo_root, trust_store_path)
+        if not loaded:
+            self._create_sample_data()
 
     def _create_sample_data(self):
+        """Dev/UI fallback catalogue — NOT a package store.
+
+        Marked as such: operations on this data complete instantly and
+        touch nothing real. The real path is repo_root +
+        trust_store_path in __init__ (a signed, verified index)."""
         now = time.time()
         self.packages = [
             Package(name="nyrqis-kernel", version="1.0.0-rc1", latest_version="1.0.0-rc1",
@@ -278,6 +291,87 @@ class PackageManager:
     def get_available(self) -> List[Package]:
         return [p for p in self.packages if p.status in (PackageStatus.AVAILABLE, PackageStatus.UPDATABLE)]
 
+    # ------------------------------------------------------------------
+    # Real store integration (NPS-026 §8 repo machinery)
+    # ------------------------------------------------------------------
+    # The catalogue comes from a SIGNED, VERIFIED repository index
+    # (backend/package_repo.PackageRepository.load_index — fail-closed:
+    # unsigned, untrusted, or tampered indexes raise and the manager
+    # falls back to the marked sample data). Package operations that
+    # need the store (install/update source verification) FAIL with a
+    # real failed PackageOperation when no verified entry exists —
+    # never a simulated success.
+
+    def _backend_dir(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent
+
+    def _load_from_repo(self, repo_root: str, trust_store_path: str) -> bool:
+        """Load the catalogue from a verified signed index.
+
+        Returns False (no raise) when the repo is unusable, so callers
+        get the sample-data fallback for dev/UI work; the failure is
+        logged, never silent."""
+        import logging
+        import sys as _sys
+        try:
+            backend_dir = self._backend_dir()
+            if str(backend_dir) not in _sys.path:
+                _sys.path.insert(0, str(backend_dir))
+            from backend.package_repo import PackageRepository
+
+            repo = PackageRepository(repo_root)
+            index = repo.load_index(trust_store_path)  # fail-closed verify
+            self._repo = repo
+            self._trust_store_path = trust_store_path
+            self._source = "signed-repo"
+            now = time.time()
+            self.packages = []
+            for entry in index.get("packages", []):
+                if entry.get("type") != "package":
+                    continue
+                self.packages.append(Package(
+                    name=entry.get("package_id", ""),
+                    id=entry.get("package_id", ""),
+                    version=entry.get("version", ""),
+                    description=entry.get("description", ""),
+                    status=PackageStatus.AVAILABLE,
+                    size_bytes=int(entry.get("size_bytes", 0)),
+                    installed_size_bytes=int(entry.get("size_bytes", 0)),
+                    dependencies=list(entry.get("dependencies", [])),
+                    maintainer=entry.get("maintainer", ""),
+                    license=entry.get("license", ""),
+                    repo=entry.get("repo", "nyrqis"),
+                    last_updated=float(entry.get("published", now)),
+                ))
+            # Deltas drive UPDATABLE: a package whose verified index
+            # also carries a delta from its version is updatable to the
+            # delta's target.
+            for entry in index.get("packages", []):
+                if entry.get("type") != "delta":
+                    continue
+                pkg = next((p for p in self.packages
+                            if p.id == entry.get("package_id")), None)
+                if pkg and pkg.version == entry.get("version_from"):
+                    pkg.latest_version = entry.get("version_to", "")
+                    pkg.status = PackageStatus.UPDATABLE
+            logging.getLogger(__name__).info(
+                "package manager: loaded %d packages from signed repo %s",
+                len(self.packages), repo_root)
+            return True
+        except Exception as exc:  # noqa: BLE001 — any repo failure falls back
+            logging.getLogger(__name__).warning(
+                "package manager: signed repo %s unusable (%s); "
+                "falling back to sample data", repo_root, exc)
+            return False
+
+    def _source_entry(self, pkg: Package) -> Optional[dict]:
+        """The verified index entry backing an install, or None."""
+        if self._repo is None:
+            return None
+        return self._repo.find(pkg.id, pkg.version,
+                               trust_store_path=self._trust_store_path)
+
     def select_package(self, name: str) -> Optional[Package]:
         pkg = next((p for p in self.packages if p.name == name), None)
         if pkg:
@@ -287,8 +381,17 @@ class PackageManager:
     def install_package(self, name: str) -> Optional[PackageOperation]:
         pkg = next((p for p in self.packages if p.name == name), None)
         if pkg and pkg.status == PackageStatus.AVAILABLE:
+            if self._repo is not None:
+                entry = self._source_entry(pkg)
+                if entry is None or not self._repo.verify_entry_content(entry):
+                    op = PackageOperation(package_name=name, operation="install",
+                                           status="failed", progress=0.0,
+                                           log=["verified index entry or payload missing for %s %s" % (pkg.id, pkg.version)])
+                    self.operations.append(op)
+                    return op
             op = PackageOperation(package_name=name, operation="install",
-                                   status="completed", progress=100.0)
+                                   status="completed", progress=100.0,
+                                   log=["source: %s" % self._source])
             self.operations.append(op)
             pkg.status = PackageStatus.INSTALLED
             pkg.installed_size_bytes = pkg.size_bytes * 3
@@ -308,8 +411,19 @@ class PackageManager:
     def update_package(self, name: str) -> Optional[PackageOperation]:
         pkg = next((p for p in self.packages if p.name == name), None)
         if pkg and pkg.status == PackageStatus.UPDATABLE:
+            if self._repo is not None:
+                delta = self._repo.find_delta(
+                    pkg.id, pkg.version, pkg.latest_version,
+                    trust_store_path=self._trust_store_path)
+                if delta is None or not self._repo.verify_entry_content(delta):
+                    op = PackageOperation(package_name=name, operation="update",
+                                           status="failed", progress=0.0,
+                                           log=["verified delta %s→%s missing for %s" % (pkg.version, pkg.latest_version, pkg.id)])
+                    self.operations.append(op)
+                    return op
             op = PackageOperation(package_name=name, operation="update",
-                                   status="completed", progress=100.0)
+                                   status="completed", progress=100.0,
+                                   log=["source: %s" % self._source])
             self.operations.append(op)
             pkg.version = pkg.latest_version
             pkg.status = PackageStatus.INSTALLED
@@ -430,26 +544,13 @@ class PackageManager:
                 return p
         return None
 
-    def install_package(self, pkg_id: str) -> bool:
-        pkg = self.get_package(pkg_id)
-        if pkg and not pkg.is_installed:
-            pkg.status = PackageStatus.INSTALLED
-            return True
-        return False
-
     def uninstall_package(self, pkg_id: str) -> bool:
+        """Bool-alias for remove_package (the test-facing API; the rich
+        PackageOperation path is remove_package above)."""
         pkg = self.get_package(pkg_id)
         if pkg and pkg.is_installed:
-            pkg.status = PackageStatus.AVAILABLE
-            return True
-        return False
-
-    def update_package(self, pkg_id: str) -> bool:
-        pkg = self.get_package(pkg_id)
-        if pkg and pkg.has_update:
-            pkg.version = pkg.latest_version
-            pkg.status = PackageStatus.INSTALLED
-            return True
+            op = self.remove_package(pkg.name)
+            return op is not None and op.status != "failed"
         return False
 
     def navigate_down(self):
