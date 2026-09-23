@@ -177,6 +177,8 @@ nav:
       - Memory Manager: diagrams/memory-manager.md
       - Game Package Layering: diagrams/game-package-layering.md
       - Update Pipeline: diagrams/update-pipeline.md
+      - AI Subsystem: diagrams/ai-subsystem.md
+      - Identity Subsystem: diagrams/identity-subsystem.md
       - Package Mount Lifecycle: diagrams/package-mount-lifecycle.md
   - Assets: assets/README.md
   - Reference Indexes:

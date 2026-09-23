@@ -16,15 +16,17 @@ on GitHub and in the MkDocs site.
 | [Memory Manager](memory-manager.md) | Per-container limits, the adopted defaults, and SUSPENDED accounting | NPS-010 §7/§9, NPS-001 §3 |
 | [Game Package Layering](game-package-layering.md) | .nypkg → .nygi → mount → overlay: the full install stack | NPS-026, NPS-006, NPS-005 |
 | [Update Pipeline](update-pipeline.md) | Delta verification, swap-and-retain, known-good rollback | NPS-026 §9, NPS-006 §3.2/§4.3 |
+| [AI Subsystem](ai-subsystem.md) | The suggest-vs-act boundary and its protected-surface path | NPS-015 §4–§5, NPS-024 |
+| [Identity Subsystem](identity-subsystem.md) | Session state machine, authentication custody, per-user separation | NPS-029, NPS-025 v1.1.0 |
 | [Package Mount Lifecycle](package-mount-lifecycle.md) | Mount → decompress → cache → unmount | NPS-006 §5 |
 
-Still planned (Milestone 11 gap category 6): the AI subsystem and
-identity subsystem diagrams. Both gates are now open — their
-governing NPS documents exist (NPS-015, NPS-029; the object graph
-already renders NPS-029's User/Session types) — and the update
-pipeline above covers what the original "await their own NPS"
-note had also listed under that gap. This file's original gating
-claim predates both NPS documents existing.
+Milestone 11 gap category 6's original planned list is **complete**:
+all eleven diagrammed (the AI and identity diagrams closed it
+2026-09-23, after their governing NPS documents existed — NPS-015
+had long since landed, NPS-029 the same day). Future diagrams follow
+the same rule that gated these: a diagram lands with the governing
+specification cited, and a new subsystem is specified before it is
+diagrammed.
 
 ## Editing Notes
 
