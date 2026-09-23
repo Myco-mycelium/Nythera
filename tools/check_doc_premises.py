@@ -599,21 +599,31 @@ CLAIMS: list[Claim] = [
     Claim(
         claim_id="debug-bundle-landed",
         pattern=r"nyrqisctl debug bundle",
-        description="DBG-001 Phase A + Phase C rider landed: `nyrqisctl debug bundle` composes the EXISTING health/status/containers/audit_log/nui_current ops client-side (no new daemon surface) — pinned by tests/test_debug_bundle.py; Phase B stays Group-gated",
+        description="DBG-001 Phase A + Phase C rider landed: `nyrqisctl debug bundle` composes the EXISTING health/status/containers/audit_log/nui_current ops client-side (no new daemon surface); redaction default-on strips vault aggregates; per-container audit trails (the op requires a container_id); --chain-id drives summary+verification",
         check="path_contains",
         check_args={
-            "needle": "def _debug_bundle",
+            "needle": "def _redact_vault",
             "files": ["source/nyhal-linux-backend/nyrqisctl.py"],
         },
     ),
     Claim(
         claim_id="dbg001-design-note",
         pattern=r"DBG-001",
-        description="The debug-tooling design note exists (DBG-001, docs/00-platform/DEBUG_TOOLING_SPEC.md, v0.2.0 as-built) — surface audit, deviations recorded, Phase B pre-read",
+        description="The debug-tooling design note exists (DBG-001, docs/00-platform/DEBUG_TOOLING_SPEC.md, v0.3.0 as-built) — deviations 2+3 resolved (redaction, per-container audit + chain capture), the build_payload audit-summary shadow recorded, Phase B pre-read",
         check="path_contains",
         check_args={
             "needle": "document_id: DBG-001",
             "files": ["docs/00-platform/DEBUG_TOOLING_SPEC.md"],
+        },
+    ),
+    Claim(
+        claim_id="debug-bundle-tests",
+        pattern=r"test_debug_bundle",
+        description="The debug-bundle contract is pinned (9 tests: redaction default, --no-redact opt-out, per-container audit requirement, chain capture, no-partial-bundle abort, supplementary-error survival)",
+        check="path_contains",
+        check_args={
+            "needle": "def test_chain_ids_capture_summary_and_verification",
+            "files": ["source/nyhal-linux-backend/tests/test_debug_bundle.py"],
         },
     ),
 ]

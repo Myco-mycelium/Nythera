@@ -9337,6 +9337,27 @@ def call_daemon(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _redact_vault(resp: Dict[str, Any]) -> Dict[str, Any]:
+    """DBG-001 §3 redaction pass: strip the vault AGGREGATE figures
+    (byte counts, warned-container counts) from a status/health reply,
+    keeping the volume count and marking the redaction. Client-side
+    only — the daemon replies are never modified in transit. The vault
+    values are cached aggregates (ipc/service.py), so nothing here is
+    secret material — but an incident bundle is a sharing artifact and
+    capacity figures do not belong in it by default."""
+    out = dict(resp)
+    vault = out.get("vault")
+    if isinstance(vault, dict):
+        out["vault"] = {
+            "redacted": True,
+            "volumes": vault.get("volumes"),
+            "fields_removed": [
+                "logical_bytes", "physical_bytes", "warned_containers",
+            ],
+        }
+    return out
+
+
 def _debug_bundle(args: argparse.Namespace) -> int:
     """DBG-001 Phase A: assemble an incident bundle by composing the
     EXISTING health/status/containers ops — client-side only, no new
@@ -9366,35 +9387,6 @@ def _debug_bundle(args: argparse.Namespace) -> int:
                   "(no partial bundle written)", file=sys.stderr)
             return 1
         collected[fname] = resp
-
-    # Control-plane audit trail: supplementary (a bounded tail), so a
-    # failure is recorded in the bundle rather than aborting it.
-    audit_payload: Dict[str, Any] = {
-        "service": "control", "op": "audit_log",
-        "container_id": None, "tail": max(0, args.audit_tail),
-        "action": None, "actor": None, "resource": None,
-    }
-    audit = call_daemon(target, audit_payload, timeout_s=args.timeout)
-    if audit is None or not audit.get("ok"):
-        collected["audit-log.json"] = {
-            "error": (audit or {}).get("error") or "no reply",
-            "note": "supplementary — bundle continues without the trail",
-        }
-    else:
-        collected["audit-log.json"] = audit
-
-    # DBG-001 Phase C rider: the NUI runtime's current rendering state
-    # (read-only, existing authorized op). Supplementary, like the tail.
-    nui = call_daemon(
-        target, {"service": "nui", "op": "nui_current"},
-        timeout_s=args.timeout)
-    if nui is None or not nui.get("ok"):
-        collected["nui-current.json"] = {
-            "error": (nui or {}).get("error") or "no reply",
-            "note": "supplementary — bundle continues without it",
-        }
-    else:
-        collected["nui-current.json"] = nui
 
     # Per-container detail: the caller may narrow with --container;
     # default is every container the list op reported.
@@ -9426,15 +9418,85 @@ def _debug_bundle(args: argparse.Namespace) -> int:
                                  else "no reply"}
             else:
                 detail[fname] = resp
+        # The container's own audit trail (the audit_log op REQUIRES a
+        # container_id — there is no daemon-wide trail; discovered on
+        # the wire 2026-09-23). Supplementary: an error is recorded,
+        # the bundle continues.
+        audit = call_daemon(target, {
+            "service": "control", "op": "audit_log",
+            "container_id": cid, "tail": max(0, args.audit_tail),
+            "action": None, "actor": None, "resource": None,
+        }, timeout_s=args.timeout)
+        if audit is None or not audit.get("ok"):
+            detail["audit.json"] = {
+                "error": (audit or {}).get("error") or "no reply",
+                "note": "supplementary — recorded, bundle continues",
+            }
+        else:
+            detail["audit.json"] = audit
         per_container[str(cid)] = detail
+
+    # Optional hash-chain capture: for each --chain-id, the existing
+    # summary + verification ops (ADR-0018 machinery). There is NO op
+    # that lists chains, so ids must be supplied by the operator —
+    # auto-discovery would be new daemon surface and is out of scope.
+    chains_out: Dict[str, Any] = {}
+    for chain_id in (getattr(args, "chain_id", None) or []):
+        entry: Dict[str, Any] = {}
+        # Wire shapes composed directly (ipc/control.py ops):
+        # build_payload("audit-summary") resolves to the CONTAINER
+        # variant — the command name is mapped twice and the first
+        # branch wins, shadowing the chain variant (the same
+        # duplicate-mapping class as the PackageManager
+        # duplicate-method find). Recorded, not silently relied on.
+        for key, payload in (
+            ("summary", {"service": "control",
+                         "op": "get_audit_summary",
+                         "chain_id": chain_id}),
+            ("verification", {"service": "control",
+                              "op": "verify_audit_chain",
+                              "chain_id": chain_id}),
+        ):
+            resp = call_daemon(target, payload, timeout_s=args.timeout)
+            if resp is None or not resp.get("ok"):
+                entry[key] = {
+                    "error": (resp or {}).get("error") or "no reply",
+                    "note": "supplementary — recorded, bundle continues",
+                }
+            else:
+                entry[key] = resp
+        chains_out[chain_id] = entry
+
+    # DBG-001 Phase C rider: the NUI runtime's current rendering state
+    # (read-only, existing authorized op). Supplementary, like the tail.
+    nui = call_daemon(
+        target, {"service": "nui", "op": "nui_current"},
+        timeout_s=args.timeout)
+    if nui is None or not nui.get("ok"):
+        collected["nui-current.json"] = {
+            "error": (nui or {}).get("error") or "no reply",
+            "note": "supplementary — bundle continues without it",
+        }
+    else:
+        collected["nui-current.json"] = nui
+
+    # Redaction (default ON): strip vault aggregate figures from the
+    # status/health replies BEFORE anything is written. --no-redact
+    # keeps the raw replies (operator's explicit choice).
+    redacted = bool(getattr(args, "redact", True))
+    if redacted:
+        for fname in ("health.json", "status.json"):
+            collected[fname] = _redact_vault(collected[fname])
 
     os.makedirs(out)
     with open(os.path.join(out, "meta.json"), "w") as fh:
         fh.write(json.dumps({
-        "bundle_format": 1,
+        "bundle_format": 2,
         "generated_at": now,
         "socket": target,
         "containers_requested": list(wanted),
+        "chains_requested": list(chains_out),
+        "redacted": redacted,
         "note": "composed by nyrqisctl debug bundle (DBG-001 Phase A) "
                 "from existing authorized ops; no new daemon surface",
     }, indent=2, sort_keys=True))
@@ -9444,6 +9506,9 @@ def _debug_bundle(args: argparse.Namespace) -> int:
     with open(os.path.join(out, "per-container.json"), "w") as fh:
         fh.write(json.dumps(
         per_container, indent=2, sort_keys=True))
+    if chains_out:
+        with open(os.path.join(out, "audit-chains.json"), "w") as fh:
+            fh.write(json.dumps(chains_out, indent=2, sort_keys=True))
     print(f"bundle written: {out}")
     return 0
 
@@ -9719,7 +9784,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Per-container detail to include (repeatable; "
                          "default: all running containers)")
     db.add_argument("--audit-tail", type=int, default=100,
-                    help="Audit-chain records to tail (default 100)")
+                    help="Per-container audit-trail entries to include "
+                         "(default 100; the audit_log op is per-container)")
+    db.add_argument("--chain-id", action="append", default=[],
+                    metavar="ID",
+                    help="Audit hash-chain to capture with summary + "
+                         "verification (repeatable; there is no chain-"
+                         "listing op, so ids must be supplied)")
+    db.add_argument("--redact", action=BooleanOptionalAction, default=True,
+                    help="Strip vault aggregate figures (byte counts, "
+                         "warned containers) from status/health in the "
+                         "bundle (default: --redact; --no-redact keeps "
+                         "the raw replies)")
     db.set_defaults(command="debug-bundle")
 
     containers = sub.add_parser(

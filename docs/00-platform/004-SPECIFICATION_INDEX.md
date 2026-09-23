@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.31.0
+version: 1.32.0
 status: Draft
 classification: Reference
 owners:
@@ -179,6 +179,7 @@ change process.
 | 1.30.0  | 2026-09-23 | Add NPS-029 (Identity and User Data Separation, Draft) — User/Session objects, authentication rules (unspoofable login surface, vault-custody credential storage), per-user data separation via ownership stamps + per-User NyFS volumes with deny-by-default cross-User access; resolves NPS-025 §4.14's placeholder (NPS-025 v1.1.0) and unblocks the identity-subsystem diagram |
 | 1.29.0  | 2026-09-23 | The build-architecture duality registered on AG_AGENDA v1.8.0 as the Group's second standing item: BUILD-001 (Draft, docs/reference/build) vs BUILD-ARCH (Accepted, docs/00-platform), both claiming NPC-007 gap 9 — canonical-ID choice + the Accepted marking's missing decision record are the Group's calls; index table names the duality |
 | 1.31.0  | 2026-09-23 | Debug tooling (M14 Phase 3): DBG-001 design note registered (v0.2.0) — surface audit, three-phase split; Phase A incident bundle + Phase C NUI rider LANDED (`nyrqisctl debug bundle`: client-side composition of existing authorized ops, no new daemon surface, 6/6 tests); Phase B (attach, step-through/breakpoints) stays Group-gated — roadmap item open for B |
+| 1.32.0  | 2026-09-23 | DBG-001 v0.3.0: Phase A follow-ups closed — redaction default-on (vault aggregates stripped from status/health, `--no-redact` opt-out), per-container audit trails (correcting a real audit_log wire-contract violation), `--chain-id` summary+verification capture; the `build_payload` `"audit-summary"` duplicate-mapping shadow recorded for the CLI owner; 9/9 bundle tests |
 | 1.28.0  | 2026-09-22 | NPS-028's implementation COMPLETE + validated (v0.9.0–v0.9.3): the production process model (PkiDaemonRunner + pki serve + nyrqis-pki.service), the daemon drill (found + closed the binary-over-JSON wire gap), §5.1's out-of-band daemon wiring, and §10's 15-claim validation record (NPC-002 §5.1/§5.2 evidence); the NPS-028 acceptance review registered on AG_AGENDA v1.7.0 as the platform's one standing item |
 | 1.26.0  | 2026-09-21 | Add NPS-028 (Package PKI Implementation Surface, Draft) — the key store, verification pipeline, revocation channel, enrollment flow, and audit trail the accepted NPS-027/NPS-026 §6.3 trust model needs built; also reconciles this table's NPS-010 cell which still read Draft after its sanctioned 2026-09-19 acceptance |
 

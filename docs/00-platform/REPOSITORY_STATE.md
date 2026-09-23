@@ -11,8 +11,10 @@ deliverables landed by 2026-09-06; the BUILD-001/BUILD-ARCH duality registered
 on AG_AGENDA v1.8.0 and briefed; NPS-029 Identity drafted — NPS-025 §4.14's
 placeholder resolved; three new architecture diagrams; the real package-manager
 store wiring landed; SDK scaffolding + hot reload struck done after a green
-test audit; `nyrqisctl debug bundle` Phase A + Phase C rider landed per
-DBG-001 v0.2.0; session records pushed to origin main — see
+test audit;`nyrqisctl debug bundle` Phase A + Phase C rider landed per
+DBG-001 v0.3.0 (redaction default-on, per-container audit trails,
+`--chain-id` capture); the IDE-integration item audited as genuinely
+absent; session records pushed to origin main — see
 `NEXT_SESSION_PLAN.md`)
 
 ## Current Milestone

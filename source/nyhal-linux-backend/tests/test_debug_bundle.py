@@ -29,6 +29,8 @@ def _args(**over):
         timeout=1.0,
         container=[],
         audit_tail=100,
+        chain_id=[],
+        redact=True,
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -43,11 +45,18 @@ class DebugBundleCLITests(unittest.TestCase):
             "debug", "bundle", "--out", "/tmp/b",
             "--container", "c1", "--container", "c2",
             "--audit-tail", "42",
+            "--chain-id", "ch-1", "--chain-id", "ch-2",
         ])
         self.assertEqual(args.command, "debug-bundle")
         self.assertEqual(args.out, "/tmp/b")
         self.assertEqual(args.container, ["c1", "c2"])
         self.assertEqual(args.audit_tail, 42)
+        self.assertEqual(args.chain_id, ["ch-1", "ch-2"])
+        # Redaction is the DEFAULT (DBG-001 §3): opt-out only.
+        self.assertIs(args.redact, True)
+        args_off = parser.parse_args(
+            ["debug", "bundle", "--out", "/tmp/b", "--no-redact"])
+        self.assertIs(args_off.redact, False)
 
 
 class DebugBundleBehaviourTests(unittest.TestCase):
@@ -93,36 +102,51 @@ class DebugBundleBehaviourTests(unittest.TestCase):
         a = _args()
         calls = []
         replies = {
-            "health": {"ok": True, "op": "health", "uptime_s": 12},
-            "status": {"ok": True, "op": "status", "version": "test"},
+            "health": {"ok": True, "op": "health", "uptime_s": 12,
+                       "vault": {"volumes": 2, "logical_bytes": 999,
+                                 "physical_bytes": 888,
+                                 "warned_containers": 1}},
+            "status": {"ok": True, "op": "status", "version": "test",
+                       "vault": {"volumes": 2, "logical_bytes": 999}},
             "container_list": {"ok": True,
                                "containers": [{"id": "c1"}, {"id": "c2"}]},
             "container_stats": {"ok": True, "cpu_pct": 1.0},
             "container_logs": {"ok": True, "lines": ["x"]},
             "container_top": {"ok": True, "procs": 3},
             "container_network_stats": {"ok": True, "rx": 1},
-            "audit_log": {"ok": True, "records": [{"seq": 1}]},
+            "audit_log": {"ok": True, "entries": [{"seq": 1}]},
+            "nui_current": {"ok": True, "op": "nui_current"},
         }
         nyrqisctl.call_daemon = self._script(replies, calls)
         rc = nyrqisctl._debug_bundle(a)
         self.assertEqual(rc, 0)
 
         meta = json.load(open(os.path.join(a.out, "meta.json")))
-        self.assertEqual(meta["bundle_format"], 1)
+        self.assertEqual(meta["bundle_format"], 2)
+        self.assertTrue(meta["redacted"])
         self.assertIn("no new daemon surface", meta["note"])
         self.assertEqual(meta["containers_requested"], ["c1", "c2"])
 
+        # Redaction (default ON): vault aggregates stripped, volume
+        # count kept, the redaction itself marked.
         health = json.load(open(os.path.join(a.out, "health.json")))
-        self.assertEqual(health["op"], "health")
+        self.assertEqual(health["vault"]["redacted"], True)
+        self.assertEqual(health["vault"]["volumes"], 2)
+        self.assertNotIn("logical_bytes", health["vault"])
+        self.assertNotIn("physical_bytes", health["vault"])
         status = json.load(open(os.path.join(a.out, "status.json")))
-        self.assertEqual(status["version"], "test")
+        self.assertNotIn("logical_bytes", status["vault"])
         per = json.load(open(os.path.join(a.out, "per-container.json")))
         self.assertIn("c1", per)
         self.assertIn("c2", per)
         self.assertEqual(per["c1"]["stats.json"]["cpu_pct"], 1.0)
         self.assertEqual(per["c1"]["logs.json"]["lines"], ["x"])
-        audit = json.load(open(os.path.join(a.out, "audit-log.json")))
-        self.assertEqual(audit["records"], [{"seq": 1}])
+        # The audit trail is per-container (the op REQUIRES a
+        # container_id — no daemon-wide trail exists).
+        self.assertEqual(per["c1"]["audit.json"]["entries"],
+                         [{"seq": 1}])
+        self.assertEqual(per["c2"]["audit.json"]["entries"],
+                         [{"seq": 1}])
         nui = json.load(open(os.path.join(a.out, "nui-current.json")))
         self.assertEqual(nui["op"], "nui_current")
 
@@ -133,6 +157,10 @@ class DebugBundleBehaviourTests(unittest.TestCase):
             "container_logs", "container_top", "container_network_stats",
             "audit_log", "nui_current",
         })
+        # Every audit_log call carried a container id.
+        for p in calls:
+            if p["op"] == "audit_log":
+                self.assertIn(p["container_id"], ("c1", "c2"))
 
     def test_bundle_records_per_container_errors(self):
         """A failing detail op is recorded as an error entry, not fatal."""
@@ -152,21 +180,85 @@ class DebugBundleBehaviourTests(unittest.TestCase):
         self.assertEqual(per["c1"]["stats.json"]["op"], "container_stats")
 
     def test_bundle_survives_audit_trail_failure(self):
-        """The audit tail is supplementary — its failure is recorded,
-        the bundle still completes."""
+        """The per-container audit trail is supplementary — its failure
+        is recorded in that container's detail, the bundle completes."""
         a = _args()
         replies = {
             "health": {"ok": True, "op": "health"},
             "status": {"ok": True, "op": "status"},
-            "container_list": {"ok": True, "containers": []},
+            "container_list": {"ok": True, "containers": [{"id": "c1"}]},
             "audit_log": {"ok": False, "error": "trail unavailable"},
         }
         nyrqisctl.call_daemon = self._script(replies, [])
         rc = nyrqisctl._debug_bundle(a)
         self.assertEqual(rc, 0)
-        audit = json.load(open(os.path.join(a.out, "audit-log.json")))
-        self.assertEqual(audit["error"], "trail unavailable")
-        self.assertIn("supplementary", audit["note"])
+        per = json.load(open(os.path.join(a.out, "per-container.json")))
+        self.assertEqual(per["c1"]["audit.json"]["error"],
+                         "trail unavailable")
+        self.assertIn("supplementary", per["c1"]["audit.json"]["note"])
+
+    def test_no_redact_keeps_raw_replies(self):
+        """--no-redact is the operator's explicit opt-out: the raw
+        vault aggregates stay in the bundle, meta records the choice."""
+        a = _args(redact=False)
+        replies = {
+            "health": {"ok": True, "op": "health",
+                       "vault": {"volumes": 1, "logical_bytes": 555}},
+            "status": {"ok": True, "op": "status"},
+            "container_list": {"ok": True, "containers": []},
+        }
+        nyrqisctl.call_daemon = self._script(replies, [])
+        rc = nyrqisctl._debug_bundle(a)
+        self.assertEqual(rc, 0)
+        health = json.load(open(os.path.join(a.out, "health.json")))
+        self.assertEqual(health["vault"]["logical_bytes"], 555)
+        meta = json.load(open(os.path.join(a.out, "meta.json")))
+        self.assertFalse(meta["redacted"])
+
+    def test_chain_ids_capture_summary_and_verification(self):
+        """--chain-id drives the existing summary + verification ops;
+        results land in audit-chains.json keyed by chain id."""
+        a = _args(chain_id=["ch-9"])
+        calls = []
+        replies = {
+            "health": {"ok": True, "op": "health"},
+            "status": {"ok": True, "op": "status"},
+            "container_list": {"ok": True, "containers": []},
+            "get_audit_summary": {"ok": True, "chain_id": "ch-9",
+                                  "total_entries": 3},
+            "verify_audit_chain": {"ok": True, "chain_id": "ch-9",
+                                   "verified": True},
+        }
+        nyrqisctl.call_daemon = self._script(replies, calls)
+        rc = nyrqisctl._debug_bundle(a)
+        self.assertEqual(rc, 0)
+        chains = json.load(
+            open(os.path.join(a.out, "audit-chains.json")))
+        self.assertEqual(chains["ch-9"]["summary"]["total_entries"], 3)
+        self.assertIs(chains["ch-9"]["verification"]["verified"], True)
+        meta = json.load(open(os.path.join(a.out, "meta.json")))
+        self.assertEqual(meta["chains_requested"], ["ch-9"])
+        ops_seen = {p["op"] for p in calls}
+        self.assertIn("get_audit_summary", ops_seen)
+        self.assertIn("verify_audit_chain", ops_seen)
+
+    def test_chain_op_errors_are_recorded_not_fatal(self):
+        """A failing chain op is supplementary: the error is recorded
+        in its entry and the bundle completes."""
+        a = _args(chain_id=["gone"])
+        replies = {
+            "health": {"ok": True, "op": "health"},
+            "status": {"ok": True, "op": "status"},
+            "container_list": {"ok": True, "containers": []},
+            "get_audit_summary": {"ok": False, "error": "not found"},
+        }
+        nyrqisctl.call_daemon = self._script(replies, [])
+        rc = nyrqisctl._debug_bundle(a)
+        self.assertEqual(rc, 0)
+        chains = json.load(
+            open(os.path.join(a.out, "audit-chains.json")))
+        self.assertEqual(chains["gone"]["summary"]["error"], "not found")
+        self.assertIn("supplementary", chains["gone"]["summary"]["note"])
 
 
 if __name__ == "__main__":

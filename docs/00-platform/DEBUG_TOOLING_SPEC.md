@@ -1,7 +1,7 @@
 ---
 title: Debug Tooling — `nyrqisctl debug` (design note for the M14 Phase 3 item)
 document_id: DBG-001
-version: 0.2.0
+version: 0.3.0
 status: Draft
 classification: Informative
 owners:
@@ -82,14 +82,32 @@ operator-local).
 
 1. *One flat bundle directory* instead of a `containers/<id>/` tree —
    per-container detail lives in one `per-container.json` keyed by id.
-2. *No redaction pass yet.* The draft's "redaction strips vault
-   figures by default" is not implemented; the vault aggregate in
-   `status.json` is CACHED figures only (ipc/service.py), but a
-   redaction option should land before bundles become a sharing
-   workflow. Tracked as a follow-up, not silently dropped.
-3. *No chain head hash in the audit tail* — `audit_log` returns the
-   bounded trail; the head-hash re-verification path needs the
-   chain-id-bearing ops and lands with the Phase B decision package.
+2. ~~No redaction pass yet~~ — **resolved (v0.3.0)**: redaction is
+   implemented and default-on (`--redact/--no-redact`): vault
+   aggregates (logical/physical bytes, warned-container counts) are
+   stripped client-side from the status/health replies, the volume
+   count is kept, and the redaction is marked in each reply plus
+   `meta.json`. The vault values are cached aggregates only
+   (ipc/service.py), so nothing secret was ever at stake — the point
+   is that capacity figures do not belong in a sharing artifact by
+   default.
+3. ~~No chain head hash in the audit tail~~ — **resolved, with a
+   wire-contract correction (v0.3.0)**: two findings. First, the
+   0.2.0 bundle's global `audit_log` call was **wrong on the wire** —
+   the op requires a specific `container_id` (there is NO daemon-wide
+   trail); a real daemon refuses it, and only the scripted tests hid
+   this. The trail is now captured **per container** (`audit.json`
+   inside each container's detail). Second, the chain-head path is
+   served by `--chain-id ID`: the existing `get_audit_summary` /
+   `verify_audit_chain` ops run per supplied id and land in
+   `audit-chains.json`. There is no chain-LISTING op, so ids are
+   operator-supplied — auto-discovery would be new daemon surface and
+   stays out of scope. Bonus find of the same class as the
+   PackageManager duplicate-method bug: `build_payload` maps
+   `"audit-summary"` twice (container variant first-wins shadows the
+   chain variant), so the bundle composes the chain ops' wire shapes
+   directly — the shadow is recorded here, not silently relied on or
+   unilaterally fixed (it is outside this document's surface).
 4. *No `state.json` summary.* Surfacing the daemon state file's
    summary touches the recovery-manifest disclosure rule; deferred
    until that surface is decided rather than risked in a convenience
@@ -125,14 +143,16 @@ this rider when there is demand.
 
 1. Phase A (the bundle) and the Phase C rider are **landed**
    (2026-09-23) — client-side composition of existing authorized ops,
-   6/6 tests green in `tests/test_debug_bundle.py`.
+   redaction default-on, 9/9 tests green in
+   `tests/test_debug_bundle.py`.
 2. Phase B (attach) still needs a Group decision on
    `CAP-DEBUG-ATTACH` and the launcher-mediated attach channel (this
    note is the pre-read). The roadmap item stays OPEN for Phase B —
    striking it as done would be false.
-3. Phase A follow-ups before bundles become a sharing workflow: the
-   redaction option (deviation 2) and the chain-head re-verification
-   path (deviation 3).
+3. The `build_payload` duplicate `"audit-summary"` mapping (deviation
+   3) should be fixed in `nyrqisctl` proper — one rename or explicit
+   dispatch — by whoever owns the CLI surface; the bundle does not
+   depend on it either way.
 
 ## Revision History
 
@@ -140,3 +160,4 @@ this rider when there is demand.
 |---------|------------|---------------|
 | 0.1.0   | 2026-09-23 | Initial draft — surface audit, three-phase split, the trust case for the attach channel |
 | 0.2.0   | 2026-09-23 | Phase A + Phase C rider landed; §3/§5 rewritten as built with four recorded deviations; §6 updated — Phase B stays Group-gated, item stays open |
+| 0.3.0   | 2026-09-23 | Deviations 2+3 resolved: redaction default-on (--redact/--no-redact); per-container audit trails (correcting a real wire-contract violation the scripted tests had masked); --chain-id summary+verification capture; the build_payload "audit-summary" shadow recorded for its owner |
