@@ -537,6 +537,26 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="sdk-scaffold-shipped",
+        pattern=r"nyq new",
+        description="The SDK scaffolding deliverable exists (sdk/nyrqis_sdk/: nyq new scaffold generator + 46 SDK tests green 2026-09-23) — the roadmap's M14 Phase 3 item is struck",
+        check="path_contains",
+        check_args={
+            "needle": "def cmd_new",
+            "files": ["sdk/nyrqis_sdk/cli.py"],
+        },
+    ),
+    Claim(
+        claim_id="pkg-manager-simulated",
+        pattern=r"PackageManager",
+        description="The package-manager UI integration is real code but a SIMULATED store (sample data, instant operations) — the roadmap records the wiring gap honestly, not as done",
+        check="path_contains",
+        check_args={
+            "needle": "def _create_sample_data",
+            "files": ["source/nyhal-linux-backend/ui/package_manager.py"],
+        },
+    ),
+    Claim(
         claim_id="nps029-identity-nps-exists",
         pattern=r"NPS-029",
         description="The Identity subsystem has its own NPS (NPS-029, Draft) — NPS-025 §4.14's placeholder is resolved",

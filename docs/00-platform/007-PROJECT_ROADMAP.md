@@ -272,11 +272,11 @@ focuses on making Nyrqis ready for real users and contributors.
 - [ ] Wayland client compatibility testing (weston, GTK4, Qt6, Sway)
 
 **Phase 3: Developer Experience**
-- [ ] Package manager integration — install/update/remove applications
-- [ ] SDK scaffolding — `nyrqis new` template generator
-- [ ] Hot reload for shell designs — live preview without restart
-- [ ] Debug tooling — `nyrqis debug` with step-through, breakpoints
-- [ ] IDE integration — VS Code extension for .nstudio editing
+- [~] Package manager integration — install/update/remove applications — **UI-layer integration exists** (`nyq pkg list|search|info|install|remove|update|stats` over `ui/package_manager.py`, 2026-09-06), but the manager is **simulated** (sample-data catalogue, instant completed operations — no `.nypkg`/repo wiring). The real-store path exists (`package_repo.py`, NPS-026 §8 machinery); the integration task is wiring the CLI/UI to it, not building one
+- [x] SDK scaffolding — **landed 2026-09-06** (`sdk/nyrqis_sdk/`): `nyq new` template generator (`scaffold.py`: default/shell/rust templates), `nyq build|test|preview|pkg` wiring, `list-templates`; 46/46 SDK tests green (test_scaffold 11, test_cli 10, test_production 25), verified 2026-09-23
+- [x] Hot reload for shell designs — **landed 2026-09-06** (`hotreload.py`): `HotReloader` file-watch with hash-based change detection, live preview without restart; covered by the production test suite
+- [ ] Debug tooling — `nyrqis debug` with step-through, breakpoints (no implementation found in the 2026-09-23 audit)
+- [ ] IDE integration — VS Code extension for .nstudio editing (no extension source found in the 2026-09-23 audit)
 
 **Phase 4: Production Hardening**
 - [ ] Crash reporting and telemetry (opt-in)
