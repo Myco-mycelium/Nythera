@@ -9,8 +9,11 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 third-fire item registered; M11's "remaining" backlog reconciled — all four
 deliverables landed by 2026-09-06; the BUILD-001/BUILD-ARCH duality registered
 on AG_AGENDA v1.8.0 and briefed; NPS-029 Identity drafted — NPS-025 §4.14's
-placeholder resolved; three new architecture diagrams; session records pushed
-to origin main — see `NEXT_SESSION_PLAN.md`)
+placeholder resolved; three new architecture diagrams; the real package-manager
+store wiring landed; SDK scaffolding + hot reload struck done after a green
+test audit; `nyrqisctl debug bundle` Phase A + Phase C rider landed per
+DBG-001 v0.2.0; session records pushed to origin main — see
+`NEXT_SESSION_PLAN.md`)
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure

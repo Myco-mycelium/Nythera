@@ -1,7 +1,7 @@
 ---
 title: Next Development Session Plan
-version: 6.16.1
-date: 2026-09-19
+version: 6.17.0
+date: 2026-09-23
 ---
 
 # Next Development Session Plan
@@ -41,7 +41,14 @@ confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
 
-## SESSION ITEM — Wed 2026-09-23 10:41 UTC: the docs-backlog pass struck three silently-completed M11 items — and found two live documents diverging
+## SESSION ITEM — Wed 2026-09-23 (afternoon): the ungated M14 Phase 3 items worked the honest way — audited, wired, and shipped where the evidence carried
+
+| Item | Status |
+|------|--------|
+| **The SDK audit struck two silent completions** | ✅ `sdk/nyrqis_sdk/` shipped 2026-09-06 but the roadmap still said unbuilt: `nyq new` scaffolding (46/46 SDK tests green, verified before striking) and `HotReloader` hot reload both struck done. The package-manager item was NOT struck — its UI layer was fed by `_create_sample_data()` (a simulated store) — and then was actually wired: `PackageManager(repo_root, trust_store_path)` now loads from the signed verified index (fail-closed), drives UPDATABLE from index deltas, verifies payload checksums before install/update succeed (tamper → FAILED operation, never simulated success), keeps the sample catalogue only as a docstring-marked dev fixture. Bonus latent bug fixed: `install_package`/`update_package` were defined twice (bool versions silently shadowed the rich API). Proven by an 11-check e2e drill on a real Ed25519-signed repo + `test_package_manager_store.py` (8 tests); full suite green |
+| **Debug tooling: Phase A + Phase C rider landed, Phase B honestly left gated** | ✅ `DBG-001` design note drafted from a surface audit (the item's "step-through, breakpoints" already has layered observational answers; the real gaps are a bundle, an attach channel, and NUI introspection). **Phase A** — `nyrqisctl debug bundle --out DIR [--container ID] [--audit-tail N]` — assembles health/status/containers/per-container stats+logs+top+net/audit-tail as pure CLIENT-SIDE composition of the existing authorized ops: no new daemon surface, nothing new to authorize; a failed core op aborts with no partial bundle, supplementary ops (audit tail, `nui_current` Phase C rider) record errors in-bundle and continue. **Phase C** rides `nui_current` as proposed. **Phase B** (`containers debug <id>` attach — `CAP-DEBUG-ATTACH`, launcher-mediated, audit-chained) is a real isolation decision that stays with the Group; the roadmap item stays `[~]` open for B. Pinned by `test_debug_bundle.py` (6/6: parser wiring, existing-ops-only composition, no-daemon abort, per-container error records, audit-failure survival, meta provenance) |
+| **Deviations recorded, not hidden (DBG-001 v0.2.0 §3)** | ✅ Four as-built deviations from the 0.1.0 draft: flat bundle directory (one `per-container.json`, no `containers/<id>/` tree); no redaction pass yet (vault figures in status are cached aggregates only, but redaction lands before bundles become a sharing workflow); no chain-head hash in the audit tail (needs the chain-id ops, deferred to the Phase B package); no `state.json` summary (touches the recovery-manifest disclosure rule — deferred, not risked in a convenience loop) |
+| **Verification and registration** | ✅ Full suite **6,505 OK / 4 environmental skips** (119 s); premises 36 → **38** (`debug-bundle-landed` pins `_debug_bundle` in nyrqisctl.py; `dbg001-design-note` pins the spec's front-matter); 0 cycles across **85** documents; `mkdocs build --strict` clean. DBG-001 registered in the spec index (v1.31.0) and mkdocs nav; roadmap M14 Phase 3 debug item updated to `[~]` with the as-built state; REPOSITORY_STATE reconciled |
 
 The M11 "remaining" backlog list (governance expansion, build architecture,
 performance budgets, developer onboarding) was stale: ALL FOUR deliverables

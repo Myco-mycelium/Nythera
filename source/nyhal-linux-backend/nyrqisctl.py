@@ -9337,8 +9337,121 @@ def call_daemon(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _debug_bundle(args: argparse.Namespace) -> int:
+    """DBG-001 Phase A: assemble an incident bundle by composing the
+    EXISTING health/status/containers ops — client-side only, no new
+    daemon surface, nothing new to authorize. Every file records which
+    op produced it and when; per-container detail follows the same
+    per-call authorization as the ops it came from."""
+    import socket as _socket  # noqa: F401 — target resolution parity
+    out = os.path.abspath(args.out)
+    if os.path.exists(out):
+        print(f"error: {out} already exists (refusing to merge bundles)",
+              file=sys.stderr)
+        return 2
+    target = args.socket
+    collected: Dict[str, Any] = {}
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    ops = [
+        ("health.json", "health"),
+        ("status.json", "status"),
+        ("containers.json", "containers-list"),
+    ]
+    for fname, cmd in ops:
+        resp = call_daemon(target, build_payload(cmd, args),
+                           timeout_s=args.timeout)
+        if resp is None or not resp.get("ok"):
+            print(f"error: {cmd} failed — bundle incomplete "
+                  "(no partial bundle written)", file=sys.stderr)
+            return 1
+        collected[fname] = resp
+
+    # Control-plane audit trail: supplementary (a bounded tail), so a
+    # failure is recorded in the bundle rather than aborting it.
+    audit_payload: Dict[str, Any] = {
+        "service": "control", "op": "audit_log",
+        "container_id": None, "tail": max(0, args.audit_tail),
+        "action": None, "actor": None, "resource": None,
+    }
+    audit = call_daemon(target, audit_payload, timeout_s=args.timeout)
+    if audit is None or not audit.get("ok"):
+        collected["audit-log.json"] = {
+            "error": (audit or {}).get("error") or "no reply",
+            "note": "supplementary — bundle continues without the trail",
+        }
+    else:
+        collected["audit-log.json"] = audit
+
+    # DBG-001 Phase C rider: the NUI runtime's current rendering state
+    # (read-only, existing authorized op). Supplementary, like the tail.
+    nui = call_daemon(
+        target, {"service": "nui", "op": "nui_current"},
+        timeout_s=args.timeout)
+    if nui is None or not nui.get("ok"):
+        collected["nui-current.json"] = {
+            "error": (nui or {}).get("error") or "no reply",
+            "note": "supplementary — bundle continues without it",
+        }
+    else:
+        collected["nui-current.json"] = nui
+
+    # Per-container detail: the caller may narrow with --container;
+    # default is every container the list op reported.
+    listed = (collected["containers.json"].get("containers") or [])
+    wanted = args.container or [c.get("id") for c in listed]
+    per_container: Dict[str, Any] = {}
+    for cid in wanted:
+        if not cid:
+            continue
+        ns = argparse.Namespace(**vars(args))
+        ns.container_id = cid
+        ns.tail = 500
+        ns.stream = "both"
+        ns.sort_by = "pid"
+        ns.descending = False
+        ns.max_depth = 2
+        ns.summary_only = True
+        detail = {}
+        for fname, cmd, nsx in (
+            ("stats.json", "containers-stats", ns),
+            ("logs.json", "containers-logs", ns),
+            ("top.json", "containers-top", ns),
+            ("net.json", "containers-net", ns),
+        ):
+            resp = call_daemon(target, build_payload(cmd, nsx),
+                               timeout_s=args.timeout)
+            if resp is None or not resp.get("ok"):
+                detail[fname] = {"error": resp.get("error") if resp
+                                 else "no reply"}
+            else:
+                detail[fname] = resp
+        per_container[str(cid)] = detail
+
+    os.makedirs(out)
+    with open(os.path.join(out, "meta.json"), "w") as fh:
+        fh.write(json.dumps({
+        "bundle_format": 1,
+        "generated_at": now,
+        "socket": target,
+        "containers_requested": list(wanted),
+        "note": "composed by nyrqisctl debug bundle (DBG-001 Phase A) "
+                "from existing authorized ops; no new daemon surface",
+    }, indent=2, sort_keys=True))
+    for fname, resp in collected.items():
+        with open(os.path.join(out, fname), "w") as fh:
+            fh.write(json.dumps(resp, indent=2, sort_keys=True))
+    with open(os.path.join(out, "per-container.json"), "w") as fh:
+        fh.write(json.dumps(
+        per_container, indent=2, sort_keys=True))
+    print(f"bundle written: {out}")
+    return 0
+
+
 def run(command: str, args: argparse.Namespace) -> int:
     """Execute ``command`` against the daemon; returns the exit code."""
+    if command == "debug-bundle":
+        return _debug_bundle(args)
     if command in STATUS_COMMANDS and args.health_socket:
         # ADR-0021: probe the dedicated health socket (no contention
         # with container traffic on the main service socket).
@@ -9591,6 +9704,23 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("health", help="Daemon health diagnostics "
                                       "(operator)")
     p.set_defaults(command="health")
+
+    dbg = sub.add_parser(
+        "debug", help="Operator diagnostics (DBG-001 Phase A)")
+    dbgsub = dbg.add_subparsers(dest="debug_cmd", required=True)
+    db = dbgsub.add_parser(
+        "bundle",
+        help="Assemble a timestamped incident bundle from the existing "
+             "health/status/containers ops (client-side composition; "
+             "no new daemon surface)")
+    db.add_argument("--out", required=True,
+                    help="Output directory (created; must not exist)")
+    db.add_argument("--container", action="append", default=[],
+                    help="Per-container detail to include (repeatable; "
+                         "default: all running containers)")
+    db.add_argument("--audit-tail", type=int, default=100,
+                    help="Audit-chain records to tail (default 100)")
+    db.set_defaults(command="debug-bundle")
 
     containers = sub.add_parser(
         "containers", help="Manage the daemon's containers")

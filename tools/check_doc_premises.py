@@ -596,6 +596,26 @@ CLAIMS: list[Claim] = [
             "files": ["docs/reference/security/NPS-028-package-pki-implementation-surface.md"],
         },
     ),
+    Claim(
+        claim_id="debug-bundle-landed",
+        pattern=r"nyrqisctl debug bundle",
+        description="DBG-001 Phase A + Phase C rider landed: `nyrqisctl debug bundle` composes the EXISTING health/status/containers/audit_log/nui_current ops client-side (no new daemon surface) — pinned by tests/test_debug_bundle.py; Phase B stays Group-gated",
+        check="path_contains",
+        check_args={
+            "needle": "def _debug_bundle",
+            "files": ["source/nyhal-linux-backend/nyrqisctl.py"],
+        },
+    ),
+    Claim(
+        claim_id="dbg001-design-note",
+        pattern=r"DBG-001",
+        description="The debug-tooling design note exists (DBG-001, docs/00-platform/DEBUG_TOOLING_SPEC.md, v0.2.0 as-built) — surface audit, deviations recorded, Phase B pre-read",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: DBG-001",
+            "files": ["docs/00-platform/DEBUG_TOOLING_SPEC.md"],
+        },
+    ),
 ]
 
 
