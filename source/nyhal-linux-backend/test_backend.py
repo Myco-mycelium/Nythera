@@ -18537,7 +18537,26 @@ class TestDaemonState(unittest.TestCase):
         self.assertEqual(DaemonStateFile.manifest([_C()]), [{
             "id": "ctr-x", "command": ["/bin/sleep", "1"],
             "state": "running", "pid": 42, "created_at": 1.0,
+            # D7 / NPS-021 §5.5 req 2: the class is ALWAYS visible in
+            # state surfaces — absent config attr reads as False.
+            "debug_class": False,
         }])
+
+    def test_manifest_marks_debug_class_containers(self):
+        """D7: a debug-class container is never indistinguishable from
+        a production one in the state manifest."""
+        from backend.daemon_state import DaemonStateFile
+        class _C:
+            id = "ctr-dbg"
+            pid = 7
+            created_at = 2.0
+            class _S:
+                value = "running"
+            state = _S()
+            config = type("CFG", (), {
+                "command": ["/bin/sleep", "1"], "debug_class": True})()
+        entries = DaemonStateFile.manifest([_C()])
+        self.assertTrue(entries[0]["debug_class"])
 
     def test_host_recovers_from_stale_state(self):
         # A state file left by a crashed previous daemon (dead pid + one
