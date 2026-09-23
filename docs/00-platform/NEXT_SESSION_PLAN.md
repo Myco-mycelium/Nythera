@@ -19,6 +19,25 @@ the checker reports SCHEDULED RUNS: OK. A missed fire now has three
 independent catchers: the checker's expected-fire logic, its new
 staleness rule, and the daily CI job itself.
 
+**Interim verdict, 07:05 + 07:20 UTC (two spaced checks): NOT YET FIRED — within
+grace, and the pattern so far is a persistent daily lag, not a Tuesday anomaly.**
+Both dailies' latest scheduled runs are still TUESDAY's (PAT watcher
+#35714958678 2026-09-22T10:15:16Z; scheduled-runs-watch #35715668768
+2026-09-22T10:23:02Z — API `event=schedule`, zero fires today on either). Due
+05:37/05:52, so ~1.5 h past due at the second check — well inside the 8 h grace,
+and consistent with the repo's entire measured fire history: every daily fire so
+far has landed 10:02–11:49 UTC (Sun 10:02, Mon 11:01/11:49, Tue 10:15/10:23), i.e.
+a scheduler-wide lag of 4.5–5.8 h every single day. The checker was run at 07:05
+UTC and reports **SCHEDULED RUNS: OK (exit 0)** — its expected-fire logic holds
+both within grace and the staleness rule correctly thresholds on the prior
+(Tuesday) fire while today's is still in grace, exactly the mid-cadence fallback
+built on Tuesday. The carried trigger was re-verified 07:10 UTC: grants still
+MISSING (Actions write 403 on dispatch, Variables write 403) — the PAT has NOT
+been rotated, so the post-rotation dispatch verification stays pending. Tree
+re-verified this morning: `TestScheduledRunsWatchContract` 4/4, premises 28/28.
+**The final verdict is time-gated, not concluded: a check after 13:52 UTC decides**
+(a no-show by then is a real finding — three independent catchers stand ready).
+
 **Carried trigger — post-rotation dispatch verification:** if the PAT
 has been rotated by then (grants re-verified MISSING at 10:36 UTC
 Tue), the first dispatch drill is the followup that verifies the
