@@ -1,0 +1,64 @@
+{
+  "name": "vscode-nyrqis",
+  "displayName": "Nyrqis NUI Design",
+  "description": "Editing support for Nyrqis .nstudio shell-design documents: validation diagnostics against the NUI contract tables (NFS-001) via the same import gate the daemon enforces (ADR-0025), plus the nyq SDK command palette entries.",
+  "version": "0.1.0",
+  "publisher": "nyrqis",
+  "license": "SEE LICENSE IN repository LICENSE",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Programming Languages", "Linters"],
+  "activationEvents": [
+    "onLanguage:nstudio"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "nstudio",
+        "aliases": ["Nyrqis NUI Design", "nstudio"],
+        "extensions": [".nstudio"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "nyrqis.validateDocument",
+        "title": "Nyrqis: Validate design document"
+      },
+      {
+        "command": "nyrqis.nyqNew",
+        "title": "Nyrqis: nyq new (scaffold project)"
+      },
+      {
+        "command": "nyrqis.nyqBuild",
+        "title": "Nyrqis: nyq build"
+      },
+      {
+        "command": "nyrqis.nyqTest",
+        "title": "Nyrqis: nyq test"
+      }
+    ],
+    "configuration": {
+      "title": "Nyrqis",
+      "properties": {
+        "nyrqis.backendRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Nyrqis Linux Backend checkout (contains nst_validate.py). Empty = the extension's bundled copy."
+        },
+        "nyrqis.validateOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the .nstudio validation gate on save."
+        },
+        "nyrqis.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python interpreter used to run nst_validate.py."
+        }
+      }
+    }
+  }
+}

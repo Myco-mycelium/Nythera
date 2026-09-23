@@ -1,0 +1,3 @@
+# The mock harness (tests/test_ide_extension.py) installs the vscode
+# stub here at test time — a local artifact, never committed.
+node_modules/

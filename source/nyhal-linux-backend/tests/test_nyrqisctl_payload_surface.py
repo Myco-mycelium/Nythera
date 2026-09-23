@@ -137,5 +137,97 @@ class PayloadSurfaceTests(unittest.TestCase):
             self.assertEqual(payload.get("op"), expect)
 
 
+class FormatterSurfaceTests(unittest.TestCase):
+    """format_human must never crash on the replies its commands get.
+
+    The 2026-09-23 sweep probed every registered command and found NO
+    genuine formatter bug — the synthetic-reply "crashes" were probe
+    artifacts (the daemon's real shapes differ: capacity-plan's
+    summary is a string per the manager's plan_capacity; the health/
+    shutdown state fields are dicts-or-None and the formatter already
+    guards `if hc`).
+
+    Pinned honestly, in two tiers:
+    - EVERY command with a sparse ``{"ok": true}`` reply — the one
+      universal invariant (branches must ride .get defaults).
+    - Commands whose reply shapes were verified against the daemon
+      side (ipc/control.py + backend/container.py) get those exact
+      families. Commands NOT individually verified get no invented
+      family — coverage grows with verification, not assumption.
+    """
+
+    def test_formatter_never_crashes_on_sparse_ok_reply(self):
+        """Universal: any command's branch must survive ok:true alone."""
+        registered = _registered_commands()
+        crashes = []
+        for name in registered:
+            try:
+                nyrqisctl.format_human(name, {"ok": True, "op": name})
+            except Exception as exc:  # noqa: BLE001 — the pin
+                crashes.append((name, type(exc).__name__, str(exc)[:60]))
+        self.assertEqual(
+            crashes, [],
+            "format_human crashed on sparse ok:true replies: %r" % crashes)
+
+    def test_formatter_verified_shapes(self):
+        """Ground-truth families for individually verified commands
+        (each traced to ipc/control.py / backend/container.py)."""
+        families = {
+            # manager plan_capacity: summary is a STRING; per-resource
+            # plans carry sufficient_data/risk_level.
+            "capacity-plan": {
+                "ok": True, "container_id": "c1", "horizon_days": 30,
+                "summary": "Planning horizon: 30 days. 0 issues.",
+                "resources": {"memory": {"sufficient_data": False,
+                                         "risk_level": "unknown"}},
+                "recommended_limits": {}, "issue_count": 0},
+            # manager get_health_check: dict-or-None fields.
+            "get-health-check": {
+                "ok": True, "container_name": "c1",
+                "health_check": {"type": "process"},
+                "state": {"status": "pending",
+                          "consecutive_failures": 0}},
+            "get-health-check-none": {
+                "ok": True, "container_name": "c1",
+                "health_check": None, "state": {}},
+            # manager get_shutdown_status.
+            "get-shutdown-status": {
+                "ok": True, "container_name": "c1",
+                "config": {"enabled": True},
+                "state": {"status": "active", "started_at": None}},
+            # manager get_audit_summary (container variant).
+            "audit-summary": {
+                "ok": True, "container_id": "c1", "total_entries": 2,
+                "by_action": {"a": 1}, "by_actor": {"o": 1},
+                "recent": [{"action": "a", "actor": "o"}]},
+            # NuiService nui_current/validate/load: summary is a DICT.
+            "nui-current": {
+                "ok": True, "loaded": True, "valid": True,
+                "summary": {"engine": "py", "version": "1.0.0",
+                            "screens": ["main"], "components": 3,
+                            "behaviors": 1, "bindings": 2},
+                "path": "/state/ui/shell.nstudio"},
+            "nui-validate": {
+                "ok": True,
+                "summary": {"engine": "rust", "version": "1.0.0",
+                            "screens": [], "components": 0,
+                            "behaviors": 0, "bindings": 0}},
+            # get_health_check config-summary family (fleet overview).
+            "fleet-health-overview": {
+                "ok": True,
+                "summary": {"healthy_count": 1, "unhealthy_count": 0,
+                            "pending_count": 0, "no_check_count": 0}},
+        }
+        crashes = []
+        for name, resp in families.items():
+            try:
+                nyrqisctl.format_human(name, resp)
+            except Exception as exc:  # noqa: BLE001 — the pin
+                crashes.append((name, type(exc).__name__, str(exc)[:60]))
+        self.assertEqual(
+            crashes, [],
+            "format_human crashed on verified daemon shapes: %r" % crashes)
+
+
 if __name__ == "__main__":
     unittest.main()
