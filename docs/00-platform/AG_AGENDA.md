@@ -378,10 +378,16 @@ the record, each item marked with its outcome.
   flagged on ADR-0019/0025/0026 — if BUILD-ARCH is canonical, its
   Accepted status needs either a Group record or a revert to Draft; if
   BUILD-001 is canonical, the divergent Accepted twin should not
-  remain as-is either way. NOT in dispute: the deliverable itself
+  remain as-is either way.  NOT in dispute: the deliverable itself
   exists and satisfies M11 gap 9 (PERF-001, same directory and era,
-  is unambiguous). A suggest-side pre-read can be prepared on request;
-  none is drafted. DECISION-READY — purely judgment; no measurement,
+  is unambiguous). Pre-read:
+  `AG_BRIEF_BUILD_ARCH_DUALITY.md` (AI-drafted, suggest-side —
+  verified content analysis of both bodies with the contradiction
+  table, three options with consequences ledgers, downstream
+  touch-points sized; recommends Option A: BUILD-001 canonical,
+  absorb BUILD-ARCH's practical sections, remove the copy, dissolve
+  the unsanctioned Accepted marking with the file).
+  DECISION-READY — purely judgment; no measurement,
   implementation, or drafting item stands ahead of it.
 
 ---
