@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.7.0
-status: One standing item registered 2026-09-22 (evening): the NPS-028 acceptance review (implementation complete + validated, §10 evidence attached; decision-ready). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
+version: 1.8.0
+status: Two standing items registered (NPS-028 acceptance review 2026-09-22 — implementation complete + validated, §10 evidence attached; BUILD-001/BUILD-ARCH document duality 2026-09-23 — the build-architecture deliverable exists twice under two document_ids). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -342,10 +342,47 @@ the record, each item marked with its outcome.
   §1 + v1.3.1. What remains open there is exactly what its text
   defers: §9.2/§9.3 serialization (§6.7.3), §10–§12's
   transaction/streaming/rollback halves, §6.7.5's deferred
-  operational parameters — the Group may accept the §6/§7 machinery
+  operational parameters —  the Group may accept the §6/§7 machinery
   while carrying those sections forward. DECISION-READY —
   no measurement, implementation, or drafting item remains ahead of
   the review.
+
+---
+
+## Standing items — registered 2026-09-23 (docs-backlog session)
+
+- **BUILD-001 vs BUILD-ARCH — the build-architecture deliverable exists
+  twice under two document_ids; pick the canonical one and dispose of
+  the other copy.** Found by the 2026-09-23 docs-backlog pass while
+  striking the stale M11 "remaining" list (both files verified on
+  disk; finding recorded in `NEXT_SESSION_PLAN.md`'s session item and
+  pinned by the `build-architecture-dual-doc` premise so it cannot go
+  quiet again):
+
+  - `docs/reference/build/BUILD_ARCHITECTURE.md` — `document_id:
+    BUILD-001`, **status: Draft**, created 2026-09-06, `depends_on:
+    [ADR-0020, NPC-003]`. The copy the rest of the tree actually
+    cites: the roadmap's struck M11 item 9, TUT-003's `depends_on`,
+    and the sdk docs.
+  - `docs/00-platform/BUILD_ARCHITECTURE.md` — `document_id:
+    BUILD-ARCH`, **status: Accepted**, created 2026-09-01,
+    `depends_on: [ADR-0012, ADR-0020, NPS-017]`, front-matter claims
+    `satisfies: [NPC-007 gap 9]`. Cited by nothing else in the tree.
+
+  The bodies diverge materially (531 diff lines across 308 vs 235
+  lines) and BOTH claim NPC-007 gap 9. The Group's two sub-decisions:
+  (1) which document_id is canonical, and the other copy's
+  disposition — delete, redirect-stub, or merge; (2) the status of the
+  Accepted marking: no Architecture Group decision record was found
+  for it, the same shape as the unsanctioned-flip class already
+  flagged on ADR-0019/0025/0026 — if BUILD-ARCH is canonical, its
+  Accepted status needs either a Group record or a revert to Draft; if
+  BUILD-001 is canonical, the divergent Accepted twin should not
+  remain as-is either way. NOT in dispute: the deliverable itself
+  exists and satisfies M11 gap 9 (PERF-001, same directory and era,
+  is unambiguous). A suggest-side pre-read can be prepared on request;
+  none is drafted. DECISION-READY — purely judgment; no measurement,
+  implementation, or drafting item stands ahead of it.
 
 ---
 

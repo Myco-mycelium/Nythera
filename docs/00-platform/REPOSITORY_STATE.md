@@ -7,7 +7,8 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 ## Last Updated
 2026-09-23 (second-fire standing item CLOSED — PASS, 10:22 UTC; Thursday's
 third-fire item registered; M11's "remaining" backlog reconciled — all four
-deliverables landed by 2026-09-06; session records pushed to origin main — see
+deliverables landed by 2026-09-06; the BUILD-001/BUILD-ARCH duality registered
+on AG_AGENDA v1.8.0; session records pushed to origin main — see
 `NEXT_SESSION_PLAN.md`)
 
 ## Current Milestone
