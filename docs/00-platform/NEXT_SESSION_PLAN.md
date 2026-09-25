@@ -1,10 +1,20 @@
 ---
 title: Next Development Session Plan
-version: 6.23.0
+version: 6.24.0
 date: 2026-09-25
 ---
 
 # Next Development Session Plan
+
+## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
+
+| Item | Status |
+|------|--------|
+| **PID-file guard in both drivers** | ✅ `tests/boot_smoke.py` + `tests/boot_smoke_menu.py`: `_acquire_smoke_lock(tag)` writes `PID` under the temp dir before booting and refuses (exit 2, "refusing to race it") while the marker names a LIVE process; a STALE marker (previous run killed without its finally) is taken over instead of deadlocking; liveness is `os.kill(pid, 0)` with EPERM counted alive — `pgrep` is banned here (self-matches the caller's cmdline). Distinct tags (`nyrqis-boot-smoke` / `nyrqis-boot-smoke-menu`) so the smokes never lock each other out; release compares the marker PID against its own before unlinking (a zombie's late finally cannot unlink the winner's marker) |
+| **Self-healing tmpdir removal** | ✅ The `finally` cleanup used `os.rmdir(tmp)` — empty-dir-only, so the extracted kernel/initrd/qemu-stderr.log survived EVERY non---keep-logs run and accumulated in /tmp: exactly the debris that invited the cleanup sweep behind issue #3. Both drivers now `shutil.rmtree(tmp, ignore_errors=True)` |
+| **Contract pins** | ✅ 12 new tests in `TestSmokeConcurrencyGuard` (test_live_boot_contract.py, now 79): text pins (guard present/refuses/finally-released, `os.kill` not pgrep, distinct tags, PID-compare-before-unlink, docstring documents exit 2, rmtree not rmdir) + functional pins via imported drivers (own PID written, second acquire refused while live, stale + garbage markers taken over, release never unlinks a winner's marker, EPERM-alive semantics). Contract pair: 79 + 34 = 113 OK |
+| **End-to-end CLI proof** | ✅ Live holder → `boot_smoke.py` exits 2 with the BUSY line; after the holder releases, the CLI proceeds past the guard (fails on the fake ISO's extraction, rc=1 — the right failure). First attempt at this check proved the STALE path instead (holder had exited → takeover) — kept as the takeover evidence, redone with a live `setsid` holder for the BUSY case |
+| **Pushed** | ✅ `d2b2a81` ("Guard the boot smokes against concurrent runs...") on origin main, remote tip verified via `git ls-remote`; doc premises 46/46 after the edit |
 
 ## STANDING ITEM — Thu 2026-09-24 05:37/05:52 UTC: the dailies' third fires — does the 10:02–11:49 band hold a fourth day?
 
