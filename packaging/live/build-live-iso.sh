@@ -583,8 +583,27 @@ log "probe parity verified: python3 + zstandard/nacl/lz4 + fusermount3 present"
 # the booting machine has no use for it).
 rm -f "$ROOTFS_SRC/usr/bin/qemu-aarch64-static"
 log "building the squashfs rootfs image"
+# NYRQIS_SQUASHFS_FORCE_ROOT=1 (set by build-live-iso-rootless.sh): files
+# created inside the self-mapped user namespace are owned by the HOST
+# uid on disk, so the squashfs would otherwise record uid 1000 for the
+# whole tree — and sudo hard-refuses a /etc/sudoers not owned by 0.
+# Forcing 0:0 is exactly what fakeroot-based live-build produces; the
+# root path (CI) keeps recording the true on-disk owners.
+FORCE_OWNER=()
+if [[ "${NYRQIS_SQUASHFS_FORCE_ROOT:-}" == "1" ]]; then
+    FORCE_OWNER=(-force-uid 0 -force-gid 0)
+fi
+# NYRQIS_SQUASHFS_PSEUDO (optional): a mksquashfs pseudo-file defs path,
+# applied AFTER -force-uid (verified: 'm' actions win) — the rootless
+# driver uses it to keep /home/demo owned by 1000:1000 (a root-owned
+# HOME makes sudo's ownership check refuse the demo user at boot).
+PSEUDO=()
+if [[ -n "${NYRQIS_SQUASHFS_PSEUDO:-}" && -f "${NYRQIS_SQUASHFS_PSEUDO}" ]]; then
+    PSEUDO=(-pf "$NYRQIS_SQUASHFS_PSEUDO")
+fi
 mksquashfs "$ROOTFS_SRC" "$LIVE_DIR/filesystem.squashfs" \
     -comp zstd -Xcompression-level 15 -noappend -wildcards \
+    "${FORCE_OWNER[@]}" "${PSEUDO[@]}" \
     -e "boot/vmlinuz-*" "boot/initrd.img-*" \
     >/dev/null   # progress is noise in logs; the ISO is the artifact
 

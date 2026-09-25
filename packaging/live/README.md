@@ -28,6 +28,42 @@ debootstrap (`NYRQIS_LIVE_SUITE` / `NYRQIS_LIVE_MIRROR` to switch),
 installs the backend + desktop tree at `/opt/nyrqis`, applies the live
 overlay, and packs everything into a zstd squashfs.
 
+### Building without root (user namespace)
+
+No sudo on the build machine? `build-live-iso-rootless.sh` produces the
+**same ISO through the unmodified builder** using a user namespace and a
+tiny LD_PRELOAD shim (`rootless-syscall-shim.c`) that covers the only
+two operations a self-mapped userns cannot do: `chown` to unmapped ids
+(no-op success — ownership is already correct inside the namespace;
+fakeroot cannot substitute — its daemon propagates EINVAL) and `mknod`
+of device nodes (placeholder regular files — the booted system mounts
+devtmpfs). The squashfs forces 0:0 ownership (with `/home/demo` kept
+1000:1000 via pseudo-file defs) because files created in the namespace
+are owned by the host uid on disk.
+
+```bash
+# one-shot (needs a long-running shell):
+packaging/live/build-live-iso-rootless.sh -o dist/nyrqis-live.iso
+
+# two-phase, resumable (each phase fits a bounded window; the .deb
+# cache survives interruptions, reruns cost extraction only):
+packaging/live/build-live-iso-rootless.sh --acquire-rootfs /srv/lr
+packaging/live/build-live-iso-rootless.sh --rootfs /srv/lr -o dist/nyrqis-live.iso
+```
+
+Requirements: `unshare` with unprivileged user namespaces enabled
+(`sysctl kernel.unprivileged_userns_clone=1` on Debian; on Ubuntu 24.04+
+check `apparmor_restrict_unprivileged_userns`), `cc` or `gcc`, and the
+builder's normal toolset. Contract-pinned in
+`source/nyhal-linux-backend/tests/test_rootless_build_contract.py`.
+
+**arm64 via this path** is blocked without an aarch64 cross-compiler:
+the emulated debootstrap stage runs arm64 binaries, which cannot load
+an amd64 preload shim for their chowns. With `gcc-aarch64-linux-gnu`
+installed, compile the shim with `-target aarch64` and stage it as
+`/tmp/rootless-syscall-shim.so` in the rootfs. CI's arm64 build is
+unaffected (runners build as root).
+
 Got a prebuilt rootfs (CI produces one)? Skip debootstrap:
 
 ```bash

@@ -5,6 +5,30 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-24 (rootless live-ISO build landed — the full ISO pipeline now
+runs WITHOUT root on the reference dev machine (no sudo/docker/KVM,
+user namespaces only): new `packaging/live/build-live-iso-rootless.sh`
+drives the UNMODIFIED `build-live-iso.sh` inside
+`unshare -Urmpf --mount-proc` with an LD_PRELOAD shim
+(`rootless-syscall-shim.c`; chown→no-op success, mknod→placeholder
+files — fakeroot cannot substitute, its daemon propagates EINVAL from
+unmapped-gid chowns); the 359 MB amd64 ISO it produced **passed both
+boot smokes locally** (direct + GRUB menu path, daemon pong + probe
+parity green); the first boot exposed a real latent bug —
+`nyrqis-demo`'s bare `$LD_LIBRARY_PATH` expansion under `set -u`
+(getty respawn loop; CI never hit it because the image shipped no
+cdylibs, so the branch never executed) — fixed with the guarded form
+and pinned in `tests/test_rootless_build_contract.py` (14 tests,
+including a real-userns tar-extraction shim test); builder gained
+env-gated `NYRQIS_SQUASHFS_FORCE_ROOT`/`NYRQIS_SQUASHFS_PSEUDO`
+(force 0:0 ownership with `/home/demo` kept 1000:1000 — root path
+untouched); arm64 via this path honestly blocked (binfmt +
+qemu-aarch64-static work — a real arm64 busybox executed — but the
+emulated debootstrap stage needs an aarch64 preload shim and no
+cross-compiler is installed; nested full-range uid maps are
+kernel-EPERM; CI's root-built arm64 unaffected); live README
+documents the rootless + two-phase resumable flow)
+
 2026-09-23 (second-fire standing item CLOSED — PASS, 10:22 UTC; Thursday's
 third-fire item registered; M11's "remaining" backlog reconciled — all four
 deliverables landed by 2026-09-06; the BUILD-001/BUILD-ARCH duality registered

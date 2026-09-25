@@ -26,7 +26,11 @@ LOG=/tmp/nyrqis-daemon.log
 # LD_LIBRARY_PATH finds them without a wrapper wrapper per module.
 export NYRQIS_CDYLIB_DIR="$OPT/rust/.cdylibs"
 if [ -d "$NYRQIS_CDYLIB_DIR" ]; then
-    case ":$LD_LIBRARY_PATH:" in
+    # ${LD_LIBRARY_PATH:-}: set -u safe — an unset LD_LIBRARY_PATH is the
+    # NORMAL case (a bare boot), and an unguarded expansion here killed
+    # the demo session in a getty respawn loop on the first image that
+    # actually shipped cdylibs (the branch never ran in CI without them).
+    case ":${LD_LIBRARY_PATH:-}" in
         *":$NYRQIS_CDYLIB_DIR:"*) : ;;
         *) export LD_LIBRARY_PATH="$NYRQIS_CDYLIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
     esac

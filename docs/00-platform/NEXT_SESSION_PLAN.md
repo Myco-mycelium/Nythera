@@ -1,7 +1,7 @@
 ---
 title: Next Development Session Plan
-version: 6.18.3
-date: 2026-09-23
+version: 6.19.0
+date: 2026-09-24
 ---
 
 # Next Development Session Plan
@@ -40,6 +40,16 @@ Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
 confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
+
+## SESSION ITEM — Thu 2026-09-24: the live ISO now builds WITHOUT root — and its first cdylib-carrying boot found a real demo-session bug
+
+| Item | Status |
+|------|--------|
+| **The rootless path landed and is boot-proven, not just build-proven** | ✅ `packaging/live/build-live-iso-rootless.sh` + `packaging/live/rootless-syscall-shim.c`: the UNMODIFIED builder runs inside `unshare -Urmpf --mount-proc` with an LD_PRELOAD shim covering the two operations a self-mapped userns cannot do (chown→no-op success; mknod→placeholder files). The 359 MB amd64 ISO **passed BOTH boot smokes on this machine** — `tests/boot_smoke.py` (ready/pong/pkgs/nyrqisctl all green) and `tests/boot_smoke_menu.py` (GRUB menu → banner → daemon) — with zero root at any step. Alternatives probed and rejected with reasons recorded in the driver: `--map-auto`/newuidmap (absent setuid helper), fakeroot (its daemon propagates EINVAL from unmapped-gid chowns — only EPERM is swallowed), proot/mmdebstrap (not installed) |
+| **The rootless mechanics are three cooperating pieces, each load-bearing** | ✅ (1) the shim covers the whole namespace AND every chroot — pre-staged into the target's /tmp before debootstrap (its internal chroot calls bypass PATH, so a chroot-wrapper alone is insufficient) plus a generated `chroot` wrapper for the builder's own chroot steps; (2) the squashfs forces 0:0 ownership via env-gated `NYRQIS_SQUASHFS_FORCE_ROOT` (files created in the self-map carry the HOST uid on disk — sudo hard-refuses a /etc/sudoers not owned by 0) while pseudo-file defs keep `/home/demo` at 1000:1000 (`NYRQIS_SQUASHFS_PSEUDO`, applied AFTER -force-uid, verified); (3) two-phase `--acquire-rootfs` with an external `--cache-dir` + completion stamp makes the long acquisition resumable within bounded runtime windows (partial target wiped, cache kept — re-extraction into a populated tree collides) |
+| **The first cdylib-carrying boot exposed a latent `set -u` bug CI structurally could not catch** | ✅ `nyrqis-demo` line 29 expanded bare `$LD_LIBRARY_PATH` inside a case pattern under `set -u`: the demo died at its first statement, getty respawn-looped the autologin forever, no smoke marker ever printed. CI never shipped Rust cdylibs, so the branch never executed there — only a build that actually carries `.cdylibs` (this session's) reaches it. Fixed with the `:${LD_LIBRARY_PATH:-}` guarded form and pinned by `TestDemoSetuRegressionGuard` (guards against ANY bare expansion reappearing). Lesson: the demo's own marker flow is the CI catch, but only for branches CI's build shape executes |
+| **arm64 via the rootless path: honestly blocked, with the exact unblock** | ✅ binfmt_misc has qemu-aarch64 registered and a REAL arm64 busybox executed through it (`BINFMT_ARM64_EXEC_OK`) — but the emulated debootstrap stage runs arm64 binaries, which cannot load an amd64 preload shim for their maintainer-script chowns (glibc rejects the ELF class); no aarch64 cross-compiler is installed, and a nested userns full-range map is kernel-EPERM (a parent can only map ids it itself possesses). Unblock: `apt-get install gcc-aarch64-linux-gnu`, compile the shim `-target aarch64`, stage as /tmp/rootless-syscall-shim.so. CI's root-built arm64 pipeline is unaffected. Recorded in the test module docstring and the live README |
+| **Contract-pinned 14 ways; docs updated** | ✅ `source/nyhal-linux-backend/tests/test_rootless_build_contract.py` (14 tests): driver structure (unmodified-builder, no-sudo/fakeroot-in-code guard, env-gated force-root, pseudo defs, stamp+cache acquire mode, shim pre-stage ordering), functional shim tests against the REAL compiled artifact (chown/mknod/fifo + the exact debootstrap killer: a root:staff tar member extracting inside a live userns), and the set -u regression guard. `packaging/live/README.md` gained the rootless section; all 67 existing `test_live_boot_contract.py` pins still pass after the builder edits |
 
 ## SESSION ITEM — Wed 2026-09-23 (evening): the D7 manifest-class plumbing landed — review first, then code, every requirement site-verified before it was written
 
