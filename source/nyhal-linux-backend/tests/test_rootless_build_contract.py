@@ -121,6 +121,41 @@ class TestRootlessDriverStructure(unittest.TestCase):
                       "the periodic re-stage must survive tmpfiles wipes "
                       "across BOTH phases")
 
+    def test_watchdog_leaves_no_stray_loops(self):
+        # 2026-09-25: the watchdog is a sleep-60 loop started before
+        # EACH phase; if it outlived the driver it would pin a CPU
+        # wake-up forever and re-create /tmp copies after cleanup. The
+        # cleanup contract: BOTH launches record WATCHDOG_PID, the EXIT
+        # trap kills it, and the trap also removes the canonical copy
+        # and the helper itself.
+        self.assertEqual(
+            self.driver.count("stage_watchdog & WATCHDOG_PID=$!"), 2,
+            "both phases (acquire + build) must launch the watchdog "
+            "and record its PID")
+        m = re.search(r"cleanup\(\) \{(.*?)\}\ntrap cleanup EXIT",
+                      self.driver, re.S)
+        self.assertIsNotNone(m, "cleanup() + trap cleanup EXIT must exist")
+        body = m.group(1)
+        self.assertIn('kill "$WATCHDOG_PID"', body,
+                      "cleanup must kill the watchdog")
+        self.assertIn('rm -f "$SHIM_SO" "$PSEUDO_DEFS" "/tmp/$SHIM_SO_NAME"',
+                      body,
+                      "cleanup must remove the canonical preload copy (a "
+                      "stale one would silently shim UNRELATED later "
+                      "builds on this machine)")
+        self.assertIn('rm -rf "${SHIMBIN:-}" "${GUEST_TMP:-}" '
+                      '"${STAGE_SHIM:-}"', body,
+                      "cleanup must purge the generated helper + wrapper "
+                      "dirs (they embed this run's shim paths)")
+        # The watchdog body itself must be a plain bounded loop — no
+        # subshell var that could dodge the kill.
+        m2 = re.search(r"stage_watchdog\(\) \{(.*?)\n\}", self.driver, re.S)
+        self.assertIsNotNone(m2, "stage_watchdog must be defined")
+        self.assertIn('sleep 60', m2.group(1))
+        self.assertNotIn("nohup", m2.group(1),
+                         "the watchdog must stay a direct child so the "
+                         "EXIT-trap kill reaches it")
+
     def test_forced_root_squashfs_is_driven_by_env(self):
         # Files created in the self-map are owned by the HOST uid on
         # disk; the squashfs must force 0:0 (sudo refuses a /etc/sudoers
