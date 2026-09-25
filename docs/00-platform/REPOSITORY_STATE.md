@@ -5,6 +5,16 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (rootless CI first run: the runner-environment validation
+EARNED ITS KEEP — the amd64 job failed in the userns-probe step on the
+runner exactly as designed: GitHub's ubuntu-24.04 image ships
+apparmor_restrict_unprivileged_userns=1, blocking unprivileged userns
+creation; pre-flight now normalizes the sysctl posture (environment
+setup, sudo-free pipeline unchanged) and the probe is VERBOSE (sysctl
+values + unshare rcs in every log); the arm64 rootless path gained the
+split menu-boot job (GRUB/UEFI via downloaded artifact, same pattern as
+the root-built workflow); rootless contract at 31 tests / 99 green)
+
 2026-09-25 (rootless CI validation job landed; full backend sweep green —
 new `.github/workflows/live-iso-rootless.yml` mirrors the reference
 machine's constraints on a stock runner: amd64 job gates pushes with the

@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.21.0
+version: 6.22.0
 date: 2026-09-25
 ---
 
@@ -40,6 +40,16 @@ Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
 confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
+
+## SESSION ITEM — Fri 2026-09-25 (evening): the rootless CI's first run failed WHERE it should — runner userns posture normalized, arm64 menu job added
+
+| Item | Status |
+|------|--------|
+| **Run #1 of live-iso-rootless validated the validation** | ✅ push 57b5003: the amd64 job failed in "Confirm unprivileged user namespaces are usable" — pre-flight apt OK, everything else skipped; check-runs API + job-steps API diagnosed it without credentials (logs are auth-walled, the repo's annotation convention held) |
+| **Root cause: GitHub's ubuntu-24.04 image ships `apparmor_restrict_unprivileged_userns=1`** | ✅ unprivileged userns creation is AppArmor-blocked on modern runner images (ubuntu-latest migrates to 26 in Oct 2026 — the posture question is now ongoing). Fix in PRE-FLIGHT (environment setup, same class as installing binfmt — pipeline stays sudo-free): `sysctl -w kernel.unprivileged_userns_clone=1` + `kernel.apparmor_restrict_unprivileged_userns=0` |
+| **The probe step is now VERBOSE, not just a gate** | ✅ sysctl values + both unshare rcs + uid print on EVERY run — a runner-image change is diagnosed from the log, not guessed (run #1 failed opaquely: annotation said only "exit code 1") |
+| **arm64 rootless path gained the split menu-boot job** | ✅ `menu-boot-arm64-rootless` needs the build, downloads the ISO artifact, boots through GRUB/UEFI with `--timeout 1680` — same diagnosability pattern as the root-built live-iso-arm64.yml (a bootloader regression is "menu path", never masked by the direct smoke) |
+| **Contract grew to 31 tests / 99 green** | ✅ new pin: menu job exists, `needs: rootless-arm64`, downloads the artifact, runs boot_smoke_menu with --arch arm64; no-sudo scan exempt-lists the QEMU-toolchain install step by name |
 
 ## SESSION ITEM — Fri 2026-09-25 (later): full sweep green, and the rootless pipeline is now CI-validated on an external machine
 

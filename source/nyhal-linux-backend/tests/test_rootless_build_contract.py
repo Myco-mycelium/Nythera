@@ -413,6 +413,25 @@ class TestRootlessCIWorkflow(unittest.TestCase):
         self.assertIn("rootless-amd64", self.wf["jobs"])
         self.assertIn("rootless-arm64", self.wf["jobs"])
 
+    def test_arm64_menu_boot_is_a_split_job(self):
+        # Same pattern as the root-built arm64 workflow: the menu path
+        # is its OWN job consuming the built ISO's artifact, so a
+        # bootloader regression is diagnosable as "menu path" without
+        # reading logs (and cannot be masked by the direct smoke).
+        job = self.wf["jobs"].get("menu-boot-arm64-rootless")
+        self.assertIsNotNone(
+            job, "the arm64 rootless ISO must get a menu-boot job")
+        self.assertEqual(
+            job.get("needs"), "rootless-arm64",
+            "the menu job must consume the rootless-arm64 build's artifact")
+        runs = "\n".join(
+            s.get("run", "") for s in job.get("steps", []))
+        self.assertIn("tests/boot_smoke_menu.py", runs)
+        self.assertIn("--arch arm64", runs)
+        uses = " ".join(s.get("uses", "") for s in job.get("steps", []))
+        self.assertIn("actions/download-artifact", uses,
+                      "the menu job must download the built ISO")
+
     def test_amd64_job_runs_on_push_and_is_dispatchable(self):
         self.assertIn("push", self.on, "amd64 job must gate pushes")
         self.assertIn("workflow_dispatch", self.on)
@@ -427,8 +446,12 @@ class TestRootlessCIWorkflow(unittest.TestCase):
     def test_pipeline_steps_never_use_sudo(self):
         # The point of the job: the pipeline under test runs rootless.
         # Pre-flight steps are EXEMPT by name (sudo there only prepares
-        # the runner environment); every other step must not invoke it.
-        exempt_prefixes = ("pre-flight", "confirm unprivileged")
+        # the runner environment: apt, binfmt, grub tree, and the
+        # runner's userns sysctl posture — ubuntu-24.04 images ship
+        # apparmor_restrict_unprivileged_userns=1); every other step
+        # must not invoke it.
+        exempt_prefixes = ("pre-flight", "confirm unprivileged",
+                           "install the qemu toolchain")
         for job in self.wf["jobs"].values():
             for step in job.get("steps", []):
                 name = (step.get("name") or "").strip().lower()

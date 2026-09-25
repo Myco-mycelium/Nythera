@@ -20,10 +20,12 @@ name: live-iso-rootless
 #   workflow_dispatch, not a push gate.
 #
 # sudo IS used on the runner — but ONLY for pre-flight environment setup
-# (apt, binfmt registration, grub module tree): the same class of setup
-# the root-built workflows do. The pipeline under test — acquire, build,
-# smokes — runs entirely as the unprivileged runner user via unshare and
-# never invokes sudo, su, or fakeroot (pinned by
+# (apt, binfmt registration, grub module tree, and normalizing the
+# runner's userns sysctl posture: ubuntu-24.04 images ship
+# apparmor_restrict_unprivileged_userns=1, which blocks the namespace
+# creation the whole pipeline stands on). The pipeline under test —
+# acquire, build, smokes — runs entirely as the unprivileged runner
+# user via unshare and never invokes sudo, su, or fakeroot (pinned by
 # tests/test_rootless_build_contract.py::test_no_root_anywhere).
 
 on:
@@ -63,6 +65,14 @@ jobs:
             debootstrap squashfs-tools xorriso genisoimage \
             grub-pc-bin grub-efi-amd64-bin mtools isolinux \
             qemu-system-x86 cpio xz-utils curl
+          # Normalize the runner's userns posture: GitHub's ubuntu-24.04
+          # images ship apparmor_restrict_unprivileged_userns=1, which
+          # blocks unprivileged userns creation (the first run died in
+          # the probe step on exactly this). This is ENVIRONMENT setup —
+          # the same class as installing binfmt — the pipeline below
+          # still runs with zero root.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           mkdir -p "$HOME/.local/opt"
           curl -fsSL -o /tmp/zig.tar.xz \
             https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
@@ -71,17 +81,20 @@ jobs:
           "$HOME/.local/opt/zig/zig" version
 
       - name: Confirm unprivileged user namespaces are usable
-        # The whole job stands on this kernel feature; if a runner-image
-        # change ever flips the sysctl posture, fail HERE with the
-        # diagnosis instead of a mystery deep in debootstrap.
+        # The whole job stands on this kernel feature. VERBOSE: the
+        # sysctl posture and unshare's stderr go to the log on EVERY
+        # run, so a runner-image change is diagnosed from the evidence,
+        # not guessed at (the first run failed here opaquely).
         run: |
-          unshare -Ur true \
-            || { echo "unshare -Ur failed — unprivileged userns restricted"; \
-                 sysctl kernel.unprivileged_userns_clone 2>/dev/null || true; \
-                 sysctl apparmor_restrict_unprivileged_userns 2>/dev/null || true; \
-                 exit 1; }
-          unshare -Urmpf --mount-proc true \
-            || { echo "mount/pid namespaces restricted — the driver needs both"; exit 1; }
+          sysctl kernel.unprivileged_userns_clone 2>/dev/null || echo "kernel.unprivileged_userns_clone: not present"
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "kernel.apparmor_restrict_unprivileged_userns: not present"
+          unshare -Ur true; RC1=$?
+          unshare -Urmpf --mount-proc true; RC2=$?
+          echo "unshare -Ur rc=$RC1; unshare -Urmpf --mount-proc rc=$RC2 (uid $(id -u))"
+          if [ "$RC1" -ne 0 ] || [ "$RC2" -ne 0 ]; then
+            echo "UNPRIVILEGED USERNS UNAVAILABLE — the rootless pipeline cannot run on this runner image"
+            exit 1
+          fi
           echo "user namespaces OK (uid $(id -u), no sudo needed below)"
 
       - name: Restore the rootless rootfs set (rootfs + deb cache + stamp)
@@ -202,6 +215,9 @@ jobs:
             || { echo "arm64-efi modules not in the .deb — layout changed"; exit 1; }
           sudo cp -a /tmp/grub-arm64-root/usr/lib/grub/arm64-efi /usr/lib/grub/
           echo "arm64-efi module tree staged ($(ls /usr/lib/grub/arm64-efi/*.mod | wc -l) modules)"
+          # Same userns-posture normalization as the amd64 pre-flight.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           unshare -Ur true \
             || { echo "unprivileged userns restricted on this runner"; exit 1; }
 
@@ -242,3 +258,43 @@ jobs:
           compression-level: 0
           retention-days: 14
           if-no-files-found: error
+
+  menu-boot-arm64-rootless:
+    # The HUMAN boot path on the rootless arm64 image: UEFI firmware
+    # chain-loads the ISO's grubaa64, the menu times out, the default
+    # entry boots — the same split-job pattern as the root-built
+    # live-iso-arm64.yml, so a bootloader regression is diagnosable as
+    # "menu path" without reading logs.
+    name: Menu-path boot smoke (GRUB via UEFI, rootless image)
+    runs-on: ubuntu-latest
+    needs: rootless-arm64
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the built ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: nyrqis-live-arm64-rootless-iso
+          path: dist
+
+      - name: Install the QEMU toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-arm qemu-efi-aarch64
+        timeout-minutes: 5
+
+      - name: Boot the ISO like a machine (GRUB menu → default entry, UEFI, ttyAMA0)
+        run: |
+          python3 tests/boot_smoke_menu.py dist/nyrqis-live-arm64-rootless.iso \
+            --arch arm64 --timeout 1680 --keep-logs
+        timeout-minutes: 29
+
+      - name: Upload menu-boot serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-rootless-menu-boot-smoke-serial-log
+          path: /tmp/nyrqis-boot-smoke-menu-*/serial.log
+          if-no-files-found: ignore
