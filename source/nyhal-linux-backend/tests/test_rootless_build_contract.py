@@ -374,5 +374,138 @@ class TestDemoSetuRegressionGuard(unittest.TestCase):
         self.assertIn('export NYRQIS_CDYLIB_DIR="$OPT/rust/.cdylibs"', demo)
 
 
+ROOTLESS_WF = os.path.join(
+    _REPO_ROOT, ".github", "workflows", "live-iso-rootless.yml")
+
+
+def read_yaml(path):
+    import yaml
+    with open(path, "r", encoding="utf-8") as fh:
+        # PyYAML resolves the unquoted `on:` key to boolean True — both
+        # spellings accepted (the boot-contract tests established this).
+        d = yaml.safe_load(fh)
+    return d.get(True, d.get("on")), d
+
+
+@unittest.skipUnless(
+    os.path.exists(ROOTLESS_WF),
+    "rootless CI workflow not present in this checkout")
+class TestRootlessCIWorkflow(unittest.TestCase):
+    """2026-09-25: the rootless pipeline is validated in CI on a stock
+    runner, mirroring the reference machine's constraints (no sudo in
+    the pipeline, no docker, no KVM, user namespaces only) — the claim
+    the local tests pin stays exercised on an external machine. sudo is
+    allowed ONLY in pre-flight steps; the arm64 job cross-builds with
+    the user-space zig toolchain, NOT a system cross-compiler.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not os.path.exists(ROOTLESS_WF):
+            raise unittest.SkipTest("workflow not present")
+        cls.on, cls.wf = read_yaml(ROOTLESS_WF)
+        cls.text = read(ROOTLESS_WF)
+
+    def job(self, name):
+        return self.wf["jobs"][name]
+
+    def test_yaml_parses_and_has_both_jobs(self):
+        self.assertIn("rootless-amd64", self.wf["jobs"])
+        self.assertIn("rootless-arm64", self.wf["jobs"])
+
+    def test_amd64_job_runs_on_push_and_is_dispatchable(self):
+        self.assertIn("push", self.on, "amd64 job must gate pushes")
+        self.assertIn("workflow_dispatch", self.on)
+
+    def test_arm64_job_is_dispatch_gated_and_input_gated(self):
+        # The emulated arm64 loop is too slow for a push gate; it must
+        # run ONLY on manual dispatch with the explicit input.
+        cond = self.job("rootless-arm64").get("if", "")
+        self.assertIn("workflow_dispatch", cond)
+        self.assertIn("with-arm64", cond)
+
+    def test_pipeline_steps_never_use_sudo(self):
+        # The point of the job: the pipeline under test runs rootless.
+        # Pre-flight steps are EXEMPT by name (sudo there only prepares
+        # the runner environment); every other step must not invoke it.
+        exempt_prefixes = ("pre-flight", "confirm unprivileged")
+        for job in self.wf["jobs"].values():
+            for step in job.get("steps", []):
+                name = (step.get("name") or "").strip().lower()
+                if name.startswith(exempt_prefixes):
+                    continue
+                body = step.get("run", "")
+                self.assertNotIn(
+                    "sudo ", body,
+                    f"step {name!r} runs the PIPELINE and must never use "
+                    "sudo — pre-flight is the only exempt phase")
+
+    def test_amd64_proves_rootlessness_via_ownership(self):
+        job_text = str(self.job("rootless-amd64"))
+        self.assertIn("stat -c %u", job_text,
+                      "the ownership check must assert the ISO was NOT "
+                      "created by root")
+        self.assertIn('"0"', job_text,
+                      "the check must compare against uid 0 explicitly")
+
+    def test_amd64_runs_both_boot_smokes(self):
+        runs = [s.get("run", "")
+                for s in self.job("rootless-amd64").get("steps", [])]
+        joined = "\n".join(runs)
+        self.assertIn("tests/boot_smoke.py", joined)
+        self.assertIn("tests/boot_smoke_menu.py", joined,
+                      "the rootless claim covers the GRUB path too")
+
+    def test_arm64_job_uses_userspace_zig_not_a_system_toolchain(self):
+        job_text = str(self.job("rootless-arm64"))
+        self.assertIn("zig-linux-x86_64", job_text,
+                      "zig must come from the user-space tarball")
+        self.assertNotIn("gcc-aarch64-linux-gnu", job_text,
+                         "the job must not depend on a system cross-gcc "
+                         "— the rootless recipe is toolchain-free")
+
+    def test_arm64_acquire_runs_the_driver_foreign_mode(self):
+        runs = [s.get("run", "")
+                for s in self.job("rootless-arm64").get("steps", [])]
+        joined = "\n".join(runs)
+        self.assertIn("--arch arm64", joined)
+        self.assertIn("--acquire-rootfs", joined)
+        self.assertIn("--rootfs", joined,
+                      "the build phase must consume the acquired rootfs")
+
+    def test_smoke_steps_keep_the_ci_timeouts(self):
+        # Same budgets as the root-built workflows (780 s direct amd64,
+        # 1680 s emulated arm64) — a hang must fail the step, not the
+        # job's whole budget.
+        for job, needle, minutes in (
+            ("rootless-amd64", "--timeout 780", 15),
+            ("rootless-arm64", "--timeout 1680", 29),
+        ):
+            steps = self.job(job).get("steps", [])
+            hit = [s for s in steps
+                   if needle in (s.get("run") or "")]
+            self.assertTrue(
+                hit, f"{job}: no smoke step with {needle}")
+            self.assertEqual(
+                hit[0].get("timeout-minutes"), minutes,
+                f"{job}: smoke step budget must stay {minutes} min")
+
+    def test_rootfs_cache_covers_the_full_sibling_set(self):
+        # The driver's resumable layout is THREE siblings (tree, .cache,
+        # .complete). Caching only the tree would drop the stamp and
+        # force a full acquisition redo on every round.
+        with_action = [s for s in self.job("rootless-amd64").get("steps", [])
+                       if s.get("uses", "").startswith("actions/cache")]
+        self.assertTrue(with_action, "amd64 job must cache the rootfs set")
+        path = with_action[0]["with"]["path"]
+        self.assertEqual(
+            path, "~/nyrqis-rootless",
+            "cache the PARENT dir so the rootfs, its .deb cache, and the "
+            "completion stamp travel together")
+        self.assertNotIn(
+            ".complete", path,
+            "parent-dir caching carries the stamp implicitly")
+
+
 if __name__ == "__main__":
     unittest.main()

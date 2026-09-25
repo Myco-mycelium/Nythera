@@ -5,6 +5,20 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (rootless CI validation job landed; full backend sweep green —
+new `.github/workflows/live-iso-rootless.yml` mirrors the reference
+machine's constraints on a stock runner: amd64 job gates pushes with the
+full rootless loop (acquire → build → BOTH boot smokes under TCG) plus
+an ownership proof (stat -c %u ≠ 0 — sudo appears ONLY in pre-flight
+steps, pinned by test), arm64 job is dispatch+input-gated and
+cross-builds with the USER-SPACE zig tarball (asserted: no
+gcc-aarch64-linux-gnu anywhere) + foreign acquire + emulated build +
+1680 s smoke; rootfs cache covers the PARENT dir so tree + .deb cache +
+completion stamp travel together; rootless contract grew to 30 tests
+(workflow pins: no-sudo-in-pipeline, job timeouts, smoke budgets,
+input gate); full `python3 -B -m unittest discover` sweep: 9212 tests
+OK (skipped=4) — the runner-coverage lesson applied); full backend sweep
+
 2026-09-25 (rootless arm64 live-ISO UNBLOCKED and boot-proven — the
 previously blocked cross build now works on the reference machine with
 NO root and NO system packages added: a user-space zig tarball

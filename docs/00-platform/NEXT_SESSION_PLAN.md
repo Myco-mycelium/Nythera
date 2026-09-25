@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.20.0
+version: 6.21.0
 date: 2026-09-25
 ---
 
@@ -40,6 +40,16 @@ Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
 confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
+
+## SESSION ITEM — Fri 2026-09-25 (later): full sweep green, and the rootless pipeline is now CI-validated on an external machine
+
+| Item | Status |
+|------|--------|
+| **The full backend unittest sweep PASSED** | ✅ `python3 -B -m unittest discover` (the CI invocation style, `-B` skips bytecode): **9212 tests OK (skipped=4)** in ~5 min — the runner-coverage lesson from NEXT_SESSION_PLAN applied instead of trusting the targeted suites |
+| **New `.github/workflows/live-iso-rootless.yml`: the rootless claim is exercised on a machine we do not control** | ✅ amd64 job gates pushes (paths: packaging/live/**, the workflow, both smoke drivers) with the FULL rootless loop — acquire (`--acquire-rootfs`) → build (`--rootfs` → ISO) → ownership proof → both boot smokes under TCG; arm64 job is dispatch+input-gated (`with-arm64`) because the emulated loop is ~1.5-2 h on a 2-core runner |
+| **The no-sudo contract is enforced against the workflow itself** | ✅ `TestRootlessCIWorkflow` (9 tests): every non-pre-flight step must contain no `sudo ` (the first draft's sudo chown in the ownership-proof step was caught by the test before commit — the test earns its keep immediately); ownership proof asserts `stat -c %u != 0` on the built ISO (the inverse of "root-owned because the build used sudo"); arm64 job must fetch zig from the USER-SPACE tarball and must NOT reference `gcc-aarch64-linux-gnu` |
+| **Runner plumbing mirrors the reference machine** | ✅ pre-flight installs exactly the builder's toolset (plus binfmt/qemu-user-static/grub-efi-arm64-bin-via-deb-index for the arm64 job — the proven root-built-workflow pattern), stages zig at `~/.local/opt/zig` (the durable path the driver probes), and probes `unshare -Urmpf` with diagnosis BEFORE the pipeline runs (a runner-image sysctl posture change fails with the reason, not a mystery inside debootstrap) |
+| **Cache shape follows the driver's resumable layout** | ✅ the cache path is the PARENT dir (`~/nyrqis-rootless`) because the layout is three siblings — rootfs tree, `DIR.cache` (.deb store), `DIR.complete` (rerun stamp); caching only the tree would drop the stamp and force a full acquisition redo |
 
 ## SESSION ITEM — Fri 2026-09-25: the rootless arm64 cross build is UNBLOCKED and boot-proven — three real mechanics found by actually running it
 

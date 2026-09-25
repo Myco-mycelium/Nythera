@@ -49,6 +49,8 @@ MENU_SMOKE = os.path.join(_REPO_ROOT, "tests", "boot_smoke_menu.py")
 LIVE_ISO_WF = os.path.join(_REPO_ROOT, ".github", "workflows", "live-iso.yml")
 LIVE_ISO_ARM64_WF = os.path.join(
     _REPO_ROOT, ".github", "workflows", "live-iso-arm64.yml")
+LIVE_ISO_ROOTLESS_WF = os.path.join(
+    _REPO_ROOT, ".github", "workflows", "live-iso-rootless.yml")
 # Single source of truth for the release-attach logic (both workflows'
 # attach steps, their re-attach jobs, and the race harness all run it).
 ATTACH_SCRIPT = os.path.join(
@@ -471,6 +473,7 @@ class TestJobTimeoutContract(unittest.TestCase):
     WORKFLOWS = (
         LIVE_ISO_WF,
         LIVE_ISO_ARM64_WF,
+        LIVE_ISO_ROOTLESS_WF,
         os.path.join(_REPO_ROOT, ".github", "workflows", "ci.yml"),
         os.path.join(_REPO_ROOT, ".github", "workflows",
                      "arm64-conformance.yml"),

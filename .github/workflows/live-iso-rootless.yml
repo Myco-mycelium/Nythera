@@ -1,0 +1,244 @@
+name: live-iso-rootless
+
+# The NO-SUDO validation of the rootless ISO pipeline: reproduces the
+# reference dev machine's constraints (no docker, no KVM, user namespaces
+# only) on a stock GitHub runner and proves the SAME claim the local
+# contract tests pin: `build-live-iso-rootless.sh` produces a bootable
+# ISO through the UNMODIFIED builder with zero root.
+#
+# Two jobs:
+# - amd64 on every relevant push: the full loop (acquire, build, BOTH
+#   boot smokes under TCG), exactly like the reference machine — plus an
+#   ownership proof that the artifact was created by the unprivileged
+#   user, not root (no sudo anywhere outside pre-flight steps).
+# - arm64 on demand: the cross build validated 2026-09-25 on the
+#   reference machine — the guest (aarch64) shim cross-compiled with a
+#   USER-SPACE zig tarball (no system cross toolchain), the acquire
+#   phase running `--foreign` with the emulated second stage, then the
+#   builder + TCG smoke. Slow (the emulated kernel-package configure and
+#   mkinitramfs dominate; ~1.5-2 h on a 2-core runner), so it is
+#   workflow_dispatch, not a push gate.
+#
+# sudo IS used on the runner — but ONLY for pre-flight environment setup
+# (apt, binfmt registration, grub module tree): the same class of setup
+# the root-built workflows do. The pipeline under test — acquire, build,
+# smokes — runs entirely as the unprivileged runner user via unshare and
+# never invokes sudo, su, or fakeroot (pinned by
+# tests/test_rootless_build_contract.py::test_no_root_anywhere).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/live/**"
+      - ".github/workflows/live-iso-rootless.yml"
+      - "tests/boot_smoke.py"
+      - "tests/boot_smoke_menu.py"
+  workflow_dispatch:
+    inputs:
+      with-arm64:
+        description: Also run the rootless arm64 cross-build check (~1.5-2 h)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  rootless-amd64:
+    name: Rootless amd64 ISO (no sudo in the pipeline, both smokes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pre-flight (sudo ONLY here — the pipeline never gets it)
+        # Package set mirrors the builder's own requirements check.
+        # Zig is fetched as a user-space tarball into $HOME/.local/opt —
+        # the documented durable location the driver probes — so even
+        # the shim toolchain is outside any system path.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap squashfs-tools xorriso genisoimage \
+            grub-pc-bin grub-efi-amd64-bin mtools isolinux \
+            qemu-system-x86 cpio xz-utils curl
+          mkdir -p "$HOME/.local/opt"
+          curl -fsSL -o /tmp/zig.tar.xz \
+            https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.local/opt"
+          mv "$HOME/.local/opt/zig-linux-x86_64-0.13.0" "$HOME/.local/opt/zig"
+          "$HOME/.local/opt/zig/zig" version
+
+      - name: Confirm unprivileged user namespaces are usable
+        # The whole job stands on this kernel feature; if a runner-image
+        # change ever flips the sysctl posture, fail HERE with the
+        # diagnosis instead of a mystery deep in debootstrap.
+        run: |
+          unshare -Ur true \
+            || { echo "unshare -Ur failed — unprivileged userns restricted"; \
+                 sysctl kernel.unprivileged_userns_clone 2>/dev/null || true; \
+                 sysctl apparmor_restrict_unprivileged_userns 2>/dev/null || true; \
+                 exit 1; }
+          unshare -Urmpf --mount-proc true \
+            || { echo "mount/pid namespaces restricted — the driver needs both"; exit 1; }
+          echo "user namespaces OK (uid $(id -u), no sudo needed below)"
+
+      - name: Restore the rootless rootfs set (rootfs + deb cache + stamp)
+        # The acquisition phase is the long pole (download + extraction).
+        # The PARENT dir is cached because the driver's resumable layout
+        # is three siblings: the rootfs tree, DIR.cache (the .deb store),
+        # and DIR.complete (the no-op rerun stamp) — caching only the
+        # tree would drop the stamp and force a full redo.
+        uses: actions/cache@v4
+        with:
+          path: ~/nyrqis-rootless
+          key: nyrqis-rootless-rootfs-amd64-bookworm-v1-systemd-sysv-sudo-linux-image-amd64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3
+
+      - name: Acquire the rootfs (rootless debootstrap, resumable)
+        # A cache hit restores DIR.complete and this is a logged no-op;
+        # a miss does the full download+extract (survives interruption
+        # via the external cache dir — the driver's own resume story).
+        run: |
+          packaging/live/build-live-iso-rootless.sh \
+            --acquire-rootfs "$HOME/nyrqis-rootless/amd64"
+        timeout-minutes: 45
+
+      - name: Build the ISO (rootless, unmodified builder)
+        run: |
+          packaging/live/build-live-iso-rootless.sh \
+            --rootfs "$HOME/nyrqis-rootless/amd64" \
+            --output dist/nyrqis-live-rootless.iso
+        timeout-minutes: 30
+
+      - name: Prove the pipeline ran without root
+        # The pipeline runs as the unprivileged runner user in a user
+        # namespace, so every file it creates — including the ISO — is
+        # owned by that user. If anything in the pipeline had silently
+        # escalated, the artifact would be root-owned. No sudo needed
+        # here either: the check is pure stat, and the rename is a
+        # plain mv (the smokes below consume the renamed artifact).
+        run: |
+          test -f dist/nyrqis-live-rootless.iso
+          BUILD_UID="$(stat -c %u dist/nyrqis-live-rootless.iso)"
+          test "$BUILD_UID" != "0" \
+            || { echo "ISO owned by root — the pipeline used root"; exit 1; }
+          echo "ISO created by uid $BUILD_UID (runner user), not root"
+          mv dist/nyrqis-live-rootless.iso dist/nyrqis-live-rootless.iso-checked
+
+      - name: Direct boot smoke (TCG, serial handshake)
+        run: |
+          python3 tests/boot_smoke.py dist/nyrqis-live-rootless.iso-checked \
+            --timeout 780 --keep-logs
+        timeout-minutes: 15
+
+      - name: Menu boot smoke (GRUB path, TCG)
+        run: |
+          python3 tests/boot_smoke_menu.py dist/nyrqis-live-rootless.iso-checked \
+            --timeout 780 --keep-logs
+        timeout-minutes: 15
+
+      - name: Upload boot-smoke serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootless-boot-smoke-serial-logs
+          path: /tmp/nyrqis-boot-smoke*/serial.log
+          if-no-files-found: ignore
+
+      - name: Upload the rootless ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyrqis-live-rootless-iso
+          path: dist/nyrqis-live-rootless.iso-checked
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+  rootless-arm64:
+    name: Rootless arm64 cross build (zig guest shim, TCG smoke)
+    runs-on: ubuntu-latest
+    # Local envelope on the 4-CPU reference machine: ~1 h build + ~20 min
+    # smoke; a shared 2-core runner emulating aarch64 is several times
+    # slower — 150 min matches live-iso-arm64.yml's job ceiling (pinned
+    # by TestJobTimeoutContract).
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.with-arm64 }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pre-flight (sudo ONLY here)
+        # binfmt + qemu-user-static are SYSTEM services: the kernel-side
+        # registration cannot be done unprivileged, so this is the one
+        # piece of the arm64 path the pipeline cannot own. The guest shim
+        # needs NO system cross toolchain — zig comes from the user-space
+        # tarball, exactly like the reference machine. grub-efi-arm64-bin
+        # exists ONLY in arm64-built archives (apt on amd64 cannot
+        # install it — the root-built arm64 workflow documents this); the
+        # module tree is resolved from the Debian index and unpacked to
+        # /usr/lib/grub as PRE-FLIGHT, mirroring that workflow.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap qemu-user-static binfmt-support \
+            squashfs-tools xorriso mtools dosfstools \
+            grub-common grub2-common \
+            qemu-system-arm cpio xz-utils curl
+          test -e /proc/sys/fs/binfmt_misc/qemu-aarch64 \
+            || { echo "binfmt has no qemu-aarch64 registration"; exit 1; }
+          mkdir -p "$HOME/.local/opt"
+          curl -fsSL -o /tmp/zig.tar.xz \
+            https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.local/opt"
+          mv "$HOME/.local/opt/zig-linux-x86_64-0.13.0" "$HOME/.local/opt/zig"
+          DEB_PATH=$(curl -fsSL \
+            https://deb.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.xz \
+            | xz -dc | awk '/^Package: grub-efi-arm64-bin$/{f=1} \
+                            f && /^Filename: /{print $2; exit}')
+          test -n "$DEB_PATH" || { echo "grub-efi-arm64-bin not found in the index"; exit 1; }
+          curl -fsSL -o /tmp/grub-arm64-bin.deb "https://deb.debian.org/debian/$DEB_PATH"
+          dpkg-deb -x /tmp/grub-arm64-bin.deb /tmp/grub-arm64-root
+          test -d /tmp/grub-arm64-root/usr/lib/grub/arm64-efi \
+            || { echo "arm64-efi modules not in the .deb — layout changed"; exit 1; }
+          sudo cp -a /tmp/grub-arm64-root/usr/lib/grub/arm64-efi /usr/lib/grub/
+          echo "arm64-efi module tree staged ($(ls /usr/lib/grub/arm64-efi/*.mod | wc -l) modules)"
+          unshare -Ur true \
+            || { echo "unprivileged userns restricted on this runner"; exit 1; }
+
+      - name: Restore the rootless arm64 rootfs set
+        uses: actions/cache@v4
+        with:
+          path: ~/nyrqis-rootless
+          key: nyrqis-rootless-rootfs-arm64-bookworm-v1-systemd-sysv-sudo-linux-image-arm64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3
+
+      - name: Acquire the arm64 rootfs (foreign, emulated second stage, rootless)
+        # Stage 1 extracts with host binaries; stage 2 runs chrooted and
+        # therefore EMULATED, preloading the zig-compiled AARCH64 shim —
+        # the mechanism validated end to end on the reference machine.
+        run: |
+          packaging/live/build-live-iso-rootless.sh --arch arm64 \
+            --acquire-rootfs "$HOME/nyrqis-rootless/arm64"
+        timeout-minutes: 60
+
+      - name: Build the arm64 ISO (rootless, emulated chroots)
+        run: |
+          packaging/live/build-live-iso-rootless.sh --arch arm64 \
+            --rootfs "$HOME/nyrqis-rootless/arm64" \
+            --output dist/nyrqis-live-arm64-rootless.iso
+        timeout-minutes: 75
+
+      - name: Direct boot smoke (TCG, ttyAMA0 handshake)
+        run: |
+          python3 tests/boot_smoke.py dist/nyrqis-live-arm64-rootless.iso \
+            --arch arm64 --timeout 1680 --keep-logs
+        timeout-minutes: 29
+
+      - name: Upload the rootless arm64 ISO
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyrqis-live-arm64-rootless-iso
+          path: dist/nyrqis-live-arm64-rootless.iso
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
