@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.24.0
+version: 6.25.0
 date: 2026-09-25
 ---
 
@@ -15,6 +15,17 @@ date: 2026-09-25
 | **Contract pins** | ✅ 12 new tests in `TestSmokeConcurrencyGuard` (test_live_boot_contract.py, now 79): text pins (guard present/refuses/finally-released, `os.kill` not pgrep, distinct tags, PID-compare-before-unlink, docstring documents exit 2, rmtree not rmdir) + functional pins via imported drivers (own PID written, second acquire refused while live, stale + garbage markers taken over, release never unlinks a winner's marker, EPERM-alive semantics). Contract pair: 79 + 34 = 113 OK |
 | **End-to-end CLI proof** | ✅ Live holder → `boot_smoke.py` exits 2 with the BUSY line; after the holder releases, the CLI proceeds past the guard (fails on the fake ISO's extraction, rc=1 — the right failure). First attempt at this check proved the STALE path instead (holder had exited → takeover) — kept as the takeover evidence, redone with a live `setsid` holder for the BUSY case |
 | **Pushed** | ✅ `d2b2a81` ("Guard the boot smokes against concurrent runs...") on origin main, remote tip verified via `git ls-remote`; doc premises 46/46 after the edit |
+
+## SESSION ITEM — Fri 2026-09-25 (latest): issue #3 followups — local wrappers surface BUSY, CI green on the guard commit, dailies in-band (5th day), dispatch probe #8 still 403
+
+| Item | Status |
+|------|--------|
+| **Local smoke wrappers surface rc=2 as a distinct BUSY verdict** | ✅ `~/nyrqis-work/run-smokes.sh`, `smoke-release.sh`, `smoke-rel-amd64.sh`: `classify` maps 0→PASS, 2→BUSY ("refused: another live smoke holds the PID marker — issue #3 guard"), else FAIL(rc=N); a `preflight` names the marker's holder via `kill -0` + `ps -p` on the MARKER's pid (never pgrep). Verified end to end with a live `sleep`-PID holder: PREFLIGHT named pid + cmdline, direct smoke printed "BUSY ... refusing to race it (issue #3)", log recorded `DIRECT-VERDICT=BUSY`; the un-held menu smoke proceeded to its correct rc=1 on the fake ISO. First two probe attempts taught a lesson each: a shell-exited holder proves STALE takeover, and `main()`'s ISO-existence check precedes the guard (rc=1 beats rc=2 — feed the wrapper a real-looking path) |
+| **Pre-guard /tmp debris cleared** | ✅ The 5 leftover `nyrqis-boot-smoke*` tmpdirs in `~/nyrqis-work/tmp` (keep-logs runs from before the rmtree fix) removed while no smoke was in flight (no PID files, no holders) |
+| **CI on the guard commit `d2b2a81`** | ✅ ci #36149179730 ✓, live-iso #36149179517 ✓, **live-iso-rootless #36149179659 ✓** — the guarded drivers ran both smokes green on GitHub's runner, so the guard does not deadlock or false-BUSY in CI; live-iso-arm64 #36149179616 was still in progress at last check (this push does NOT auto-run its arm64 jobs — dispatch-gated) |
+| **CI on the records commit `e9ce31c`** | ✅ docs #36149287264 ✓, ci #36149287259 ✓ |
+| **Dailies band verdict (5th consecutive in-band day)** | ✅ PASS — see the STANDING ITEM above: 10:28:46 + 10:36:16 UTC, both success, checker exit 0 |
+| **Dispatch probe #8** | ❌ 403, byte-identical to #1–#7 — PAT not rotated; carried trigger unchanged (owner browser rotation → `scripts/rotate_push_pat.sh` → expect 204) |
 
 ## STANDING ITEM — Thu 2026-09-24 05:37/05:52 UTC: the dailies' third fires — does the 10:02–11:49 band hold a fourth day?
 
@@ -50,6 +61,23 @@ Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
 confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
+
+**Fri 2026-09-25 verdict — the band holds: PASS.** Both dailies fired in-band
+(pat-expiry-watch 10:28:46 UTC #36124190963, scheduled-runs-watch 10:36:16 UTC
+#36124876646 — both inside 10:02–11:49, attempt 1, completed success), and
+`scripts/check_scheduled_runs.sh` exited 0 ("SCHEDULED RUNS: OK", all four
+scheduled workflows completed/success). That is the fifth consecutive in-band
+day; a fourth-and-fifth-day extension of the 10:02–11:49 envelope is now the
+stable pattern, median ~4.5 h late, all inside the 8 h grace.
+
+**Carried trigger — probed again Fri 16:5x UTC (probe #8): still 403.**
+`POST .../live-iso-rootless.yml/dispatches` (with-arm64) via the credential
+helper's cached PAT → HTTP 403 "Resource not accessible by personal access
+token", byte-identical to probes #1–#7: the PAT has NOT been rotated. (An
+intermediate empty-bearer attempt read 401 — a lookup failure, not evidence;
+the real probe went through `git credential fill`.) The drill still cannot run
+until the owner mints the fine-grained PAT in the browser and runs
+`scripts/rotate_push_pat.sh`; 204 remains the expected post-rotation result.
 
 ## SESSION ITEM — Fri 2026-09-25 (night): rootless CI is GREEN on GitHub's runner — two runner-only shim bugs found and fixed; arm64 dispatch blocked on the PAT (403, as expected)
 
