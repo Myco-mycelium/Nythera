@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.22.0
+version: 6.23.0
 date: 2026-09-25
 ---
 
@@ -40,6 +40,16 @@ Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
 confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
+
+## SESSION ITEM — Fri 2026-09-25 (night): rootless CI is GREEN on GitHub's runner — two runner-only shim bugs found and fixed; arm64 dispatch blocked on the PAT (403, as expected)
+
+| Item | Status |
+|------|--------|
+| **live-iso-rootless amd64: fully GREEN on a stock runner** | ✅ run 36122698939 (push 9788f3d): acquire → build → ownership proof (`stat -c %u != 0`) → direct boot smoke → menu boot smoke, ALL success, zero sudo in the pipeline — the rootless claim now holds on a machine we do not control |
+| **Runner-only bug #1 — the preload path must be CANONICAL** | ✅ Runs 2-3 failed in acquire: the driver preloaded the shim's raw mktemp path, so the runner's debootstrap (which sanitizes PATH and skips the chroot wrapper) resolved the preload against the TARGET — nothing there (the pre-stage had kept the mktemp name) → core install ran unshimmed → `chown /var/mail` EINVAL. The reference machine masked it (older debootstrap resolved chroot via the wrapper). Fix: `/tmp/rootless-syscall-shim.so` is the ONE preload path for every phase — host-class copy host-side, correct-class copy in-target, same name both sides; chrooted shimming no longer depends on wrapper engagement. Diagnosed from run 3's inline inner-evidence dump (the acquire step prints the inner debootstrap.log on failure — build that evidence in) |
+| **Runner-only bug #2 — NEVER cp -f onto a mapped preload file** | ✅ Run 4 failed in build with rc=139; reproduced locally at the identical step; systemd-coredump showed cp AND the builder bash SIGSEGV. Mechanism: the wrapper's per-call `cp -f` truncated the canonical shim while the long-running builder bash was mapped from it — next page fault executes zeros. Fix: every staging site writes to a temp name and RENAMES (rename(2) swaps the entry; old inode stays alive for mappers); acquire's fresh-target pre-stage stays a plain copy. Both fixes re-validated locally END TO END (full acquire + full build, exit 0) before pushing |
+| **Arm64 rootless dispatch: HTTP 403 — the PAT-rotation trigger, verified again** | ✅ `POST /actions/workflows/live-iso-rootless.yml/dispatches` → 403 "Resource not accessible by personal access token": byte-consistent with every pre-rotation probe. The workflow's `with-arm64` input is READY and its recipe is runner-proven (amd64 loop green; the arm64 job is the same driver with `--arch arm64`); dispatching waits on the owner mints the fine-grained PAT (Actions write included) and rotates — `scripts/rotate_push_pat.sh` |
+| **Contracts grew with the runner lessons** | ✅ rootless contract now 33 tests: canonical-preload pin (every phase + explicit host staging + no other path), tmp+mv staging pin, inner-evidence step, menu-job pin; 99 contract tests green; local end-to-end re-validation recorded in both fix commits |
 
 ## SESSION ITEM — Fri 2026-09-25 (evening): the rootless CI's first run failed WHERE it should — runner userns posture normalized, arm64 menu job added
 

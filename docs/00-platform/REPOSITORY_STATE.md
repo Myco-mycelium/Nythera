@@ -5,6 +5,16 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (rootless CI GREEN on GitHub's runner after two runner-only
+shim fixes — the canonical preload path (one name on both chroot sides,
+immune to PATH-sanitizing debootstrap) and tmp+mv shim staging (cp -f
+onto a mapped .so truncates it and running processes execute zeros —
+SIGSEGV, reproduced locally via systemd-coredump); both re-validated
+end-to-end locally before push; run 36122698939: acquire + build +
+ownership proof + BOTH boot smokes all success with zero sudo; arm64
+dispatch honestly 403 (pre-rotation PAT signature, carried trigger);
+rootless contract 33 tests / 99 green)
+
 2026-09-25 (rootless CI first run: the runner-environment validation
 EARNED ITS KEEP — the amd64 job failed in the userns-probe step on the
 runner exactly as designed: GitHub's ubuntu-24.04 image ships
