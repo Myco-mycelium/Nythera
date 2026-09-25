@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.32.0
+version: 6.33.0
 date: 2026-09-25
 ---
 
@@ -34,6 +34,14 @@ MISSING (403, via its designed harmless pat-expiry-watch self-check) →
 GRANTS MISSING — the rotation has NOT happened; run the same script after the
 owner rotates and expect ALL GRANTS PRESENT before starting the drill. CI on
 the wrap commit `8d292a6`: docs #36172497861 ✓ + ci #36172498062 ✓.
+
+**Re-checks Fri 18:23 UTC (both triggers re-verified, both still parked):**
+`verify_pat_grants.sh` again → GRANTS MISSING (identical signature — identity
+OK, variables 403, actions 403); day check confirms Friday 18:23 UTC, so the
+Monday check is honestly not executable yet. Opening housekeeping pre-flight
+RAN CLEAN: no stray qemu/smoke processes, no PID markers anywhere, clean git
+tree at the tip, workroot 712 MB (two kept ISOs + wrapper tooling + logs),
+tmp empty — the next session can open cold and go straight to the checklist.
 
 ## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
 
