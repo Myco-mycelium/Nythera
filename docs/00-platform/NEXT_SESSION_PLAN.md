@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.34.0
+version: 6.35.0
 date: 2026-09-25
 ---
 
@@ -52,6 +52,18 @@ pick up; the repo state is fully landed. The session is CLOSED pending its
 external triggers: the owner's PAT rotation (then the drill) and Monday's
 dailies (then the band check). Nothing else is actionable; do not manufacture
 work — open threads only via the triggers above or fresh owner direction.
+
+**Fri 18:32 UTC — next-session AGENDA (tracker survey + gate #5):** rotation
+re-check #5 → GRANTS MISSING (fifth identical; still parked). Tracker: 3 open
+issues, 0 open PRs. #3 = this session's work (done, released in v0.29.32,
+comment pending rotation). The REAL next-session agenda is the two August AG
+Reviews, both owner/Architecture-Group decisions, not agent-executable code:
+**#1** — accept ADR-0019's auto_compact default + dirty-flag shutdown
+contract (implementation already landed in `40cb4e8`); **#2** — accept
+ADR-0020 v2.0.0 (canonical language matrix, status Proposed) per NPC-001
+§6.4 to make it binding. Ask the owner/AG to adjudicate both; land whatever
+disposition they give (accept → flip ADR status/closure, request changes →
+scope the revision).
 
 ## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
 
