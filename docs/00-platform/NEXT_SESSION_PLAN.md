@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.27.0
+version: 6.28.0
 date: 2026-09-25
 ---
 
@@ -39,6 +39,14 @@ date: 2026-09-25
 | **CI on `3f85979`** | ✅ docs #36158861154 ✓, ci ✓, live-iso ✓ (watched to completion — build + both boot smokes green with the tool in tree) |
 | **Comment retry (single, after the tooling landed)** | ❌ 403 again — rotation still pending (consistent with dispatch probe #8). Full updated summary text preserved for the post-rotation retry; no further probes until the PAT rotates |
 | **Closing audit** | ✅ tip `3f85979` clean tree; workroot 829 MB (tmp 118 MB — mostly the PASS ×4 sweep's kept serial evidence); both kept ISOs in place; open items: owner-side PAT rotation (dispatch + issue-comment scope) |
+
+## SESSION ITEM — Fri 2026-09-25 (very end): the new tool's first real sweep, CI on the records commit, and the post-rotation probes (all still 403)
+
+| Item | Status |
+|------|--------|
+| **First real sweep by `scripts/clean-smoke-tmp.sh`** | ✅ DRY-RUN listed exactly the 5 kept smoke-evidence dirs; `--yes` (with `CLEAN_TMP_ROOT=~/nyrqis-work/tmp`) removed exactly those — ~118 MB freed, tmp now empty, nothing else touched. Also the default-root lesson: with no TMPDIR the tool targets `/tmp` (correct default; the workroot sweep goes through `CLEAN_TMP_ROOT`, which is what the override exists for) |
+| **CI on the records commit `21d9d62`** | ✅ docs #36159948749 ✓ + ci #36159948614 ✓ (docs-only push — no live-iso runs, correct) |
+| **Post-rotation probes (single shots)** | ❌ dispatch probe #9 → 403; issue-comment probe → 403. Consistent pair: the PAT has NOT been rotated. Rotation checklist stays: owner mints the fine-grained PAT (Contents/Workflows/Actions/Variables/PR + issue comments = RW) → `scripts/rotate_push_pat.sh` → expect dispatch 204 AND comment 201; the close-out comment text is preserved in this file's history (6.27.0 item) and the session transcript |
 
 ## STANDING ITEM — Thu 2026-09-24 05:37/05:52 UTC: the dailies' third fires — does the 10:02–11:49 band hold a fourth day?
 

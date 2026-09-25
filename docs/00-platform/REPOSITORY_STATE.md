@@ -5,6 +5,18 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (issue #3 COMPLETED end to end — the tooling half landed in
+scripts/clean-smoke-tmp.sh (3f85979): the sanctioned sweeper for
+nyrqis-boot-smoke-* dirs refuses (exit 3, removes NOTHING) while any PID-file
+liveness source (the drivers' two markers or the local wrapper's smoke.pids)
+names a live process via /proc existence checks — never pgrep — with a
+dry-run default, --yes-gated removal, and a flat scan scoped to the smoke
+namespace; 7 contract tests (live-boot contract 86; pair 120 OK); CI green
+on 3f85979 (docs, ci, live-iso) and on 21d9d62 (docs, ci); the tool's first
+real sweep removed exactly the 5 kept smoke-evidence dirs (~118 MB, nothing
+else); issue-comment POST still 403 (three probes) and dispatch probe #9
+still 403 — the PAT rotation remains the single open item, owner-side)
+
 2026-09-25 (issue #3 IMPLEMENTED + full local/CI verification GREEN — both
 boot smokes now guard concurrent runs (PID marker under the temp dir, exit 2
 + "refusing to race it" while a live instance holds it; stale/garbage markers
