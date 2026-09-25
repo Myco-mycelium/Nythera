@@ -57,12 +57,50 @@ check `apparmor_restrict_unprivileged_userns`), `cc` or `gcc`, and the
 builder's normal toolset. Contract-pinned in
 `source/nyhal-linux-backend/tests/test_rootless_build_contract.py`.
 
-**arm64 via this path** is blocked without an aarch64 cross-compiler:
-the emulated debootstrap stage runs arm64 binaries, which cannot load
-an amd64 preload shim for their chowns. With `gcc-aarch64-linux-gnu`
-installed, compile the shim with `-target aarch64` and stage it as
-`/tmp/rootless-syscall-shim.so` in the rootfs. CI's arm64 build is
-unaffected (runners build as root).
+**arm64 works via this path too** (verified 2026-09-25: the rootless
+arm64 ISO passed BOTH boot smokes on the reference machine — direct
+ttyAMA0 handshake and the GRUB/UEFI menu path under
+`qemu-system-aarch64 -M virt`):
+
+```bash
+packaging/live/build-live-iso-rootless.sh --arch arm64 \
+    --acquire-rootfs ~/nyrqis-work/lr-arm64
+packaging/live/build-live-iso-rootless.sh --arch arm64 \
+    --rootfs ~/nyrqis-work/lr-arm64 -o dist/nyrqis-live-arm64.iso
+
+# boot-smoke both paths (TCG — no KVM on arm64 here):
+python3 tests/boot_smoke.py dist/nyrqis-live-arm64.iso \
+    --arch arm64 --timeout 1680 --keep-logs
+python3 tests/boot_smoke_menu.py dist/nyrqis-live-arm64.iso \
+    --arch arm64 --timeout 1680 --keep-logs
+```
+
+The three extra ingredients, all rootless:
+
+1. **A cross compiler for the guest shim.** The emulated debootstrap
+   second stage and every emulated chroot step run AARCH64 binaries,
+   whose loader refuses an amd64 preload — the shim is cross-compiled
+   per build from the same committed C source. No `gcc-aarch64-linux-gnu`
+   needed: [zig](https://ziglang.org/download) as a user-space tarball
+   suffices (`zig cc -target aarch64-linux-gnu`); the driver probes
+   `zig` on PATH, `~/.local/opt/zig/zig`, or `NYRQIS_ZIG`/`NYRQIS_AARCH64_CC`.
+2. **binfmt_misc + qemu-user-static** (F-flagged registration, so the
+   interpreter resolves inside chroots; check
+   `ls /proc/sys/fs/binfmt_misc/qemu-aarch64`).
+3. **`grub-efi-arm64`'s module tree** (`/usr/lib/grub/arm64-efi`) for
+   `grub-mkrescue` — install the package where you can, or extract the
+   .deb and unpack it to that path; the builder only needs the
+   directory.
+
+Notes: the driver keeps all its temp artifacts under
+`~/.cache/nyrqis-rootless` (NOT /tmp — systemd-tmpfiles may empty /tmp
+mid-build); the chroot wrapper is the shim class boundary (host amd64
+shim outside, in-target aarch64 shim inside — the preload path is
+staged on both sides so no loader ever warns); the cross build skips
+Rust cdylibs of the host arch (`NYRQIS_CDYLIB_ARCH=aarch64`, the demo
+honestly reports them unloaded); expect the emulated kernel package
+configuration and `mkinitramfs` to dominate the build (~1 h total on
+4 CPUs). CI's arm64 build is unaffected (runners build as root).
 
 Got a prebuilt rootfs (CI produces one)? Skip debootstrap:
 

@@ -83,6 +83,15 @@ case "$ARCH" in
     amd64) DEB_ARCH=amd64 ; KERNEL_PKG=linux-image-amd64 ;;
     arm64) DEB_ARCH=arm64 ; KERNEL_PKG=linux-image-arm64 ;;
 esac
+# qemu-user-static BINARY name. binfmt registers the QEMU arch, which
+# differs from the deb arch on arm64: the binary is qemu-aarch64-static,
+# NOT qemu-<debarch>-static (that name does not exist — a real
+# build-stopper hit while cross-building rootlessly; kept as a variable
+# so every use site below stays consistent).
+case "$DEB_ARCH" in
+    arm64) QEMU_STATIC="qemu-aarch64-static" ;;
+    *)     QEMU_STATIC="qemu-amd64-static" ;;
+esac
 
 # ---------------------------------------------------------------- preconditions
 need() { command -v "$1" >/dev/null 2>&1 || MISSING+=("$1"); }
@@ -176,13 +185,13 @@ else
         --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
         "$SUITE" "$ROOTFS_SRC" "$MIRROR"
     if ((${#FOREIGN[@]})); then
-        log "second-stage debootstrap under qemu-$DEB_ARCH-static (emulated)"
+        log "second-stage debootstrap under $QEMU_STATIC (emulated)"
         mkdir -p "$ROOTFS_SRC/usr/bin"
-        cp "$(command -v "qemu-$DEB_ARCH-static")" \
+        cp "$(command -v "$QEMU_STATIC")" \
             "$ROOTFS_SRC/usr/bin/"
         if ! chroot "$ROOTFS_SRC" /debootstrap/debootstrap --second-stage; then
-            rm -f "$ROOTFS_SRC/usr/bin/qemu-$DEB_ARCH-static"
-            die "second-stage debootstrap failed under emulation —\n  the kernel must dispatch $DEB_ARCH binaries to qemu-user-static:\n  apt-get install qemu-user-static and confirm binfmt is registered\n  (ls /proc/sys/fs/binfmt_misc | grep $DEB_ARCH)"
+            rm -f "$ROOTFS_SRC/usr/bin/$QEMU_STATIC"
+            die "second-stage debootstrap failed under emulation —\n  the kernel must dispatch $DEB_ARCH binaries to $QEMU_STATIC:\n  apt-get install qemu-user-static and confirm binfmt is registered\n  (ls /proc/sys/fs/binfmt_misc | grep $DEB_ARCH)"
         fi
     fi
 fi
@@ -191,19 +200,19 @@ fi
 # Cross-arch chroot support: every chroot step below (useradd,
 # mkinitramfs, byte-compile) execs $DEB_ARCH binaries. binfmt_misc
 # resolves the registered interpreter path INSIDE the chroot, so
-# qemu-$DEB_ARCH-static must exist in the rootfs at the registered
-# host path (/usr/bin/qemu-$DEB_ARCH-static) — a rootfs from ANY
+# $QEMU_STATIC must exist in the rootfs at the registered
+# host path (/usr/bin/$QEMU_STATIC) — a rootfs from ANY
 # acquisition path needs it, not just the debootstrap one. Removed
 # again before mksquashfs (the shipped image must not carry a foreign
 # emulator binary).
-QEMU_IN_ROOTFS="$ROOTFS_SRC/usr/bin/qemu-$DEB_ARCH-static"
+QEMU_IN_ROOTFS="$ROOTFS_SRC/usr/bin/$QEMU_STATIC"
 if [[ "$ARCH" == arm64 ]]; then
     if [[ ! -x "$QEMU_IN_ROOTFS" ]]; then
-        command -v "qemu-$DEB_ARCH-static" >/dev/null 2>&1 || \
+        command -v "$QEMU_STATIC" >/dev/null 2>&1 || \
             die "cross-building arm64 needs qemu-user-static (apt-get install qemu-user-static; binfmt-support comes with it)"
         mkdir -p "$ROOTFS_SRC/usr/bin"
-        cp "$(command -v "qemu-$DEB_ARCH-static")" "$QEMU_IN_ROOTFS"
-        log "staged qemu-$DEB_ARCH-static in the rootfs for emulated chroot steps"
+        cp "$(command -v "$QEMU_STATIC")" "$QEMU_IN_ROOTFS"
+        log "staged $QEMU_STATIC in the rootfs for emulated chroot steps"
     fi
 fi
 
@@ -222,14 +231,37 @@ cp -a "$BACKEND_DIR" "$OPT/nyhal-linux-backend"
 # copy them out of the target dirs, then drop the build caches (the
 # target dirs themselves carry tens of MB of intermediate objects).
 cdies=0
+skipped_cdies=0
+# NYRQIS_CDYLIB_ARCH (optional): when set to a deb arch (e.g. aarch64
+# for a cross-built arm64 image), artifacts whose ELF machine differs
+# are SKIPPED. A foreign-arch .so is inert at runtime (the demo loader
+# reports it as not loaded — honest fallback by design) and only bloats
+# the image; the host-typed build tree just happens to carry the host
+# arch. Unset on the root/CI path: every artifact ships, as before.
+elf_machine() { od -An -tu1 -j18 -N1 "$1" 2>/dev/null | tr -d ' '; }
 for t in "$BACKEND_DIR"/rust/*/target/release; do
     for a in "$t"/libnyrqis_*.so "$t"/nyrqis-launcher; do
         if [ -f "$a" ]; then
+            if [[ -n "${NYRQIS_CDYLIB_ARCH:-}" ]]; then
+                case "$NYRQIS_CDYLIB_ARCH:$a" in
+                    aarch64:*) want=183 ;;   # EM_AARCH64
+                    amd64:*)   want=62 ;;    # EM_X86_64
+                    *)         want="" ;;
+                esac
+                got="$(elf_machine "$a")"
+                if [[ -n "$want" && "$got" != "$want" ]]; then
+                    skipped_cdies=$((skipped_cdies+1))
+                    continue
+                fi
+            fi
             install -D "$a" "$OPT/nyhal-linux-backend/rust/.cdylibs/$(basename "$a")"
             cdies=$((cdies+1))
         fi
     done
 done
+if [ "$skipped_cdies" -gt 0 ]; then
+    log "skipped $skipped_cdies foreign-arch Rust artifact(s) (NYRQIS_CDYLIB_ARCH=${NYRQIS_CDYLIB_ARCH})"
+fi
 log "kept $cdies Rust FFI artifact(s) in rust/.cdylibs"
 rm -rf "$OPT/nyhal-linux-backend"/{.git,__pycache__,rust/*/target,.pytest_cache}
 find "$OPT" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
@@ -581,7 +613,7 @@ log "probe parity verified: python3 + zstandard/nacl/lz4 + fusermount3 present"
 # ---------------------------------------------------------------- squashfs + ISO
 # The emulator binary must NOT ship in the image (foreign to the arch;
 # the booting machine has no use for it).
-rm -f "$ROOTFS_SRC/usr/bin/qemu-aarch64-static"
+rm -f "$ROOTFS_SRC/usr/bin/$QEMU_STATIC"
 log "building the squashfs rootfs image"
 # NYRQIS_SQUASHFS_FORCE_ROOT=1 (set by build-live-iso-rootless.sh): files
 # created inside the self-mapped user namespace are owned by the HOST

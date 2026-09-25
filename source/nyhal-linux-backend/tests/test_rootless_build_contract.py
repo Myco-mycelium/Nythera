@@ -16,15 +16,23 @@ Verified END TO END on the reference machine (2026-09-24): the driver
 produced a 359 MB amd64 ISO that PASSED both boot smokes
 (tests/boot_smoke.py, tests/boot_smoke_menu.py) with zero root.
 
-arm64 on the same machine is honestly blocked: binfmt + qemu
--aarch64-static work (a real arm64 busybox executed), but the emulated
-debootstrap stage needs an AARCH64 preload shim (an amd64 .so cannot
-load into arm64 processes — glibc rejects the ELF class), no
-aarch64 cross-compiler is installed, and a nested user namespace's
-full-range map write is EPERM (a parent can only map ids it possesses;
-the self-map owns one). Unblock: install gcc-aarch64-linux-gnu and
-compile the shim as -target aarch64. CI's arm64 build is unaffected —
-runners build as root.
+arm64 on the same machine was UNBLOCKED and boot-proven the next day
+(2026-09-25), still rootless: binfmt dispatches aarch64 ELF to
+qemu-aarch64-static (F-flagged — the interpreter resolves inside
+chroots), and a USER-SPACE zig tarball (~/.local/opt/zig; no sudo, no
+apt) cross-compiles this same C source as an AARCH64 shared object —
+the emulated debootstrap second stage runs arm64 binaries, whose loader
+rejects an amd64 .so. Two mechanics this cross build exposed (both now
+contract-pinned): the chroot wrapper is the shim CLASS boundary
+(preloading both classes makes every emulated loader warn, and the
+noise trips captured-stderr gates like dpkg --audit; the preload path
+must be staged on BOTH sides of the chroot boundary), and /tmp must
+NOT hold the driver's temp artifacts (systemd-tmpfiles 'D /tmp'
+emptied /tmp mid-build twice). Also fixed here: the builder named the
+emulator "qemu-$DEB_ARCH-static" = qemu-arm64-static, which does not
+exist (binfmt registers the QEMU arch, not the deb arch). The 351 MB
+arm64 ISO passed BOTH boot smokes under TCG (direct ttyAMA0 handshake
++ the GRUB/UEFI menu path). CI's root-built arm64 is unaffected.
 """
 
 import os
@@ -125,8 +133,15 @@ class TestRootlessDriverStructure(unittest.TestCase):
         # Builder chroot steps (apt top-up, useradd, mkinitramfs) go
         # through the chroot BINARY: the wrapper must stage the .so and
         # then exec the REAL chroot (not busybox's, not a shim).
-        self.assertIn('exec /usr/sbin/chroot', self.driver,
-                      "wrapper must exec the real chroot binary")
+        # 2026-09-25: the exec is also the shim-CLASS boundary — chrooted
+        # processes preload ONLY the in-target shim path, never the host
+        # one (a foreign-class preload makes every emulated loader warn,
+        # and that noise polluted the builder's captured dpkg --audit).
+        self.assertIn(
+            'exec env LD_PRELOAD="/tmp/$SHIM_SO_NAME" /usr/sbin/chroot',
+            self.driver,
+            "wrapper must exec the real chroot binary, preloading ONLY the "
+            "in-target shim path (the class boundary)")
         self.assertIn('mkdir -p "$tgt/tmp"', self.driver.replace("\\$tgt", "$tgt"))
 
     def test_no_root_anywhere(self):
@@ -214,6 +229,118 @@ class TestRootlessShim(unittest.TestCase):
         # a mistake here would make it a no-op everywhere.
         self.assertIn("#define _GNU_SOURCE", self.shim)
         self.assertIn("RTLD_NEXT", self.shim)
+
+
+@unittest.skipUnless(
+    os.path.exists(ROOTLESS_DRIVER),
+    "rootless driver not present in this checkout")
+class TestRootlessArm64CrossBuild(unittest.TestCase):
+    """2026-09-25: the driver cross-builds arm64 rootlessly. The machine
+    facts that make it possible (all probed, all rootless): binfmt_misc
+    dispatches aarch64 ELF to qemu-aarch64-static (F-flagged, so the
+    interpreter resolves inside chroots too), and a user-space zig
+    toolchain cross-compiles the shim — the emulated second stage runs
+    AARCH64 binaries, whose loader rejects an amd64 .so.
+    """
+
+    def setUp(self):
+        self.driver = read(ROOTLESS_DRIVER)
+
+    def test_arch_facts_map_deb_arch_to_the_real_qemu_binary(self):
+        # binfmt registers the QEMU arch (aarch64), not the deb arch
+        # (arm64): "qemu-arm64-static" does not exist. Comment lines are
+        # stripped first — the docs may NAME the wrong spelling to warn
+        # about it; no CODE may use it.
+        code = "\n".join(
+            l for l in self.driver.splitlines()
+            if not l.strip().startswith("#"))
+        self.assertIn(
+            'arm64) DEB_ARCH=arm64; KERNEL_PKG=linux-image-arm64',
+            self.driver)
+        self.assertIn(
+            'QEMU_STATIC="qemu-aarch64-static"', self.driver,
+            "the driver must name the REAL qemu-user-static binary")
+        self.assertNotIn(
+            "qemu-arm64-static", code,
+            "qemu-arm64-static does not exist — no code path may name it")
+
+    def test_acquire_runs_foreign_and_emulated_second_stage(self):
+        # Stage 1 extracts with HOST binaries (no emulation needed);
+        # stage 2 is chrooted and therefore emulated.
+        self.assertIn('"${FOREIGN[@]}"', self.driver,
+                      "acquire must pass --foreign for arm64")
+        self.assertIn(
+            'chroot "$ACQUIRE_ROOTFS" /debootstrap/debootstrap --second-stage',
+            self.driver,
+            "the foreign second stage must run chrooted (emulated)")
+
+    def test_guest_shim_is_cross_compiled_per_build(self):
+        # The aarch64 shim must be produced at build time from the SAME
+        # committed C source — no architecture-specific binary in git.
+        self.assertIn("NYRQIS_AARCH64_CC", self.driver,
+                      "an installed cross-gcc must be usable via env")
+        self.assertIn("cc -target aarch64-linux-gnu", self.driver,
+                      "zig is the documented no-root fallback toolchain")
+        self.assertIn("$HOME/.local/opt/zig/zig", self.driver,
+                      "the durable zig location survives /tmp cleanup")
+        self.assertIn("die \"no aarch64 cross compiler available", self.driver,
+                      "missing toolchain must fail with the fix, not silently")
+
+    def test_wrapper_stages_the_guest_shim_for_cross_builds(self):
+        # Chrooted arm64 processes preload from ONE path inside the
+        # target; cross builds must put the GUEST-class shim there (the
+        # aarch64 loader refuses an amd64 .so with a hard error). The
+        # wrapper is GENERATED through a heredoc, so its source text
+        # carries the escaped \$ spellings.
+        self.assertIn(
+            'cp -f "\\$GUEST_SHIM" "\\$tgt/tmp/\\$SHIM_SO_NAME"', self.driver)
+        # And the emulator must be staged INSIDE the rootfs at the
+        # binfmt-registered path for every cross chroot.
+        self.assertIn(
+            'cp -f "/usr/bin/\\$QEMU_STATIC" "\\$tgt/usr/bin/"', self.driver)
+        # Acquire pre-stages the same pair before debootstrap starts.
+        self.assertIn(
+            'cp -f "$GUEST_SHIM" "$ACQUIRE_ROOTFS/tmp/$SHIM_SO_NAME"',
+            self.driver)
+
+    def test_build_phase_forwards_arch_to_the_builder(self):
+        self.assertIn('BUILDER_ARGS+=(--arch "$ARCH")', self.driver,
+                      "the ISO must be assembled for the acquired arch")
+
+    def test_arm64_preconditions_fail_with_reasons(self):
+        # The two arm64-only requirements are checked before any work.
+        self.assertIn('binfmt_misc has no qemu-aarch64 registration',
+                      self.driver)
+        self.assertIn('$QEMU_STATIC not present', self.driver)
+
+    @unittest.skipUnless(
+        any(os.path.exists(p) for p in (
+            os.path.expanduser("~/.local/opt/zig/zig"),
+            shutil.which("zig"))),
+        "no zig toolchain on this machine (the documented no-root path)")
+    def test_guest_shim_compiles_as_aarch64(self):
+        """The committed C source must cross-compile to an AARCH64 ELF
+        shared object (e_machine 0xB7) — the exact artifact the emulated
+        second stage preloads."""
+        zig = shutil.which("zig") or os.path.expanduser(
+            "~/.local/opt/zig/zig")
+        so_path = subprocess.run(
+            ["mktemp", "/tmp/nyrqis-guestshim-test.XXXXXX.so"],
+            capture_output=True, text=True).stdout.strip()
+        self.addCleanup(
+            lambda: os.path.exists(so_path) and os.remove(so_path))
+        rc = subprocess.call(
+            [zig, "cc", "-target", "aarch64-linux-gnu", "-O2",
+             "-fPIC", "-shared", "-o", so_path, ROOTLESS_SHIM, "-ldl"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.assertEqual(rc, 0, "shim must cross-compile clean")
+        with open(so_path, "rb") as fh:
+            hdr = fh.read(20)
+        self.assertEqual(hdr[:4], b"\x7fELF", "not an ELF object")
+        e_machine = int.from_bytes(hdr[18:20], "little")
+        self.assertEqual(e_machine, 0xB7,
+                         "the guest shim must be AARCH64 (e_machine 0xB7), "
+                         f"got 0x{e_machine:X}")
 
 
 class TestDemoSetuRegressionGuard(unittest.TestCase):

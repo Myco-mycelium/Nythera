@@ -201,9 +201,25 @@ class TestArm64BootContract(unittest.TestCase):
     def test_builder_never_ships_the_emulator(self):
         # The qemu-aarch64-static binary is a HOST artifact for emulated
         # chroot steps; shipping it wastes space and confuses audits.
+        # 2026-09-25: the binary name is a VARIABLE now ($QEMU_STATIC):
+        # "qemu-$DEB_ARCH-static" produced qemu-arm64-static, which does
+        # not exist (binfmt registers the QEMU arch aarch64, not the deb
+        # arch arm64) — a real build-stopper hit while cross-building
+        # rootlessly. The test pins BOTH the mapping and every use site.
         self.assertIn(
-            'rm -f "$ROOTFS_SRC/usr/bin/qemu-aarch64-static"', self.builder,
+            'arm64) QEMU_STATIC="qemu-aarch64-static" ;;', self.builder,
+            "the builder must map the deb arch to the REAL qemu-user-static "
+            "binary name (aarch64, not arm64)")
+        self.assertNotIn(
+            'qemu-arm64-static', self.builder,
+            "qemu-arm64-static does not exist (the binary is "
+            "qemu-aarch64-static) — no code path may name it")
+        self.assertIn(
+            'rm -f "$ROOTFS_SRC/usr/bin/$QEMU_STATIC"', self.builder,
             "the builder must strip the emulator binary before mksquashfs")
+        self.assertIn(
+            'QEMU_IN_ROOTFS="$ROOTFS_SRC/usr/bin/$QEMU_STATIC"', self.builder,
+            "the emulated-chroot staging must use the same QEMU_STATIC name")
 
     def test_smokes_support_arm64(self):
         for label, text in (("boot_smoke", self.direct),

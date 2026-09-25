@@ -1,7 +1,7 @@
 ---
 title: Next Development Session Plan
-version: 6.19.0
-date: 2026-09-24
+version: 6.20.0
+date: 2026-09-25
 ---
 
 # Next Development Session Plan
@@ -40,6 +40,18 @@ Push verified end-to-end 2026-09-23: `7629c35..78783bc` fast-forward, remote tip
 confirmed via `git ls-remote`, and all three push-triggered CI runs on `78783bc`
 completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 #35849078488).
+
+## SESSION ITEM — Fri 2026-09-25: the rootless arm64 cross build is UNBLOCKED and boot-proven — three real mechanics found by actually running it
+
+| Item | Status |
+|------|--------|
+| **The "blocked" arm64 followup closed: user-space zig, no sudo, no apt** | ✅ A standalone zig tarball at `~/.local/opt/zig` cross-compiles the SAME committed `rootless-syscall-shim.c` as an AARCH64 shared object (`zig cc -target aarch64-linux-gnu -fPIC -shared`); `gcc-aarch64-linux-gnu` (needs sudo) is NOT required — `NYRQIS_AARCH64_CC`/`NYRQIS_ZIG` override the probe (`PATH`, `~/.local/opt/zig/zig`, `~/.local/bin/zig`). The driver's acquire phase gained `--foreign` + an emulated second stage (`chroot … /debootstrap/debootstrap --second-stage` under binfmt-dispatched qemu-aarch64-static); contract test compiles the guest shim and asserts `e_machine == 0xB7` |
+| **Mechanic #1 — the shim CLASS boundary (two real failures diagnosed)** | ✅ (a) Preloading BOTH classes (`host.so:/tmp/rootless-syscall-shim.so`) made every emulated loader warn about the foreign entry — the builder's `dpkg --audit` gate (correctly) captures stderr and failed on a CLEAN rootfs; (b) `exec env LD_PRELOAD=/tmp/… chroot` still warned once per call: the chroot BINARY is host-side and resolved the path against HOST /tmp, where the guest shim is never staged. Fix: the wrapper is the class boundary — it re-execs chroot with ONLY the in-target preload path and stages a copy on BOTH sides (host /tmp for the chroot binary, target /tmp for what it runs). One path, per-context resolution, zero warnings |
+| **Mechanic #2 — /tmp is a hazard on hosts running systemd-tmpfiles** | ✅ `tmpfiles.d` `D /tmp` EMPTIED /tmp mid-build TWICE: the vanished shim .so silently unshimmed debootstrap's tar (`chown root:staff → EINVAL` again — the exact class the shim exists to prevent) and a launcher without output died instantly. The driver now keeps ALL temp artifacts in `${NYRQIS_ROOTLESS_WORKROOT:-~/.cache/nyrqis-rootless}` and defaults the builder's `--workdir` there too; README documents the same for direct use |
+| **Mechanic #3 — latent builder bug: `qemu-$DEB_ARCH-static` names a nonexistent binary** | ✅ binfmt registers the QEMU arch (`aarch64`), not the deb arch (`arm64`); the builder's from-scratch arm64 path would have died on `command -v qemu-arm64-static` (CI never hit it: the rootfs workflow pre-stages the correctly named binary, so the `[[ -x ]]` fast-path passed). Fixed via `$QEMU_STATIC` (`arm64) QEMU_STATIC="qemu-aarch64-static"`), all four use sites consistent; pinned by an updated boot-contract test that also bans the wrong spelling in CODE while allowing the doc-mention |
+| **The arm64 ISO is boot-proven on BOTH paths, all gates green** | ✅ 351 MB `~/nyrqis-work/nyrqis-live-arm64.iso` built rootlessly (~1 h, emulated kernel-pkg configure + mkinitramfs dominate); dpkg audit, probe parity, initrd verification (live-boot scripts + squashfs/iso9660/loop/overlay), pivot-init resolution all passed; BOTH smokes PASSED under TCG (`qemu-system-aarch64 -M virt`): direct-kernel ttyAMA0 handshake (ready/pong/nyrqisctl=1/pkgs=ok) AND the GRUB menu path via UEFI firmware (`QEMU_EFI.fd`), matching the arm64 CI workflow's two smokes |
+| **Cross images skip host-arch cdylibs (env-gated)** | ✅ Builder's cdylib copy honors `NYRQIS_CDYLIB_ARCH`: ELF `e_machine` checked per artifact (x86-64=62, aarch64=183) — 18 host-arch artifacts skipped on the arm64 build instead of shipping inert `.so`s; the demo reports `NYRQIS_BOOT_SMOKE_CRATE=0/0` honestly. Unset on the root/CI path: every artifact ships as before |
+| **Contracts updated: 88 green (21 rootless + 67 boot)** | ✅ `test_rootless_build_contract.py` 14→21 (arch facts, foreign+second-stage, guest-shim compile/e_machine, wrapper guest staging, arch forwarding, arm64 preconditions); `test_live_boot_contract.py` emulator pin now pins the `$QEMU_STATIC` mapping + bans `qemu-arm64-static`; README's arm64 section rewritten from "blocked" to the working recipe; REPOSITORY_STATE Last-Updated entry added |
 
 ## SESSION ITEM — Thu 2026-09-24: the live ISO now builds WITHOUT root — and its first cdylib-carrying boot found a real demo-session bug
 

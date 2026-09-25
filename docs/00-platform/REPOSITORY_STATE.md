@@ -5,6 +5,29 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (rootless arm64 live-ISO UNBLOCKED and boot-proven — the
+previously blocked cross build now works on the reference machine with
+NO root and NO system packages added: a user-space zig tarball
+(~/.local/opt/zig) cross-compiles the LD_PRELOAD shim as an AARCH64
+shared object (zig cc -target aarch64-linux-gnu) because the emulated
+debootstrap second stage runs arm64 ELF whose loader refuses an amd64
+.so; the acquire phase gained --foreign + an emulated second stage
+(chroot wrapper re-execs with ONLY the in-target preload — the shim
+class boundary: staging on BOTH sides of the chroot boundary kills the
+loader warnings that polluted the builder's captured dpkg --audit gate);
+fixed a real latent builder bug (qemu-$DEB_ARCH-static produced the
+nonexistent qemu-arm64-static — binfmt registers the QEMU arch, now
+$QEMU_STATIC); all driver temp artifacts moved to ~/.cache after
+systemd-tmpfiles emptied /tmp MID-BUILD twice (the vanished shim
+unloaded debootstrap's tar and resurfaced the exact chown-EINVAL class
+the shim exists to prevent); the builder gained NYRQIS_CDYLIB_ARCH
+to skip host-arch Rust cdylibs in a cross image (18 skipped, demo
+reports 0/0 honestly); the 351 MB arm64 ISO (~/nyrqis-work/)
+PASSED BOTH boot smokes under TCG — direct ttyAMA0 handshake AND the
+GRUB/UEFI menu path — daemon pong + ctl round-trip + probe parity all
+green; driver contract grew to 21 tests incl. a zig-cross-compile test
+verifying e_machine=0xB7; 88 contract tests green)
+
 2026-09-24 (rootless live-ISO build landed — the full ISO pipeline now
 runs WITHOUT root on the reference dev machine (no sudo/docker/KVM,
 user namespaces only): new `packaging/live/build-live-iso-rootless.sh`
