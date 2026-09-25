@@ -5,6 +5,58 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.32] - 2026-09-25
+
+### Added
+
+- **Concurrent-run guard for both boot smokes** (`tests/boot_smoke.py`,
+  `tests/boot_smoke_menu.py`; issue #3): before booting, each driver
+  writes a PID marker under the temp dir and refuses with exit 2
+  ("BUSY — refusing to race it") while the marker names a LIVE
+  process; a stale or garbage marker (a run killed without its
+  `finally`) is taken over instead of deadlocking the smoke forever.
+  Liveness is `os.kill(pid, 0)` with EPERM counted alive — `pgrep` is
+  banned because `pgrep -f PATTERN` self-matches the checking shell's
+  own cmdline and can fool or kill the launcher it inspects. Distinct
+  per-driver tags (`nyrqis-boot-smoke` / `nyrqis-boot-smoke-menu`) so
+  the two smokes never lock each other out; release PID-compares before
+  unlinking, so a zombie's late `finally` cannot remove the winner's
+  marker. The docstrings document the BUSY exit code.
+- **Liveness-guarded cleanup tooling** (`scripts/clean-smoke-tmp.sh`;
+  fixes #3): the sanctioned sweeper for `nyrqis-boot-smoke-*` dirs
+  refuses (exit 3, removes NOTHING) while any PID-file liveness source
+  — the drivers' two markers or the local wrapper's `smoke.pids` —
+  names a live process, via `/proc/$pid` existence checks (EPERM-immune;
+  the shell-side equivalent of the drivers' os.kill semantics, and
+  never pgrep). The default mode is DRY-RUN; removal is gated behind
+  `--yes`; the scan is flat (`-maxdepth 1`) and scoped to the smoke
+  namespace only; stale markers are removed as debris. Root and PID-file
+  locations are overridable (`CLEAN_TMP_ROOT`, `CLEAN_SMOKE_PIDS`) for
+  testing and for sweeping the durable workroot instead of `/tmp`.
+
+### Fixed
+
+- **The boot smokes no longer leak their tmpdirs**: the `finally`
+  cleanup used `os.rmdir`, which removes only an ALREADY-EMPTY directory
+  — the extracted kernel/initrd and qemu-stderr.log survived every
+  non-`--keep-logs` run and accumulated in /tmp. That debris is exactly
+  what invited the cleanup sweep behind issue #3, whose concurrent
+  deletion of a LIVE smoke's tmpdir made the driver poll a nonexistent
+  serial path and false-FAIL a byte-identical ISO. Both drivers now
+  `shutil.rmtree(tmp, ignore_errors=True)`.
+
+Nineteen contract tests pin the new behavior (12 in
+`TestSmokeConcurrencyGuard` — shape pins plus functional pins exercising
+the imported drivers — and 7 in `TestCleanupToolingContract` including a
+hermetic live-holder test); full backend sweep 9237 OK (skipped=4). CI
+verified the guard end to end on the guard commit: all four workflows
+success, including `live-iso-rootless` (the guarded smokes ran green on
+GitHub's runner — no deadlock, no false BUSY) and the root-built
+`live-iso-arm64` (46-minute build + menu-path UEFI smoke). Locally, all
+four smokes (amd64 and arm64 × direct and menu) PASS on the release
+ISOs, and the cleanup tool's first real sweep removed exactly the five
+kept smoke-evidence dirs and nothing else.
+
 ## [0.29.31] - 2026-09-25
 
 ### Added
