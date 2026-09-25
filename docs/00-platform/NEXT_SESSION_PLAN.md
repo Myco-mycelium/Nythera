@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.26.0
+version: 6.27.0
 date: 2026-09-25
 ---
 
@@ -29,6 +29,16 @@ date: 2026-09-25
 | **CI on the records commit `d63ffab`** | ✅ docs #36157177914 ✓ + ci #36157177968 ✓ (docs-only push — no live-iso runs, correct: the builder is path-gated) |
 | **Scratch wrappers cleaned** | ✅ The busytest/amd64/arm64 scratch wrappers removed from `~/nyrqis-work/tmp`; the five `nyrqis-boot-smoke*` tmpdirs there are the `--keep-logs` serial evidence from the PASS ×4 sweep and stay by design (~118 MB) |
 | **Issue #3 summary comment** | ❌ 403 "Resource not accessible by personal access token" (twice: full body + tiny probe; reads are 200, rate-limit fresh — a PERMISSION gap, not throttling). Asymmetry noted: issue CREATION returned 201 this morning, issue COMMENT 403 now — add comment-scope to the post-rotation verification checklist (expect 201 after rotation; full summary text preserved in this session's transcript and mirrored in REPOSITORY_STATE) |
+
+## SESSION ITEM — Fri 2026-09-25 (close): issue #3 COMPLETED — liveness-guarded cleanup tooling landed; comment retry still 403 (rotation pending); closing audit green
+
+| Item | Status |
+|------|--------|
+| **Cleanup tooling (the tooling half of #3)** | ✅ `scripts/clean-smoke-tmp.sh` (`3f85979`, "Fixes #3"): the sanctioned sweeper for `nyrqis-boot-smoke-*` dirs REFUSES (exit 3, removes NOTHING) while any liveness source — the drivers' two PID markers or the wrapper's `smoke.pids` — names a live process; `/proc/$pid` existence check (EPERM-immune, the shell-side equivalent of the drivers' os.kill semantics); NEVER pgrep. Default DRY-RUN; removal gated behind `--yes`; flat scan scoped to the smoke namespace only; stale markers removed as debris. Functional checks: live marker → REFUSED + dirs intact; stale + `--yes` → dirs+marker gone, foreign files untouched; wrapper-pid live → REFUSED; bad flag → usage exit 2 |
+| **Contract pins for the tool** | ✅ 7 new tests (`TestCleanupToolingContract`, live-boot contract now 86; pair 86+34=120 OK): text pins (dry-run default, --yes gate, usage-level pgrep ban — comment mentions allowed, /proc liveness, refusal-before-scan ordering, all three PID sources, scoped flat scan) + a hermetic functional pin (the unittest process holds the marker as the live holder; dry-run removes nothing; `--yes` cleans only the namespace) |
+| **CI on `3f85979`** | ✅ docs #36158861154 ✓, ci ✓, live-iso ✓ (watched to completion — build + both boot smokes green with the tool in tree) |
+| **Comment retry (single, after the tooling landed)** | ❌ 403 again — rotation still pending (consistent with dispatch probe #8). Full updated summary text preserved for the post-rotation retry; no further probes until the PAT rotates |
+| **Closing audit** | ✅ tip `3f85979` clean tree; workroot 829 MB (tmp 118 MB — mostly the PASS ×4 sweep's kept serial evidence); both kept ISOs in place; open items: owner-side PAT rotation (dispatch + issue-comment scope) |
 
 ## STANDING ITEM — Thu 2026-09-24 05:37/05:52 UTC: the dailies' third fires — does the 10:02–11:49 band hold a fourth day?
 
