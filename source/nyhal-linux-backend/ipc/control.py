@@ -227,6 +227,11 @@ class ControlService:
             elif op == "container_exec":
                 self._container_exec(server, sender_path, msg.message_id,
                                      request)
+            elif op == "container_debug":
+                # D7 attach-channel op family (NPS-011 v1.4.0):
+                # capability- and class-gated inside the manager.
+                self._container_debug(server, sender_path, msg.message_id,
+                                      request)
             elif op == "container_top":
                 self._container_top(server, sender_path,
                                     msg.message_id, request)
@@ -2526,6 +2531,49 @@ class ControlService:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
                 "error": "container_exec failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            **result,
+        })
+
+    def _container_debug(self, server, sender_path: str, call_id: str,
+                         request: Dict[str, Any]) -> None:
+        """D7 attach-channel op (NPS-021 §5.5: operator-only).
+
+        Capability/class/state checks live in the manager (fail-closed);
+        this handler only parses and reports.
+        """
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id is required",
+            })
+            return
+        action = request.get("action", "info")
+        debugger = request.get("debugger", "debugpy")
+        container = self.container_manager.containers.get(container_id)
+        if container is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown container: %r" % (container_id,),
+            })
+            return
+        try:
+            result = self.container_manager.container_debug(
+                container, action=action, debugger=debugger)
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_debug refused: %s" % (e,),
+            })
+            return
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_debug failed: %s" % (e,),
             })
             return
         self._reply(server, sender_path, call_id, {

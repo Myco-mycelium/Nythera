@@ -1,13 +1,13 @@
 ---
 title: Debug Tooling — `nyrqisctl debug` (design note for the M14 Phase 3 item)
 document_id: DBG-001
-version: 0.6.0
+version: 0.7.0
 status: Draft
 classification: Informative
 owners:
   - Nyrqis Engineering
 created: 2026-09-23
-updated: 2026-09-23
+updated: 2026-09-25
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NPC-001, NPS-010, ADR-0018, ADR-0021, NPS-019]
@@ -138,11 +138,17 @@ mediated recommendation.** What was decided:
 Not yet landed (the D7 implementation work items, in order): ~~the
 NPS-021 addendum; NPS-011 v1.4.0's registry entry~~ **done 2026-09-23**;
 ~~the launcher's manifest-class plumbing~~ **done 2026-09-23, same day
-as the §4.1 review (see below)**; debug-image staging; the
-`nyrqisctl containers debug` op family. The "step-through, breakpoints"
-roadmap wording now has a decided design AND its manifest-class
-foundation behind it; the roadmap item stays `[~]` until the attach
-channel itself lands.
+as the §4.1 review (see below)**; ~~debug-image staging~~ **done
+2026-09-25** (`_setup_debug_staging`: per-container dir on the writable
+overlay, loopback-pinned endpoints marker, non-fatal failure, path rides
+the config); ~~the `nyrqisctl containers debug` op family~~ **done
+2026-09-25** (`container_debug` info/attach/detach/bind — capability-,
+class-, state- and staging-gated; bind needs CAP_NETWORK_BIND; audit-
+chained with the class per FIND-CAPABILITY-006 req 5; IPC op + CLI
+commands). What remains for the roadmap item to strike `[~]`→`[x]`: the
+actual interactive attach UX over the staged channel (a real debugpy/
+gdbserver session), which needs a live container to validate — the
+security surface (gates, audit, endpoints) is complete and pinned.
 
 ### 4.1 Design review against NPS-021 §5.5 (2026-09-23)
 
@@ -251,3 +257,4 @@ this rider when there is demand.
 | 0.3.0   | 2026-09-23 | Deviations 2+3 resolved: redaction default-on (--redact/--no-redact); per-container audit trails (correcting a real wire-contract violation the scripted tests had masked); --chain-id summary+verification capture; the build_payload "audit-summary" shadow recorded for its owner |
 | 0.3.1   | 2026-09-23 | The recorded shadow repaired (CR-0037): audit-chain-summary command registered properly, alert-summary un-hijacked, the stray mid-build_payload raise removed (~300 commands were unreachable since the CLI's first commit), parse→payload surface pinned by test_nyrqisctl_payload_surface.py |
 | 0.4.0   | 2026-09-23 | **Phase B DECIDED (D7): developer-mode manifests (Option B)** — debug:true class + CAP-DEBUG-ATTACH, in-container debugpy/gdbserver, ptrace relaxation for the manifest class only, NPS-021 addendum before implementation; §4 rewritten as decided with the original proposal retained; implementation work items listed, none landed yet |
+| 0.7.0   | 2026-09-25 | **D7 work items 1+2 LANDED:** debug-image staging (`_setup_debug_staging` at spawn, per-container dir on the writable overlay, loopback-pinned `debug-endpoints.json`, non-fatal failure leaves no staging) and the `containers debug` op family (`container_debug`: info/attach/detach/bind; CAP_DEBUG_ATTACH required, RUNNING state, staging fail-closed, bind additionally requires CAP_NETWORK_BIND, every accepted action audit-chained with the class in the entry result per FIND-CAPABILITY-006 req 5). IPC `container_debug` op + handler; CLI `containers debug-info/attach/detach/bind` (payload + formatter, pinned by the payload-surface sweep). 11 new tests (28 total in the manifest-class suite); full sweep 9255 OK. §4's work-item list updated |

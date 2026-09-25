@@ -26,7 +26,7 @@ BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BACKEND)
 
 from backend.capability import Capability, CapabilityManager
-from backend.container import ContainerConfig, ContainerManager
+from backend.container import ContainerConfig, ContainerManager, ContainerState
 from backend import seccomp
 
 
@@ -238,6 +238,193 @@ class StateVisibilityTests(unittest.TestCase):
             m.capability_manager.container_class(restored.id),
             {"debug_class": True},
         )
+
+
+class DebugStagingTests(unittest.TestCase):
+    """D7 work item: debug-image staging (2026-09-25).
+
+    Staging happens at SPAWN for debug-class containers only, into a
+    per-container dir on the writable overlay; endpoints are
+    loopback-pinned (NPS-021 §5.5 req 4); the path rides the config
+    (req 2, visible); failures are non-fatal but leave NO staging (the
+    attach ops fail closed).
+    """
+
+    def _manager_with_rootfs(self, tmp):
+        rootfs = os.path.join(tmp, "base")
+        os.makedirs(rootfs, exist_ok=True)
+        m = _make_manager()
+        return m, rootfs
+
+    def test_staging_skipped_for_non_debug_containers(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m, rootfs = self._manager_with_rootfs(tmp)
+            container = m.create(ContainerConfig(rootfs=rootfs))
+            m._setup_debug_staging(container)
+            self.assertIsNone(container.config.debug_staging_dir)
+            self.assertFalse(os.path.exists(
+                os.path.join(rootfs, "debug-staging")))
+
+    def test_staging_creates_loopback_pinned_endpoints(self):
+        import json as jsonmod
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m, rootfs = self._manager_with_rootfs(tmp)
+            container = m.create(ContainerConfig(
+                debug_class=True, rootfs=rootfs))
+            m._setup_debug_staging(container)
+            staging = container.config.debug_staging_dir
+            self.assertTrue(staging)
+            self.assertIn(os.path.join(
+                "debug-staging", container.id), staging)
+            marker = os.path.join(staging, "debug-endpoints.json")
+            self.assertTrue(os.path.exists(marker))
+            with open(marker, "r", encoding="utf-8") as fh:
+                data = jsonmod.load(fh)
+            self.assertTrue(data["loopback_only"])
+            for ep in data["endpoints"].values():
+                self.assertTrue(ep.startswith("127.0.0.1:"),
+                                f"endpoint not loopback-pinned: {ep}")
+
+    def test_staging_failure_leaves_no_staging_dir(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m, rootfs = self._manager_with_rootfs(tmp)
+            container = m.create(ContainerConfig(
+                debug_class=True,
+                rootfs=os.path.join(rootfs, "staging-file-as-dir-blocker")))
+            # Force makedirs to fail: create a FILE where the staging
+            # dir's parent would be.
+            os.makedirs(container.config.rootfs, exist_ok=True)
+            blocker = os.path.join(
+                container.config.rootfs, "debug-staging")
+            open(blocker, "w").close()
+            m._setup_debug_staging(container)  # must not raise
+            self.assertIsNone(container.config.debug_staging_dir)
+
+
+class ContainerDebugOpTests(unittest.TestCase):
+    """D7 work item: the containers-debug op family (2026-09-25).
+
+    All checks fail closed in the manager: CAP_DEBUG_ATTACH required
+    (§5.5 req 1 operator-only), RUNNING state, staging present, known
+    action; the bind action additionally demands CAP_NETWORK_BIND
+    (req 4); accepted actions are audit-chained with the class in the
+    entry result (req 5).
+    """
+
+    def _debug_container(self, m, tmp, caps=("CAP_DEBUG_ATTACH",)):
+        rootfs = os.path.join(tmp, "base")
+        os.makedirs(rootfs, exist_ok=True)
+        container = m.create(ContainerConfig(
+            debug_class=True, rootfs=rootfs,
+            capabilities=list(caps)))
+        # The operator flow: create (class declared) -> GRANT -> use.
+        # The grant path is itself class-gated (NPS-011 §4.4).
+        for c in caps:
+            m.capability_manager.grant_capability(
+                container.id, Capability(c))
+        m._setup_debug_staging(container)
+        container.state = ContainerState.RUNNING
+        container.pid = os.getpid()
+        return container
+
+    def test_debug_op_refuses_without_capability(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _make_manager()
+            rootfs = os.path.join(tmp, "base")
+            os.makedirs(rootfs)
+            container = m.create(ContainerConfig(
+                debug_class=True, rootfs=rootfs))
+            m._setup_debug_staging(container)
+            container.state = ContainerState.RUNNING
+            with self.assertRaises(ValueError) as ctx:
+                m.container_debug(container)
+            self.assertIn("CAP_DEBUG_ATTACH", str(ctx.exception))
+
+    def test_debug_info_returns_loopback_endpoints(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _make_manager()
+            container = self._debug_container(m, tmp)
+            result = m.container_debug(container, action="info")
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["loopback_only"])
+            self.assertIn("debugpy", result["endpoints"])
+
+    def test_debug_refuses_non_debug_container_even_with_grant(self):
+        # A non-debug-class container can never hold the grant (the
+        # grant path raises); simulate a stale grant to prove the STAGING
+        # check also fails closed.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _make_manager()
+            rootfs = os.path.join(tmp, "base")
+            os.makedirs(rootfs)
+            container = m.create(ContainerConfig(rootfs=rootfs))
+            container.state = ContainerState.RUNNING
+            container.pid = os.getpid()
+            m.capability_manager.grants[container.id] = {
+                Capability.CAP_DEBUG_ATTACH}
+            with self.assertRaises(ValueError) as ctx:
+                m.container_debug(container)
+            self.assertIn("staging", str(ctx.exception))
+
+    def test_debug_bind_requires_network_bind(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _make_manager()
+            container = self._debug_container(m, tmp)
+            with self.assertRaises(ValueError) as ctx:
+                m.container_debug(container, action="bind")
+            self.assertIn("CAP_NETWORK_BIND", str(ctx.exception))
+
+    def test_debug_bind_allowed_with_network_bind_and_audited(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _make_manager()
+            container = self._debug_container(
+                m, tmp,
+                caps=("CAP_DEBUG_ATTACH", "CAP_NETWORK_BIND"))
+            result = m.container_debug(container, action="bind")
+            self.assertTrue(result["audit"].get("hash"))
+            self.assertTrue(result["audit"].get("ok"))
+
+    def test_debug_actions_are_audit_chained_with_class(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _make_manager()
+            container = self._debug_container(m, tmp)
+            result = m.container_debug(container, action="attach")
+            chain_id = result["audit"]["chain_id"]
+            self.assertTrue(result["audit"].get("hash"))
+            verification = m.verify_audit_chain(chain_id)
+            self.assertTrue(verification.get("verified"))
+            chain = m._audit_chains[chain_id]
+            last = chain["entries"][-1]
+            self.assertEqual(last["op"], "debug_attach")
+            self.assertTrue(last["result"].get("debug_class"))
+
+    def test_debug_unknown_action_fails_closed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _make_manager()
+            container = self._debug_container(m, tmp)
+            with self.assertRaises(ValueError) as ctx:
+                m.container_debug(container, action="root-for-me")
+            self.assertIn("unknown debug action", str(ctx.exception))
+
+    def test_debug_refuses_non_running_container(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _make_manager()
+            container = self._debug_container(m, tmp)
+            container.state = ContainerState.CREATED
+            with self.assertRaises(ValueError) as ctx:
+                m.container_debug(container)
+            self.assertIn("RUNNING", str(ctx.exception))
 
 
 if __name__ == "__main__":

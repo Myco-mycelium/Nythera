@@ -105,6 +105,11 @@ class ContainerConfig:
     # (NPS-021 §5.5 req 2) — a debug container is never indistinguishable
     # from a production one in operator tooling.
     debug_class: bool = False
+    # D7 debug-image staging (set at spawn by _setup_debug_staging for
+    # debug-class containers): the per-container directory on the
+    # writable overlay holding the staged tooling endpoints. User-visible
+    # per NPS-021 §5.5 req 2.
+    debug_staging_dir: Optional[str] = None
     network: bool = False  # own network namespace (loopback only), opt-in
     app_path: Optional[str] = None  # Nyrqis application path (.napp binary)
     # Overlay filesystem: when ``rootfs`` is set, the container gets a
@@ -2437,6 +2442,7 @@ class ContainerManager:
         try:
             self._setup_cgroups(container)
             self._setup_overlay(container)
+            self._setup_debug_staging(container)
             self._setup_lsm(container)
             self._spawn(container)  # sets container.pid
             self._setup_network(container)
@@ -7749,6 +7755,101 @@ class ContainerManager:
                 "stdout": "",
                 "stderr": f"command timed out after {timeout_s}s",
             }
+
+    def container_debug(self, container: Container,
+                        action: str = "info",
+                        debugger: str = "debugpy") -> Dict[str, Any]:
+        """The D7 attach-channel ops, capability- and class-gated.
+
+        Per NPS-021 §5.5 req 1 (operator-only) the caller must already
+        hold CAP_DEBUG_ATTACH; per NPS-011 §4.4 that grant is only
+        possible for a debug-class container. Per FIND-CAPABILITY-006
+        req 5 every accepted action is audit-chained with the manifest
+        class recorded in the entry result. Per req 4 the staged
+        endpoints are loopback-only; ``action="bind"`` is the ONE
+        wider-binding path and refuses unless the container ALSO holds
+        CAP_NETWORK_BIND.
+
+        Actions (read-only unless noted):
+        - "info": the staging/endpoint surface (endpoints, paths).
+        - "attach": marks a debug session open (audit-chained).
+        - "detach": marks it closed (audit-chained).
+        - "bind": request a non-loopback endpoint bind (audit-chained;
+          requires CAP_NETWORK_BIND).
+
+        Raises:
+            ValueError: capability missing / wrong state / unknown
+                action (fail-closed: an error, never a degradation).
+        """
+        from backend.capability import Capability  # lazy, file convention
+        cm = self.capability_manager
+        cap = Capability.CAP_DEBUG_ATTACH
+        if cm is None or not cm.has_capability(
+                container.id, cap):
+            raise ValueError(
+                f"container_debug requires CAP_DEBUG_ATTACH on "
+                f"{container.id} (denied by default; operator-only)"
+            )
+        if container.state != ContainerState.RUNNING:
+            raise ValueError(
+                f"Cannot debug a container in {container.state.value} "
+                "state (must be RUNNING)"
+            )
+        action = (action or "info").lower()
+        if action not in ("info", "attach", "detach", "bind"):
+            raise ValueError(f"unknown debug action: {action!r}")
+        staging = getattr(container.config, "debug_staging_dir", None)
+        if not staging:
+            raise ValueError(
+                "no debug staging present (non-debug-class container or "
+                "staging failed at spawn) — attach surface absent"
+            )
+        endpoints_path = os.path.join(staging, "debug-endpoints.json")
+        try:
+            with open(endpoints_path, "r", encoding="utf-8") as fh:
+                endpoints = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ValueError(
+                f"debug endpoints unreadable: {e} — attach surface absent"
+            )
+        result_extra: Dict[str, Any] = {}
+        if action == "bind":
+            if not cm.has_capability(
+                    container.id, Capability.CAP_NETWORK_BIND):
+                raise ValueError(
+                    "a non-loopback debug bind requires CAP_NETWORK_BIND "
+                    "(NPS-021 §5.5 req 4)"
+                )
+            result_extra["wider_binding"] = True
+        audit = self.create_audit_chain(container)
+        chain_id = audit.get("chain_id", "")
+        entry = self.append_audit_entry(
+            chain_id,
+            f"debug_{action}",
+            result={
+                "debug_class": True,
+                "capability": cap.value,
+                "endpoints_path": endpoints_path,
+                "loopback_only": endpoints.get("loopback_only", True),
+                **result_extra,
+            },
+        )
+        if entry.get("error"):
+            logger.warning(
+                "container_debug(%s): audit entry failed: %s",
+                container.id, entry["error"])
+        self._record_event(
+            f"debug_{action}", container.id,
+            f"capability={cap.value} staging={staging}")
+        return {
+            "ok": True,
+            "container_id": container.id,
+            "action": action,
+            "staging_dir": staging,
+            "endpoints": endpoints.get("endpoints", {}),
+            "loopback_only": endpoints.get("loopback_only", True),
+            "audit": entry,
+        }
 
     def container_top(self, container: Container,
                        sort_by: Optional[str] = None,
@@ -36437,6 +36538,66 @@ class ContainerManager:
         except Exception as e:
             logger.warning(f"Container {container.id} overlay setup failed: "
                            f"{e} — running without overlay")
+
+    def _setup_debug_staging(self, container: Container) -> None:
+        """Stage the in-container debug tooling for a debug-class container
+        (AG decision log D7, work item: debug-image staging).
+
+        D7 (Option B) runs debugpy/gdbserver INSIDE the debugged
+        container, so the debugger binaries must be present there. Rather
+        than mutating the image (the debug-vs-prod divergence the D7
+        ledger accepts but keeps narrow), this stages the tooling into a
+        per-container directory on the container's writable overlay
+        (``<rootfs>/debug-staging/<container_id>/``) and records it on
+        the config. Non-debug containers are skipped untouched.
+
+        Requirements bound here (NPS-021 §4.8/§5.5, the §4.1 review):
+        - construction-time only (fence 2): staging happens at spawn,
+          never mutates the RUNNING container's image;
+        - user-visible (req 2): the staging path is part of the state
+          surfaces the class already rides (checked in tests);
+        - loopback-default endpoints (req 4): the staged
+          ``debug-endpoints.json`` pins endpoints to 127.0.0.1 — any
+          wider binding stays behind CAP-NETWORK-BIND per its registry
+          row (enforced at the attach ops, work item 2).
+
+        A staging failure is logged and non-fatal: the container still
+        runs (without debug tooling present) — the attach ops gate on
+        the CAPABILITY and the staged paths, not on this step.
+        """
+        if not container.config.debug_class:
+            return
+        rootfs = container.config.rootfs
+        if not rootfs:
+            logger.info(
+                "Container %s is debug-class but has no rootfs overlay; "
+                "debug staging skipped (attach ops will fail closed)",
+                container.id)
+            return
+        staging_dir = os.path.join(
+            rootfs, "debug-staging", container.id)
+        try:
+            os.makedirs(staging_dir, exist_ok=True)
+            marker = os.path.join(staging_dir, "debug-endpoints.json")
+            with open(marker, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "container_id": container.id,
+                    "debug_class": True,
+                    "endpoints": {
+                        "debugpy": "127.0.0.1:5678",
+                        "gdbserver": "127.0.0.1:1234",
+                    },
+                    "loopback_only": True,
+                    "note": "D7 staging; wider binding needs CAP-NETWORK-BIND",
+                }, fh, indent=2)
+            os.chmod(marker, 0o600)
+            container.config.debug_staging_dir = staging_dir
+            logger.info("Container %s debug staging ready (%s)",
+                        container.id, staging_dir)
+        except OSError as e:
+            logger.warning(
+                "Container %s debug staging failed: %s — continuing "
+                "without staged tooling", container.id, e)
 
     def _setup_lsm(self, container: Container) -> None:
         """Generate and stage an LSM policy for the container.

@@ -182,6 +182,19 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "command": args.exec_command,
             "timeout": args.timeout,
         }
+    if command in ("containers-debug-info", "containers-debug-attach",
+                   "containers-debug-detach", "containers-debug-bind"):
+        # D7 attach-channel op family (NPS-011 v1.4.0): the manager
+        # enforces CAP_DEBUG_ATTACH + the debug manifest class;
+        # loopback-default endpoints, wider bind needs CAP_NETWORK_BIND.
+        action = command.rsplit("-", 1)[-1]
+        return {
+            "service": "control",
+            "op": "container_debug",
+            "container_id": args.container_id,
+            "action": action,
+            "debugger": getattr(args, "debugger", None) or "debugpy",
+        }
     if command == "containers-top":
         p: Dict[str, Any] = {
             "service": "control",
@@ -5256,6 +5269,21 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             parts.append(f"[stderr] {stderr.rstrip()}")
         parts.append(f"exit code: {exit_code}")
         return "\n".join(parts)
+    if command in ("containers-debug-info", "containers-debug-attach",
+                   "containers-debug-detach", "containers-debug-bind"):
+        if resp.get("ok") is False:
+            return f"debug {command.rsplit('-', 1)[-1]} refused: {resp.get('error', '?')}"
+        eps = resp.get("endpoints", {})
+        lines = [
+            f"container {resp.get('container_id')}: debug {resp.get('action')} ok",
+            f"staging: {resp.get('staging_dir', '(none)')}",
+            "loopback-only: %s" % ("yes" if resp.get("loopback_only") else "NO"),
+        ]
+        for name, ep in (eps or {"(none)": "-"}).items():
+            lines.append(f"  {name}: {ep}")
+        if resp.get("audit", {}).get("hash"):
+            lines.append(f"audit: {resp['audit']['chain_id']} {resp['audit']['hash'][:16]}")
+        return "\n".join(lines)
     if command == "containers-top":
         # Check if this is a summary response
         if "total_processes" in resp:
@@ -9915,6 +9943,20 @@ def build_parser() -> argparse.ArgumentParser:
     ce.add_argument("--timeout", type=float, default=10.0,
                     help="Timeout in seconds (default: 10)")
     ce.set_defaults(command="containers-exec")
+
+    # D7 attach-channel op family (NPS-011 v1.4.0): operator-only, gated
+    # on CAP_DEBUG_ATTACH (debug manifest class only, denied by default).
+    for _daction, _dhelp in (
+        ("debug-info", "Show the container's staged debug endpoints"),
+        ("debug-attach", "Open a debug session (audit-chained)"),
+        ("debug-detach", "Close a debug session (audit-chained)"),
+        ("debug-bind", "Request a non-loopback endpoint (needs CAP_NETWORK_BIND)"),
+    ):
+        dp = csub.add_parser(_daction, help=_dhelp)
+        dp.add_argument("container_id")
+        dp.add_argument("--debugger", default="debugpy",
+                        help="debugger flavor (debugpy|gdbserver; default: debugpy)")
+        dp.set_defaults(command=f"containers-{_daction}")
 
     cc = csub.add_parser("checkpoint", help="Checkpoint a container's filesystem state")
     cc.add_argument("container_id")
