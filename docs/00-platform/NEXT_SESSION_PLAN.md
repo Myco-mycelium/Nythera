@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.25.0
+version: 6.26.0
 date: 2026-09-25
 ---
 
@@ -26,6 +26,9 @@ date: 2026-09-25
 | **CI on the records commit `e9ce31c`** | ✅ docs #36149287264 ✓, ci #36149287259 ✓ |
 | **Dailies band verdict (5th consecutive in-band day)** | ✅ PASS — see the STANDING ITEM above: 10:28:46 + 10:36:16 UTC, both success, checker exit 0 |
 | **Dispatch probe #8** | ❌ 403, byte-identical to #1–#7 — PAT not rotated; carried trigger unchanged (owner browser rotation → `scripts/rotate_push_pat.sh` → expect 204) |
+| **CI on the records commit `d63ffab`** | ✅ docs #36157177914 ✓ + ci #36157177968 ✓ (docs-only push — no live-iso runs, correct: the builder is path-gated) |
+| **Scratch wrappers cleaned** | ✅ The busytest/amd64/arm64 scratch wrappers removed from `~/nyrqis-work/tmp`; the five `nyrqis-boot-smoke*` tmpdirs there are the `--keep-logs` serial evidence from the PASS ×4 sweep and stay by design (~118 MB) |
+| **Issue #3 summary comment** | ❌ 403 "Resource not accessible by personal access token" (twice: full body + tiny probe; reads are 200, rate-limit fresh — a PERMISSION gap, not throttling). Asymmetry noted: issue CREATION returned 201 this morning, issue COMMENT 403 now — add comment-scope to the post-rotation verification checklist (expect 201 after rotation; full summary text preserved in this session's transcript and mirrored in REPOSITORY_STATE) |
 
 ## STANDING ITEM — Thu 2026-09-24 05:37/05:52 UTC: the dailies' third fires — does the 10:02–11:49 band hold a fourth day?
 
