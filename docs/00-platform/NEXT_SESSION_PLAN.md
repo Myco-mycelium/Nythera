@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.37.0
+version: 6.38.0
 date: 2026-09-25
 ---
 
@@ -87,6 +87,23 @@ in the 6.33.0–6.36.0 records and the digest. CI on the records commit
 watch on this stop-declaration commit itself is explicitly waived (docs-only
 text, same shape as the last eight green ones). Nothing actionable remains
 in this session by decision, not by omission.
+
+## SESSION ITEM — Fri 2026-09-25 (night, after the stop): the next session OPENED with the D7 remainder — debug-image staging and the containers-debug op family LANDED
+
+The stop declaration held for the three trigger-gated threads (no gate
+re-runs). "Proceed" per the records meant opening the next session, and the
+reading order surfaced the one decided, agent-executable work stream: D7's
+remaining implementation items (AG_AGENDA status: "launcher plumbing + IPC
+ops remain" → now landed).
+
+| Item | Status |
+|------|--------|
+| **Debug-image staging** (`d7bf812`) | ✅ `ContainerManager._setup_debug_staging`, wired into `spawn()` after overlay setup: debug-class containers get a per-container dir on the writable overlay (`<rootfs>/debug-staging/<id>/`) holding a 0600 `debug-endpoints.json` marker — endpoints pinned to 127.0.0.1 (§5.5 req 4); construction-time only (fence 2 — no running-image mutation); the path rides `ContainerConfig.debug_staging_dir` (req 2, visible); failures are non-fatal but leave NO staging (the ops fail closed); non-debug containers are untouched |
+| **`containers debug` op family** | ✅ `ContainerManager.container_debug(action=info\|attach\|detach\|bind)`: fails closed on missing CAP_DEBUG_ATTACH (req 1, operator-only), non-RUNNING state, absent staging, or an unknown action; `bind` additionally requires CAP_NETWORK_BIND (req 4); every accepted action is audit-chained via `create_audit_chain` + `append_audit_entry` with `debug_class` in the entry result (req 5, FIND-CAPABILITY-006) and a lifecycle event |
+| **Wiring** | ✅ IPC: `container_debug` dispatch arm + `_container_debug` handler (mirrors `_container_exec`). CLI: `containers debug-info/attach/detach/bind` (payload mapping + human formatter) — the payload-surface sweep pin validated the new commands resolve (the CR-0037 lesson applied to new code) |
+| **Pins** | ✅ 11 new tests in `test_debug_manifest_class.py` (28 total): staging skip/create/failure, capability refusal, loopback endpoints, stale-grant fail-closed, bind gating, audit chaining + class-in-result + chain verification, unknown action, non-RUNNING refusal. Full sweep 9255 OK (skipped=4) |
+| **Records** | ✅ DBG-001 v0.7.0 (work items 3+4 struck; the roadmap item stays `[~]` only for the interactive attach UX over a live container — the security surface is complete and pinned); roadmap updated; premises 46/46 |
+| **CI on `d7bf812`** | ✅ docs ✓ + ci ✓ + live-iso ✓ (watched to completion — the backend change passed the full builder + both boot smokes) |
 
 ## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
 
