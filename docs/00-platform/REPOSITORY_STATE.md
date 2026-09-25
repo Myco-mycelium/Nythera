@@ -5,6 +5,19 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (v0.29.31 RELEASED — tagged, both ISOs attached to the
+published GitHub release and verified end-user-style: sha256 digests
+match the API values, both assets boot-smoked locally (amd64 direct,
+arm64 GRUB/UEFI menu) after download; the first amd64 attempt failed
+from a self-inflicted harness fault (concurrent cleanup deleted the
+live smoke's tmpdir) — standing rule recorded and filed as issue #3:
+cleanup must check smoke liveness (PID-file based, never self-matching
+pgrep -f) before touching tmp dirs; artifact cleanup executed per user
+choices (~2.8 GB freed, originals kept); sixth dispatch probe 403 —
+the PAT is fine-grained WITHOUT Actions:write (confirmed by the absent
+X-OAuth-Scopes header), so the rootless arm64 CI dispatch remains the
+single open item, owner-side)
+
 2026-09-25 (shim staging consolidated into ONE atomic helper + a
 per-minute re-stage watchdog covering BOTH phases (the local /tmp wipe
 hazard is time-based); dead per-phase helper removed; contract at 100
