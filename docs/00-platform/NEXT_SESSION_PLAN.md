@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.29.0
+version: 6.30.0
 date: 2026-09-25
 ---
 
@@ -57,6 +57,16 @@ date: 2026-09-25
 | **CI on `56512c3`** | ✅ ci ✓ + live-iso ✓ (watched to completion — the backend path gate fired for CHANGELOG/pyproject and the build stayed green with version 0.29.32) |
 | **NOT done (deliberately)** | No tag, no release, no GitHub release assets — the entry is a DRAFT; cut v0.29.32 only when there is something to ship or the next release point arrives |
 | **Time-blocked followups** | Post-rotation drill: blocked until the owner rotates the PAT (probes #9 + comment both 403 earlier today — no new probes until then). Monday dailies check: the next scheduled verification point for the 10:02–11:49 band (five consecutive in-band days so far) |
+
+## SESSION ITEM — Fri 2026-09-25 (night): v0.29.32 RELEASED — tagged, published, both ISOs attached and verified end-user-style
+
+| Item | Status |
+|------|--------|
+| **Tag + release** | ✅ Annotated tag `v0.29.32` (repo identity, per v0.29.31 style) pushed; release "Nyrqis 0.29.32" created via API (HTTP 201, id 396774080) with the 0.29.32 CHANGELOG section as the body — the drafted entry became the release at the user's decision (the release point) |
+| **Tag-triggered CI** | ✅ live-iso #36162993443 ✓ (~11 min: build + both smokes + asset attach); live-iso-arm64 #36162993345 ✓ (~38 min: root build + menu-path UEFI smoke + attach); re-attach jobs did their thing — BOTH assets landed on the release |
+| **Assets verified end-user-style** | ✅ Both downloaded unauthenticated (resumed once past a stalled window): `nyrqis-live.iso` 258263040 bytes sha256 `a6fe25568b7103f5a7a6ae1575b8c953d1e03925a257000d833b0230eb45f6cb`; `nyrqis-live-arm64.iso` 267214848 bytes sha256 `f0efecb604ceb9c13fc27fbeb2969747ecbad4e702354667fcdc0a66f4e3fc66`; sizes match the API asset sizes exactly; both are bootable ISO 9660 (`NYRQIS_LIVE`) |
+| **Boot verification of the downloaded assets** | ✅ ALL FOUR paths PASS on the DOWNLOADED ISOs (not CI artifacts, not local builds): amd64 direct + menu, arm64 direct + menu — each with the full PASS line (demo session reached serial console / GRUB booted the default entry, daemon answered ping, probe's required packages complete). Verification wave ran serially under the issue #3 guard (one marker per driver at a time); `--keep-logs` evidence dirs retained in `~/nyrqis-work/tmp` |
+| **Rotation probe #10 (drill trigger check)** | ❌ 403 — the post-rotation drill and the Monday dailies check remain parked on their triggers |
 
 ## STANDING ITEM — Thu 2026-09-24 05:37/05:52 UTC: the dailies' third fires — does the 10:02–11:49 band hold a fourth day?
 
