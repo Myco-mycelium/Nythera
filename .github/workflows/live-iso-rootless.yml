@@ -112,9 +112,27 @@ jobs:
         # A cache hit restores DIR.complete and this is a logged no-op;
         # a miss does the full download+extract (survives interruption
         # via the external cache dir — the driver's own resume story).
+        # On failure the INNER debootstrap.log is printed inline: job
+        # logs are auth-walled but this step's stdout is not — the
+        # chrooted dpkg errors must reach the run log verbatim.
         run: |
+          set +e
           packaging/live/build-live-iso-rootless.sh \
             --acquire-rootfs "$HOME/nyrqis-rootless/amd64"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            T="$HOME/nyrqis-rootless/amd64"
+            echo "=== acquire failed rc=$RC — inner evidence ==="
+            echo "--- debootstrap.log tail ---"
+            tail -40 "$T/debootstrap/debootstrap.log" 2>/dev/null || echo "(no debootstrap.log)"
+            echo "--- target /tmp (shim staged?) ---"
+            ls -la "$T/tmp" 2>/dev/null | head -10 || true
+            file "$T/tmp/rootless-syscall-shim.so" 2>/dev/null || true
+            echo "--- target /dev (placeholders?) ---"
+            ls -la "$T/dev" 2>/dev/null | head -15 || true
+            exit "$RC"
+          fi
         timeout-minutes: 45
 
       - name: Build the ISO (rootless, unmodified builder)
@@ -231,9 +249,23 @@ jobs:
         # Stage 1 extracts with host binaries; stage 2 runs chrooted and
         # therefore EMULATED, preloading the zig-compiled AARCH64 shim —
         # the mechanism validated end to end on the reference machine.
+        # Same inline inner-evidence dump as the amd64 acquire step.
         run: |
+          set +e
           packaging/live/build-live-iso-rootless.sh --arch arm64 \
             --acquire-rootfs "$HOME/nyrqis-rootless/arm64"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            T="$HOME/nyrqis-rootless/arm64"
+            echo "=== acquire failed rc=$RC — inner evidence ==="
+            echo "--- debootstrap.log tail ---"
+            tail -40 "$T/debootstrap/debootstrap.log" 2>/dev/null || echo "(no debootstrap.log)"
+            echo "--- target /tmp (shim staged?) ---"
+            ls -la "$T/tmp" 2>/dev/null | head -10 || true
+            file "$T/tmp/rootless-syscall-shim.so" 2>/dev/null || true
+            exit "$RC"
+          fi
         timeout-minutes: 60
 
       - name: Build the arm64 ISO (rootless, emulated chroots)
