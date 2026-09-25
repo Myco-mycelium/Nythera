@@ -92,12 +92,34 @@ class TestRootlessDriverStructure(unittest.TestCase):
         self.assertIn('LD_PRELOAD="/tmp/$SHIM_SO_NAME"', self.driver,
                       "every phase must preload the canonical in-target "
                       "resolvable path")
-        self.assertIn('stage_host_shim', self.driver,
-                      "the host-side copy must be staged explicitly")
+        self.assertIn('STAGE_SHIM="$WORKROOT/nyrqis-stage-shim.$$"',
+                      self.driver,
+                      "ONE atomic staging helper serves every staging site")
+        self.assertIn('"$STAGE_SHIM" "$SHIM_SO" "/tmp/$SHIM_SO_NAME"',
+                      self.driver,
+                      "the host-side copy must be staged explicitly at init")
         self.assertEqual(
             self.driver.count('LD_PRELOAD='),
             self.driver.count('LD_PRELOAD="/tmp/$SHIM_SO_NAME"'),
             "no phase may preload any other path")
+
+    def test_stage_helper_is_atomic_and_shared(self):
+        # The helper must ALWAYS land copies via tmp+mv (rename): a
+        # truncating overwrite of a mapped preload file executes zeros
+        # under running processes (cp+bash SIGSEGV cores, observed).
+        m = re.search(
+            r"cat > \"\$STAGE_SHIM\" <<'STAGESHIM'\n(.*?)STAGESHIM",
+            self.driver, re.S)
+        self.assertIsNotNone(m, "the staging helper heredoc must exist")
+        helper = m.group(1)
+        self.assertIn('mv -f "$tmp" "$dest"', helper,
+                      "the helper must RENAME, not overwrite in place")
+        self.assertNotIn(
+            'cp -f "$SHIM_SO" "/tmp/$SHIM_SO_NAME"', self.driver,
+            "no site may cp straight onto the canonical preload path")
+        self.assertIn("stage_watchdog", self.driver,
+                      "the periodic re-stage must survive tmpfiles wipes "
+                      "across BOTH phases")
 
     def test_forced_root_squashfs_is_driven_by_env(self):
         # Files created in the self-map are owned by the HOST uid on
@@ -132,7 +154,7 @@ class TestRootlessDriverStructure(unittest.TestCase):
         # shell's PATH, so the chroot wrapper alone cannot cover them:
         # the .so must be pre-staged into the target's /tmp.
         m = re.search(
-            r'if \[\[ -n "\$ACQUIRE_ROOTFS" \]\]; then(.*?)fi\n\n# -+ build',
+            r'if \[\[ -n "\$ACQUIRE_ROOTFS" \]\]; then(.*?)exit "\$RC"\nfi',
             self.driver, re.S)
         self.assertIsNotNone(m, "acquire block must exist before the build block")
         block = m.group(1)
@@ -149,18 +171,22 @@ class TestRootlessDriverStructure(unittest.TestCase):
 
     def test_chroot_wrapper_stages_the_shim(self):
         # Builder chroot steps (apt top-up, useradd, mkinitramfs) go
-        # through the chroot BINARY: the wrapper must stage the .so and
-        # then exec the REAL chroot (not busybox's, not a shim).
-        # 2026-09-25: the exec is also the shim-CLASS boundary — chrooted
-        # processes preload ONLY the in-target shim path, never the host
-        # one (a foreign-class preload makes every emulated loader warn,
-        # and that noise polluted the builder's captured dpkg --audit).
+        # through the chroot BINARY: the wrapper must stage the .so via
+        # the ATOMIC helper and then exec the REAL chroot (not busybox's,
+        # not a shim). 2026-09-25: the exec is also the shim-CLASS
+        # boundary — chrooted processes preload ONLY the in-target shim
+        # path, never the host one (a foreign-class preload makes every
+        # emulated loader warn, and that noise polluted the builder's
+        # captured dpkg --audit).
         self.assertIn(
             'exec env LD_PRELOAD="/tmp/$SHIM_SO_NAME" /usr/sbin/chroot',
             self.driver,
             "wrapper must exec the real chroot binary, preloading ONLY the "
             "in-target shim path (the class boundary)")
-        self.assertIn('mkdir -p "$tgt/tmp"', self.driver.replace("\\$tgt", "$tgt"))
+        self.assertIn(
+            '"$STAGE_SHIM" "\\$SHIM_SO" "/tmp/\\$SHIM_SO_NAME" 2>/dev/null || :',
+            self.driver,
+            "the host-side re-stage must go through the atomic helper")
 
     def test_no_root_anywhere(self):
         # Guard the whole point: no sudo, no su, no fakeroot fallback.
@@ -310,13 +336,12 @@ class TestRootlessArm64CrossBuild(unittest.TestCase):
         # aarch64 loader refuses an amd64 .so with a hard error). The
         # wrapper is GENERATED through a heredoc, so its source text
         # carries the escaped \$ spellings.
-        # 2026-09-25: staging is tmp+mv (rename), NEVER cp -f onto the
-        # live preload path — cp -f truncates the inode and every process
-        # mapped from it executes zeros (cp+bash SIGSEGV cores observed
-        # mid-build once the build phase preloaded the canonical path).
+        # 2026-09-25: staging goes through the ATOMIC helper (tmp+mv,
+        # rename) — cp -f onto the live preload path truncates it and
+        # mapped processes execute zeros (cp+bash SIGSEGV cores).
         self.assertIn(
-            'mv -f "\\$tgt/tmp/.shim.tmp.\\$\\$" '
-            '"\\$tgt/tmp/\\$SHIM_SO_NAME"', self.driver)
+            '"$STAGE_SHIM" "\\$GUEST_SHIM" '
+            '"\\$tgt/tmp/\\$SHIM_SO_NAME" 2>/dev/null || :', self.driver)
         # And the emulator must be staged INSIDE the rootfs at the
         # binfmt-registered path for every cross chroot.
         self.assertIn(

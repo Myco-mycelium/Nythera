@@ -177,33 +177,44 @@ log "compiling shim: $CC_BIN → $SHIM_SO"
 # never engages: newer Ubuntu debootstrap sanitizes PATH, so "chroot" may
 # resolve to the real /usr/sbin/chroot (observed on GitHub's 24.04 runner —
 # the acquire failed unshimmed while the identical flow worked locally).
-# NEVER overwrite a preload file in place: cp -f truncates the inode,
-# and every process mapped from it (the builder bash itself, on the
-# canonical path) executes zeroed text on its next page fault — SIGSEGV
-# mid-build (observed: cp + bash cores at the first wrapper chroot
-# after the build phase switched to the canonical preload). Stage to a
-# temp name and RENAME: mv(1) within the same directory is rename(2) —
-# atomic entry swap, old inode stays alive for running mappers.
-stage_host_shim() {
-    mkdir -p /tmp
-    cp -f "$SHIM_SO" "/tmp/$SHIM_SO_NAME.tmp.$$" \
-        && mv -f "/tmp/$SHIM_SO_NAME.tmp.$$" "/tmp/$SHIM_SO_NAME"
-}
-stage_host_shim
-# Re-stage helper: before each long phase, ensure the canonical host-side
-# copy exists (hosts running systemd-tmpfiles can empty /tmp at any
-# moment — observed twice on the reference machine).
-STAGE_HELPER="$WORKROOT/nyrqis-stage-host-shim.$$"
-cat > "$STAGE_HELPER" <<'STAGEHELPER'
+# Atomic staging helper. ONE implementation for every site that lands a
+# shim copy on a preload path (driver init, chroot wrapper host-side +
+# in-target, phase re-staging): write to a temp name in the DESTINATION
+# directory, then RENAME. Never cp -f straight onto the destination —
+# truncating a mapped .so makes running processes execute zeros (SIGSEGV,
+# observed as cp+bash cores); rename(2) swaps the entry atomically and
+# the old inode stays alive for existing mappers.
+STAGE_SHIM="$WORKROOT/nyrqis-stage-shim.$$"
+cat > "$STAGE_SHIM" <<'STAGESHIM'
 #!/bin/sh
-if [ -f /tmp/rootless-syscall-shim.so ]; then exit 0; fi
-src="$(ls -t "$HOME"/.cache/nyrqis-rootless/nyrqis-shim.*.so 2>/dev/null | head -1)"
-[ -n "$src" ] && [ -f "$src" ] && cp -f "$src" /tmp/rootless-syscall-shim.so
-STAGEHELPER
-chmod 0755 "$STAGE_HELPER"
+# stage-shim SRC DEST — atomic install of SRC at DEST (preload-safe).
+src="$1"; dest="$2"
+[ -f "$src" ] && [ -n "$dest" ] || exit 1
+d="${dest%/*}"
+mkdir -p "$d" 2>/dev/null || exit 1
+tmp="$d/.shim.tmp.$$"
+cp -f "$src" "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 1; }
+mv -f "$tmp" "$dest" || { rm -f "$tmp"; exit 1; }
+exit 0
+STAGESHIM
+chmod 0755 "$STAGE_SHIM"
+"$STAGE_SHIM" "$SHIM_SO" "/tmp/$SHIM_SO_NAME" \
+    || die "staging the host shim at /tmp/$SHIM_SO_NAME failed"
+# Watchdog: re-stage the canonical host-side copy every minute for the
+# WHOLE run (acquire AND build). Hosts running systemd-tmpfiles can
+# empty /tmp at any moment (observed twice locally): already-running
+# processes keep their inode mappings, but every NEW exec — debootstrap's
+# constant tar|dpkg pipelines included — would silently lose the preload.
+stage_watchdog() {
+    while :; do
+        sleep 60
+        "$STAGE_SHIM" "$SHIM_SO" "/tmp/$SHIM_SO_NAME" 2>/dev/null || :
+    done
+}
 cleanup() {
-    rm -rf "${SHIMBIN:-}" "${GUEST_TMP:-}" "${STAGE_HELPER:-}"
-    rm -f "$SHIM_SO" "$PSEUDO_DEFS"
+    [[ -n "${WATCHDOG_PID:-}" ]] && kill "$WATCHDOG_PID" 2>/dev/null || :
+    rm -rf "${SHIMBIN:-}" "${GUEST_TMP:-}" "${STAGE_SHIM:-}"
+    rm -f "$SHIM_SO" "$PSEUDO_DEFS" "/tmp/$SHIM_SO_NAME"
 }
 trap cleanup EXIT
 
@@ -293,13 +304,11 @@ for a in "\$@"; do
     esac
 done
 if [ -n "\$tgt" ]; then
-    mkdir -p "\$tgt/tmp" 2>/dev/null
-    # tmp+mv (rename), NEVER cp -f onto the live preload path: the
-    # in-target copy may be mapped by chrooted processes of a PARALLEL
-    # step, and cp -f's truncate executes zeros under them.
+    # Atomic staging (helper, tmp+mv) — NEVER cp -f onto the live
+    # preload path: the in-target copy may be mapped by chrooted
+    # processes, and cp -f's truncate executes zeros under them.
     if [ -n "\$GUEST_SHIM" ] && [ -f "\$GUEST_SHIM" ]; then
-        cp -f "\$GUEST_SHIM" "\$tgt/tmp/.shim.tmp.\$\$" 2>/dev/null \
-            && mv -f "\$tgt/tmp/.shim.tmp.\$\$" "\$tgt/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
+        "$STAGE_SHIM" "\$GUEST_SHIM" "\$tgt/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
         # Keep the emulated binary staged at the registered binfmt path
         # (binfmt resolves the interpreter INSIDE the chroot).
         if [ -x "/usr/bin/\$QEMU_STATIC" ] && [ ! -x "\$tgt/usr/bin/\$QEMU_STATIC" ]; then
@@ -307,23 +316,13 @@ if [ -n "\$tgt" ]; then
             cp -f "/usr/bin/\$QEMU_STATIC" "\$tgt/usr/bin/" 2>/dev/null || :
         fi
     elif [ -f "\$SHIM_SO" ]; then
-        cp -f "\$SHIM_SO" "\$tgt/tmp/.shim.tmp.\$\$" 2>/dev/null \
-            && mv -f "\$tgt/tmp/.shim.tmp.\$\$" "\$tgt/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
+        "$STAGE_SHIM" "\$SHIM_SO" "\$tgt/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
     fi
 fi
-# The preload path must resolve on BOTH sides of the chroot boundary:
-# the chroot binary itself loads it HOST-side (so host /tmp needs the
-# HOST-class copy — re-staged on every call, tmpfiles may wipe /tmp),
-# while the chrooted command loads the SAME path INSIDE the target,
-# where the correct-class copy was staged just above. One path, per-
-# context resolution, zero loader warnings (a single missing-side copy
-# puts one warning per chroot into every captured stderr — it tripped
-# the builder's dpkg --audit gate on a clean rootfs).
-# Host-side re-stage: ALSO tmp+mv — THIS shell and the builder bash are
-# mapped from exactly this file; cp -f here truncates our own text
-# (observed as cp+bash SIGSEGV cores mid-build).
-cp -f "\$SHIM_SO" "/tmp/.shim.tmp.\$\$" 2>/dev/null \
-    && mv -f "/tmp/.shim.tmp.\$\$" "/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
+# Host-side re-stage: atomic (helper) — THIS shell and the builder bash
+# are mapped from exactly this file; a truncating overwrite hands them
+# zeros (observed as cp+bash SIGSEGV cores mid-build).
+"$STAGE_SHIM" "\$SHIM_SO" "/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
 exec env LD_PRELOAD="/tmp/$SHIM_SO_NAME" /usr/sbin/chroot "\$@"
 WRAPPER
 chmod 0755 "$SHIMBIN/chroot"
@@ -385,6 +384,7 @@ if [[ -n "$ACQUIRE_ROOTFS" ]]; then
     # ensure-packages step installs missing probe packages on the
     # --rootfs path, and its dpkg-audit + probe-parity gates fail the
     # build if anything is still absent.
+    stage_watchdog & WATCHDOG_PID=$!
     set +e
     unshare -Urmpf --mount-proc env \
         LD_PRELOAD="/tmp/$SHIM_SO_NAME" \
@@ -418,6 +418,8 @@ if [[ -n "$ACQUIRE_ROOTFS" ]]; then
     fi
     exit "$RC"
 fi
+
+stage_watchdog & WATCHDOG_PID=$!
 
 # ---------------------------------------------------------------- build
 log "launching $BUILDER_NAME in a user namespace (no root involved)"

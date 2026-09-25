@@ -5,6 +5,14 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (shim staging consolidated into ONE atomic helper + a
+per-minute re-stage watchdog covering BOTH phases (the local /tmp wipe
+hazard is time-based); dead per-phase helper removed; contract at 100
+tests with atomicity pinned inside the helper; refactor re-validated
+END TO END locally — full acquire+build exit 0 and BOTH boot smokes
+PASSED on the resulting ISO; arm64 dispatch re-attempted, 403 again
+(pre-rotation signature))
+
 2026-09-25 (rootless CI GREEN on GitHub's runner after two runner-only
 shim fixes — the canonical preload path (one name on both chroot sides,
 immune to PATH-sanitizing debootstrap) and tmp+mv shim staging (cp -f
