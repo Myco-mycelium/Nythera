@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 2.1.0
-status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7)
+version: 2.2.0
+status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -484,6 +484,44 @@ The registered text below is retained for the record.
   the item honestly. Downstream if accepted: NPS-011 v1.4.0, an
   NPS-021 addendum, a new authority-guarded op family, and the
   roadmap item strikes as done. DECISION-READY — purely judgment.
+
+---
+
+---
+
+## Bundle D — staged 2026-09-25 (late addition, decision-ready)
+
+### D1. ADR-0019 — the auto_compact tuning review (issue #1)
+
+ADR-0019 (Proposed; its 2026-09-06 self-flip to Accepted was reverted
+2026-09-20 as unsanctioned — no Group record) · implementation landed in
+`40cb4e8` · tracked as issue #1 since 2026-08-12.
+
+**Pre-flight (2026-09-25, AI-verified against the tree):** the default IS
+shipped — `auto_compact: bool = True` at `fuse/nyfs.py` (mount),
+re-surfaced in `backend/container.py` and `nyrqisctl.py`, and pinned by a
+dedicated contract test (`test_backend.py::
+test_auto_compact_is_the_mount_default`); the dirty-flag tracking, the
+`shutdown()` ordering (stop watcher → dirty-gated final save → unmount),
+and the SIGINT/SIGTERM handlers are in `fuse/nyfs.py` per
+`DAEMON_LIFECYCLE.md`. The governance defect was the unrecorded flip, not
+the code — the mechanism has run as the de-facto default since 2026-08-12.
+
+**Decisions the Group must make (from issue #1):**
+
+1. Compaction cadence: keep the fixed 60 s watcher interval, or derive it
+   from observed journal growth / a multiple of the fsync period?
+2. Default posture: ratify `auto_compact=True` as the shipped default, or
+   demote it to opt-in until the watcher's resource profile is documented
+   on real hardware?
+3. Shutdown ordering: confirm drain → dirty-gated final save → unmount,
+   or amend.
+
+**What a decision unlocks:** removing the "tuning pending AG review"
+caveats from ADR-0019 and `DAEMON_LIFECYCLE.md`; recording the outcome as
+an ADR-0019 amendment or follow-up ADR; a clean acceptance (or a scoped
+revision) closes issue #1. DECISION-READY — purely judgment; the same
+ratify-vs-revert frame the ADR-0022 precedent set.
 
 ---
 
