@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files — the booted system mounts devtmpfs). The runner job proves the
   full loop with zero sudo in the pipeline: acquire → build →
   ownership proof (`stat -c %u != 0`) → BOTH boot smokes under TCG.
-  Alternatives probed and rejected with reasons recorded in the driver:
+  A two-phase `--acquire-rootfs` mode (external .deb cache + completion
+  stamp; partial targets wiped, cache kept) makes the long acquisition
+  resumable within bounded runtime windows. Alternatives probed and
+  rejected with reasons recorded in the driver:
   `--map-auto`/newuidmap (absent setuid helper), fakeroot (its daemon
   propagates EINVAL from unmapped-gid chowns), proot/mmdebstrap.
 - **Rootless arm64 cross build, boot-proven on both paths**: the guest
@@ -56,9 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`nyrqis-demo`'s bare `$LD_LIBRARY_PATH` expansion crashed the demo
   session under `set -u`** (the first cdylib-carrying boot exposed it:
   getty respawn-looped the autologin, no smoke marker ever printed;
-  CI never executed the branch without cdylibs). Fixed with the
-  `:${LD_LIBRARY_PATH:-}` guarded form; the regression guard bans any
-  bare expansion.
+  CI never shipped cdylibs, so the branch never executed there). Fixed
+  with the `:${LD_LIBRARY_PATH:-}` guarded form; the regression guard
+  bans any bare expansion.
 
 ### CI
 
