@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.28.0
+version: 6.29.0
 date: 2026-09-25
 ---
 
@@ -47,6 +47,16 @@ date: 2026-09-25
 | **First real sweep by `scripts/clean-smoke-tmp.sh`** | ✅ DRY-RUN listed exactly the 5 kept smoke-evidence dirs; `--yes` (with `CLEAN_TMP_ROOT=~/nyrqis-work/tmp`) removed exactly those — ~118 MB freed, tmp now empty, nothing else touched. Also the default-root lesson: with no TMPDIR the tool targets `/tmp` (correct default; the workroot sweep goes through `CLEAN_TMP_ROOT`, which is what the override exists for) |
 | **CI on the records commit `21d9d62`** | ✅ docs #36159948749 ✓ + ci #36159948614 ✓ (docs-only push — no live-iso runs, correct) |
 | **Post-rotation probes (single shots)** | ❌ dispatch probe #9 → 403; issue-comment probe → 403. Consistent pair: the PAT has NOT been rotated. Rotation checklist stays: owner mints the fine-grained PAT (Contents/Workflows/Actions/Variables/PR + issue comments = RW) → `scripts/rotate_push_pat.sh` → expect dispatch 204 AND comment 201; the close-out comment text is preserved in this file's history (6.27.0 item) and the session transcript |
+
+## SESSION ITEM — Fri 2026-09-25 (night): the 0.29.32 changelog entry is DRAFTED (not released)
+
+| Item | Status |
+|------|--------|
+| **CHANGELOG 0.29.32 entry** | ✅ `56512c3`: covers the issue #3 work — the concurrent-run guard (both drivers: PID marker, exit-2 BUSY refusal, stale takeover, pgrep ban, per-driver tags, PID-compare release), the liveness-guarded cleanup tooling (`scripts/clean-smoke-tmp.sh`: exit-3 refusal, /proc liveness, dry-run default, `--yes` gate, scoped flat scan), and the tmpdir-leak fix (os.rmdir → rmtree), plus the verification record (19 contract pins, sweep 9237 OK, CI four-for-four, local PASS ×4, first real sweep) |
+| **pyproject bumped to 0.29.32** | ✅ the version-drift rule (project version == newest CHANGELOG heading) verified MATCH after the bump; `tests.test_boot_init` 26 OK; premises 46/46 |
+| **CI on `56512c3`** | ✅ ci ✓ + live-iso ✓ (watched to completion — the backend path gate fired for CHANGELOG/pyproject and the build stayed green with version 0.29.32) |
+| **NOT done (deliberately)** | No tag, no release, no GitHub release assets — the entry is a DRAFT; cut v0.29.32 only when there is something to ship or the next release point arrives |
+| **Time-blocked followups** | Post-rotation drill: blocked until the owner rotates the PAT (probes #9 + comment both 403 earlier today — no new probes until then). Monday dailies check: the next scheduled verification point for the 10:02–11:49 band (five consecutive in-band days so far) |
 
 ## STANDING ITEM — Thu 2026-09-24 05:37/05:52 UTC: the dailies' third fires — does the 10:02–11:49 band hold a fourth day?
 
