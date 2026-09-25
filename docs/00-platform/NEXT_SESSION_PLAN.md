@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.35.0
+version: 6.36.0
 date: 2026-09-25
 ---
 
@@ -59,11 +59,21 @@ issues, 0 open PRs. #3 = this session's work (done, released in v0.29.32,
 comment pending rotation). The REAL next-session agenda is the two August AG
 Reviews, both owner/Architecture-Group decisions, not agent-executable code:
 **#1** — accept ADR-0019's auto_compact default + dirty-flag shutdown
-contract (implementation already landed in `40cb4e8`); **#2** — accept
-ADR-0020 v2.0.0 (canonical language matrix, status Proposed) per NPC-001
-§6.4 to make it binding. Ask the owner/AG to adjudicate both; land whatever
-disposition they give (accept → flip ADR status/closure, request changes →
-scope the revision).
+contract (implementation already landed in `40cb4e8`); **#2 — CORRECTED
+after the deeper read:** ADR-0020 v2.0.0 is already **Accepted** by the AG
+(recorded in the issue, REPOSITORY_STATE, and the ADR index); the issue
+stays open only because the PAT cannot close issues — close it manually at
+the next owner session. So the only pending AG adjudication is #1, staged
+DECISION-READY as Bundle D on `AG_AGENDA.md` v2.2.0; land the disposition
+the owner/AG gives (ratify → strip the tuning-pending caveats and close #1;
+demote to opt-in → scope the revision).
+
+**Fri late evening — record correction (v6.36.0):** the #2 premise in the
+6.35.0 agenda above was wrong (Proposed) and is superseded by the inline
+correction — ADR-0020 v2.0.0 is Accepted. CI on the Bundle D staging commit
+`2e0c4ad`: docs #36174762210 ✓ + ci #36174762241 ✓ — every commit pushed
+today has now been verified green. The team digest gained the governance
+row to match.
 
 ## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
 

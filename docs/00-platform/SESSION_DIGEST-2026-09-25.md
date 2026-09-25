@@ -33,10 +33,17 @@ written-down trigger.**
    `scripts/verify_pat_grants.sh` → expect `ALL GRANTS PRESENT` →
    dispatch `live-iso-rootless.yml` `with-arm64: true` → expect 204 →
    watch the arm64 rootless run → post the issue #3 comment → expect 201.
-   State: `GRANTS MISSING` ×3 re-checks (identity OK; variables 403;
+   State: `GRANTS MISSING` ×5 re-checks (identity OK; variables 403;
    actions 403). **No further re-checks until the owner reports rotation.**
 2. **Monday dailies check** — sixth consecutive in-band day; verdict goes
    into NEXT_SESSION_PLAN's STANDING ITEM.
+3. **AG governance** — issue #2 is already DECIDED (ADR-0020 v2.0.0
+   Accepted via the issue; close it manually at the next owner session —
+   the PAT cannot close issues). Issue #1 (ADR-0019 auto_compact tuning
+   review) is staged DECISION-READY as Bundle D on `AG_AGENDA.md` v2.2.0
+   with a tree-verified pre-flight; land the Group's disposition when it
+   rules (ratify → strip the tuning-pending caveats and close #1; demote
+   to opt-in → scope the revision).
 
 ## Reading order for a cold open
 
