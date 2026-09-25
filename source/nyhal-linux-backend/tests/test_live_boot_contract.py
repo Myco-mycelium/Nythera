@@ -28,6 +28,9 @@ checkout depth.
 
 import os
 import re
+import shutil
+import sys
+import tempfile
 import unittest
 
 import yaml
@@ -1307,6 +1310,199 @@ class TestFfiArtifactsInImage(unittest.TestCase):
                 "NYRQIS_BOOT_SMOKE_CRATE", text,
                 f"{os.path.basename(driver)}: CRATE is informational — "
                 "the drivers must not gate on it")
+
+
+class TestSmokeConcurrencyGuard(unittest.TestCase):
+    """Issue #3 (2026-09-25): cleanup deleting tmp/nyrqis-boot-smoke-*
+    while a smoke ran made the driver poll a nonexistent serial path
+    and false-FAIL a byte-identical ISO. The drivers must now (a) guard
+    against concurrent instances via a PID marker, (b) heal their own
+    tmpdir in finally, so external sweeps are never invited in.
+
+    Text pins contract the SHAPE (a regression cannot silently drop the
+    guard); functional tests load both drivers and exercise the guard
+    at unit-test speed — no qemu needed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.direct_text = read(DIRECT_SMOKE)
+        cls.menu_text = read(MENU_SMOKE)
+        # Import both drivers as modules: put the DRIVERS' directory
+        # (repo-root tests/) on sys.path and import by module name —
+        # the drivers are top-level scripts, not a package. They import
+        # nothing but the stdlib and have no import-time side effects
+        # (main() is __main__-guarded).
+        _smoke_dir = os.path.dirname(DIRECT_SMOKE)
+        if _smoke_dir not in sys.path:
+            sys.path.insert(0, _smoke_dir)
+        import boot_smoke
+        import boot_smoke_menu
+        cls.direct_mod = boot_smoke
+        cls.menu_mod = boot_smoke_menu
+
+    def setUp(self):
+        # Per-test scratch dir for the functional guard pins: the
+        # markers live HERE, never in the shared /tmp namespace.
+        self.tmpdir = tempfile.mkdtemp(prefix="nyrqis-contract-smoke-guard-")
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+    # ---- text pins: the guard is present and wired in both drivers
+
+    def test_both_drivers_guard_concurrency(self):
+        for label, text in (("boot_smoke", self.direct_text),
+                            ("boot_smoke_menu", self.menu_text)):
+            self.assertIn("_acquire_smoke_lock", text,
+                          f"{label} must acquire the PID guard before booting")
+            self.assertIn("_release_smoke_lock", text,
+                          f"{label} must release the PID guard in a finally")
+            self.assertIn("refusing to race it", text,
+                          f"{label} must refuse (not warn-and-continue) when "
+                          "a live instance holds the marker")
+
+    def test_guard_uses_pid_files_not_self_matching_pgrep(self):
+        # The lesson behind issue #3's sibling pitfall: `pgrep -f
+        # PATTERN` self-matches the checking shell's own cmdline and
+        # kills the launcher. The guard must liveness-check with
+        # os.kill(pid, 0), never spawn a pattern matcher.
+        for label, text in (("boot_smoke", self.direct_text),
+                            ("boot_smoke_menu", self.menu_text)):
+            self.assertIn("os.kill(pid, 0)", text,
+                          f"{label} must liveness-check with os.kill(pid, 0)")
+            self.assertNotIn("pgrep", text,
+                             f"{label}: pgrep self-matches the caller's own "
+                             "cmdline — forbidden (issue #3)")
+
+    def test_markers_are_distinct_per_driver(self):
+        # Two different smokes must not guard on ONE marker or a run of
+        # the direct smoke would lock out the menu smoke.
+        self.assertIn('_acquire_smoke_lock("nyrqis-boot-smoke")',
+                      self.direct_text)
+        self.assertIn('_acquire_smoke_lock("nyrqis-boot-smoke-menu")',
+                      self.menu_text)
+
+    def test_release_compares_pid_before_unlink(self):
+        # A late finally of a zombie that lost a stale-marker takeover
+        # must not unlink the WINNER's marker: compare before unlink.
+        for label, text in (("boot_smoke", self.direct_text),
+                            ("boot_smoke_menu", self.menu_text)):
+            self.assertRegex(
+                text, r"def _release_smoke_lock[\s\S]*os\.unlink",
+                f"{label} release must unlink only after reading the marker")
+            self.assertIn("!= os.getpid()", text,
+                          f"{label} release must compare the marker PID "
+                          "against its own before unlinking")
+
+    def test_exit_code_two_is_documented_as_busy(self):
+        for label, text in (("boot_smoke", self.direct_text),
+                            ("boot_smoke_menu", self.menu_text)):
+            self.assertIn("2 = refused", text,
+                          f"{label} docstring must document the BUSY exit code")
+
+    # ---- text pins: self-healing tmpdir removal
+
+    def test_tmpdir_cleanup_is_self_healing_rmtree(self):
+        # os.rmdir removed only an ALREADY-EMPTY dir — the extracted
+        # kernel/initrd/qemu-stderr survived every non---keep-logs run
+        # and accumulated in /tmp. That debris invited the cleanup sweep
+        # behind issue #3; rmtree makes the drivers clean up fully.
+        for label, text in (("boot_smoke", self.direct_text),
+                            ("boot_smoke_menu", self.menu_text)):
+            self.assertIn("shutil.rmtree(tmp, ignore_errors=True)", text,
+                          f"{label} must rmtree its tmpdir (self-healing, "
+                          "issue #3)")
+            self.assertNotIn("os.rmdir(tmp)", text,
+                             f"{label}: os.rmdir(tmp) left non-empty dirs "
+                             "behind — the exact /tmp debris of issue #3")
+            self.assertIn("import shutil", text,
+                          f"{label} must import shutil for rmtree")
+
+    # ---- functional pins: exercise the guard without qemu
+
+    def test_acquire_writes_own_pid_and_release_unlinks(self):
+        marker = self.direct_mod._acquire_smoke_lock(
+            "nyrqis-contract-test-a", tmpdir=self.tmpdir)
+        try:
+            self.assertIsNotNone(marker, "a clean tmpdir must be acquirable")
+            with open(marker, "r", encoding="utf-8") as fh:
+                self.assertEqual(int(fh.read().strip()), os.getpid())
+            self.direct_mod._release_smoke_lock(marker)
+            self.assertFalse(os.path.exists(marker),
+                             "release must remove this process's own marker")
+        finally:
+            if os.path.exists(marker):
+                os.unlink(marker)
+
+    def test_second_instance_is_refused_while_first_is_live(self):
+        marker = self.menu_mod._acquire_smoke_lock(
+            "nyrqis-contract-test-b", tmpdir=self.tmpdir)
+        try:
+            self.assertIsNotNone(marker)
+            # The pid inside is ALIVE (it is this test process): a
+            # second acquire must refuse (None) instead of taking over.
+            self.assertIsNone(
+                self.menu_mod._acquire_smoke_lock(
+                    "nyrqis-contract-test-b", tmpdir=self.tmpdir),
+                "a live PID in the marker must make acquire refuse")
+        finally:
+            self.menu_mod._release_smoke_lock(marker)
+
+    def test_stale_marker_is_taken_over(self):
+        # A previous run that died without its finally (SIGKILL/OOM)
+        # must not deadlock the smoke: a marker naming a DEAD pid is
+        # taken over and rewritten with the new pid.
+        stale = os.path.join(self.tmpdir, "nyrqis-contract-test-c.pid")
+        with open(stale, "w", encoding="utf-8") as fh:
+            fh.write("999999999\n")  # pid_max-clamped, cannot exist
+        marker = self.direct_mod._acquire_smoke_lock(
+            "nyrqis-contract-test-c", tmpdir=self.tmpdir)
+        try:
+            self.assertIsNotNone(marker, "a stale marker must be taken over")
+            with open(marker, "r", encoding="utf-8") as fh:
+                self.assertEqual(int(fh.read().strip()), os.getpid())
+        finally:
+            self.direct_mod._release_smoke_lock(marker)
+
+    def test_garbage_marker_is_taken_over(self):
+        garbage = os.path.join(self.tmpdir, "nyrqis-contract-test-d.pid")
+        with open(garbage, "w", encoding="utf-8") as fh:
+            fh.write("not-a-pid\n")
+        marker = self.menu_mod._acquire_smoke_lock(
+            "nyrqis-contract-test-d", tmpdir=self.tmpdir)
+        try:
+            self.assertIsNotNone(marker)
+        finally:
+            self.menu_mod._release_smoke_lock(marker)
+
+    def test_release_never_unlinks_a_winner_marker(self):
+        # The zombie case: a process that LOST the marker (its pid was
+        # replaced) must not unlink the winner's marker in its finally.
+        marker = self.direct_mod._acquire_smoke_lock(
+            "nyrqis-contract-test-e", tmpdir=self.tmpdir)
+        try:
+            # Simulate a takeover by another instance: rewrite the pid.
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write("999999999\n")
+            self.direct_mod._release_smoke_lock(marker)
+            self.assertTrue(
+                os.path.exists(marker),
+                "release must NOT unlink a marker that no longer names "
+                "this process")
+        finally:
+            if os.path.exists(marker):
+                os.unlink(marker)
+
+    def test_pid_alive_treats_eperm_as_alive(self):
+        # os.kill(pid, 0) on a process you cannot signal fails with
+        # EPERM, not ESRCH — existence without inspectability. Treating
+        # EPERM as dead would let two smokes race under different uids.
+        self.assertTrue(self.direct_mod._pid_alive(os.getpid()),
+                        "a live pid (self) must read alive")
+        self.assertFalse(self.direct_mod._pid_alive(999999999),
+                         "a clamped-impossible pid must read dead")
+        # Menu driver must carry the identical semantics.
+        self.assertTrue(self.menu_mod._pid_alive(os.getpid()))
+        self.assertFalse(self.menu_mod._pid_alive(999999999))
 
 
 if __name__ == "__main__":

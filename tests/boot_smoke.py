@@ -26,7 +26,9 @@ Timing-tolerant: the total budget is generous (a cold boot in CI is
 usually ~40–60 s); the log is polled for the markers rather than
 assumed. Exit codes: 0 = both markers seen (pong = 1); 1 = boot
 failed, banner absent, or pong = 0 (the serial log tail is printed
-for diagnosis).
+for diagnosis); 2 = refused: another instance of this smoke is
+already running (PID-file guard, issue #3 — concurrent runs race
+each other's tmpdir cleanup and false-FAIL).
 
 Usage:
     python3 tests/boot_smoke.py dist/nyrqis-live.iso \
@@ -148,6 +150,67 @@ def _read_tail(path, n=2000):
             return fh.read()[-n:]
     except FileNotFoundError:
         return ""
+
+
+def _pid_alive(pid):
+    """True when pid names a live process.
+
+    EPERM counts as alive: on Linux, signalling a process you do not
+    own fails with EPERM, not ESRCH — existence without inspectability.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _acquire_smoke_lock(tag, tmpdir=None):
+    """PID-file guard (issue #3): refuse concurrent instances of a smoke.
+
+    Deleting tmp/nyrqis-boot-smoke-* while a smoke is live makes the
+    driver poll a nonexistent serial path and report a false FAIL on a
+    byte-identical ISO (2026-09-25). The guard: before the boot, write
+    a PID marker under the temp dir and let the caller refuse when it
+    names a process that is ALIVE. A stale marker — the previous run
+    died without its finally (SIGKILL, OOM, machine reset) — is taken
+    over instead of deadlocking the smoke forever. Returns the marker
+    path, or None when a live instance holds it; release with
+    _release_smoke_lock in a finally so crashes clean up after
+    themselves.
+    """
+    marker = os.path.join(tmpdir or tempfile.gettempdir(), f"{tag}.pid")
+    try:
+        with open(marker, "r", encoding="utf-8") as fh:
+            pid = int(fh.read().strip() or 0)
+    except (OSError, ValueError):
+        pid = 0
+    if pid > 0 and _pid_alive(pid):
+        return None
+    # Stale, garbage, or absent: take it over.
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\n")
+    return marker
+
+
+def _release_smoke_lock(marker):
+    """Remove the marker iff it still names THIS process.
+
+    An instance that took a stale marker over must not be unlinked by
+    an older zombie's late finally — compare before unlinking.
+    """
+    try:
+        with open(marker, "r", encoding="utf-8") as fh:
+            if int(fh.read().strip() or 0) != os.getpid():
+                return
+    except (OSError, ValueError):
+        return
+    try:
+        os.unlink(marker)
+    except OSError:
+        pass
 
 
 def _extract_live_kernel(iso, dest_dir):
@@ -371,15 +434,13 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             except subprocess.TimeoutExpired:
                 proc.kill()
         if not keep_logs:
-            for name in (serial_log,):
-                try:
-                    os.unlink(name)
-                except OSError:
-                    pass
-            try:
-                os.rmdir(tmp)
-            except OSError:
-                pass
+            # Self-healing tmpdir removal (issue #3): os.rmdir only
+            # removed an ALREADY-empty dir — the extracted kernel,
+            # initrd and qemu-stderr.log survived every non---keep-logs
+            # run and accumulated in /tmp, exactly the debris that
+            # invited the cleanup sweep behind issue #3. rmtree, best
+            # effort: a cleanup failure must never mask the verdict.
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main():
@@ -408,8 +469,20 @@ def main():
         print(f"[boot-smoke] SKIP: {args.qemu} not on PATH "
               "(install qemu-system-x86 or qemu-system-arm to run the boot smoke)")
         return 0
-    return run_smoke(args.iso, args.qemu, args.timeout, args.keep_logs,
-                     arch=args.arch)
+    # Issue #3: two concurrent instances share the
+    # tmp/nyrqis-boot-smoke-* namespace; one run's cleanup (or an
+    # external sweep) deleting the other's serial log mid-poll is a
+    # false FAIL. Refuse instead of racing.
+    marker = _acquire_smoke_lock("nyrqis-boot-smoke")
+    if marker is None:
+        print("[boot-smoke] BUSY: another boot smoke instance is already "
+              "running — refusing to race it (issue #3)")
+        return 2
+    try:
+        return run_smoke(args.iso, args.qemu, args.timeout, args.keep_logs,
+                         arch=args.arch)
+    finally:
+        _release_smoke_lock(marker)
 
 
 if __name__ == "__main__":
