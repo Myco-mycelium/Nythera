@@ -58,11 +58,12 @@
 #   compiler is user-space, no root needed: zig
 #   (https://ziglang.org/download — a static tarball suffices), or any
 #   aarch64-capable compiler via NYRQIS_AARCH64_CC, e.g.
-#   NYRQIS_AARCH64_CC='aarch64-linux-gnu-gcc'. The chroot wrapper is
-#   the shim-CLASS boundary: it stages the guest-class shim into the
-#   target and re-execs the chroot preloading ONLY the in-target path —
-#   preloading both classes instead makes every emulated loader warn,
-#   and that noise trips captured-stderr gates (dpkg --audit).
+#   NYRQIS_AARCH64_CC='aarch64-linux-gnu-gcc'. The preload path is
+#   CANONICAL (/tmp/rootless-syscall-shim.so): it resolves on BOTH
+#   sides of every chroot — host-side the host-class copy, in-target
+#   the guest-class copy — so chrooted steps are shimmed even when the
+#   chroot wrapper never engages (a PATH-sanitizing debootstrap can
+#   skip it; observed on GitHub's 24.04 runner).
 #
 # Extra args (--volume-id, --rootfs, ...) are passed through to
 # build-live-iso.sh (--arch is honored by BOTH phases: acquire uses it
@@ -164,10 +165,36 @@ SHIM_SO="$(mktemp "$WORKROOT/nyrqis-shim.XXXXXX.so")"
 PSEUDO_DEFS="$(mktemp "$WORKROOT/nyrqis-pseudo.XXXXXX")"
 printf '/home/demo m 0755 1000 1000\n/home/demo/.bash_profile m 0644 1000 1000\n' \
     > "$PSEUDO_DEFS"
-trap 'rm -f "$SHIM_SO" "$PSEUDO_DEFS"' EXIT
 CC_BIN=cc; command -v cc >/dev/null 2>&1 || CC_BIN=gcc
+log "compiling shim: $CC_BIN → $SHIM_SO"
 "$CC_BIN" -O2 -fPIC -shared -o "$SHIM_SO" "$SHIM_SRC" -ldl \
     || die "shim compile failed"
+# Stage the HOST-class copy at /tmp/$SHIM_SO_NAME (host side). /tmp/$SHIM_SO_NAME
+# is the ONE preload path for the whole build: it resolves on both sides of
+# every chroot boundary — host-side this copy, in-target the copy acquire
+# pre-stages (same name, correct class per side). The outer LD_PRELOAD below
+# references it so chrooted steps are shimmed EVEN WHEN the chroot wrapper
+# never engages: newer Ubuntu debootstrap sanitizes PATH, so "chroot" may
+# resolve to the real /usr/sbin/chroot (observed on GitHub's 24.04 runner —
+# the acquire failed unshimmed while the identical flow worked locally).
+stage_host_shim() { mkdir -p /tmp; cp -f "$SHIM_SO" "/tmp/$SHIM_SO_NAME"; }
+stage_host_shim
+# Re-stage helper: before each long phase, ensure the canonical host-side
+# copy exists (hosts running systemd-tmpfiles can empty /tmp at any
+# moment — observed twice on the reference machine).
+STAGE_HELPER="$WORKROOT/nyrqis-stage-host-shim.$$"
+cat > "$STAGE_HELPER" <<'STAGEHELPER'
+#!/bin/sh
+if [ -f /tmp/rootless-syscall-shim.so ]; then exit 0; fi
+src="$(ls -t "$HOME"/.cache/nyrqis-rootless/nyrqis-shim.*.so 2>/dev/null | head -1)"
+[ -n "$src" ] && [ -f "$src" ] && cp -f "$src" /tmp/rootless-syscall-shim.so
+STAGEHELPER
+chmod 0755 "$STAGE_HELPER"
+cleanup() {
+    rm -rf "${SHIMBIN:-}" "${GUEST_TMP:-}" "${STAGE_HELPER:-}"
+    rm -f "$SHIM_SO" "$PSEUDO_DEFS"
+}
+trap cleanup EXIT
 
 # ---------------------------------------------------------------- cross shim (arm64)
 # The emulated (second-stage) chroot runs AARCH64 binaries: glibc refuses
@@ -179,7 +206,6 @@ CC_BIN=cc; command -v cc >/dev/null 2>&1 || CC_BIN=gcc
 GUEST_SHIM=""
 if [[ "$ARCH" == arm64 ]]; then
     GUEST_TMP="$(mktemp -d "$WORKROOT/nyrqis-guestshim.XXXXXX")"
-    trap 'rm -rf ${GUEST_TMP:+"$GUEST_TMP"}; rm -f "$SHIM_SO" "$PSEUDO_DEFS"' EXIT
     if [[ -n "${NYRQIS_AARCH64_CC:-}" ]]; then
         log "cross-compiling guest shim via NYRQIS_AARCH64_CC: $NYRQIS_AARCH64_CC"
         if $NYRQIS_AARCH64_CC -O2 -fPIC -shared -o \
@@ -208,6 +234,11 @@ if [[ "$ARCH" == arm64 ]]; then
       aarch64 for clang-style drivers; plain gcc cross toolchains need
       no -target)."
     log "guest shim ready: $GUEST_SHIM"
+    # NOTE: the HOST-side /tmp copy stays HOST-class — it is loaded only
+    # by the chroot binary itself (which runs on the host). The GUEST
+    # class lives at the same path INSIDE the target (staged by acquire
+    # below and re-staged by the wrapper), so each loader resolves the
+    # class it can actually load.
 fi
 
 # ---------------------------------------------------------------- handoff
@@ -221,13 +252,15 @@ fi
 #      correct-class .so into the target and re-execs the REAL chroot
 #      preloading ONLY that in-target path (builder steps like the apt
 #      top-up, useradd, mkinitramfs).
-# The wrapper is the shim-CLASS boundary: outside chroots the build
-# preloads the host shim; inside, the target's own (guest-class on a
-# cross build). The preload path is staged on BOTH sides of the
-# boundary (host /tmp for the chroot binary itself, target /tmp for
-# what it runs) — a foreign-class preload or a missing-side copy makes
-# loaders warn, and that noise fails honest captured-stderr gates
-# (observed: dpkg --audit on a clean rootfs).
+# The wrapper is BEST-EFFORT, not load-bearing: newer Ubuntu debootstrap
+# sanitizes PATH, so its internal chroots may resolve the real
+# /usr/sbin/chroot and skip the wrapper entirely. That case is covered
+# by the CANONICAL preload path (/tmp/rootless-syscall-shim.so): the
+# driver stages a host-class copy host-side and acquire pre-stages the
+# correct-class copy in-target, so the same path resolves on both sides
+# of the boundary without the wrapper. A foreign-class preload or a
+# missing-side copy makes loaders warn — and noise fails honest
+# captured-stderr gates (observed: dpkg --audit on a clean rootfs).
 SHIMBIN="$(mktemp -d "$WORKROOT/nyrqis-shimbin.XXXXXX")"
 cat > "$SHIMBIN/chroot" <<WRAPPER
 #!/bin/sh
@@ -274,9 +307,6 @@ cp -f "\$SHIM_SO" "/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
 exec env LD_PRELOAD="/tmp/$SHIM_SO_NAME" /usr/sbin/chroot "\$@"
 WRAPPER
 chmod 0755 "$SHIMBIN/chroot"
-trap 'rm -rf "$SHIMBIN" ${GUEST_TMP:+"$GUEST_TMP"}; rm -f "$SHIM_SO" "$PSEUDO_DEFS"' EXIT
-
-log "compiling shim: $CC_BIN → $SHIM_SO"
 
 # ------------------------------------------------------------ acquisition-only
 # --acquire-rootfs DIR: run ONLY the debootstrap step into DIR and exit.
@@ -310,7 +340,14 @@ if [[ -n "$ACQUIRE_ROOTFS" ]]; then
     # chrooted step (dpkg postinsts chown /var/mail etc. — the exact
     # failure without it).
     mkdir -p "$ACQUIRE_ROOTFS/tmp"
-    cp -f "$SHIM_SO" "$ACQUIRE_ROOTFS/tmp/"
+    # Pre-stage under the CANONICAL preload name: the outer LD_PRELOAD is
+    # /tmp/rootless-syscall-shim.so, so this copy — not the raw mktemp
+    # name — is what every chrooted loader resolves (a plain copy once
+    # left only the mktemp-named file in the target and the runner's
+    # debootstrap ran its core install UNSHIMMED: chown /var/mail →
+    # EINVAL). amd64: host class; arm64: the guest shim below overwrites
+    # it with the aarch64 class.
+    cp -f "$SHIM_SO" "$ACQUIRE_ROOTFS/tmp/$SHIM_SO_NAME"
     if [[ -n "$GUEST_SHIM" ]]; then
         # Cross build: the emulated processes must find the GUEST-class
         # shim at the preloaded path (an amd64 .so is rejected by the
@@ -329,7 +366,7 @@ if [[ -n "$ACQUIRE_ROOTFS" ]]; then
     # build if anything is still absent.
     set +e
     unshare -Urmpf --mount-proc env \
-        LD_PRELOAD="$SHIM_SO" \
+        LD_PRELOAD="/tmp/$SHIM_SO_NAME" \
         PATH="$SHIMBIN:$PATH" \
         debootstrap --variant=minbase --arch="$DEB_ARCH" \
             "${FOREIGN[@]}" \
@@ -348,7 +385,7 @@ if [[ -n "$ACQUIRE_ROOTFS" ]]; then
         log "second-stage debootstrap under $QEMU_STATIC (emulated, rootless)"
         set +e
         unshare -Urmpf --mount-proc env \
-            LD_PRELOAD="$SHIM_SO" \
+            LD_PRELOAD="/tmp/$SHIM_SO_NAME" \
             PATH="$SHIMBIN:$PATH" \
             chroot "$ACQUIRE_ROOTFS" /debootstrap/debootstrap --second-stage
         RC=$?
@@ -383,16 +420,13 @@ esac
 HAVE_WORKDIR=false
 for a in "${POSITIONAL[@]:-}"; do [[ "$a" == "--workdir" ]] && HAVE_WORKDIR=true; done
 $HAVE_WORKDIR || BUILDER_ARGS+=(--workdir "$WORKROOT/build-$$")
-# LD_PRELOAD stays HOST-CLASS ONLY outside chroots: the wrapper below
-# is the class boundary — it re-execs every chroot with ONLY the
-# in-target shim path (guest class when cross-building, staged by the
-# wrapper itself). Preloading both classes instead made every emulated
-# loader warn about the foreign entry, and that noise — captured with
-# 2>&1 by the builder's dpkg --audit gate — failed the audit on an
-# otherwise clean rootfs (observed 2026-09-25).
-PRELOAD_PAIR="$SHIM_SO"
+# The outer LD_PRELOAD is the CANONICAL path (/tmp/$SHIM_SO_NAME):
+# host-side it resolves to the driver's host-class copy; inside any
+# chroot, to the target's own copy (correct class per side — guest on a
+# cross build). Chrooted shimming therefore does NOT depend on the
+# chroot wrapper engaging, which a PATH-sanitizing debootstrap can skip.
 unshare -Urmpf --mount-proc env \
-    LD_PRELOAD="$PRELOAD_PAIR" \
+    LD_PRELOAD="/tmp/$SHIM_SO_NAME" \
     ${CDYLIB_ARCH:+NYRQIS_CDYLIB_ARCH="$CDYLIB_ARCH"} \
     PATH="$SHIMBIN:$PATH" \
     NYRQIS_ROOTLESS_BUILD=1 \

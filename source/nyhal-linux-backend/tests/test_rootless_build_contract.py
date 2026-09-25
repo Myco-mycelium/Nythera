@@ -83,8 +83,21 @@ class TestRootlessDriverStructure(unittest.TestCase):
                       "the driver must exec the real builder, not reimplement it")
 
     def test_ld_preload_carries_the_shim(self):
-        self.assertIn('LD_PRELOAD="$SHIM_SO"', self.driver,
-                      "the whole namespace must run preloaded")
+        # 2026-09-25: the preload path is CANONICAL — /tmp/<shim>.so
+        # resolves on BOTH sides of every chroot boundary (host-side:
+        # the driver's host-class copy; in-target: acquire's correctly
+        # named copy). The raw mktemp path is useless inside chroots,
+        # which is exactly how the runner's acquire ran its core
+        # install unshimmed while the identical flow worked locally.
+        self.assertIn('LD_PRELOAD="/tmp/$SHIM_SO_NAME"', self.driver,
+                      "every phase must preload the canonical in-target "
+                      "resolvable path")
+        self.assertIn('stage_host_shim', self.driver,
+                      "the host-side copy must be staged explicitly")
+        self.assertEqual(
+            self.driver.count('LD_PRELOAD='),
+            self.driver.count('LD_PRELOAD="/tmp/$SHIM_SO_NAME"'),
+            "no phase may preload any other path")
 
     def test_forced_root_squashfs_is_driven_by_env(self):
         # Files created in the self-map are owned by the HOST uid on
@@ -123,7 +136,12 @@ class TestRootlessDriverStructure(unittest.TestCase):
             self.driver, re.S)
         self.assertIsNotNone(m, "acquire block must exist before the build block")
         block = m.group(1)
-        self.assertIn('cp -f "$SHIM_SO" "$ACQUIRE_ROOTFS/tmp/"', block)
+        # 2026-09-25: the pre-stage must use the CANONICAL preload name —
+        # the outer LD_PRELOAD is /tmp/rootless-syscall-shim.so, and a
+        # raw-mktemp-named copy once left the runner's debootstrap core
+        # install UNSHIMMED (chown /var/mail → EINVAL).
+        self.assertIn('cp -f "$SHIM_SO" "$ACQUIRE_ROOTFS/tmp/$SHIM_SO_NAME"',
+                      block)
         self.assertLess(
             block.index('cp -f "$SHIM_SO"'),
             block.index("debootstrap --variant=minbase"),
