@@ -5,6 +5,23 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (issue #3 IMPLEMENTED + full local/CI verification GREEN — both
+boot smokes now guard concurrent runs (PID marker under the temp dir, exit 2
++ "refusing to race it" while a live instance holds it; stale/garbage markers
+taken over; liveness via os.kill(pid,0) with EPERM alive — pgrep banned;
+distinct per-driver tags) and self-heal their tmpdirs (rmtree replaces the
+empty-dir-only rmdir that leaked kernel/initrd debris every run); 12 contract
+tests + CLI-level BUSY proof; commit d2b2a81: ALL FOUR CI workflows success
+incl. live-iso-rootless (guarded smokes runner-proven) and the root-built
+live-iso-arm64 (build 46 min + menu-path UEFI smoke success, re-attach
+skipped as tag-gated); local wrappers surface rc=2 as a distinct BUSY
+verdict; full local smoke sweep PASS ×4 (amd64 direct+menu, arm64
+direct+menu on the kept ISOs — arm64 pair needed a redo after the guard
+correctly BUSY-refused its own concurrent launch); dailies PASS 5th
+consecutive in-band day (10:28:46 + 10:36:16 UTC, checker exit 0);
+dispatch probe #8 still 403 — PAT rotation remains the single open item,
+owner-side)
+
 2026-09-25 (v0.29.31 RELEASED — tagged, both ISOs attached to the
 published GitHub release and verified end-user-style: sha256 digests
 match the API values, both assets boot-smoked locally (amd64 direct,
