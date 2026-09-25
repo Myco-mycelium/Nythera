@@ -90,6 +90,56 @@ jobs:
           # /dev/kvm, /dev/dri etc. are NOT probed at build time — the
           # banner probes the booting machine, not the builder.
 
+      - name: Restore the cargo build cache
+        # The demo's Rust FFI surface (rust/.cdylibs in the image) is
+        # built from the crates every round; cache registry + targets so
+        # routine rebuilds skip the recompile. Keyed on the crate
+        # manifests+locks: any dependency or profile change invalidates.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            source/nyhal-linux-backend/rust/*/target
+          key: nyrqis-cdylibs-${{ runner.os }}-v1-${{ hashFiles('source/nyhal-linux-backend/rust/*/Cargo.toml', 'source/nyhal-linux-backend/rust/*/Cargo.lock') }}
+
+      - name: Build the Rust cdylibs (the demo's FFI surface)
+        # The demo session ships these into rust/.cdylibs and dlopens
+        # them (the NYRQIS_BOOT_SMOKE_CRATE marker). Until 2026-09-24 CI
+        # ISOs carried NONE — which let a latent `set -u` crash in
+        # nyrqis-demo's cdylib branch reach a real boot unexecuted (the
+        # first cdylib-carrying image caught it). Building them here
+        # keeps that branch CI-exercised on every round.
+        #
+        # Per-crate tolerant: a crate whose system build deps are not on
+        # the runner skips its artifacts with a visible warning (the FFI
+        # marker reports what actually loads). But ZERO artifacts is a
+        # hard failure — that is exactly the image shape that hid the
+        # set -u bug.
+        run: |
+          command -v cargo >/dev/null 2>&1 || rustup toolchain install --profile minimal stable
+          set +e
+          built=0
+          for d in source/nyhal-linux-backend/rust/*/; do
+            [ -f "$d/Cargo.toml" ] || continue
+            echo "::group::cargo build $(basename "$d")"
+            (cd "$d" && cargo build --release)
+            rc=$?
+            echo "::endgroup::"
+            if [ $rc -ne 0 ]; then
+              echo "::warning::crate $(basename "$d") failed to build — its artifacts are skipped (the demo's FFI marker reports what actually loads)"
+            else
+              built=$((built+1))
+            fi
+          done
+          set -e
+          count=$(ls source/nyhal-linux-backend/rust/*/target/release/libnyrqis_*.so 2>/dev/null | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no libnyrqis_*.so produced — the image would carry no Rust FFI surface (NYRQIS_BOOT_SMOKE_CRATE=0/0) and the demo's cdylib branch stays unexercised"
+            exit 1
+          fi
+          echo "cdylibs built: crates_ok=$built artifacts=$count"
+
       - name: Build the ISO
         run: |
           sudo packaging/live/build-live-iso.sh \
