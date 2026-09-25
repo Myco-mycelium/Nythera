@@ -29,6 +29,7 @@ checkout depth.
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1503,6 +1504,131 @@ class TestSmokeConcurrencyGuard(unittest.TestCase):
         # Menu driver must carry the identical semantics.
         self.assertTrue(self.menu_mod._pid_alive(os.getpid()))
         self.assertFalse(self.menu_mod._pid_alive(999999999))
+
+
+CLEANUP_TOOL = os.path.join(
+    _REPO_ROOT, "scripts", "clean-smoke-tmp.sh")
+
+
+class TestCleanupToolingContract(unittest.TestCase):
+    """Issue #3's tooling half: cleanup must check smoke liveness (PID
+    files, never self-matching pgrep) BEFORE touching tmp dirs.
+
+    The 2026-09-25 false FAIL was exactly a cleanup deleting a LIVE
+    smoke's tmpdir; scripts/clean-smoke-tmp.sh is the sanctioned sweeper
+    and must refuse while any marker or the wrapper PID file names a
+    live process, default to dry-run, gate removal behind --yes, and
+    touch only the nyrqis-boot-smoke-* namespace.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tool = read(CLEANUP_TOOL)
+
+    # ---- text pins: the shape of the guard
+
+    def test_tool_exists_and_defaults_to_dry_run(self):
+        self.assertTrue(os.path.exists(CLEANUP_TOOL))
+        self.assertIn("DO_IT=0", self.tool,
+                      "default must be dry-run (DO_IT=0)")
+        self.assertIn("--yes", self.tool,
+                      "actual removal must be gated behind --yes")
+        self.assertIn("CLEANUP-VERDICT=DRY-RUN", self.tool)
+
+    def test_tool_never_uses_pgrep(self):
+        # Usage ban, not a mention ban: the tool's header documents WHY
+        # pgrep is banned, and that prose must keep standing. What may
+        # never happen is pgrep on an executable line.
+        code_lines = [ln for ln in self.tool.splitlines()
+                      if not ln.lstrip().startswith("#")]
+        offenders = [ln for ln in code_lines if "pgrep" in ln]
+        self.assertEqual(
+            offenders, [],
+            "pgrep -f self-matches the checking shell's own cmdline — "
+            "the recurring pitfall; liveness comes from PID files only "
+            f"(offending lines: {offenders!r})")
+
+    def test_liveness_is_proc_existence_eperm_immune(self):
+        # kill -0 on a process you do not own fails with EPERM and
+        # bash cannot distinguish EPERM (alive) from ESRCH (dead);
+        # /proc/$pid existence is the correct shell-side test — the
+        # same semantics as the drivers' os.kill(pid, 0)+EPERM-alive.
+        self.assertIn('-d "/proc/$1"', self.tool,
+                      "liveness must be a /proc existence check")
+
+    def test_refusal_is_loud_and_non_destructive(self):
+        self.assertIn("CLEANUP-VERDICT=REFUSED", self.tool)
+        self.assertIn("exit 3", self.tool,
+                      "refusal must be a DISTINCT exit code (3), not 1")
+        # The refusal must fire BEFORE any removal: both live sources
+        # feed any_live, and the find/rm block only runs after it.
+        self.assertLess(
+            self.tool.index("any_live=1"), self.tool.index("mapfile"),
+            "liveness checks must precede the removal scan")
+
+    def test_all_three_pid_sources_are_checked(self):
+        self.assertIn("nyrqis-boot-smoke.pid", self.tool,
+                      "must honor the direct smoke's marker")
+        self.assertIn("nyrqis-boot-smoke-menu.pid", self.tool,
+                      "must honor the menu smoke's marker")
+        self.assertIn("smoke.pids", self.tool,
+                      "must honor the local wrapper's PID file")
+
+    def test_removal_is_scoped_to_the_smoke_namespace(self):
+        self.assertIn("-name 'nyrqis-boot-smoke-*'", self.tool,
+                      "the scan must match ONLY the smoke namespace")
+        self.assertIn("-maxdepth 1", self.tool,
+                      "no recursion — the temp root is scanned flat")
+
+    # ---- functional pins: hermetic, the test process IS the live holder
+
+    def test_tool_refuses_live_cleans_stale_touches_nothing_else(self):
+        with tempfile.TemporaryDirectory(
+                prefix="nq-clean-contract-") as root:
+            env = dict(os.environ,
+                       CLEAN_TMP_ROOT=root,
+                       CLEAN_SMOKE_PIDS=os.path.join(root, "smoke.pids"))
+            marker = os.path.join(root, "nyrqis-boot-smoke.pid")
+            smoke_dir = os.path.join(root, "nyrqis-boot-smoke-aaa")
+            os.makedirs(smoke_dir)
+            foreign = os.path.join(root, "keepme")
+            open(foreign, "w").close()
+
+            def run(*args):
+                return subprocess.run(
+                    ["bash", CLEANUP_TOOL, *args], env=env,
+                    capture_output=True, text=True, timeout=30)
+
+            # LIVE: this test process holds the marker — must refuse.
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write(f"{os.getpid()}\n")
+            refused = run()
+            self.assertEqual(
+                refused.returncode, 3,
+                "a live marker must refuse with exit 3")
+            self.assertIn("CLEANUP-VERDICT=REFUSED", refused.stdout)
+            self.assertTrue(os.path.isdir(smoke_dir),
+                            "refusal must remove nothing")
+
+            # STALE, dry-run: dead pid -> WOULD-REMOVE, nothing removed.
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write("999999999\n")  # pid_max-clamped, cannot exist
+            dry = run()
+            self.assertIn("WOULD-REMOVE", dry.stdout)
+            self.assertIn("CLEANUP-VERDICT=DRY-RUN", dry.stdout)
+            self.assertTrue(os.path.isdir(smoke_dir),
+                            "dry-run must remove nothing")
+
+            # STALE, --yes: dirs + stale marker gone, foreign untouched.
+            done = run("--yes")
+            self.assertEqual(done.returncode, 0)
+            self.assertIn("CLEANUP-VERDICT=DONE", done.stdout)
+            self.assertFalse(os.path.isdir(smoke_dir))
+            self.assertFalse(os.path.exists(marker),
+                             "a stale marker is debris — remove it too")
+            self.assertTrue(
+                os.path.exists(foreign),
+                "cleanup must touch ONLY the nyrqis-boot-smoke-* namespace")
 
 
 if __name__ == "__main__":
