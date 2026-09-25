@@ -23,6 +23,26 @@ sudo apt-get install -y debootstrap squashfs-tools genisoimage xorriso \
 sudo packaging/live/build-live-iso.sh -o dist/nyrqis-live.iso
 ```
 
+### CI jobs (already green — copy these names into your PR checklist)
+
+| Workflow | Job(s) | What proves |
+|---|---|---|
+| `live-iso` | `build`, `menu-boot` (+ re-attach) | root-built amd64 ISO boots (direct + GRUB) |
+| `live-iso-arm64` | `build-arm64`, `menu-boot-arm64` (+ re-attach) | root-built cross amd64→arm64 ISO boots (direct + UEFI/GRUB) |
+| `live-iso-rootless` | `rootless-amd64` (push-gated), `rootless-arm64` + `menu-boot-arm64-rootless` (dispatch, input `with-arm64`) | the NO-SUDO loop: acquire → build → ownership proof (`stat -c %u != 0`) → both boot smokes, on a stock runner |
+
+The rootless CI job enforces one architectural rule worth knowing before
+editing the driver: **the shim preload path is canonical** —
+`/tmp/rootless-syscall-shim.so` is the ONLY preloaded path, resolved on
+both sides of every chroot (host-side the host-class copy, in-target the
+correct-class copy under the same name). Do not preload the driver's
+raw mktemp path (a PATH-sanitizing debootstrap resolves chroots directly
+and would run unshimmed — observed on GitHub's 24.04 runner), and do
+not `cp -f` onto any preload path (a truncating overwrite executes
+zeros under processes mapped from it — SIGSEGV; stage with the atomic
+tmp+mv helper, `nyrqis-stage-shim.$$`). All pinned in
+`tests/test_rootless_build_contract.py` (101 tests).
+
 The default path assembles a minimal Debian bookworm rootfs with
 debootstrap (`NYRQIS_LIVE_SUITE` / `NYRQIS_LIVE_MIRROR` to switch),
 installs the backend + desktop tree at `/opt/nyrqis`, applies the live
