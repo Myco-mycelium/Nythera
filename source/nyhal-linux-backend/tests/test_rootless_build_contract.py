@@ -310,8 +310,13 @@ class TestRootlessArm64CrossBuild(unittest.TestCase):
         # aarch64 loader refuses an amd64 .so with a hard error). The
         # wrapper is GENERATED through a heredoc, so its source text
         # carries the escaped \$ spellings.
+        # 2026-09-25: staging is tmp+mv (rename), NEVER cp -f onto the
+        # live preload path — cp -f truncates the inode and every process
+        # mapped from it executes zeros (cp+bash SIGSEGV cores observed
+        # mid-build once the build phase preloaded the canonical path).
         self.assertIn(
-            'cp -f "\\$GUEST_SHIM" "\\$tgt/tmp/\\$SHIM_SO_NAME"', self.driver)
+            'mv -f "\\$tgt/tmp/.shim.tmp.\\$\\$" '
+            '"\\$tgt/tmp/\\$SHIM_SO_NAME"', self.driver)
         # And the emulator must be staged INSIDE the rootfs at the
         # binfmt-registered path for every cross chroot.
         self.assertIn(

@@ -177,7 +177,18 @@ log "compiling shim: $CC_BIN → $SHIM_SO"
 # never engages: newer Ubuntu debootstrap sanitizes PATH, so "chroot" may
 # resolve to the real /usr/sbin/chroot (observed on GitHub's 24.04 runner —
 # the acquire failed unshimmed while the identical flow worked locally).
-stage_host_shim() { mkdir -p /tmp; cp -f "$SHIM_SO" "/tmp/$SHIM_SO_NAME"; }
+# NEVER overwrite a preload file in place: cp -f truncates the inode,
+# and every process mapped from it (the builder bash itself, on the
+# canonical path) executes zeroed text on its next page fault — SIGSEGV
+# mid-build (observed: cp + bash cores at the first wrapper chroot
+# after the build phase switched to the canonical preload). Stage to a
+# temp name and RENAME: mv(1) within the same directory is rename(2) —
+# atomic entry swap, old inode stays alive for running mappers.
+stage_host_shim() {
+    mkdir -p /tmp
+    cp -f "$SHIM_SO" "/tmp/$SHIM_SO_NAME.tmp.$$" \
+        && mv -f "/tmp/$SHIM_SO_NAME.tmp.$$" "/tmp/$SHIM_SO_NAME"
+}
 stage_host_shim
 # Re-stage helper: before each long phase, ensure the canonical host-side
 # copy exists (hosts running systemd-tmpfiles can empty /tmp at any
@@ -283,8 +294,12 @@ for a in "\$@"; do
 done
 if [ -n "\$tgt" ]; then
     mkdir -p "\$tgt/tmp" 2>/dev/null
+    # tmp+mv (rename), NEVER cp -f onto the live preload path: the
+    # in-target copy may be mapped by chrooted processes of a PARALLEL
+    # step, and cp -f's truncate executes zeros under them.
     if [ -n "\$GUEST_SHIM" ] && [ -f "\$GUEST_SHIM" ]; then
-        cp -f "\$GUEST_SHIM" "\$tgt/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
+        cp -f "\$GUEST_SHIM" "\$tgt/tmp/.shim.tmp.\$\$" 2>/dev/null \
+            && mv -f "\$tgt/tmp/.shim.tmp.\$\$" "\$tgt/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
         # Keep the emulated binary staged at the registered binfmt path
         # (binfmt resolves the interpreter INSIDE the chroot).
         if [ -x "/usr/bin/\$QEMU_STATIC" ] && [ ! -x "\$tgt/usr/bin/\$QEMU_STATIC" ]; then
@@ -292,7 +307,8 @@ if [ -n "\$tgt" ]; then
             cp -f "/usr/bin/\$QEMU_STATIC" "\$tgt/usr/bin/" 2>/dev/null || :
         fi
     elif [ -f "\$SHIM_SO" ]; then
-        cp -f "\$SHIM_SO" "\$tgt/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
+        cp -f "\$SHIM_SO" "\$tgt/tmp/.shim.tmp.\$\$" 2>/dev/null \
+            && mv -f "\$tgt/tmp/.shim.tmp.\$\$" "\$tgt/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
     fi
 fi
 # The preload path must resolve on BOTH sides of the chroot boundary:
@@ -303,7 +319,11 @@ fi
 # context resolution, zero loader warnings (a single missing-side copy
 # puts one warning per chroot into every captured stderr — it tripped
 # the builder's dpkg --audit gate on a clean rootfs).
-cp -f "\$SHIM_SO" "/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
+# Host-side re-stage: ALSO tmp+mv — THIS shell and the builder bash are
+# mapped from exactly this file; cp -f here truncates our own text
+# (observed as cp+bash SIGSEGV cores mid-build).
+cp -f "\$SHIM_SO" "/tmp/.shim.tmp.\$\$" 2>/dev/null \
+    && mv -f "/tmp/.shim.tmp.\$\$" "/tmp/\$SHIM_SO_NAME" 2>/dev/null || :
 exec env LD_PRELOAD="/tmp/$SHIM_SO_NAME" /usr/sbin/chroot "\$@"
 WRAPPER
 chmod 0755 "$SHIMBIN/chroot"
@@ -346,7 +366,8 @@ if [[ -n "$ACQUIRE_ROOTFS" ]]; then
     # left only the mktemp-named file in the target and the runner's
     # debootstrap ran its core install UNSHIMMED: chown /var/mail →
     # EINVAL). amd64: host class; arm64: the guest shim below overwrites
-    # it with the aarch64 class.
+    # it with the aarch64 class. (Fresh target — no process maps this
+    # yet — so a plain copy is safe here.)
     cp -f "$SHIM_SO" "$ACQUIRE_ROOTFS/tmp/$SHIM_SO_NAME"
     if [[ -n "$GUEST_SHIM" ]]; then
         # Cross build: the emulated processes must find the GUEST-class
