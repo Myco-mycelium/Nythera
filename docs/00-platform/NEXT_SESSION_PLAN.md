@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.31.0
+version: 6.32.0
 date: 2026-09-25
 ---
 
@@ -26,6 +26,14 @@ verified. Only TWO open threads, both parked on external triggers:
 Standing references: REPOSITORY_STATE's newest paragraphs carry the full
 session close-out; the local workroot is swept (tmp at 4 KB; the two kept
 `~/nyrqis-work` ISOs remain from the 0.29.31-era local builds).
+
+**Trigger state verified Fri night via the repo's own check** (no extra
+dispatch probe needed): `scripts/verify_pat_grants.sh` probe mode reports
+identity OK (Myco-mycelium), variables write MISSING (403), actions write
+MISSING (403, via its designed harmless pat-expiry-watch self-check) →
+GRANTS MISSING — the rotation has NOT happened; run the same script after the
+owner rotates and expect ALL GRANTS PRESENT before starting the drill. CI on
+the wrap commit `8d292a6`: docs #36172497861 ✓ + ci #36172498062 ✓.
 
 ## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
 
