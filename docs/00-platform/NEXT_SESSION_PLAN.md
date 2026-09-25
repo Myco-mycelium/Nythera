@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.36.0
+version: 6.37.0
 date: 2026-09-25
 ---
 
@@ -74,6 +74,19 @@ correction — ADR-0020 v2.0.0 is Accepted. CI on the Bundle D staging commit
 `2e0c4ad`: docs #36174762210 ✓ + ci #36174762241 ✓ — every commit pushed
 today has now been verified green. The team digest gained the governance
 row to match.
+
+**Fri night — STOP DECLARATION (v6.37.0):** gate re-check #6 → GRANTS
+MISSING, sixth byte-identical result. The rotation is not happening tonight,
+and re-running the gates on generic "proceed" prompts is now itself the
+anti-pattern (issue #3 was literally "a loop kept doing X"). Standing rule:
+the three parked threads fire ONLY on their named triggers — (1) the AG's
+Bundle D ruling, (2) the owner REPORTING the PAT rotation (not a re-check
+prompt), (3) Monday's dailies — and each has its exact next command written
+in the 6.33.0–6.36.0 records and the digest. CI on the records commit
+`b15f7b1`: docs ✓ + ci ✓ — every commit pushed today is CI-verified; the
+watch on this stop-declaration commit itself is explicitly waived (docs-only
+text, same shape as the last eight green ones). Nothing actionable remains
+in this session by decision, not by omission.
 
 ## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
 

@@ -33,8 +33,9 @@ written-down trigger.**
    `scripts/verify_pat_grants.sh` → expect `ALL GRANTS PRESENT` →
    dispatch `live-iso-rootless.yml` `with-arm64: true` → expect 204 →
    watch the arm64 rootless run → post the issue #3 comment → expect 201.
-   State: `GRANTS MISSING` ×5 re-checks (identity OK; variables 403;
-   actions 403). **No further re-checks until the owner reports rotation.**
+   State: `GRANTS MISSING` ×6 re-checks (identity OK; variables 403;
+   actions 403). **Re-checks STOPPED — fire only on the owner REPORTING
+   rotation, not on generic re-run prompts.**
 2. **Monday dailies check** — sixth consecutive in-band day; verdict goes
    into NEXT_SESSION_PLAN's STANDING ITEM.
 3. **AG governance** — issue #2 is already DECIDED (ADR-0020 v2.0.0
