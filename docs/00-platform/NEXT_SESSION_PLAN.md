@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.33.0
+version: 6.34.0
 date: 2026-09-25
 ---
 
@@ -42,6 +42,16 @@ Monday check is honestly not executable yet. Opening housekeeping pre-flight
 RAN CLEAN: no stray qemu/smoke processes, no PID markers anywhere, clean git
 tree at the tip, workroot 712 MB (two kept ISOs + wrapper tooling + logs),
 tmp empty — the next session can open cold and go straight to the checklist.
+
+**Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
+MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
+reports rotation). Work-stream audit: the repo's two candidate branches
+(audit-b1-hardening, milestone/m14-display-server) are BOTH already merged
+into main (0 ahead, 118/438 behind) — there is NO unlanded work stream to
+pick up; the repo state is fully landed. The session is CLOSED pending its
+external triggers: the owner's PAT rotation (then the drill) and Monday's
+dailies (then the band check). Nothing else is actionable; do not manufacture
+work — open threads only via the triggers above or fresh owner direction.
 
 ## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
 
