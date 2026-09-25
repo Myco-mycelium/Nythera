@@ -1,10 +1,31 @@
 ---
 title: Next Development Session Plan
-version: 6.30.0
+version: 6.31.0
 date: 2026-09-25
 ---
 
 # Next Development Session Plan
+
+## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+Everything actionable from Fri 2026-09-25 has landed; v0.29.32 is released and
+verified. Only TWO open threads, both parked on external triggers:
+
+1. **Post-rotation drill** (trigger: the owner rotates the fine-grained PAT —
+   dispatch probes #1–#10 and the issue-comment POST all 403 pre-rotation):
+   `POST .../live-iso-rootless.yml/dispatches` with `with-arm64: true` → expect
+   204; watch the arm64 rootless CI run to green; then post the issue #3
+   close-out comment (expect 201 — issue CREATION returned 201 all along while
+   comment POST 403'd; the summary text is preserved in the 6.28.0/6.29.0
+   records and the session transcript). `scripts/verify_pat_grants.sh` and
+   `scripts/rotate_push_pat.sh` are the rotation-side tooling.
+2. **Monday dailies check** (trigger: the Mon ~10:02–11:49 UTC fires): verify
+   both dailies in-band + success + `scripts/check_scheduled_runs.sh` exit 0 —
+   a SIXTH consecutive in-band day. Record the verdict in the STANDING ITEM.
+
+Standing references: REPOSITORY_STATE's newest paragraphs carry the full
+session close-out; the local workroot is swept (tmp at 4 KB; the two kept
+`~/nyrqis-work` ISOs remain from the 0.29.31-era local builds).
 
 ## SESSION ITEM — Fri 2026-09-25 (later still): issue #3 implemented — both boot smokes guard concurrent runs (PID marker, exit 2 on BUSY) and self-heal their tmpdirs
 

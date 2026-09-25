@@ -5,6 +5,17 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-25 (v0.29.32 RELEASED — the drafted entry became the release: annotated
+tag pushed, release created via API with the 0.29.32 changelog body; both
+tag-triggered ISO workflows green (live-iso ~11 min, live-iso-arm64 ~38 min);
+both assets attached and verified END-USER-STYLE — unauthenticated download,
+sizes match the API (258263040 / 267214848 bytes), sha256 a6fe2556…b45f6cb /
+f0efecb6…f4e3fc66 recorded, and ALL FOUR boot paths PASS on the downloaded
+ISOs (amd64 direct+menu, arm64 direct+menu); the new cleanup tool swept its
+own verification evidence (~117 MB plus the byte-verified download dupes);
+issue-comment probe still 403 — the arm64 rootless dispatch and the issue
+comment both remain parked on the owner-side PAT rotation)
+
 2026-09-25 (issue #3 COMPLETED end to end — the tooling half landed in
 scripts/clean-smoke-tmp.sh (3f85979): the sanctioned sweeper for
 nyrqis-boot-smoke-* dirs refuses (exit 3, removes NOTHING) while any PID-file
