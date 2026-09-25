@@ -5,6 +5,71 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.31] - 2026-09-25
+
+### Added
+
+- **The live ISO now builds WITHOUT root — and the rootless pipeline is
+  CI-validated on a stock runner** (`build-live-iso-rootless.sh` +
+  `rootless-syscall-shim.c`, new `live-iso-rootless` workflow): the
+  unmodified builder runs inside `unshare -Urmpf --mount-proc` with an
+  LD_PRELOAD shim covering the two operations a self-mapped user
+  namespace cannot do (chown to unmapped ids → no-op success, ownership
+  correct by construction; mknod of device nodes → placeholder regular
+  files — the booted system mounts devtmpfs). The runner job proves the
+  full loop with zero sudo in the pipeline: acquire → build →
+  ownership proof (`stat -c %u != 0`) → BOTH boot smokes under TCG.
+  Alternatives probed and rejected with reasons recorded in the driver:
+  `--map-auto`/newuidmap (absent setuid helper), fakeroot (its daemon
+  propagates EINVAL from unmapped-gid chowns), proot/mmdebstrap.
+- **Rootless arm64 cross build, boot-proven on both paths**: the guest
+  (aarch64) shim is cross-compiled per build from the same committed C
+  source with a USER-SPACE zig tarball (`zig cc -target
+  aarch64-linux-gnu` — no sudo, no system cross-compiler); the acquire
+  phase runs `--foreign` with an emulated second stage. The 351 MB
+  arm64 ISO passed both smokes (direct ttyAMA0 handshake + GRUB/UEFI
+  menu) under TCG; the demo reports the honestly-skipped host-arch
+  cdylibs (`NYRQIS_CDYLIB_ARCH`, new env gate).
+
+### Fixed
+
+- **`build-live-iso.sh` named a nonexistent qemu binary on the arm64
+  path**: `qemu-$DEB_ARCH-static` produced `qemu-arm64-static`, which
+  does not exist (binfmt_misc registers the QEMU arch `aarch64`, not
+  the deb arch `arm64`). Now `$QEMU_STATIC`; the root-built CI never
+  hit it only because the rootfs workflow pre-stages the correctly
+  named binary.
+- **Two shim-staging defects surfaced by the CI runner** (each masked
+  locally by environmental differences, both contract-pinned now):
+  the shim is preloaded ONLY by its canonical path
+  (`/tmp/rootless-syscall-shim.so` — resolves on both sides of every
+  chroot; a raw mktemp path is useless inside chroots and a
+  PATH-sanitizing debootstrap skips the chroot wrapper entirely, which
+  once ran the core install unshimmed → `chown /var/mail` EINVAL), and
+  every staging site uses an ATOMIC tmp+mv helper (an in-place
+  overwrite of a mapped preload file truncates it; running processes
+  execute zeros — SIGSEGV, reproduced via systemd-coredump). A
+  per-minute watchdog re-stages the canonical copy for the whole run
+  (hosts running systemd-tmpfiles can empty /tmp mid-build — observed
+  twice) and the EXIT-trap cleanup removes it again (a stale copy
+  would silently shim unrelated later builds).
+- **`nyrqis-demo`'s bare `$LD_LIBRARY_PATH` expansion crashed the demo
+  session under `set -u`** (the first cdylib-carrying boot exposed it:
+  getty respawn-looped the autologin, no smoke marker ever printed;
+  CI never executed the branch without cdylibs). Fixed with the
+  `:${LD_LIBRARY_PATH:-}` guarded form; the regression guard bans any
+  bare expansion.
+
+### CI
+
+- **`live-iso-rootless` workflow**: amd64 push-gated (full rootless
+  loop + ownership proof + both smokes); arm64 + menu jobs dispatchable
+  with the `with-arm64` input (user-space zig, no system cross-gcc —
+  asserted). Runner userns posture normalized in pre-flight
+  (`apparmor_restrict_unprivileged_userns`); acquire steps dump the
+  inner debootstrap evidence inline on failure. Contract suite at 101
+  rootless/boot tests; full backend sweep 9,225 OK.
+
 ## [0.29.30] - 2026-09-20
 
 ### Added
