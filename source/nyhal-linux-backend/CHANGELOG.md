@@ -5,6 +5,56 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.33] - 2026-09-26
+
+### Added
+
+- **The D7 interactive attach UX — the last DBG-001 work item**
+  (`debug_attach.py`, `nyrqisctl debug attach|detach|dap-bridge`, 17
+  contract tests in `tests/test_debug_attach_ux.py`): a real debugger
+  session over the security surface that shipped 2026-09-23/25. Per
+  DBG-001's Phase A discipline it is CLIENT-SIDE COMPOSITION ONLY —
+  every privileged step rides an op that already exists on the wire
+  (`container_debug` attach/detach markers, `container_list` posture,
+  the manifest command); no new daemon op, nothing new to authorize.
+  The session record carries the KEPT probe socket — pydevd binds to
+  the first accepted connection, so a reconnect would steal the one
+  client slot (found end-to-end). The DAP bridge is a framing-only
+  byte pipe between IDE stdio and the staged loopback endpoint, so
+  VS Code and any DAP client attach without this CLI in the data
+  path. An own-netns container is REFUSED (the staged endpoints are
+  loopback-ONLY inside that namespace, NPS-021 §5.5 req 4) with the
+  marker released; every failure path closes the audit-chained
+  session (fail-closed, no dangling marker).
+- **`container_run` wire enablement** (`ipc/control.py`, CLI flags
+  `--debug-class`/`--rootfs`): the debug manifest class and rootfs
+  ride the wire; after spawn, manifest-requested class-conditional
+  capabilities are granted through the class-gated grant path (a
+  non-debug manifest raises, NPS-011 §4.4) — spawn itself grants the
+  defaults only. `container_list` entries now carry the network
+  posture and the debug class (the orchestrator's loopback-refusal
+  check reads them over the wire).
+
+### Validated
+
+- **End-to-end attach proof on a live debug-class container** (this
+  host): manifest command `python3 -Xfrozen_modules=off -m debugpy
+  --listen 127.0.0.1:5678 app.py` — audit-chained attach marker →
+  DAP initialize/attach over the kept socket → initialized event →
+  breakpoint verified=True → `configurationDone` → stopped
+  (reason=breakpoint) → variable inspection `x == 40` (execution
+  paused BEFORE `x += 2`) → continue → `AFTER_BP 42` printed →
+  `debug_detach` → hash chain verified with `debug_class=true` in
+  every entry. Three transport lessons are recorded in the module
+  docstring: the socket-family capabilities the in-container listener
+  needs (CAP_NETWORK_SOCKET/BIND — the D7-ledger divergence in
+  capability space), the kept-client-slot rule, and pydevd's
+  `arguments`-key + sequencing requirements. `-Xfrozen_modules=off`
+  is required: with frozen modules the adapter goes silent under the
+  container's seccomp posture.
+- Full sweep: `python3 -B -m unittest discover` 9272 OK (skipped=4);
+  pytest-collected tests/ 6619 passed (4 skipped).
+
 ## [0.29.32] - 2026-09-25
 
 ### Added

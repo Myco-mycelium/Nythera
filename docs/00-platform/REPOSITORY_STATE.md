@@ -5,6 +5,38 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-26 (M14 Phase 3 CLOSED — the LAST D7 work item, the interactive
+attach UX, LANDED and END-TO-END PROVEN on a live debug-class container:
+debug_attach.py + `nyrqisctl debug attach/detach/dap-bridge` — client-side
+composition only per the Phase A discipline, the audit-chained
+container_debug markers + container_list posture + the manifest command as
+the debugged program, NO new daemon op; the DAP bridge is a framing-only
+byte pipe between IDE stdio and the staged loopback endpoint so VS Code and
+any DAP client attach without this CLI in the data path; container_run
+gained --debug-class/--rootfs and the post-spawn grant of manifest-requested
+class-conditional caps through the class-gated path (NPS-011 §4.4);
+container_list entries carry the network posture + class. The proof:
+manifest command `python3 -Xfrozen_modules=off -m debugpy --listen
+127.0.0.1:5678 app.py` → attach marker → DAP handshake over the KEPT socket
+(pydevd binds to the FIRST accepted connection — a connect-and-close probe
+wedges it; three transport lessons pinned in DBG-001 v0.8.0 §4.2 and the
+module docstring: the socket-family capabilities CAP_NETWORK_SOCKET/BIND
+the in-container listener needs, the kept-client-slot rule, pydevd's
+arguments-key + initialize→attach→initialized→setBreakpoints→
+configurationDone sequencing) → breakpoint verified=True → stopped
+(reason=breakpoint) → variable inspection x==40 (paused BEFORE x+=2) →
+continue → AFTER_BP 42 → detach → hash chain verified with
+debug_class=true in every entry; own-netns containers REFUSED per §5.5
+req 4 with the marker released; -Xfrozen_modules=off required (frozen
+modules make the adapter go silent under the container's seccomp posture).
+Pinned by tests/test_debug_attach_ux.py (17 tests); roadmap strikes
+[~]→[x]; spec index v1.38.0; DBG-001 v0.8.0; CHANGELOG 0.29.33 + pyproject
+bumped (drift OK); sweep 9272 OK (skipped=4), pytest 6619 passed; three
+test_backend.py ControlService tests reconciled to the new container_list
+shape and the getattr-guarded grant block. The parked threads are unchanged:
+the owner-side PAT rotation (dispatch + issue comment), Monday's dailies
+check, and the AG's Bundle D ruling)
+
 2026-09-25 (v0.29.32 RELEASED — the drafted entry became the release: annotated
 tag pushed, release created via API with the 0.29.32 changelog body; both
 tag-triggered ISO workflows green (live-iso ~11 min, live-iso-arm64 ~38 min);

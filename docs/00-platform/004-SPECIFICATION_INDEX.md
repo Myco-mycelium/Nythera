@@ -1,13 +1,13 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.37.0
+version: 1.38.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-09-23
+updated: 2026-09-26
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -187,6 +187,7 @@ change process.
 | 1.35.0  | 2026-09-23 | D5/D6/D7 landed across the tree: NPS-028 v1.0.0 (Accepted + amendments), BUILD-ARCH v2.0.0 (canonical, merged, refreshed), TUT-003 depends_on + sdk citations re-pointed to BUILD-ARCH, DBG-001 v0.4.0 (Phase B decided, work items listed), AG_AGENDA v2.0.0 (all three standing items decided), the duality premise pin replaced by build-architecture-unified |
 | 1.36.0  | 2026-09-23 | D7 preconditions landed: NPS-021 v1.1.0 (§4.8 debug-attach surface analysis — the PID-namespace fence, the construction-time seccomp gate, the authorization fence; §5.5 FIND-CAPABILITY-006 with five MUST requirements) and NPS-011 v1.4.0 (`CAP-DEBUG-ATTACH`: High tier, denied by default, class-conditional per new §4.4, operator-only ops); AG_AGENDA v2.1.0 (D7 record updated); DBG-001 work-items list updated |
 | 1.37.0  | 2026-09-23 | D7 design review (DBG-001 v0.5.0 §4.1: all five §5.5 MUSTs mapped to verified enforcement sites, one open choice recorded and resolved same day) + the D7 manifest-class plumbing LANDED: `ContainerConfig.debug_class`, evaluation-time rejection in `create()` per NPS-011 §4.4, the class-conditional grant guard centralized in `CapabilityManager`, the construction-time seccomp gate (`build_policy`/`build_allowlist_policy` keyword-only `debug_class`), class-through-policy-file launcher parity, state-surface visibility (state dict, daemon-state manifest, checkpoint round-trip, creation event), IPC create passthrough — pinned by `tests/test_debug_manifest_class.py` (16 tests); DBG-001 v0.6.0 |
+| 1.38.0  | 2026-09-26 | **M14 Phase 3 CLOSED — the last D7 work item (the interactive attach UX) LANDED and END-TO-END PROVEN on a live debug-class container** (DBG-001 v0.8.0 §4.2): `debug_attach.py` + `nyrqisctl debug attach/detach/dap-bridge` (client-side composition only — the audit-chained markers, the posture from `container_list`, the manifest command as the debugged program; no new daemon op), `container_run` `--debug-class`/`--rootfs` + the post-spawn class-conditional grant through the class-gated path (NPS-011 §4.4), `container_list` entries carry network posture + class; 17 contract tests (`test_debug_attach_ux.py`); the proof: breakpoint verified → stopped → variable inspection x==40 pre-increment → continue → program completes → detach → chain verified with `debug_class=true` in every entry; three transport lessons pinned (socket-family capabilities, the kept-client-slot rule, pydevd DAP quirks); roadmap strikes, CHANGELOG 0.29.33, sweep 9272 OK |
 | 1.28.0  | 2026-09-22 | NPS-028's implementation COMPLETE + validated (v0.9.0–v0.9.3): the production process model (PkiDaemonRunner + pki serve + nyrqis-pki.service), the daemon drill (found + closed the binary-over-JSON wire gap), §5.1's out-of-band daemon wiring, and §10's 15-claim validation record (NPC-002 §5.1/§5.2 evidence); the NPS-028 acceptance review registered on AG_AGENDA v1.7.0 as the platform's one standing item |
 | 1.26.0  | 2026-09-21 | Add NPS-028 (Package PKI Implementation Surface, Draft) — the key store, verification pipeline, revocation channel, enrollment flow, and audit trail the accepted NPS-027/NPS-026 §6.3 trust model needs built; also reconciles this table's NPS-010 cell which still read Draft after its sanctioned 2026-09-19 acceptance |
 

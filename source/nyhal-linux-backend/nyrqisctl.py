@@ -41,6 +41,12 @@ import tempfile
 import time
 from typing import Any, Dict, List, Optional
 
+try:  # D7 attach UX (client-side composition only; see debug_attach.py)
+    import debug_attach
+except ImportError:  # pragma: no cover — running from another cwd
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import debug_attach
+
 from ipc.transport import (
     DEFAULT_OPERATOR_ID, IPCClient, IPCTransportError,
 )
@@ -150,6 +156,10 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "restart_policy": args.restart_policy,
             "restart_max_retries": args.restart_max_retries,
             "restart_delay": args.restart_delay,
+            # D7 attach UX: the debug manifest class + optional rootfs
+            # (debug staging rides <rootfs>/debug-staging/<id>).
+            "debug_class": bool(getattr(args, "debug_class", False)),
+            "rootfs": getattr(args, "rootfs", None),
         }
     if command == "containers-kill":
         return {
@@ -5240,10 +5250,16 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             lines.append(f"messages:      {resp.get('message_count')}")
         return "\n".join(lines)
     if command == "containers-run":
-        return (
+        lines = [
             f"container {resp.get('container_id')} started "
             f"(pid {resp.get('pid')})"
-        )
+        ]
+        if resp.get("debug_class"):
+            lines.append(
+                "debug_class: true (D7 staging ready; attach via "
+                "nyrqisctl debug attach " + str(resp.get("container_id"))
+                + ")")
+        return "\n".join(lines)
     if command == "containers-kill":
         return f"container {resp.get('container_id')} terminated"
     if command == "containers-logs":
@@ -9392,6 +9408,97 @@ def _redact_vault(resp: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _debug_attach_session(args: argparse.Namespace) -> int:
+    """D7 attach UX: the audited session marker + the reachability wait
+    (client-side composition of the existing ops; see debug_attach.py).
+    The in-container server itself is the MANIFEST COMMAND (the D7
+    design) — e.g. containers-run --debug-class with command
+    [python3, -m, debugpy, --listen, 127.0.0.1:5678, app.py]."""
+    target = args.socket
+
+    def container_call(op: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        resp = call_daemon(target, payload, timeout_s=max(args.timeout, 8.0))
+        return resp or {"ok": False, "error": "no reply from daemon"}
+
+    try:
+        result = debug_attach.attach(
+            container_call, args.container_id,
+            debugger=args.debugger, poll_timeout_s=args.wait)
+    except debug_attach.RefusedError as e:
+        print(f"debug attach refused: {e}", file=sys.stderr)
+        return 2
+    except debug_attach.UnreachableError as e:
+        print(f"debug attach failed: {e}", file=sys.stderr)
+        return 1
+    audit = result.get("attach_audit") or {}
+    ep = result["endpoint"]
+    print(f"container {result['container_id']}: debug session open "
+          f"({result['debugger']})")
+    print(f"  endpoint: {ep['host']}:{ep['port']} (loopback-only)")
+    if audit.get("hash"):
+        print(f"  audit:    {audit.get('chain_id', '?')} "
+              f"{audit['hash'][:16]}")
+    print(f"  waited:   {result['waited_s']}s")
+    print("  attach an IDE (DAP attach to the endpoint) or run: ")
+    print(f"    nyrqisctl debug dap-bridge {result['container_id']} "
+          f"--debugger {result['debugger']}")
+    return 0
+
+
+def _debug_detach_session(args: argparse.Namespace) -> int:
+    """D7 attach UX: the audit-chained session close."""
+    target = args.socket
+
+    def container_call(op: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        resp = call_daemon(target, payload, timeout_s=args.timeout)
+        return resp or {"ok": False, "error": "no reply from daemon"}
+
+    try:
+        result = debug_attach.detach(
+            container_call, args.container_id, debugger=args.debugger)
+    except debug_attach.RefusedError as e:
+        print(f"debug detach refused: {e}", file=sys.stderr)
+        return 2
+    audit = result.get("audit", {})
+    print(f"container {args.container_id}: debug session closed")
+    if audit.get("hash"):
+        print(f"  audit: {audit.get('chain_id', '?')} {audit['hash'][:16]}")
+    return 0
+
+
+def _debug_dap_bridge(args: argparse.Namespace) -> int:
+    """D7 attach UX: the stdio DAP bridge for IDE launch configs.
+
+    Resolves the staged endpoint via the existing container_debug
+    info op (its refusal is surfaced verbatim — the gates stay in the
+    manager), then pipes bytes between stdin/stdout and the endpoint.
+    """
+    target = args.socket
+    info = call_daemon(target, {
+        "service": "control", "op": "container_debug",
+        "container_id": args.container_id, "action": "info",
+        "debugger": args.debugger,
+    }, timeout_s=args.timeout)
+    if not info or not info.get("ok"):
+        print("debug dap-bridge refused: %s"
+              % ((info or {}).get("error", "no reply from daemon"),),
+              file=sys.stderr)
+        return 2
+    host, port = debug_attach.dap_endpoint_for(
+        args.debugger, info.get("endpoints"))
+    try:
+        sock = debug_attach._connect(
+            host, port, debug_attach.DEFAULT_CONNECT_TIMEOUT_S)
+        debug_attach.dap_bridge(
+            sock, sys.stdin.buffer.read1,
+            lambda data: (sys.stdout.buffer.write(data),
+                          sys.stdout.buffer.flush())[0])
+    except debug_attach.DebugSessionError as e:
+        print(f"debug dap-bridge: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _debug_bundle(args: argparse.Namespace) -> int:
     """DBG-001 Phase A: assemble an incident bundle by composing the
     EXISTING health/status/containers ops — client-side only, no new
@@ -9568,6 +9675,12 @@ def run(command: str, args: argparse.Namespace) -> int:
         return 2
     else:
         target = args.socket
+    if command == "debug-attach":
+        return _debug_attach_session(args)
+    if command == "debug-detach-session":
+        return _debug_detach_session(args)
+    if command == "debug-dap-bridge":
+        return _debug_dap_bridge(args)
     if command == "vault-volume-rekey":
         # OPERATOR-ONLY KEK rotation (ADR-0023): the new passphrase
         # rides to the daemon over the authenticated operator path; the
@@ -9832,6 +9945,43 @@ def build_parser() -> argparse.ArgumentParser:
                          "the raw replies)")
     db.set_defaults(command="debug-bundle")
 
+    # D7 attach UX (DBG-001's last work item): client-side session
+    # orchestration over the ALREADY-LANDED attach channel — the
+    # audited container_debug marker ops + the staged loopback
+    # endpoints. No new daemon op: attach/detach compose the existing
+    # ops; dap-bridge is the stdio DAP pipe for IDEs.
+    da = dbgsub.add_parser(
+        "attach",
+        help="Open an audited debug session and wait for the staged "
+             "in-container debugger endpoint to accept (D7)")
+    da.add_argument("container_id")
+    da.add_argument("--debugger", default="debugpy",
+                    choices=["debugpy", "gdbserver"],
+                    help="debugger flavor (default: debugpy)")
+    da.add_argument("--wait", type=float, default=60.0,
+                    help="Seconds to wait for the endpoint "
+                         "(default: 60)")
+    da.set_defaults(command="debug-attach")
+
+    dd = dbgsub.add_parser(
+        "detach",
+        help="Close the audited debug session (D7)")
+    dd.add_argument("container_id")
+    dd.add_argument("--debugger", default="debugpy",
+                    choices=["debugpy", "gdbserver"],
+                    help="debugger flavor (default: debugpy)")
+    dd.set_defaults(command="debug-detach-session")
+
+    dbb = dbgsub.add_parser(
+        "dap-bridge",
+        help="Bridge DAP between stdio (the IDE) and the container's "
+             "staged debug endpoint (byte pipe; no new daemon op)")
+    dbb.add_argument("container_id")
+    dbb.add_argument("--debugger", default="debugpy",
+                     choices=["debugpy", "gdbserver"],
+                     help="debugger flavor (default: debugpy)")
+    dbb.set_defaults(command="debug-dap-bridge")
+
     containers = sub.add_parser(
         "containers", help="Manage the daemon's containers")
     csub = containers.add_subparsers(dest="container_cmd", required=True)
@@ -9863,6 +10013,14 @@ def build_parser() -> argparse.ArgumentParser:
     # command it is executing.
     cr.add_argument("run_command", nargs="+", help="Command to run")
     cr.set_defaults(command="containers-run")
+    cr.add_argument(
+        "--rootfs", default=None,
+        help="Rootfs path for the container (debug staging rides the "
+             "overlay at <rootfs>/debug-staging/<id>; D7 attach UX)")
+    cr.add_argument(
+        "--debug-class", action=BooleanOptionalAction, default=False,
+        help="Declare the debug manifest class (debug:true; required "
+             "for CAP-DEBUG-ATTACH, NPS-011 §4.4)")
 
     ck = csub.add_parser("kill", help="Terminate a container on the daemon")
     ck.add_argument("container_id")

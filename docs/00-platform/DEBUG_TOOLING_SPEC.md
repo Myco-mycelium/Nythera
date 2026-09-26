@@ -1,13 +1,13 @@
 ---
 title: Debug Tooling — `nyrqisctl debug` (design note for the M14 Phase 3 item)
 document_id: DBG-001
-version: 0.7.0
+version: 0.8.0
 status: Draft
 classification: Informative
 owners:
   - Nyrqis Engineering
 created: 2026-09-23
-updated: 2026-09-25
+updated: 2026-09-26
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NPC-001, NPS-010, ADR-0018, ADR-0021, NPS-019]
@@ -145,10 +145,65 @@ the config); ~~the `nyrqisctl containers debug` op family~~ **done
 2026-09-25** (`container_debug` info/attach/detach/bind — capability-,
 class-, state- and staging-gated; bind needs CAP_NETWORK_BIND; audit-
 chained with the class per FIND-CAPABILITY-006 req 5; IPC op + CLI
-commands). What remains for the roadmap item to strike `[~]`→`[x]`: the
-actual interactive attach UX over the staged channel (a real debugpy/
-gdbserver session), which needs a live container to validate — the
-security surface (gates, audit, endpoints) is complete and pinned.
+commands); ~~the interactive attach UX~~ **done 2026-09-26** — the LAST
+work item: `debug_attach.py` + `nyrqisctl debug
+attach|detach|dap-bridge` (17 contract tests, `test_debug_attach_ux.py`)
+and the `container_run` wire enablement (`--debug-class`/`--rootfs`; the
+post-spawn grant of manifest-requested class-conditional caps through
+the class-gated path). **END-TO-END PROVEN on a live debug-class
+container** (see §4.2). The roadmap item strikes `[~]`→`[x]`.
+
+### 4.2 The attach UX as built (2026-09-26) and its end-to-end proof
+
+The UX is CLIENT-SIDE COMPOSITION ONLY (the Phase A discipline): every
+privileged step rides an op that already exists on the wire — the
+audit-chained `container_debug` attach/detach markers, `container_list`
+for the network posture, and the MANIFEST COMMAND itself (the D7
+design: the debugger runs inside the debuggee, so the manifest command
+IS the debugged program under debugpy). No new daemon op, nothing new
+to authorize. Surface: `nyrqisctl debug attach <id>` (marker +
+reachability wait), `debug detach <id>` (the audited close), and
+`debug dap-bridge <id>` (a framing-only byte pipe between IDE stdio
+and the staged endpoint — VS Code and any DAP client attach without
+this CLI in the data path).
+
+Three transport lessons, each found by actually running it and pinned
+in the module docstring:
+
+1. **The manifest needs the socket families.** The in-container
+   debugpy listener requires `CAP_NETWORK_SOCKET` (socket/connect)
+   and `CAP_NETWORK_BIND` (bind/listen/accept) — the seccomp baseline
+   deliberately excludes them. Without them the server EPERMs on
+   `socket()` and dies. This is the D7-ledger debug-vs-prod
+   divergence, in CAPABILITY space, not image space.
+2. **The reachability probe OWNS the client slot.** pydevd binds to
+   the FIRST accepted connection; a connect-then-close probe wedges
+   the server on the dead socket and the real DAP client's
+   `initialize` is never answered (silence, not an error). `attach()`
+   returns the KEPT probe socket (`_socket`) for the DAP client to
+   REUSE — never reconnect.
+3. **pydevd DAP quirks.** Every request must carry an `arguments`
+   key (even `{}`); the order is initialize → attach → the
+   `initialized` EVENT → setBreakpoints (earlier config requests are
+   refused: "Breakpoints may only be set after the launch request is
+   received") → configurationDone.
+
+**The proof (2026-09-26, live container):** manifest command
+`python3 -Xfrozen_modules=off -m debugpy --listen 127.0.0.1:5678
+app.py`, debug-class manifest with the defaults + CAP_DEBUG_ATTACH +
+the socket families; audit-chained attach marker → DAP
+initialize/attach over the kept socket → initialized event →
+breakpoint at line 5 verified=True → `configurationDone` → stopped
+(reason=breakpoint) → variable inspection `x == 40` (execution paused
+BEFORE `x += 2`) → continue → the program completes and prints
+`AFTER_BP 42` → `debug_detach` → hash chain verified with
+`debug_class=true` in every entry. `-Xfrozen_modules=off` is
+REQUIRED: with frozen modules the adapter goes silent under the
+container's seccomp posture (the debugger's own warning names the
+flag). An own-netns container (`network: true`) is REFUSED with the
+§5.5 req 4 explanation — the staged endpoints are loopback-ONLY
+inside that namespace — and the marker is released; wider binding
+remains the `debug-bind` op's job (CAP_NETWORK_BIND, audit-chained).
 
 ### 4.1 Design review against NPS-021 §5.5 (2026-09-23)
 
@@ -258,3 +313,4 @@ this rider when there is demand.
 | 0.3.1   | 2026-09-23 | The recorded shadow repaired (CR-0037): audit-chain-summary command registered properly, alert-summary un-hijacked, the stray mid-build_payload raise removed (~300 commands were unreachable since the CLI's first commit), parse→payload surface pinned by test_nyrqisctl_payload_surface.py |
 | 0.4.0   | 2026-09-23 | **Phase B DECIDED (D7): developer-mode manifests (Option B)** — debug:true class + CAP-DEBUG-ATTACH, in-container debugpy/gdbserver, ptrace relaxation for the manifest class only, NPS-021 addendum before implementation; §4 rewritten as decided with the original proposal retained; implementation work items listed, none landed yet |
 | 0.7.0   | 2026-09-25 | **D7 work items 1+2 LANDED:** debug-image staging (`_setup_debug_staging` at spawn, per-container dir on the writable overlay, loopback-pinned `debug-endpoints.json`, non-fatal failure leaves no staging) and the `containers debug` op family (`container_debug`: info/attach/detach/bind; CAP_DEBUG_ATTACH required, RUNNING state, staging fail-closed, bind additionally requires CAP_NETWORK_BIND, every accepted action audit-chained with the class in the entry result per FIND-CAPABILITY-006 req 5). IPC `container_debug` op + handler; CLI `containers debug-info/attach/detach/bind` (payload + formatter, pinned by the payload-surface sweep). 11 new tests (28 total in the manifest-class suite); full sweep 9255 OK. §4's work-item list updated |
+| 0.8.0   | 2026-09-26 | **The LAST D7 work item LANDED and END-TO-END PROVEN:** the interactive attach UX (`debug_attach.py`, `nyrqisctl debug attach/detach/dap-bridge`, `container_run` `--debug-class`/`--rootfs` + the post-spawn class-conditional grant; 17 contract tests). §4.2 added: the as-built UX, the three transport lessons (socket-family capabilities, the kept-client-slot rule, pydevd's DAP quirks), and the live-container breakpoint proof (x==40 pre-increment, chain verified). The roadmap item strikes `[~]`→`[x]` |

@@ -2392,6 +2392,7 @@ class ControlService:
                 # D7: the debug manifest class (NPS-011 §4.4). Creation
                 # rejects CAP-DEBUG-ATTACH requests without it.
                 debug_class=bool(request.get("debug_class", False)),
+                rootfs=request.get("rootfs") or None,
                 network=bool(request.get("network", False)),
                 limits=ResourceLimits(
                     memory_mb=int(request.get("memory_mb") or 256),
@@ -2404,6 +2405,25 @@ class ControlService:
             )
             container = self.container_manager.create(config)
             self.container_manager.spawn(container)
+            # D7 attach-channel enablement (NPS-011 §4.4): spawn grants
+            # the DEFAULTS only (_cap_initialize superscedes pre-spawn
+            # grants), so a manifest that REQUESTS a class-conditional
+            # capability is granted here — AFTER spawn, when the class
+            # declaration from create() is in place, through the same
+            # class-gated grant path (a non-debug manifest raises).
+            # The grant path is also the audit point (CapabilityGrant
+            # trail); the attach ops then enforce it fail-closed.
+            if (self.container_manager.capability_manager
+                    is not None and config.capabilities):
+                from backend.capability import Capability
+                cm = self.container_manager.capability_manager
+                for cap_name in config.capabilities:
+                    try:
+                        cap = Capability(cap_name)
+                    except ValueError:
+                        continue  # unknown names stay inert
+                    if cap not in cm.get_capabilities(container.id):
+                        cm.grant_capability(container.id, cap)
         except Exception as e:  # noqa: BLE001 - report to the operator
             logger.error("ipc: container_run failed: %s", e)
             self._reply(server, sender_path, call_id, {
@@ -2416,11 +2436,21 @@ class ControlService:
             "ok": True,
             "container_id": container.id,
             "pid": container.pid,
+            # D7 attach UX: the manifest-requested capabilities (the
+            # operator's echo back) + the class as created.
+            "capabilities": list(config.capabilities or []),
+            "debug_class": bool(config.debug_class),
         })
 
     def _container_list(self, server, sender_path: str, call_id: str) -> None:
         containers = [
-            {"id": c.id, "state": c.state.value, "pid": c.pid}
+            {"id": c.id, "state": c.state.value, "pid": c.pid,
+             # D7 attach UX: the network posture decides whether the
+             # staged LOOPBACK endpoints are reachable from the operator
+             # host (§5.5 req 4); the class is already a state surface.
+             "network": bool(c.config.network),
+             "debug_class": bool(getattr(c.config, "debug_class", False)),
+             }
             for c in self.container_manager.containers.values()
         ]
         self._reply(server, sender_path, call_id, {

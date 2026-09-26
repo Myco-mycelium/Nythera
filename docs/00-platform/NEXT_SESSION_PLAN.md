@@ -8,6 +8,21 @@ date: 2026-09-25
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sat 2026-09-26 session item — M14 Phase 3 CLOSED: the last D7 work item
+(the interactive attach UX) LANDED and END-TO-END PROVEN.** Everything
+decided and agent-executable has now landed; the tree carries the proof.
+
+| Item | Status |
+|------|--------|
+| **The attach UX** (`debug_attach.py` + `nyrqisctl debug attach/detach/dap-bridge`) | ✅ CLIENT-SIDE COMPOSITION ONLY (Phase A discipline): the audit-chained `container_debug` attach/detach markers, `container_list` for the network posture, and the MANIFEST COMMAND as the debugged program — no new daemon op, nothing new to authorize. The DAP bridge is a framing-only byte pipe between IDE stdio and the staged endpoint (VS Code/any DAP client attach without this CLI in the data path). Fail-closed: attach refusal surfaced verbatim; own-netns containers REFUSED per §5.5 req 4 with the marker released; every failure path closes the session |
+| **Wire enablement** | ✅ `container_run` gained `--debug-class`/`--rootfs`; after spawn, manifest-requested class-conditional capabilities are granted through the class-gated grant path (a non-debug manifest raises, NPS-011 §4.4) — spawn grants the defaults only; `container_list` entries carry the network posture + debug class |
+| **The end-to-end proof (live container)** | ✅ manifest command `python3 -Xfrozen_modules=off -m debugpy --listen 127.0.0.1:5678 app.py` on a debug-class manifest (defaults + CAP_DEBUG_ATTACH + CAP_NETWORK_SOCKET/BIND + CAP_PROCESS_SPAWN): attach marker → DAP initialize/attach over the KEPT socket → initialized event → breakpoint verified=True → configurationDone → stopped (reason=breakpoint) → variable inspection x==40 (paused BEFORE `x+=2`) → continue → `AFTER_BP 42` printed → detach → hash chain verified with `debug_class=true` in every entry |
+| **Three transport lessons (pinned: DBG-001 v0.8.0 §4.2 + the module docstring)** | ✅ (1) the in-container listener needs the socket families (CAP_NETWORK_SOCKET/BIND — the seccomp baseline deliberately excludes them; the D7-ledger divergence in CAPABILITY space, not image space); (2) the reachability probe OWNS the client slot — pydevd binds to the FIRST accepted connection, a connect-and-close probe wedges it (silence, not an error), so `attach()` hands back the KEPT socket for the DAP client to reuse; (3) pydevd DAP quirks — `arguments` key mandatory even when empty, and initialize → attach → initialized EVENT → setBreakpoints → configurationDone ordering (earlier config requests are refused). Also: `-Xfrozen_modules=off` REQUIRED — with frozen modules the adapter goes silent under the container's seccomp posture |
+| **Pins + sweeps** | ✅ 17 contract tests (`test_debug_attach_ux.py`: op-composition discipline, refusal/marker-release, netns refusal, DAP framing/bridge pins incl. the garbage-frame fail-closed and the real-socketpair byte-pipe transparency, container_run payload passthrough, the grant-after-spawn wiring); test_backend.py's `_FakeManager` reconciled (getattr-guarded grant block; container_list shape + network/debug_class on the fake's mock); full sweep 9272 OK (skipped=4); pytest 6619 passed |
+| **Records** | ✅ DBG-001 v0.8.0 (§4.2 added; the work-item list fully struck; revision row); roadmap `[~]`→`[x]` (M14 Phase 3 CLOSED); spec index v1.38.0; REPOSITORY_STATE newest paragraph; CHANGELOG 0.29.33 + pyproject bumped (drift OK); version-drift check exit 0 |
+
+**Carried triggers (unchanged):** the owner-side PAT rotation (dispatch +
+issue comment), Monday's dailies check, and the AG's Bundle D ruling.
 Everything actionable from Fri 2026-09-25 has landed; v0.29.32 is released and
 verified. Only TWO open threads, both parked on external triggers:
 

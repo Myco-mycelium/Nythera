@@ -13786,12 +13786,22 @@ class TestControlService(unittest.TestCase):
         def __init__(self):
             self.containers = {}
             self.created = []
+            # D7: container_run grants manifest-requested class-
+            # conditional caps after spawn; the fake has no capability
+            # manager, and the handler must treat that as "nothing to
+            # grant" (getattr-guarded), not crash.
+            self.capability_manager = None
 
         def create(self, config):
             c = mock.Mock()
             c.id = "ctr-1"
             c.pid = 4242
             c.state.value = "CREATED"
+            # D7: container_list reads the config's network posture and
+            # the debug class; a bare Mock reports truthy for both, so
+            # pin them to a plain (network-less, non-debug) container.
+            c.config.network = False
+            c.config.debug_class = False
             self.containers["ctr-1"] = c
             self.created.append(config)
             return c
@@ -14220,9 +14230,13 @@ class TestControlService(unittest.TestCase):
             resp = self._call(client, json.dumps({
                 "service": "control", "op": "container_list"}).encode())
             self.assertTrue(resp["ok"], resp)
+            # D7 attach UX: the network posture and the class ride
+            # every list entry (the orchestrator's loopback-refusal
+            # check reads them over the wire).
             self.assertEqual(resp["containers"],
                              [{"id": "ctr-1", "state": "CREATED",
-                               "pid": 4242}])
+                               "pid": 4242, "network": False,
+                               "debug_class": False}])
             resp = self._call(client, json.dumps({
                 "service": "control", "op": "container_kill",
                 "container_id": "ctr-1"}).encode())
