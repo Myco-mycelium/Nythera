@@ -89,6 +89,15 @@ rotation is still absent — verify_pat_grants.sh ran this same hour (GRANTS
 MISSING, identical signature), so the drill stays parked until the owner
 rotates.
 
+**Next-session pre-flight RAN CLEAN Sat ~13:00 UTC:** no stray qemu/smoke
+processes, no PID markers anywhere, clean git tree at the tip, /tmp at
+4.4 MB after sweeping the session's last ephemera (8 dbg-test-* fixture
+dirs, 14 tiny mkdtemp leftovers, 2 state:"created"/pid:null nyctr-*
+checkpoint test doubles — all ownerless, nothing live), only system dirs +
+the legit nyrqis-config/locks runtime state remain; workroot 712 MB (the
+two kept ISOs + wrapper tooling + logs, unchanged). The next session can
+open cold and go straight to the checklist.
+
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
 reports rotation). Work-stream audit: the repo's two candidate branches
