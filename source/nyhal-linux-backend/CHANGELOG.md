@@ -5,6 +5,30 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.34] - 2026-09-26
+
+### Added
+
+- **The .vsix build half of the IDE-integration item**
+  (`tools/build_vsix.py`, pinned by 12 tests in
+  `tests/test_build_vsix.py`): the vscode-nyrqis extension now builds
+  into a real, installable .vsix with the Python standard library
+  alone — no vsce, no npm registry, no network. The builder is
+  fail-closed (a manifest missing required fields or its entry point
+  refuses; a written archive is reopened and must contain the
+  structure members, the manifest, and the entry point before success
+  is reported) and deterministic (fixed member timestamps — two runs
+  produce byte-identical archives, so a rebuild is hash-checked, not
+  trusted). Verified beyond the contract tests: real VS Code accepted
+  the artifact (`--install-extension` success and the extension listed
+  as `nyrqis.vscode-nyrqis` in a throwaway extensions dir). The
+  marketplace-publish half stays open — it needs an owner-side
+  publisher account.
+- Verification: sweep `python3 -B -m unittest discover` 9284 OK
+  (skipped=4, +12); pytest 6631 passed (4 skipped); premises 46/46;
+  version drift OK; 0 dependency cycles across 85 documents;
+  `mkdocs build --strict` clean.
+
 ## [0.29.33] - 2026-09-26
 
 ### Added

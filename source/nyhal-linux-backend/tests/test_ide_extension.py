@@ -3,8 +3,10 @@
 The IDE-integration roadmap item was audited as genuinely absent
 (2026-09-23); this extension is the prototype that closes the gap
 honestly: real validation (the same floor the daemon's import gate
-uses), a real manifest, and a harness-pinned contract — without
-pretending a marketplace package can be built here.
+uses), a real manifest, and a harness-pinned contract — the .vsix
+build half followed 2026-09-26 (tools/build_vsix.py +
+test_build_vsix.py), leaving only the owner-side marketplace publish
+outside the repo.
 
 The harness stubs the 'vscode' module and drives extension.js's
 diagnostic path end-to-end: command wiring, language activation,

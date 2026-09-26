@@ -5,6 +5,17 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-26 (the .vsix BUILD HALF of the IDE-integration item LANDED —
+tools/build_vsix.py packages the vscode-nyrqis extension into a real,
+installable .vsix with the Python standard library alone (no vsce, no
+npm registry, no network), fail-closed and byte-identical-reproducible,
+pinned by 12 contract tests in test_build_vsix.py and verified beyond
+the tests with REAL VS CODE (--install-extension success, the extension
+listed as nyrqis.vscode-nyrqis in a throwaway extensions dir); the
+roadmap IDE item keeps [~] with the build half struck and only the
+owner-side marketplace publish open; CHANGELOG 0.29.34 + pyproject
+bumped (drift OK); sweep 9284 OK (skipped=4), pytest 6631 passed)
+
 2026-09-26 (v0.29.33 RELEASED and VERIFIED END-USER-STYLE — the D7 wrap
 commit 28ae6b2 tagged v0.29.33 (annotated, pushed), release created via the
 API (ID 397200903, "Nyrqis 0.29.33") with the D7 attach-UX body; CI on
