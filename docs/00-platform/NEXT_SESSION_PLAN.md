@@ -107,7 +107,12 @@ it was PATCHed in only after the four paths passed), Assets 4 (both ISOs
 + source archives). Triggers re-affirmed WITHOUT new probes: Monday's
 dailies check not yet due (Saturday; fires 2026-09-28 ~10:02–11:49 UTC,
 checker exit 0 now) and the PAT rotation still absent (verify_pat_grants.sh
-ran this hour: GRANTS MISSING).
+ran this hour: GRANTS MISSING). CI on the record commit de902f0: ci
+#36250232744 ✓ + docs #36250232748 ✓. Post-release pre-flight RAN CLEAN
+(Sat ~15:00 UTC): no stray processes, no PID markers, clean tree at the
+tip, tmp at 4.4 MB after sweeping one more ownerless nstudio test
+fixture from the suite run, workroot 712 MB unchanged — the next session
+opens cold, straight to the checklist, with all triggers external.
 
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
