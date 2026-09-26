@@ -79,6 +79,16 @@ removed exactly the 4 kept smoke-evidence dirs (~118 MB, nothing else) and
 the 502 MB of release-verification ISOs were removed after their hashes and
 boot verdicts were recorded.
 
+**End-user release review + trigger re-check Sat 12:54 UTC:** the v0.29.33
+release page renders as intended for a visitor — title "Nyrqis 0.29.33",
+Latest badge, tag at 28ae6b2, both body paragraphs intact, Assets 4 (both
+ISOs plus the automatic source archives). Both standing triggers re-affirmed
+WITHOUT new probes: the Monday dailies check is not yet due (today is
+Saturday; the fires are Mon 2026-09-28 ~10:02–11:49 UTC) and the PAT
+rotation is still absent — verify_pat_grants.sh ran this same hour (GRANTS
+MISSING, identical signature), so the drill stays parked until the owner
+rotates.
+
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
 reports rotation). Work-stream audit: the repo's two candidate branches
