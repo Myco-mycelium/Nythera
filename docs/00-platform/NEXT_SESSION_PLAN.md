@@ -100,6 +100,15 @@ the legit nyrqis-config/locks runtime state remain; workroot 712 MB (the
 two kept ISOs + wrapper tooling + logs, unchanged). The next session can
 open cold and go straight to the checklist.
 
+**v0.29.34 end-user review + trigger re-check Sat 14:56 UTC:** the release
+page renders as intended — title "Nyrqis 0.29.34", Latest badge, tag at
+9a9ca20, both body paragraphs intact (the boot-smoke line visible because
+it was PATCHed in only after the four paths passed), Assets 4 (both ISOs
++ source archives). Triggers re-affirmed WITHOUT new probes: Monday's
+dailies check not yet due (Saturday; fires 2026-09-28 ~10:02–11:49 UTC,
+checker exit 0 now) and the PAT rotation still absent (verify_pat_grants.sh
+ran this hour: GRANTS MISSING).
+
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
 reports rotation). Work-stream audit: the repo's two candidate branches
