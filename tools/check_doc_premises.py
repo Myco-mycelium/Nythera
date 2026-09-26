@@ -627,6 +627,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="cry001-design-note",
+        pattern=r"CRY-001",
+        description="The crash-reporting/telemetry design note exists (CRY-001, docs/00-platform/CRASH_TELEMETRY_SPEC.md, v0.1.0 Draft) — surface audit recorded (zero outbound HTTP clients in non-test backend code; §4.5 recovery + --syslog + health + the bundle's redaction-default-on as the existing substrate), three options (A local-only recommended; B audited opt-in egress; C observational close), four open questions for the Group",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: CRY-001",
+            "files": ["docs/00-platform/CRASH_TELEMETRY_SPEC.md"],
+        },
+    ),
+    Claim(
         claim_id="debug-bundle-tests",
         pattern=r"test_debug_bundle",
         description="The debug-bundle contract is pinned (9 tests: redaction default, --no-redact opt-out, per-container audit requirement, chain capture, no-partial-bundle abort, supplementary-error survival)",

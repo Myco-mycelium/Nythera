@@ -43,6 +43,7 @@ nav:
       - M15 Milestone Plan: 00-platform/M15_PLAN.md
       - Build Architecture: 00-platform/BUILD_ARCHITECTURE.md
       - Debug Tooling Design Note (DBG-001): 00-platform/DEBUG_TOOLING_SPEC.md
+      - Crash Reporting Design Note (CRY-001): 00-platform/CRASH_TELEMETRY_SPEC.md
       - Next Session Plan: 00-platform/NEXT_SESSION_PLAN.md
   - Tutorials:
       - Index: tutorials/README.md

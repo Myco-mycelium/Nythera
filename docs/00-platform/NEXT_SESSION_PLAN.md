@@ -146,6 +146,26 @@ hand — Monday's fires still ~42 h out; rotation verified GRANTS MISSING
 CHANGELOG release through 0.29.35 carries its tag, release, and on-disk
 verification.
 
+**NEW SCOPE opened Sat 16:5x UTC (user-approved): the M14 Phase 4
+"crash reporting and telemetry (opt-in)" item moved with the design-note-
+first discipline** (the DBG-001 precedent): `CRY-001` v0.1.0 Draft
+(`docs/00-platform/CRASH_TELEMETRY_SPEC.md`) — the surface audit's null
+finding shapes everything: ZERO outbound HTTP clients exist in non-test
+backend code (the live ISO boots `-net none`), so transmitting would be
+the platform's FIRST egress surface (a new NPS-019/NPS-020 class). What
+already exists: §4.5 crash-recovery reporting, `--syslog` journal mirror,
+health/status ops, the bundle's redaction-default-on, the ADR-0018 chain,
+NPS-029 separation. Three options: **A** local-only spool + a
+`nyrqisctl crash list/show/purge` surface (recommended — no new threat
+surface, redaction inherited, audit-chained), **B** audited opt-in egress
+to a self-operated collector (the transmission half split into its own
+future AG package), **C** observational close. Four open questions
+recorded (A-vs-B, spool default ON/OFF, mandatory schema fields,
+retention/purge). Registered: spec index v1.39.0 row + revision row,
+mkdocs nav, premise `cry001-design-note` (47/47), cycles 0 across 86
+docs, mkdocs strict clean. The item stays `[ ]` on the roadmap — the
+draft proposes, the Group decides.
+
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
 reports rotation). Work-stream audit: the repo's two candidate branches
