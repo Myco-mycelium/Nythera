@@ -114,6 +114,18 @@ tip, tmp at 4.4 MB after sweeping one more ownerless nstudio test
 fixture from the suite run, workroot 712 MB unchanged — the next session
 opens cold, straight to the checklist, with all triggers external.
 
+**Lesson re-probed and CORRECTED Sat 15:0x UTC (0.29.35):** the .vsix
+determinism claim shipped in 0.29.34 was FALSE — wall-clock CreationDate
+broke cross-second rebuilds, and the original test passed only because
+both builds ran inside the same second (a test that cannot fail across
+the boundary it exists to guard). Caught by re-probing the claim an hour
+after shipping it; fixed with SOURCE_DATE_EPOCH + a sleep-1.1s pin and
+an override pin (13 tests); cross-second rebuild re-verified byte-
+identical on the real tree, VS Code still accepts the artifact. Sweep
+9285 OK (skipped=4), pytest 6632; CHANGELOG 0.29.35 + pyproject (drift
+OK). The meta-lesson joins the repo's pattern: a claim that "cannot
+fail" in its own test is the one to re-probe hardest.
+
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
 reports rotation). Work-stream audit: the repo's two candidate branches

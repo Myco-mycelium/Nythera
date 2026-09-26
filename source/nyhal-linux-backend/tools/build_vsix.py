@@ -17,9 +17,15 @@ Discipline:
   exit 1 and builds nothing.
 - The mock-harness ``node_modules/`` stub and dotfiles are never
   packaged.
-- Deterministic bytes: every member gets a fixed timestamp, so two
-  runs over the same tree produce byte-identical archives (same sha256)
-  — a rebuild can be hash-checked instead of trusted.
+- Deterministic bytes: every zip member gets a fixed timestamp and the
+  manifest's ``CreationDate`` comes from ``SOURCE_DATE_EPOCH``
+  (the reproducible-builds standard) with a fixed epoch default — so
+  two runs over the same tree produce byte-identical archives (same
+  sha256) no matter how far apart in time they run. The first draft
+  used wall-clock ``CreationDate`` and its determinism claim was
+  false across second boundaries; caught by re-probing the claim, not
+  by the original test (which built twice inside the same second).
+  A rebuild can be hash-checked instead of trusted.
 - Self-verifying: the written archive is reopened and must contain the
   entry point and the manifest before the build is reported.
 
@@ -106,8 +112,17 @@ def _collect_files(ext_dir: str) -> list:
     return files
 
 
+def _creation_date() -> str:
+    """VSIX CreationDate, reproducibly: SOURCE_DATE_EPOCH if set (the
+    reproducible-builds convention), else the epoch itself — never
+    wall-clock, which would break byte-identical rebuilds."""
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
 def _vsixmanifest(manifest: dict) -> bytes:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = _creation_date()
     identity = f"{manifest['publisher']}.{manifest['name']}"
     props = [
         ("Microsoft.VisualStudio.Code.Engine",

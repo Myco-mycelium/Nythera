@@ -5,6 +5,24 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.35] - 2026-09-26
+
+### Fixed
+
+- **build_vsix determinism was FALSE as shipped in 0.29.34** — caught by
+  re-probing the claim an hour later, not by the original test: the
+  vsixmanifest's `CreationDate` used wall-clock time, so two builds
+  crossing a clock-second boundary produced different hashes. The
+  original byte-identical test passed only because both of its builds
+  ran inside the same second (a test that cannot fail across the
+  boundary it exists to guard). `CreationDate` now comes from
+  `SOURCE_DATE_EPOCH` (the reproducible-builds standard) with a fixed
+  epoch default; the test pins determinism across a real second
+  boundary (sleep 1.1 s between builds) and pins the override, so
+  neither half of the claim can silently regress again. Cross-second
+  rebuild re-verified byte-identical on the real extension tree; VS
+  Code still accepts the artifact.
+
 ## [0.29.34] - 2026-09-26
 
 ### Added

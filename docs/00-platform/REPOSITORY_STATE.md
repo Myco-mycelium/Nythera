@@ -5,6 +5,16 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-26 (0.29.35 — the build_vsix DETERMINISM CLAIM SHIPPED IN 0.29.34
+WAS FALSE and is fixed: CreationDate used wall-clock, so cross-second
+rebuilds differed; the original test passed only because its two builds
+ran inside one second. Caught by re-probing the claim, not by the suite.
+Now SOURCE_DATE_EPOCH (fixed-epoch default); the test pins determinism
+across a real second boundary (sleep 1.1 s) and pins the override;
+cross-second rebuild re-verified byte-identical on the real tree, VS
+Code still accepts the artifact. CHANGELOG 0.29.35 + pyproject (drift
+OK); sweep 9285 OK (skipped=4), pytest 6632 passed)
+
 2026-09-26 (v0.29.34 RELEASED and VERIFIED END-USER-STYLE — commit 9a9ca20
 (the .vsix build half) tagged v0.29.34 and pushed; release created via API
 (ID 397251990) with the boot-smoke line WITHHELD until proven — the v0.29.33

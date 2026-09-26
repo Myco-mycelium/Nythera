@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -132,15 +133,45 @@ class TestVsixBuilder(unittest.TestCase):
         target = local(root, "InstallationTarget")
         self.assertEqual(target.get("Id"), "Microsoft.VisualStudio.Code")
 
-    def test_rebuild_is_byte_identical(self):
-        """Two runs over the same tree → same bytes (the rebuild can be
-        hash-checked instead of trusted)."""
+    def test_rebuild_is_byte_identical_across_seconds(self):
+        """Two runs over the same tree → same bytes, even when the runs
+        cross a clock-second boundary. The first draft's wall-clock
+        CreationDate passed a same-second double-build test and was
+        still non-deterministic — the delay here is the pin, not
+        decoration: without it this test can silently stop testing
+        what it claims."""
         a, b = self._out("a.vsix"), self._out("b.vsix")
         self.sandbox.run("--out", a)
+        time.sleep(1.1)
         self.sandbox.run("--out", b)
         with open(a, "rb") as f1, open(b, "rb") as f2:
             self.assertEqual(hashlib.sha256(f1.read()).hexdigest(),
                              hashlib.sha256(f2.read()).hexdigest())
+
+    def test_source_date_epoch_is_honored(self):
+        """The reproducible-builds override: two runs with the same
+        SOURCE_DATE_EPOCH agree, and the manifest carries that exact
+        instant."""
+        epoch = str(int(time.time()))
+        env = dict(os.environ, SOURCE_DATE_EPOCH=epoch)
+        a, b = self._out("sa.vsix"), self._out("sb.vsix")
+        for out in (a, b):
+            proc = subprocess.run(
+                [sys.executable, BUILDER,
+                 "--extension-dir", self.sandbox.ext.ext_dir,
+                 "--out", out],
+                capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(a, "rb") as f1, open(b, "rb") as f2:
+            self.assertEqual(hashlib.sha256(f1.read()).hexdigest(),
+                             hashlib.sha256(f2.read()).hexdigest())
+        import zipfile
+        with zipfile.ZipFile(a) as zf:
+            manifest = zf.read("extension.vsixmanifest").decode("utf-8")
+        expected = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                 time.gmtime(int(epoch)))
+        self.assertIn(f"<CreationDate>{expected}</CreationDate>",
+                      manifest)
 
     def test_node_modules_stub_is_never_packaged(self):
         """The mock-harness vscode stub (node_modules/) never enters
