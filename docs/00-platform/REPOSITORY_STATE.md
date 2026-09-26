@@ -5,15 +5,17 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-09-26 (0.29.35 — the build_vsix DETERMINISM CLAIM SHIPPED IN 0.29.34
-WAS FALSE and is fixed: CreationDate used wall-clock, so cross-second
-rebuilds differed; the original test passed only because its two builds
-ran inside one second. Caught by re-probing the claim, not by the suite.
-Now SOURCE_DATE_EPOCH (fixed-epoch default); the test pins determinism
-across a real second boundary (sleep 1.1 s) and pins the override;
-cross-second rebuild re-verified byte-identical on the real tree, VS
-Code still accepts the artifact. CHANGELOG 0.29.35 + pyproject (drift
-OK); sweep 9285 OK (skipped=4), pytest 6632 passed)
+2026-09-26 (v0.29.35 RELEASED and VERIFIED END-USER-STYLE — the
+determinism fix tagged (annotated, a30098c), release 397286940 created
+with the boot-smoke line withheld, both tag workflows success
+(live-iso ~9 min, live-iso-arm64 ~38 min), both assets downloaded
+unauthenticated byte-exact (258340864 / 267296768; sha256
+06e45f60…76f7ef1 / 2c8395fd…2c713) and ALL FOUR boot paths PASS on the
+downloaded ISOs, verdicts captured to files this time after a tool
+timeout orphaned one early run (the killed run left a stale marker and
+no verdict — re-run cleanly rather than counted); boot-smoke line
+PATCHed into the release only after the proof; dailies in-band (checker
+exit 0). The 0.29.35 tag closes the drift gap the fix opened)
 
 2026-09-26 (v0.29.34 RELEASED and VERIFIED END-USER-STYLE — commit 9a9ca20
 (the .vsix build half) tagged v0.29.34 and pushed; release created via API

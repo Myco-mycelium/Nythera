@@ -126,6 +126,15 @@ identical on the real tree, VS Code still accepts the artifact. Sweep
 OK). The meta-lesson joins the repo's pattern: a claim that "cannot
 fail" in its own test is the one to re-probe hardest.
 
+**Release v0.29.35 shipped + verified end-user-style:** tag pushed
+(annotated, a30098c); release 397286940 created with the boot-smoke line
+withheld, PATCHed after proof; tag workflows success (live-iso ~9 min,
+live-iso-arm64 ~38 min); assets byte-exact (258340864 / 267296768;
+sha256 06e45f60…76f7ef1 amd64 / 2c8395fd…2c713 arm64); ALL FOUR boot
+smokes PASS on the downloaded ISOs — verdicts captured to files after a
+tool timeout orphaned one early amd64 run (stale marker, no verdict →
+clean re-run, never counted without proof).
+
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
 reports rotation). Work-stream audit: the repo's two candidate branches
