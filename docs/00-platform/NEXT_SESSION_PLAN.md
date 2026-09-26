@@ -1,7 +1,7 @@
 ---
 title: Next Development Session Plan
-version: 6.38.0
-date: 2026-09-25
+version: 6.39.0
+date: 2026-09-26
 ---
 
 # Next Development Session Plan
@@ -11,6 +11,14 @@ date: 2026-09-25
 **Sat 2026-09-26 session item — M14 Phase 3 CLOSED: the last D7 work item
 (the interactive attach UX) LANDED and END-TO-END PROVEN.** Everything
 decided and agent-executable has now landed; the tree carries the proof.
+The session then shipped AND verified the release end-user-style: CI on
+28ae6b2 green (all four workflows), today's dailies in-band (sixth
+consecutive day, checker exit 0), tag v0.29.33 pushed, release created
+(ID 397200903), both tag workflows success, both ISO assets verified
+(byte-exact vs API sizes; sha256 9cef5320…c28a8c70 amd64 /
+aa81e8aa…57738635 arm64) and ALL FOUR boot paths PASS on the downloaded
+ISOs — the published release body's boot-smoke line independently
+confirmed after the fact.
 
 | Item | Status |
 |------|--------|
@@ -20,11 +28,12 @@ decided and agent-executable has now landed; the tree carries the proof.
 | **Three transport lessons (pinned: DBG-001 v0.8.0 §4.2 + the module docstring)** | ✅ (1) the in-container listener needs the socket families (CAP_NETWORK_SOCKET/BIND — the seccomp baseline deliberately excludes them; the D7-ledger divergence in CAPABILITY space, not image space); (2) the reachability probe OWNS the client slot — pydevd binds to the FIRST accepted connection, a connect-and-close probe wedges it (silence, not an error), so `attach()` hands back the KEPT socket for the DAP client to reuse; (3) pydevd DAP quirks — `arguments` key mandatory even when empty, and initialize → attach → initialized EVENT → setBreakpoints → configurationDone ordering (earlier config requests are refused). Also: `-Xfrozen_modules=off` REQUIRED — with frozen modules the adapter goes silent under the container's seccomp posture |
 | **Pins + sweeps** | ✅ 17 contract tests (`test_debug_attach_ux.py`: op-composition discipline, refusal/marker-release, netns refusal, DAP framing/bridge pins incl. the garbage-frame fail-closed and the real-socketpair byte-pipe transparency, container_run payload passthrough, the grant-after-spawn wiring); test_backend.py's `_FakeManager` reconciled (getattr-guarded grant block; container_list shape + network/debug_class on the fake's mock); full sweep 9272 OK (skipped=4); pytest 6619 passed |
 | **Records** | ✅ DBG-001 v0.8.0 (§4.2 added; the work-item list fully struck; revision row); roadmap `[~]`→`[x]` (M14 Phase 3 CLOSED); spec index v1.38.0; REPOSITORY_STATE newest paragraph; CHANGELOG 0.29.33 + pyproject bumped (drift OK); version-drift check exit 0 |
+| **Release v0.29.33 shipped + verified end-user-style** | ✅ CI on 28ae6b2 green (ci #36236636540, live-iso #36236636631, arm64-conformance #36236636527, docs #36236636528); tag pushed (annotated); release created via API (ID 397200903, body = the D7 attach-UX paragraph); tag workflows success (live-iso #36237180631 ~11 min, live-iso-arm64 #36237180628 ~46 min); both assets attached automatically, downloaded UNAUTHENTICATED byte-exact vs the API asset sizes (258312192 / 267268096 bytes), sha256 recorded, and ALL FOUR boot smokes PASS serially on the DOWNLOADED ISOs (amd64 direct+menu, arm64 direct+menu, exit 0 each). Lesson: mid-watch 403 from the unauthenticated 60/h API quota — resume polling with the git-credential-fill Bearer token (5000/h); downloads stay unauthenticated |
 
 **Carried triggers (unchanged):** the owner-side PAT rotation (dispatch +
 issue comment), Monday's dailies check, and the AG's Bundle D ruling.
-Everything actionable from Fri 2026-09-25 has landed; v0.29.32 is released and
-verified. Only TWO open threads, both parked on external triggers:
+Everything actionable from Fri 2026-09-25 has landed; v0.29.33 is released
+and verified. Only TWO open threads, both parked on external triggers:
 
 1. **Post-rotation drill** (trigger: the owner rotates the fine-grained PAT —
    dispatch probes #1–#10 and the issue-comment POST all 403 pre-rotation):
@@ -36,7 +45,9 @@ verified. Only TWO open threads, both parked on external triggers:
    `scripts/rotate_push_pat.sh` are the rotation-side tooling.
 2. **Monday dailies check** (trigger: the Mon ~10:02–11:49 UTC fires): verify
    both dailies in-band + success + `scripts/check_scheduled_runs.sh` exit 0 —
-   a SIXTH consecutive in-band day. Record the verdict in the STANDING ITEM.
+   targeting a SEVENTH consecutive in-band day (Saturday 2026-09-26 made six:
+   pat-expiry-watch 10:08:33Z + scheduled-runs-watch 10:19:32Z, both success,
+   checker exit 0). Record the verdict in the STANDING ITEM.
 
 Standing references: REPOSITORY_STATE's newest paragraphs carry the full
 session close-out; the local workroot is swept (tmp at 4 KB; the two kept

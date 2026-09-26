@@ -5,6 +5,27 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-26 (v0.29.33 RELEASED and VERIFIED END-USER-STYLE — the D7 wrap
+commit 28ae6b2 tagged v0.29.33 (annotated, pushed), release created via the
+API (ID 397200903, "Nyrqis 0.29.33") with the D7 attach-UX body; CI on
+28ae6b2 all green BEFORE the tag (ci, live-iso, arm64-conformance, docs);
+both tag-triggered workflows success (live-iso #36237180631 ~11 min,
+live-iso-arm64 #36237180628 ~46 min); both ISO assets attached automatically
+and verified the 0.29.32 way — unauthenticated download byte-exact against
+the API asset sizes (258312192 / 267268096 bytes; sha256 9cef5320…c28a8c70 /
+aa81e8aa…57738635) and ALL FOUR boot paths PASS on the DOWNLOADED ISOs (amd64
+direct+menu, arm64 direct+menu — exit 0 each, run serially under the
+PID-marker guard). Operational lesson recorded: unauthenticated
+api.github.com polling exhausted the 60/h quota (403) mid-watch; the git
+credential fill token lifts API polling to the authenticated 5000/h while
+downloads stay unauthenticated. The release body's boot-smoke line,
+published ahead of the re-verification, is now independently confirmed.
+Today's dailies ran in-band (pat-expiry-watch 10:08:33Z,
+scheduled-runs-watch 10:19:32Z, both success — the SIXTH consecutive
+in-band day; scripts/check_scheduled_runs.sh exit 0). Parked threads
+unchanged: the owner-side PAT rotation (dispatch + issue #3 comment),
+Monday's dailies check, and the AG's Bundle D ruling)
+
 2026-09-26 (M14 Phase 3 CLOSED — the LAST D7 work item, the interactive
 attach UX, LANDED and END-TO-END PROVEN on a live debug-class container:
 debug_attach.py + `nyrqisctl debug attach/detach/dap-bridge` — client-side
