@@ -5,6 +5,19 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-26 (v0.29.34 RELEASED and VERIFIED END-USER-STYLE — commit 9a9ca20
+(the .vsix build half) tagged v0.29.34 and pushed; release created via API
+(ID 397251990) with the boot-smoke line WITHHELD until proven — the v0.29.33
+lesson applied — then PATCHed in after all four paths passed; both
+tag-triggered workflows success (live-iso #36246338154 ~8 min,
+live-iso-arm64 #36246338155 ~38 min); both assets downloaded
+unauthenticated byte-exact vs the API sizes (258342912 / 267290624;
+sha256 5ba9470f…681c392c / f867ceb8…1c01a22e) and ALL FOUR boot paths PASS
+on the DOWNLOADED ISOs, run serially. Dailies in-band the same day
+(scripts/check_scheduled_runs.sh exit 0); PAT rotation still absent
+(verify_pat_grants.sh: GRANTS MISSING). The 0.29.34 tag also closes the
+version-drift loose end the .vsix commit opened)
+
 2026-09-26 (the .vsix BUILD HALF of the IDE-integration item LANDED —
 tools/build_vsix.py packages the vscode-nyrqis extension into a real,
 installable .vsix with the Python standard library alone (no vsce, no
