@@ -69,6 +69,16 @@ RAN CLEAN: no stray qemu/smoke processes, no PID markers anywhere, clean git
 tree at the tip, workroot 712 MB (two kept ISOs + wrapper tooling + logs),
 tmp empty — the next session can open cold and go straight to the checklist.
 
+**Follow-up verdicts Sat 2026-09-26 (post-release):** CI on the record commit
+`e9bf59d` green — docs #36243099595 ✓ + ci #36243099607 ✓ (all 30 check runs
+success on the head sha). The PAT-rotation probe re-run the same hour:
+GRANTS MISSING, identical signature (identity OK, variables 403, actions
+403) — the rotation has NOT happened and the drill stays parked. The
+session's /tmp footprint swept the sanctioned way: clean-smoke-tmp.sh --yes
+removed exactly the 4 kept smoke-evidence dirs (~118 MB, nothing else) and
+the 502 MB of release-verification ISOs were removed after their hashes and
+boot verdicts were recorded.
+
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
 reports rotation). Work-stream audit: the repo's two candidate branches
