@@ -135,6 +135,17 @@ smokes PASS on the downloaded ISOs — verdicts captured to files after a
 tool timeout orphaned one early amd64 run (stale marker, no verdict →
 clean re-run, never counted without proof).
 
+**Post-release refresh Sat 16:46 UTC:** CI green on both record commits
+(1c72f33: docs #36251997782 ✓ + ci #36251997867 ✓; c9484a8: docs
+#36256552963 ✓ + ci #36256552990 ✓). Pre-flight re-ran CLEAN: no stray
+processes, no PID markers, clean tree at c9484a8, tmp at 4.4 MB after
+sweeping one more ownerless nstudio test fixture, workroot 712 MB
+unchanged; dailies checker exit 0. Triggers re-affirmed from evidence in
+hand — Monday's fires still ~42 h out; rotation verified GRANTS MISSING
+~90 min prior, no new probe spent. The next session opens cold; every
+CHANGELOG release through 0.29.35 carries its tag, release, and on-disk
+verification.
+
 **Fri late-night close-out audit (v6.34.0):** rotation re-check #4 → GRANTS
 MISSING (fourth identical; the re-check cadence stays STOPPED until the owner
 reports rotation). Work-stream audit: the repo's two candidate branches
