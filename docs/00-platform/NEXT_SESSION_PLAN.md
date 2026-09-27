@@ -8,6 +8,34 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~13:35 UTC — the re-probe round: UPD-001's own audit
+corrected (v0.2.1 corrigendum) and the full verification wave re-run,
+all green.** The three suggested followups resolved: (1) the §2.1
+re-probe — every untruncated whole-repo search re-run freshly, and it
+CAUGHT a false claim the same day the note was written (the 0.29.35
+lesson, now twice in one day): the v0.2.0 audit ran on TRUNCATED
+search output (head-capped) and an under-scoped importer sweep, so it
+understated the wired surface — deployment/snapshot-scoped rollback is
+ALREADY WIRED end-to-end (`rollback_to_snapshot` dry-run-default +
+deployment version rollback in container.py; five rollback IPC
+dispatch arms with five `nyrqisctl rollback-*` verbs) and the delta
+GENERATION half is wired (`nyrqisctl_repo publish-delta`); the
+corrected load-bearing finding: the gap is the SIGNED-PACKAGE
+verify/apply path (`UpdateVerifier`/`validate_rollback`/
+`apply_delta_update` — library-complete, user-unreachable) plus the
+policy questions — not cryptography, not the rollback concept; options,
+recommendation, open questions, and the §7 plan unchanged in scope;
+AG_AGENDA v2.3.4 Bundle F pre-flight, roadmap note, premise
+description, digest, and REPOSITORY_STATE all reconciled in commit
+`5060816`; (2) the full test sweep — unittest 9285 OK (skipped=4) +
+pytest 6632 passed + 4 skipped, BOTH matching the last recorded
+counts, zero regression; (3) the dailies trigger — still Sunday;
+Monday 2026-09-28's fires remain the named verification point, zero
+probes spent. CI on `5060816` green 35/35 watched to completion; the
+watch on this records commit is waived (docs-only text, v6.37.0
+precedent). Nothing actionable remains by decision; the session
+re-opens on a named trigger.
+
 **Sun 2026-09-27 ~13:05 UTC — the UPD-001 thread completed its
 pre-acceptance arc in one afternoon: v0.2.0 §7 (the Option A build
 plan) pre-staged and the decision staged as AG_AGENDA v2.3.3 Bundle
