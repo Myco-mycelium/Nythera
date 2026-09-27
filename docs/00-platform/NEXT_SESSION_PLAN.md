@@ -8,6 +8,35 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~12:45 UTC — NEW SCOPE: UPD-001 v0.1.0, the
+automatic-updates-with-rollback design note, LANDED and CI-verified
+(35/35).** All three suggested followups were dispositioned honestly:
+the dailies check is Monday's named trigger (still Sunday; no
+manufactured re-run), the digest refresh is riding this records commit,
+and the updates design note is the real work — drafted first per the
+DBG-001/CRY-001 discipline. The surface audit's load-bearing finding
+(verified against the tree 2026-09-27, searches recorded in the note
+so a re-probe can re-run them): the signed-update machinery —
+`backend/update_signing.py` (FULL/DELTA/PATCH verification +
+`validate_rollback`: target-older + trusted-key) and
+`backend/delta_update.py` (signed delta generate/apply, fail-closed
+without PyNaCl) — is SHIPPED and TESTED but consumed ONLY by its own
+tests; no IPC op or CLI wires fetch→verify→apply→audit, and
+`PackageManager.update_package` (the 2026-09-23 store wiring) verifies
+the delta WITHOUT applying it. The honest gap is WIRING and POLICY,
+not cryptography. Three options (A compose-first operator-invoked
+surface — restore point → apply → audit-chain, recommended; B A +
+opt-in automaticity, triggering the NPS-019/NPS-020 pass for a
+daemon-initiated fetch; C observational close), five open questions
+with the rollback trigger/health contract flagged as the load-bearing
+mechanism question (CRY-001's spool-default analog). Registered: spec
+index v1.43.0, mkdocs nav, premise `upd001-design-note` (49/49),
+cycles 0 across 88 docs, mkdocs strict clean; roadmap note corrected;
+REPOSITORY_STATE paragraph landed in the same commit `ecafd3d`; CI on
+it green 35/35 (watched to completion, ~90 s; live-iso correctly
+path-gated off). Roadmap item stays `[ ]` — the draft proposes, the
+Group decides.
+
 **Sun 2026-09-27 ~12:20 UTC — the one open tail closed: CI on the
 cold-close records commit `f6157f9` is GREEN, 35/35 check runs
 completed success** (read via the authenticated check-runs API,

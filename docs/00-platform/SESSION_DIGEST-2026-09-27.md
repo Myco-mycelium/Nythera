@@ -4,12 +4,17 @@ One-line summary: **the CRY-001 thread matured from draft to
 decision-ready — its false "zero egress" null finding was caught and
 corrected (v0.1.1), the corrected design note was staged as AG_AGENDA
 Bundle E with a full pre-read brief, and every record commit is
-CI-verified green.**
+CI-verified green; the afternoon added the next Phase 4 design note
+(UPD-001, automatic updates with rollback) whose surface audit found
+the signed-update machinery shipped-but-unwired.**
 
 ## Shipped
 
 | What | Where | Evidence |
 |------|-------|----------|
+| CI tail closed (afternoon) | `3b2e783` | the morning's cold-close records commit `f6157f9` verified green 35/35 via the authenticated check-runs API — the every-commit-verified property extends through the morning session's final push |
+| UPD-001 v0.1.0 — the automatic-updates/rollback design note (afternoon) | `ecafd3d`, `docs/00-platform/UPDATE_ROLLBACK_SPEC.md` | per the DBG-001/CRY-001 design-note-first discipline: surface audit (§2.1) finds the signed-update machinery — `update_signing.py` verify + `validate_rollback`, `delta_update.py` signed generate/apply — shipped and tested but consumed ONLY by its own tests; no IPC op or CLI wires fetch→verify→apply→audit; `PackageManager.update_package` verifies without applying; honest gap = WIRING and POLICY, not cryptography. Three options (A compose-first operator-invoked, recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C close), five open questions (rollback trigger/health contract = the load-bearing one) |
+| UPD-001 registered | `ecafd3d` | spec index v1.43.0 row; mkdocs nav; premise `upd001-design-note` (49/49); roadmap M14 Phase 4 note corrected; REPOSITORY_STATE paragraph in the same commit; gates: cycles 0 across 88 docs, mkdocs strict clean; CI on `ecafd3d` green 35/35 watched to completion |
 | CRY-001 v0.1.0 null finding caught FALSE | `75d6492`, CRY-001 §2.1 | "ZERO outbound HTTP clients in non-test backend code" returns four hits, all predating the draft: `_send_webhook` (2026-08-28, `5585532`), registry pull/push/catalog (2026-08-30, `56de456`; pull wired to IPC + CLI), loopback-only health-check HTTP type |
 | CRY-001 v0.1.1 corrigendum | `75d6492` | §1 reframed (first TELEMETRY-class egress, not first egress path), §2.1 records the four-site table; corrected finding: NO implicit/telemetry egress — every existing site operator-configured or loopback |
 | Staged for the Group | `75d6492`, AG_AGENDA v2.3.0 Bundle E1 | tree-verified pre-flight, §6's four decisions (option choice; spool default; schema floor; retention/purge); DECISION-READY; roadmap stays `[ ]` |
@@ -31,6 +36,12 @@ CI-verified green.**
 
 ## Parked (triggers + exact next commands)
 
+0. **AG governance — THREE decision-ready threads now**: Bundle D
+   (ADR-0019, issue #1), Bundle E (CRY-001, briefed), and UPD-001
+   (this afternoon's note, not yet bundled — stage it as a Bundle F
+   row on AG_AGENDA when the Group's next session is called). Land the
+   Group's disposition when it rules; issue #2 stays open only because
+   the PAT cannot close issues.
 1. **Post-rotation drill** — unchanged; fire ONLY on the owner
    REPORTING the rotation: `scripts/verify_pat_grants.sh` → expect
    `ALL GRANTS PRESENT` → dispatch `live-iso-rootless.yml`
