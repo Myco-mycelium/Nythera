@@ -36,11 +36,12 @@ CI-verified green.**
    `ALL GRANTS PRESENT` → dispatch `live-iso-rootless.yml`
    `with-arm64: true` → expect 204 → watch the run → post the issue #3
    comment → expect 201.
-2. **Dailies band check** — Sunday 2026-09-27's fires expected in the
-   10:02–11:49 UTC band; when both land: verify both success +
-   `scripts/check_scheduled_runs.sh` exit 0, and record the verdict in
-   the STANDING ITEM. (The digest was written ~08:0x UTC, before the
-   band; the verdict is recorded in NEXT_SESSION_PLAN when captured.)
+2. **Dailies band check — CAPTURED ~10:58 UTC: PASS, seventh
+   consecutive in-band day.** Both Sunday fires landed in-band
+   (pat-expiry-watch 10:41:23Z, scheduled-runs-watch 10:51:17Z, both
+   completed success at tip `c258f93`) and the checker exited 0 at
+   ~10:53 UTC. Full verdict recorded in the NEXT_SESSION_PLAN STANDING
+   ITEM; the next verification point is Monday 2026-09-28's fires.
 3. **AG governance** — two bundles now decision-ready on
    `AG_AGENDA.md` v2.3.1: Bundle D (ADR-0019 auto_compact, issue #1)
    and Bundle E (CRY-001 crash reporting/telemetry, briefed by

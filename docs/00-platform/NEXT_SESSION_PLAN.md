@@ -1,12 +1,27 @@
 ---
 title: Next Development Session Plan
-version: 6.44.0
+version: 6.45.0
 date: 2026-09-27
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Sun 2026-09-27 ~10:58 UTC — the dailies band verdict captured in-band:
+PASS, SEVENTH consecutive day.** The one trigger that was due inside
+the stop declaration (digest parked item #2) fired and was dispositioned
+by evidence, not by a gate re-run: pat-expiry-watch 10:41:23Z,
+scheduled-runs-watch 10:51:17Z — both inside 10:02–11:49, both
+completed success at the current tip `c258f93` (today's runs execute a
+remote main that includes all four of today's record waves),
+`scripts/check_scheduled_runs.sh` exit 0 re-run at ~10:53 UTC
+("SCHEDULED RUNS: OK", all four scheduled workflows
+completed/success). Full verdict recorded in the STANDING ITEM below.
+Zero PAT-grant probes spent; the rotation trigger stays
+owner-reported-only. Tracker re-read at ~10:43 UTC: the same 3 open
+issues, no new PRs — no AG Bundle D/E ruling has landed, no owner
+direction, no manufactured work.
 
 **Sun 2026-09-27 ~08:35 UTC — SESSION CLOSED pending external triggers
 (stop declaration).** The third "proceed with all the suggested
@@ -411,6 +426,19 @@ completed success by 10:38 UTC (ci #35849078481, docs #35849078492, live-iso
 scheduled workflows completed/success). That is the fifth consecutive in-band
 day; a fourth-and-fifth-day extension of the 10:02–11:49 envelope is now the
 stable pattern, median ~4.5 h late, all inside the 8 h grace.
+
+**Sun 2026-09-27 verdict — the band holds: PASS, SEVENTH consecutive
+in-band day.** Both dailies fired in-band (pat-expiry-watch 10:41:23Z,
+scheduled-runs-watch 10:51:17Z — both inside 10:02–11:49 UTC, first
+observed attempt, completed success at head `c258f93`), and
+`scripts/check_scheduled_runs.sh` exited 0 ("SCHEDULED RUNS: OK", all
+four scheduled workflows completed/success; re-run at ~10:53 UTC after
+the second fire landed). The 10:02–11:49 envelope is now the stable
+pattern across all seven measured days, median ~4.5 h late, all inside
+the 8 h grace. Next verification point: Monday 2026-09-28's fires.
+Run IDs not printed in this record: the poll used the list endpoint
+only; both runs were read as completed/success and the checker's own
+output (run IDs included) is the durable evidence on file.
 
 **Carried trigger — probed again Fri 16:5x UTC (probe #8): still 403.**
 `POST .../live-iso-rootless.yml/dispatches` (with-arm64) via the credential
