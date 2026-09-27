@@ -8,6 +8,30 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~14:10 UTC — the Bundle F pre-read landed and the B1
+claims pinned; the decision package is complete.** AG_BRIEF_UPD001
+v1.0.0 (the AG_BRIEF precedent's format): the corrected audit restated
+with the wired/unwired split tabled, the regulatory frame (NPS-027/028
+promise the surface; ADR-0018 chaining; A needs no new NPS-011
+capability; B triggers the NPS-019/NPS-020 pass as a PRECONDITION),
+three options with ledgers, recommends **Option A** compose-first with
+the rollback trigger/health contract (UPD-001 §5 Q4) flagged as the
+open mechanism question — and the observation that A is safe to accept
+BEFORE Q4 is answered, because A keeps rollback operator-judgment-only
+by construction. Registered: AG_AGENDA v2.3.6 F1, mkdocs nav, spec
+index 1.47.0, premise `upd001-brief-registered`. Also: the 09-19
+pre-flight's B1 CURRENT-STATE mechanism claims pinned re-runnably
+(three `regex_counts` entries — auto_compact default + its resurface,
+the dedicated test, the anchored 256/64 defaults + FairTokenBucket;
+the dated 09-19 cells stay as the historical record). Gates: premises
+56/56, cycles 0 across 89 docs, mkdocs strict clean. CI on the landing
+commit `540b8e7` green 35/35 watched to completion; the watch on this
+records commit is waived (docs-only text, v6.37.0 precedent). The
+dailies trigger: still Sunday at record time (~14:10 UTC); Monday
+2026-09-28's fires remain the named verification point, zero probes
+spent. THREE AG bundles now fully packaged (D, E, F — each brief +
+pre-staged build plan); the session re-opens on a named trigger.
+
 **Sun 2026-09-27 ~13:50 UTC — the audit-claim sweep: DBG-001 clean,
 CRY-001's exhaustiveness claim caught FALSE as stated, and the
 truncated-output failure mode made structural (three re-runnable

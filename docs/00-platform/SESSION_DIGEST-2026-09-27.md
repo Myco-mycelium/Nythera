@@ -13,6 +13,7 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 | What | Where | Evidence |
 |------|-------|----------|
+| AG_BRIEF_UPD001 + B1 pins (evening) | this session | the Bundle F pre-read per the AG_BRIEF precedent (AG-BRIEF-UPD001 v1.0.0): corrected audit restated with the wired/unwired split tabled, three options with ledgers, recommends Option A compose-first, the rollback trigger/health contract flagged as the open mechanism question (A safe to accept before Q4 — operator-judgment-only by construction); registered AG_AGENDA v2.3.6 F1 + nav + spec index 1.47.0 + premise upd001-brief-registered; the 09-19 pre-flight's B1 current-state claims pinned re-runnably (3 regex_counts entries: auto_compact default + resurface, the dedicated test, anchored 256/64 defaults + FairTokenBucket) |
 | Audit-claim sweep + re-runnable pins (evening) | this session | every search-based audit claim re-probed untruncated: DBG-001's test counts exact (9/28/17, zero drift); CRY-001's "only non-test egress file" claim caught FALSE as stated — `tools/compare_benchmarks.py` (CI artifact downloader, fixed api.github.com destination) is a second site; corrected in CRY-001 v0.3.0 + the brief + AG_AGENDA v2.3.5 Bundle E pre-flight, narrow finding (no implicit/telemetry egress) survives; check_doc_premises.py gained the generic `regex_counts` checker + three pins (`cry001-egress-audit-pin`, `upd001-audit-rollback-pin`, `upd001-audit-unwired-pin`), both failure paths verified on synthetic data; premises 49 → 52 |
 | CI tail closed (afternoon) | `3b2e783` | the morning's cold-close records commit `f6157f9` verified green 35/35 via the authenticated check-runs API — the every-commit-verified property extends through the morning session's final push |
 | UPD-001 v0.1.0 — the automatic-updates/rollback design note (afternoon) | `ecafd3d`, `docs/00-platform/UPDATE_ROLLBACK_SPEC.md` | per the DBG-001/CRY-001 design-note-first discipline: surface audit (§2.1) finds the signed-update machinery — `update_signing.py` verify + `validate_rollback`, `delta_update.py` signed generate/apply — shipped and tested but consumed ONLY by its own tests; no IPC op or CLI wires fetch→verify→apply→audit; `PackageManager.update_package` verifies without applying; honest gap = WIRING and POLICY, not cryptography. Three options (A compose-first operator-invoked, recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C close), five open questions (rollback trigger/health contract = the load-bearing one) |
@@ -27,7 +28,11 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 ## Verified
 
-- Premise registry: **52/52 OK** (49 + the three new audit pins; the
+- Premise registry: **56/56 OK** (49 + the three audit pins + the
+  brief pin + the three B1 pins; the `regex_counts` checker's drift and
+  unrecorded-file failure paths exercised on synthetic data before
+  landing).
+- Premise registry at the audit-sweep wave: **52/52 OK** (49 + the three new audit pins; the
   `regex_counts` checker's drift and unrecorded-file failure paths
   exercised on synthetic data before landing).
 - Full backend verification wave (evening): unittest full sweep
@@ -47,11 +52,11 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 ## Parked (triggers + exact next commands)
 
 0. **AG governance — THREE decision-ready bundles now, all on
-   `AG_AGENDA.md` v2.3.3**: Bundle D (ADR-0019, issue #1), Bundle E
-   (CRY-001, briefed, build plan pre-staged v0.2.0 §7), and Bundle F
-   (UPD-001, build plan pre-staged v0.2.0 §7). Land the Group's
-   disposition when it rules; issue #2 stays open only because the PAT
-   cannot close issues.
+   `AG_AGENDA.md` v2.3.6, D/E/F each with its pre-read brief and
+   pre-staged build plan**: Bundle D (ADR-0019, issue #1), Bundle E
+   (CRY-001, AG-BRIEF-CRY001), Bundle F (UPD-001, AG-BRIEF-UPD001).
+   Land the Group's disposition when it rules; issue #2 stays open
+   only because the PAT cannot close issues.
 1. **Post-rotation drill** — unchanged; fire ONLY on the owner
    REPORTING the rotation: `scripts/verify_pat_grants.sh` → expect
    `ALL GRANTS PRESENT` → dispatch `live-iso-rootless.yml`
