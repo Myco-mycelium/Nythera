@@ -8,6 +8,34 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~14:40 UTC — COLD CLOSE: the housekeeping pre-flight
+RAN CLEAN and the day's workspace is restored to its recorded
+baseline.** No stray qemu/smoke processes, no PID markers anywhere,
+clean tree at the tip; the workroot's unrecorded 692 MB delta was fully
+ACCOUNTED before anything was removed: `release-verify/` (502 MB) held
+the v0.29.35 verification ISOs whose on-disk sha256 values matched the
+recorded verification record byte-identically (06e45f60…76f7ef1 /
+2c8395fd…2c713) — removed hash-verified, the 2026-09-26 precedent —
+and `tmp/` (186 MB) held four completed `--keep-logs` smoke-evidence
+dirs with no live markers, swept by the sanctioned
+`clean-smoke-tmp.sh --yes` (verdict DONE; /tmp-side dry-run CLEAN).
+Workroot back to the recorded **712 MB** (the two kept ISOs + wrapper
+tooling + logs), tmp empty, `/tmp` 4.5 MB OS-owned plus one 28 KB
+empty mktemp deliberately LEFT IN PLACE (mtime minutes old — plausibly
+the live client runtime's scratch; the runner-bug-2 hazard-class
+discipline). Also this wave: the audit-chain CURRENT-STATE cell landed
+on AG_AGENDA v2.3.7 (both families salted scheme-2, snapshot
+persistence implemented, `package_pki.py` a second scheme-2 consumer —
+the 09-19 "unsalted/memory-only" cells stay as the historical record),
+pinned re-runnably as `agenda-audit-chain-state-pin`; premises 57/57;
+CI on `9a98841` green 35/35 watched to completion. The dailies
+trigger: still Sunday at close; Monday 2026-09-28's fires (10:02–11:49
+UTC) remain the named verification point — an eighth consecutive
+in-band day is Monday's question, zero probes spent. The watch on this
+records commit is waived (docs-only text, v6.37.0 precedent). The next
+session opens cold, straight to the checklist, with all triggers
+external.
+
 **Sun 2026-09-27 ~14:10 UTC — the Bundle F pre-read landed and the B1
 claims pinned; the decision package is complete.** AG_BRIEF_UPD001
 v1.0.0 (the AG_BRIEF precedent's format): the corrected audit restated
