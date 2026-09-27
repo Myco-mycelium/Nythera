@@ -8,6 +8,20 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~14:45 UTC — the followup round dispositioned; the
+stop state holds.** "Proceed with all the suggested followups" resolved
+to the three named triggers, each verified not yet due with
+point-in-time evidence and zero new probes: (1) Monday's dailies band —
+14:41 UTC is still Sunday; the eighth-day fires are 2026-09-28's;
+(2) the post-rotation drill — no owner report, and the tracker read at
+~14:44 UTC (authenticated, read-only) is identical to every prior one:
+issues #1/#2/#3 all with pre-today `updated_at` timestamps, 0 open
+PRs — no Bundle D/E/F ruling, no manufactured work; (3) the cold-open —
+executed in its lightest honest form: tip `f8c1300` verified, clean
+tree, in sync, the checklist walked, nothing actionable by decision.
+The records commit is docs-only; the CI watch is waived per the
+v6.37.0 precedent. The session re-opens on a named trigger.
+
 **Sun 2026-09-27 ~14:40 UTC — COLD CLOSE: the housekeeping pre-flight
 RAN CLEAN and the day's workspace is restored to its recorded
 baseline.** No stray qemu/smoke processes, no PID markers anywhere,
