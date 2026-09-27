@@ -13,6 +13,7 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 | What | Where | Evidence |
 |------|-------|----------|
+| Audit-claim sweep + re-runnable pins (evening) | this session | every search-based audit claim re-probed untruncated: DBG-001's test counts exact (9/28/17, zero drift); CRY-001's "only non-test egress file" claim caught FALSE as stated — `tools/compare_benchmarks.py` (CI artifact downloader, fixed api.github.com destination) is a second site; corrected in CRY-001 v0.3.0 + the brief + AG_AGENDA v2.3.5 Bundle E pre-flight, narrow finding (no implicit/telemetry egress) survives; check_doc_premises.py gained the generic `regex_counts` checker + three pins (`cry001-egress-audit-pin`, `upd001-audit-rollback-pin`, `upd001-audit-unwired-pin`), both failure paths verified on synthetic data; premises 49 → 52 |
 | CI tail closed (afternoon) | `3b2e783` | the morning's cold-close records commit `f6157f9` verified green 35/35 via the authenticated check-runs API — the every-commit-verified property extends through the morning session's final push |
 | UPD-001 v0.1.0 — the automatic-updates/rollback design note (afternoon) | `ecafd3d`, `docs/00-platform/UPDATE_ROLLBACK_SPEC.md` | per the DBG-001/CRY-001 design-note-first discipline: surface audit (§2.1) finds the signed-update machinery — `update_signing.py` verify + `validate_rollback`, `delta_update.py` signed generate/apply — shipped and tested but consumed ONLY by its own tests; no IPC op or CLI wires fetch→verify→apply→audit; `PackageManager.update_package` verifies without applying; honest gap = WIRING and POLICY, not cryptography. Three options (A compose-first operator-invoked, recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C close), five open questions (rollback trigger/health contract = the load-bearing one) |
 | UPD-001 registered | `ecafd3d` | spec index v1.43.0 row; mkdocs nav; premise `upd001-design-note` (49/49); roadmap M14 Phase 4 note corrected; REPOSITORY_STATE paragraph in the same commit; gates: cycles 0 across 88 docs, mkdocs strict clean; CI on `ecafd3d` green 35/35 watched to completion |
@@ -26,6 +27,9 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 ## Verified
 
+- Premise registry: **52/52 OK** (49 + the three new audit pins; the
+  `regex_counts` checker's drift and unrecorded-file failure paths
+  exercised on synthetic data before landing).
 - Full backend verification wave (evening): unittest full sweep
   **9285 OK (skipped=4)**, pytest **6632 passed, 4 skipped** — both
   matching the last recorded counts; zero regression.

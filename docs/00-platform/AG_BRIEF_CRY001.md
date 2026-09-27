@@ -36,7 +36,14 @@ document, not a test). The corrected audit is what this brief stages.
 **The corrected egress posture.** The platform is NOT egress-free —
 that was the false v0.1.0 claim. `backend/container.py` carries four
 outbound HTTP client sites, all predating the draft, and a 2026-09-27
-whole-repo sweep confirms it is the only non-test file carrying egress
+whole-repo sweep confirmed it as the only non-test file carrying egress
+— **CORRECTED 2026-09-27 (CRY-001 v0.3.0): that claim was FALSE as
+stated** — `tools/compare_benchmarks.py` (the CI benchmark-artifact
+downloader, fixed api.github.com destination, operator-authenticated,
+CI-side tooling) is a second non-test site; the narrow finding stands:
+no implicit/telemetry egress, so Option B is still the first
+telemetry-class surface (the enumeration is pinned re-runnable:
+registry `cry001-egress-audit-pin`)
 client code:
 
 | Site | Introduced | Destination | Posture |

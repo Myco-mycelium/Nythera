@@ -233,6 +233,63 @@ def _check_frontmatter_status(paths: list[str], args: dict) -> tuple[str, str]:
     return "fail", f"{rel} status is {actual!r}; the recorded decision says {expected!r} (reconcile whichever is wrong)"
 
 
+def _check_regex_counts(paths: list[str], args: dict) -> tuple[str, str]:
+    """Per-file regex match counts equal the recorded counts, and no other
+    scanned files match at all (the checker's own source is excluded —
+    the registry's pin strings match their own patterns; the instrument
+    is not the specimen).
+
+    Makes search-based audit claims ("this file carries exactly N sites
+    and nothing else does") re-runnable instead of prose. ``expect``
+    maps repo-relative evidence files to the recorded match count;
+    ``scan_globs`` lists repo-root globs swept for UNRECORDED matching
+    files (tests are excluded by construction — list no test globs).
+    Deliberately fail-on-change: when implementation lands or a site
+    moves, the pin fails and the recording document must be updated in
+    the same commit.
+    """
+    pattern = str(args["pattern"])
+    expect = {str(k): int(v) for k, v in args.get("expect", {}).items()}
+    scan_globs = [str(g) for g in args.get("scan_globs", [])]
+    if not expect and not scan_globs:
+        return "warn", "regex_counts claim has neither expect nor scan_globs"
+    for rel, expected in sorted(expect.items()):
+        text = _read(REPO_ROOT / rel)
+        if text.startswith("\0READ_ERROR"):
+            return "fail", f"evidence file recorded with {expected} match(es) is gone: {rel}"
+        actual = len(re.findall(pattern, text))
+        if actual != expected:
+            return "fail", (
+                f"{rel}: regex matches {actual} time(s), "
+                f"the premise records {expected} — update the document or the registry"
+            )
+    if not scan_globs:
+        return "ok", f"{len(expect)} evidence file(s) at recorded match counts"
+    unrecorded: list[str] = []
+    self_path = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
+    for g in scan_globs:
+        for p in sorted(REPO_ROOT.glob(g)):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(REPO_ROOT).as_posix()
+            if rel in expect or rel == self_path:
+                continue
+            text = _read(p)
+            if text.startswith("\0READ_ERROR"):
+                continue
+            if re.findall(pattern, text):
+                unrecorded.append(rel)
+    if unrecorded:
+        return "fail", (
+            f"file(s) the premise does not record now match the regex: "
+            f"{', '.join(unrecorded)} — update the document or the registry"
+        )
+    return "ok", (
+        f"{len(expect)} recorded file(s) at recorded counts; "
+        f"scan found no unrecorded files"
+    )
+
+
 CHECKS = {
     "section_exists": _check_section_exists,
     "subsection_exists": _check_subsection_exists,
@@ -243,6 +300,7 @@ CHECKS = {
     "dir_absent": _check_dir_absent,
     "all_paths_exist": _check_all_paths_exist,
     "frontmatter_status": _check_frontmatter_status,
+    "regex_counts": _check_regex_counts,
 }
 
 
@@ -654,6 +712,65 @@ CLAIMS: list[Claim] = [
         check_args={
             "needle": "document_id: UPD-001",
             "files": ["docs/00-platform/UPDATE_ROLLBACK_SPEC.md"],
+        },
+    ),
+    Claim(
+        claim_id="upd001-audit-rollback-pin",
+        pattern=r"rollback is ALREADY WIRED|rollback.*ALREADY WIRED",
+        description="UPD-001 §2.1 (v0.2.1) as-probed: the wired rollback family — container.py carries the rollback_to_snapshot/deployment-rollback implementation (110 'rollback' occurrences), ipc/control.py the five dispatch arms (50), nyrqisctl.py the five CLI verbs (71) — pinned per-file so implementation drift fails the pin",
+        check="regex_counts",
+        check_args={
+            "pattern": r"rollback",
+            "expect": {
+                "source/nyhal-linux-backend/backend/container.py": 110,
+                "source/nyhal-linux-backend/ipc/control.py": 50,
+                "source/nyhal-linux-backend/nyrqisctl.py": 71,
+            },
+            "scan_globs": [],
+        },
+    ),
+    Claim(
+        claim_id="upd001-audit-unwired-pin",
+        pattern=r"user-unreachable",
+        description="UPD-001 §2.1 (v0.2.1) as-probed: the signed-package verify/apply machinery is unwired — UpdateVerifier(/validate_rollback(/apply_delta_update( appear once each (their defining modules); the only other consumers are their own tests (8+11+1 calls) and test_package_repo.py (1); nyrqisctl_repo.py imports the delta GENERATION half only (its 'rollback' count is 0) — pinned per-file so wiring a consumer fails the pin (then update UPD-001 in the same commit)",
+        check="regex_counts",
+        check_args={            "pattern": r"validate_rollback\(|UpdateVerifier\(|apply_delta_update\(",
+            "expect": {
+                "source/nyhal-linux-backend/backend/delta_update.py": 1,
+                "source/nyhal-linux-backend/backend/update_signing.py": 1,
+                "source/nyhal-linux-backend/tests/test_delta_update.py": 8,
+                "source/nyhal-linux-backend/tests/test_package_repo.py": 1,
+                "source/nyhal-linux-backend/tests/test_update_signing.py": 11,
+            },
+            "scan_globs": [
+                "source/nyhal-linux-backend/backend/*.py",
+                "source/nyhal-linux-backend/ipc/*.py",
+                "source/nyhal-linux-backend/ui/*.py",
+                "source/nyhal-linux-backend/*.py",
+                "sdk/nyrqis_sdk/*.py",
+                "tools/*.py",
+            ],
+        },
+    ),
+    Claim(
+        claim_id="cry001-egress-audit-pin",
+        pattern=r"no implicit or telemetry egress|no IMPLICIT or TELEMETRY",
+        description="CRY-001 §2.1 (v0.3.0) as-probed: the platform's outbound-HTTP-client sites are enumerable — backend/container.py carries exactly 16 pattern matches (the four sites: _send_webhook, registry pull/push/catalog, loopback health check) and tools/compare_benchmarks.py exactly 5 (the CI artifact downloader, fixed api.github.com destination, operator-authenticated — the v0.3.0 corrigendum site); tests excluded by construction, so the checked property is: nothing OUTSIDE these two files egresses",
+        check="regex_counts",
+        check_args={
+            "pattern": r"urllib\.request|urllib\.error|import requests|from requests|http\.client|import httpx|from httpx",
+            "expect": {
+                "source/nyhal-linux-backend/backend/container.py": 16,
+                "tools/compare_benchmarks.py": 5,
+            },
+            "scan_globs": [
+                "source/nyhal-linux-backend/backend/*.py",
+                "source/nyhal-linux-backend/ipc/*.py",
+                "source/nyhal-linux-backend/ui/*.py",
+                "source/nyhal-linux-backend/*.py",
+                "sdk/nyrqis_sdk/*.py",
+                "tools/*.py",
+            ],
         },
     ),
     Claim(

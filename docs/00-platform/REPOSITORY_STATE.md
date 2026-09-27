@@ -5,6 +5,25 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (evening II — the audit-claim sweep + re-runnable pins:
+every search-based audit claim in the decision-critical notes re-probed
+untruncated — DBG-001's pinned test counts verified digit-for-digit
+(9/28/17, zero drift); CRY-001's exhaustiveness claim ("container.py is
+the only non-test egress file") caught FALSE AS STATED:
+tools/compare_benchmarks.py (the CI benchmark-artifact downloader,
+fixed api.github.com destination, operator-authenticated, CI-side
+tooling) is a second non-test egress site — corrected in CRY-001 v0.3.0,
+AG_BRIEF_CRY001, and AG_AGENDA v2.3.5's Bundle E pre-flight, while the
+narrow finding (no implicit/telemetry egress) survives; the failure
+mode (truncated search output) made structural: check_doc_premises.py
+gained the generic regex_counts checker — per-file regex match counts
++ scan-for-unrecorded-files, fail-on-change, checker source
+self-excluded — with three pins (cry001-egress-audit-pin:
+container.py 16 + compare_benchmarks.py 5; upd001-audit-rollback-pin:
+the wired rollback family per-file 110/50/71; upd001-audit-unwired-pin:
+verify/apply call sites, fails when a consumer wires in); both failure
+paths verified on synthetic data; premises 49 → 52)
+
 2026-09-27 (evening: UPD-001 v0.2.1 corrigendum — the re-probe
 discipline (the 0.29.35 lesson: re-probe hardest the claim that cannot
 fail) applied to the note the SAME DAY it was written: the v0.2.0

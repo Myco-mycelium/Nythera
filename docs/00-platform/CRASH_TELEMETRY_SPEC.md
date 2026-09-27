@@ -1,7 +1,7 @@
 ---
 title: Opt-in Crash Reporting and Telemetry — design note for the M14 Phase 4 item
 document_id: CRY-001
-version: 0.2.0
+version: 0.3.0
 status: Draft
 classification: Informative
 owners:
@@ -53,9 +53,19 @@ platform already ships most of the *hard* parts, locally:
 outbound HTTP clients (`urllib.request`, `requests`, `http.client`,
 `httpx`) across non-test backend code returns zero results. Re-running
 that same search the next session returns hits in
-`backend/container.py`, and a 2026-09-27 whole-repo sweep confirms
-`backend/container.py` is the only non-test file carrying egress client
-code. The four sites:
+`backend/container.py`, and a 2026-09-27 whole-repo sweep confirmed
+`backend/container.py` as the only non-test file carrying egress client
+code. **v0.3.0 corrigendum: that "only file" claim was FALSE as
+stated** — the 0.29.35 lesson (re-probe hardest the claim that cannot
+fail) applied to it the same day, and the untruncated re-run found a
+second non-test site: `tools/compare_benchmarks.py` (the CI
+benchmark-artifact downloader) carries outbound HTTP client code to a
+FIXED destination (`api.github.com`), operator-authenticated,
+CI-side tooling — not platform runtime, and not incident-driven or
+telemetry-class. The narrow finding SURVIVES unchanged: the platform
+still has NO implicit/telemetry egress; what the corrigendum fixes is
+the enumeration. The corrected, complete site list (pinned re-runnable
+by the registry's `cry001-egress-audit-pin`, per-file counts):
 
 | Site | Introduced | Destination | Posture |
 |---|---|---|---|
@@ -199,6 +209,7 @@ fail-closed, contract-pinned.
 
 | Version | Date | Change |
 |---|---|---|
+| 0.3.0 | 2026-09-27 | Corrigendum: the "container.py is the only non-test egress file" claim was FALSE as stated — tools/compare_benchmarks.py (CI artifact downloader, fixed api.github.com destination, operator-authenticated, CI-side) is a second site; the narrow finding (no implicit/telemetry egress) survives; enumeration now pinned re-runnable (registry `cry001-egress-audit-pin`: container.py 16 + compare_benchmarks.py 5 pattern matches, scan-for-unrecorded) |
 | 0.2.0 | 2026-09-27 | §7 added: the Option A implementation plan pre-staged (module, retention, CLI, spool default, schema floor, contract pins incl. the no-egress assertion) — acceptance converts to landed work without re-planning; content unchanged otherwise |
 | 0.1.1 | 2026-09-27 | Corrigendum: the v0.1.0 surface-audit null finding ("ZERO outbound HTTP clients in non-test backend code") was FALSE — `_send_webhook` (2026-08-28) and the registry pull/push/catalog family (2026-08-30) predate this note and return hits on the same search; corrected finding: no implicit/telemetry egress, all four sites operator-destination-configured or loopback (§2.1); options, recommendation, and open questions unchanged — the Group framing now rests on the corrected audit |
 | 0.1.0 | 2026-09-26 | First draft: surface audit (recorded as zero egress clients — corrected in 0.1.1), three options, recommendation A, four open questions |

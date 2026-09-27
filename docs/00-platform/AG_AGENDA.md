@@ -1,7 +1,7 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 2.3.4
+version: 2.3.5
 status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready; E1 briefed 2026-09-27 (AG-BRIEF-CRY001 v1.0.0 — recommends Option A local-only, spool default flagged as the open mechanism question) and CRY-001 v0.2.0 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning. Re-probed 2026-09-27: the 09-19 pre-flight's frontmatter cells marked as a dated snapshot (frontmatter and index now agree per the sanctioned reconciliation; the B1/B2 mechanism claims re-verified, zero false claims found). Staged 2026-09-27 (afternoon): Bundle F — the UPD-001 automatic-updates/rollback design decision (v0.2.1 Draft — the surface audit CORRECTED the same session it was re-probed: the first pass's truncated search output had understated the wired surface; §7 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning), decision-ready
 owners: [Nyrqis Architecture]
 created: 2026-09-18
@@ -560,14 +560,21 @@ correction of the draft's own v0.1.0 audit claim):** CRY-001 v0.1.0
 opened with a FALSE null finding ("ZERO outbound HTTP clients in
 non-test backend code") — caught the next session by re-running the
 audit (the 0.29.35 lesson: re-probe hardest the claim that cannot fail).
-The tree carries FOUR outbound client sites, all in
+The tree carries FOUR outbound client sites in
 `backend/container.py`: `_send_webhook` (HMAC-signed POST, 2026-08-28,
 `5585532`), the registry pull/push/catalog family (2026-08-30,
 `56de456`; `registry_pull` wired to IPC + `nyrqisctl`), and a
 loopback-only health-check HTTP type — every one operator-
-destination-configured or loopback. The corrected finding: **no
-implicit/telemetry egress exists** — no crash reporter, no metrics
-pipeline, no phone-home; the live ISO boots `-net none` in every smoke.
+destination-configured or loopback. **CORRECTED 2026-09-27 (CRY-001
+v0.3.0): one more non-test egress site exists** —
+`tools/compare_benchmarks.py` (the CI benchmark-artifact downloader,
+fixed api.github.com destination, operator-authenticated, CI-side
+tooling, not platform runtime) — so `container.py` is the only
+non-test PLATFORM-RUNTIME egress file, not the only non-test egress
+file; the corrected finding stands: **no implicit/telemetry egress
+exists** — no crash reporter, no metrics pipeline, no phone-home; the
+live ISO boots `-net none` in every smoke; the enumeration is pinned
+re-runnable (registry `cry001-egress-audit-pin`).
 NPS-019's enumeration does not cover a daemon-side telemetry client
 (`SURFACE-NET-0001` is container egress), so Option B is still a new
 surface class for the NPS-019/NPS-020 pass. The existing substrate
