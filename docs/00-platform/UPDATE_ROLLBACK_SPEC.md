@@ -1,7 +1,7 @@
 ---
 title: Automatic Updates and Rollback — design note for the M14 Phase 4 item
 document_id: UPD-001
-version: 0.1.0
+version: 0.2.0
 status: Draft
 classification: Informative
 owners:
@@ -195,8 +195,63 @@ item as scoped-out until a user-visible demand arrives.
   NPS-019/NPS-020 pass is a precondition, not a rider.
 - **Option C**: records only.
 
-## 7. Revision history
+## 7. Pre-staged implementation plan (if the Group accepts Option A) — 2026-09-27
 
-| Version | Date | Changes |
+Recorded so acceptance converts to landed work without a re-planning
+session (the CRY-001 §7 precedent, which followed D7's DBG-001 §4).
+Ground rule throughout: the debug-bundle discipline — client-side
+composition of already-authorized, already-tested primitives; no new
+daemon trust decisions; audit-chained; fail-closed; contract-pinned.
+
+1. **`backend/update_orchestrate.py`** (new module):
+   `apply_package_update()` owns the fetch→verify→restore→apply→audit
+   sequence over the shipped pieces — the verified signed index
+   (`package_repo.load_index`, fail-closed), the shipped verifier
+   (`update_signing.UpdateVerifier`), the apply primitive
+   (`delta_update.apply_delta_update`), a pre-apply restore point (the
+   `sdk/nyrqis_sdk/restore.RestoreManager` pattern, promoted from SDK
+   convenience to the update path's own fail-safe), and the audit chain
+   (`create_audit_chain`/`append_audit_entry`) with the package id,
+   version transition, and delta checksum in the entry result.
+2. **Ordering pins (non-negotiable):** verify BEFORE restore point
+   BEFORE apply; no apply on an unverified delta (the
+   `PackageManager.update_package` posture already pins the negative
+   case — a tampered payload yields FAILED, never a simulated
+   success); every rollback passes `validate_rollback` (target
+   strictly older + trusted key, as shipped); missing PyNaCl refuses
+   to sign/verify/apply (the delta_signing fail-closed posture).
+3. **Rollback surface:** operator-invoked ONLY in Option A —
+   `nyrqisctl packages rollback <name> [version]`, gated by
+   `validate_rollback`, confirmation required. The automated
+   health-gated rollback is Option B's contract (§5 Q4) and does not
+   exist in A.
+4. **CLI:** `nyrqisctl packages update <name|--all>` (resolve
+   UPDATABLE from the signed index → verify → restore point → apply →
+   audit), `packages rollback` (per above), and the existing
+   status/list display carrying the updated versions.
+5. **The one implementation choice this plan flags:** CLI-side
+   composition (DEFAULT — the spool/read-access analogy: local file
+   operations on operator-owned state, nothing new to authorize) vs a
+   minimal IPC op (needed only if applies must be daemon-coordinated
+   with container liveness). A's default keeps zero new daemon
+   surface.
+6. **Scope default:** packages only (§5 Q2) — any platform/OS update
+   channel is explicitly out of scope for this item unless the Group
+   says otherwise.
+7. **Contract pins (the test plan):** verification strictly precedes
+   apply; `validate_rollback` refuses a same-or-newer target and an
+   untrusted key; fail-closed without PyNaCl; the restore point exists
+   before any payload mutation; the audit chain carries the delta
+   checksum; and — the CRY-001 §7.7 analog — **a no-direct-egress
+   assertion**: the orchestration module imports no HTTP client, so
+   "fetch stays behind the operator-configured registry client" stays
+   a tested property, not a prose claim.
+8. **On landing:** UPD-001 as-built revision; roadmap strike;
+   CHANGELOG + pyproject at the release point.
+
+## 8. Revision history
+
+| Version | Date | Change |
 |---|---|---|
+| 0.2.0 | 2026-09-27 | §7 added: the Option A implementation plan pre-staged (orchestration module composing the shipped primitives, ordering pins, operator-only rollback, CLI, the CLI-side-composition default, scope default, contract pins incl. the no-direct-egress assertion) — acceptance converts to landed work without re-planning; content unchanged otherwise |
 | 0.1.0 | 2026-09-27 | Initial draft per the DBG-001/CRY-001 design-note-first discipline: surface audit (the signed-update machinery is shipped, tested, and unwired — §2.1), three options, five open questions, downstream sizing. Roadmap item stays `[ ]` — the draft proposes, the Group decides |

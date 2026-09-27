@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 2.3.2
-status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready; E1 briefed 2026-09-27 (AG-BRIEF-CRY001 v1.0.0 — recommends Option A local-only, spool default flagged as the open mechanism question) and CRY-001 v0.2.0 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning. Re-probed 2026-09-27: the 09-19 pre-flight's frontmatter cells marked as a dated snapshot (frontmatter and index now agree per the sanctioned reconciliation; the B1/B2 mechanism claims re-verified, zero false claims found)
+version: 2.3.3
+status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready; E1 briefed 2026-09-27 (AG-BRIEF-CRY001 v1.0.0 — recommends Option A local-only, spool default flagged as the open mechanism question) and CRY-001 v0.2.0 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning. Re-probed 2026-09-27: the 09-19 pre-flight's frontmatter cells marked as a dated snapshot (frontmatter and index now agree per the sanctioned reconciliation; the B1/B2 mechanism claims re-verified, zero false claims found). Staged 2026-09-27 (afternoon): Bundle F — the UPD-001 automatic-updates/rollback design decision (v0.2.0 Draft — §7 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning), decision-ready
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -597,6 +597,83 @@ item with a small, pinned implementation (spool + CLI surface + redaction
 reuse + audit chaining); B's transmission half is explicitly split into
 its own future AG package (egress policy, endpoint governance, NPS-029
 payload review); C closes the item as covered with zero surface.
+DECISION-READY — purely judgment; no code has landed for this item.
+
+---
+
+---
+
+## Bundle F — staged 2026-09-27 (afternoon addition, decision-ready)
+
+### F1. UPD-001 — automatic updates with rollback (the M14 Phase 4 item)
+
+`docs/00-platform/UPDATE_ROLLBACK_SPEC.md` (v0.2.0 Draft, Informative)
+· drafted 2026-09-27 per the DBG-001/CRY-001 design-note-first
+discipline · v0.2.0 pre-stages the Option A build plan (§7:
+orchestration module composing the shipped primitives, ordering pins,
+operator-only rollback, CLI, contract pins incl. a no-direct-egress
+assertion) · the roadmap item stays `[ ]` — the draft proposes, the
+Group decides.
+
+**Pre-flight (2026-09-27, AI-verified against the tree — searches
+recorded in UPD-001 §2.1 so the session can re-run them):** the
+item's name promises "automatic" and "rollback", and the tree already
+ships most of the rollback half while the automatic half is almost
+entirely POLICY. The signed-update machinery —
+`backend/update_signing.py` (FULL/DELTA/PATCH verification;
+`validate_rollback` enforces target-strictly-older + trusted-key
+signature) and `backend/delta_update.py` (signed delta
+generate/apply; canonical signature payload identical to the shipped
+verifier's; fail-closed without PyNaCl) — is SHIPPED and TESTED but
+consumed ONLY by its own tests (`test_update_signing.py`,
+`test_delta_update.py`; a tree-wide importer sweep returns nothing
+else). No IPC op or CLI wires fetch→verify→apply→audit.
+`PackageManager.update_package` (the 2026-09-23 store wiring)
+verifies the delta entry but does NOT apply it through
+`apply_delta_update` — it reports success and flips status after
+verification. The fetch half EXISTS end-to-end (`registry_pull`:
+IPC dispatch arm + handler + `nyrqisctl` payload, operator-
+configured `registry_url`). No self-update/platform-update code
+exists anywhere. Substrate verified real: NPS-026 (.nypkg
+integrity), NPS-027 and NPS-028 both Accepted, `package_pki.py`,
+the SDK `RestoreManager` restore-point primitive, the ADR-0018
+audit chain, the NPS-011 operator-only authorization posture. The
+honest gap is **WIRING and POLICY, not cryptography**. Scope
+tension for Q2: the platform ships as a live ISO (immutable by
+respin), so a platform update channel may BE re-imaging by
+construction.
+
+**Decisions the Group must make (UPD-001 §5):**
+
+1. **Option choice:** A — compose-first, operator-invoked (the
+   draft's recommendation: zero new crypto, zero new trust
+   decisions, zero egress policy change; every primitive already
+   tested), or B — A plus opt-in automaticity (accepting the
+   NPS-019/NPS-020 pass: a daemon-initiated fetch is a new surface
+   class even to an operator-configured destination — the same
+   class boundary CRY-001 drew for telemetry), or C —
+   observational close (leaves the tested-but-unreachable
+   signed-update surface that NPS-027/028 visibly promise).
+2. **Scope:** packages only, or is a platform/OS update channel in
+   scope for this milestone at all.
+3. **Automaticity posture (if B):** opt-in vs opt-out, check-only
+   vs check-and-apply, and the consent record's shape under
+   NPS-029.
+4. **The rollback trigger / health contract:** what defines
+   "update failed", and whether any automated gate may roll back
+   without an operator — the load-bearing mechanism question (the
+   CRY-001 spool-default analog).
+5. **Restore-point retention** for update-path restore points (the
+   SDK RestoreManager already cleans up old points; what is
+   normative, and where do they live).
+
+**What a decision unlocks:** Option A closes the M14 Phase 4 roadmap
+item with a small, pinned implementation (UPD-001 §7 is pre-staged:
+one orchestration module + CLI verb composing the shipped pieces,
+ordering pins — verify BEFORE restore point BEFORE apply —
+operator-invoked-only rollback, no new NPS-011 capability, per
+`debug bundle`); B additionally requires the NPS-019/NPS-020 pass as
+a precondition, not a rider; C closes the item as scoped-out.
 DECISION-READY — purely judgment; no code has landed for this item.
 
 ---

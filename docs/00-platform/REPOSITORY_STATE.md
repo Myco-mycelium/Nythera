@@ -5,6 +5,20 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (late afternoon: UPD-001 v0.2.0 + AG_AGENDA v2.3.3 Bundle F —
+UPD-001 §7 pre-stages the Option A implementation plan (the CRY-001
+§7 precedent: acceptance converts to landed work without re-planning):
+`backend/update_orchestrate.py` composing the shipped primitives —
+`package_repo.load_index`, `UpdateVerifier`, `apply_delta_update`, the
+SDK RestoreManager restore point, the ADR-0018 chain — with ordering
+pins (verify BEFORE restore point BEFORE apply), operator-invoked-only
+rollback behind `validate_rollback`, `nyrqisctl packages
+update/rollback`, and contract pins including a no-direct-egress
+assertion; the same session staged the decision as AG_AGENDA v2.3.3
+Bundle F1 with a tree-verified pre-flight (five questions per UPD-001
+§5, decision-ready); spec index 1.44.0; premise description updated,
+still 49/49; cycles 0 across 88 docs; mkdocs strict clean)
+
 2026-09-27 (afternoon: UPD-001 v0.1.0 — the M14 Phase 4
 "Automatic updates with rollback" design note drafted first per the
 DBG-001/CRY-001 discipline (docs/00-platform/UPDATE_ROLLBACK_SPEC.md):

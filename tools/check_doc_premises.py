@@ -649,7 +649,7 @@ CLAIMS: list[Claim] = [
     Claim(
         claim_id="upd001-design-note",
         pattern=r"UPD-001",
-        description="The automatic-updates/rollback design note exists (UPD-001, docs/00-platform/UPDATE_ROLLBACK_SPEC.md, v0.1.0 Draft) — surface audit recorded (the signed-update machinery update_signing.py/delta_update.py is shipped and tested but consumed only by its own tests; no IPC op or CLI wires fetch→verify→apply→audit, PackageManager.update_package verifies without applying), three options (A compose-first operator-invoked recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C observational close), five open questions staged for the Group",
+        description="The automatic-updates/rollback design note exists (UPD-001, docs/00-platform/UPDATE_ROLLBACK_SPEC.md, v0.1.0 Draft) — surface audit recorded (the signed-update machinery update_signing.py/delta_update.py is shipped and tested but consumed only by its own tests; no IPC op or CLI wires fetch→verify→apply→audit, PackageManager.update_package verifies without applying), three options (A compose-first operator-invoked recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C observational close), five open questions, and §7 pre-stages the Option A implementation plan (update_orchestrate module composing the shipped primitives, ordering pins — verify before restore point before apply, operator-invoked-only rollback behind validate_rollback, no-direct-egress assertion); staged as AG_AGENDA v2.3.3 Bundle F1",
         check="path_contains",
         check_args={
             "needle": "document_id: UPD-001",
