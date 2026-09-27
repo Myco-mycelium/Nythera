@@ -5,6 +5,24 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (CRY-001 v0.1.1 corrigendum + AG_AGENDA v2.3.0 Bundle E — the
+crash-reporting design note's v0.1.0 surface-audit null finding ("ZERO
+outbound HTTP clients in non-test backend code") was caught FALSE the
+next session by re-running the audit: `backend/container.py` carries
+four outbound client sites predating the draft — `_send_webhook`
+(2026-08-28, 5585532), registry_pull/push/catalog (2026-08-30, 56de456;
+pull wired to IPC + nyrqisctl), and a loopback-only health-check HTTP
+type; the corrected finding is NO implicit/telemetry egress (every site
+operator-configured or loopback; the live ISO boots -net none), so
+Option B's transmission would still be the first telemetry-class egress
+surface (see CRY-001 §2.1); the corrected note is staged for the Group
+as Bundle E (decision-ready, four questions: option choice, spool
+default, schema floor, retention/purge); roadmap note corrected, spec
+index 1.40.0, premise registry updated; CI on the CRY-001 draft commit
+46dbc46 green (35/35), scheduled-runs checker exit 0 point-in-time
+2026-09-27 ~07:36 UTC; the two parked triggers unchanged (owner-reported
+PAT rotation; Monday's dailies band check))
+
 2026-09-26 (v0.29.35 RELEASED and VERIFIED END-USER-STYLE — the
 determinism fix tagged (annotated, a30098c), release 397286940 created
 with the boot-smoke line withheld, both tag workflows success

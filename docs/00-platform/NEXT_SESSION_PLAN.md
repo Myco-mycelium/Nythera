@@ -1,12 +1,35 @@
 ---
 title: Next Development Session Plan
-version: 6.39.0
-date: 2026-09-26
+version: 6.40.0
+date: 2026-09-27
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Sun 2026-09-27 session item — CRY-001's v0.1.0 null finding caught FALSE
+and corrected (v0.1.1); the corrected design note staged as AG_AGENDA
+v2.3.0 Bundle E.** "Proceed with all the suggested followups" per the
+records meant: (1) the cold-open verification pass, (2) the natural next
+step of the newest open item — the CRY-001 draft's explicit handoff
+("the draft proposes, the Group decides") had no agenda bundle behind it
+yet. The cold-open pass found CI on the draft commit `46dbc46` green
+(all 35 check runs success; live-iso correctly path-gated off for a
+docs-only push) and the scheduled-runs checker exit 0 (read-only API
+check, run point-in-time; Sunday's fires not yet due — Monday's band
+check stays the named trigger). Then the re-probe discipline (the
+0.29.35 lesson) struck again:
+
+| Item | Status |
+|------|--------|
+| **The v0.1.0 null finding was FALSE** | ❌→✅ "ZERO outbound HTTP clients in non-test backend code" — the search itself returns FOUR hits in `backend/container.py`, all predating the draft: `_send_webhook` (HMAC-signed POST, 2026-08-28 `5585532`), registry_pull/push/catalog (2026-08-30 `56de456`; pull wired to IPC + CLI), and a loopback-only health-check HTTP type. A 2026-09-27 whole-repo sweep confirms `container.py` is the only non-test egress file. Correction landed same session |
+| **The corrected finding (CRY-001 §2.1)** | ✅ narrower but still real: NO implicit/telemetry egress — no crash reporter, no metrics pipeline, no phone-home; live ISO boots `-net none` in every smoke; every existing site is operator-destination-configured or loopback. Option B remains a NEW surface CLASS (incident-driven, payload-carrying; NPS-019's SURFACE-NET-0001 covers container egress, not a daemon telemetry client) |
+| **CRY-001 v0.1.1 corrigendum** | ✅ §1 framing rewritten (first TELEMETRY-class egress, not first egress path), §2.1 records the false-finding correction with the four-site table, Option B's con re-worded honestly, revision row added; options, recommendation (A), and the four open questions unchanged |
+| **Staged: AG_AGENDA v2.3.0 Bundle E** | ✅ E1 carries the tree-verified pre-flight (including the correction of the draft's own claim, stated plainly), the corrected audit, and §6's four decisions (option choice; spool default; schema floor; retention/purge); downstream sized per option; DECISION-READY — purely judgment; roadmap stays `[ ]` |
+| **Downstream records reconciled** | ✅ roadmap M14 Phase 4 note corrected + staging recorded; spec index 1.39.0 row carries an inline correction marker + new 1.40.0 row; premise `cry001-design-note` description updated to v0.1.1 (needle unchanged — still verifies the note exists) |
+| **Verification state at record time** | CI on `46dbc46` green (35/35); checker exit 0 point-in-time 2026-09-27 ~07:36 UTC; no PAT-grant probes spent (the rotation trigger stays owner-reported-only); the standing parked threads unchanged |
+
 
 **Sat 2026-09-26 session item — M14 Phase 3 CLOSED: the last D7 work item
 (the interactive attach UX) LANDED and END-TO-END PROVEN.** Everything

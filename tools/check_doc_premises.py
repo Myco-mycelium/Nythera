@@ -629,7 +629,7 @@ CLAIMS: list[Claim] = [
     Claim(
         claim_id="cry001-design-note",
         pattern=r"CRY-001",
-        description="The crash-reporting/telemetry design note exists (CRY-001, docs/00-platform/CRASH_TELEMETRY_SPEC.md, v0.1.0 Draft) — surface audit recorded (zero outbound HTTP clients in non-test backend code; §4.5 recovery + --syslog + health + the bundle's redaction-default-on as the existing substrate), three options (A local-only recommended; B audited opt-in egress; C observational close), four open questions for the Group",
+        description="The crash-reporting/telemetry design note exists (CRY-001, docs/00-platform/CRASH_TELEMETRY_SPEC.md, v0.1.1 Draft) — surface audit recorded with the 0.1.1 corrigendum (the 0.1.0 'zero outbound HTTP clients' null finding was FALSE: _send_webhook 2026-08-28 + the registry family 2026-08-30; the corrected finding is NO implicit/telemetry egress, §2.1), three options (A local-only recommended; B audited opt-in egress; C observational close), four open questions staged as AG_AGENDA v2.3.0 Bundle E",
         check="path_contains",
         check_args={
             "needle": "document_id: CRY-001",

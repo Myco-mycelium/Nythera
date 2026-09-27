@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 2.2.0
-status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready
+version: 2.3.0
+status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -522,6 +522,62 @@ caveats from ADR-0019 and `DAEMON_LIFECYCLE.md`; recording the outcome as
 an ADR-0019 amendment or follow-up ADR; a clean acceptance (or a scoped
 revision) closes issue #1. DECISION-READY — purely judgment; the same
 ratify-vs-revert frame the ADR-0022 precedent set.
+
+---
+
+## Bundle E — staged 2026-09-27 (late addition, decision-ready)
+
+### E1. CRY-001 — crash reporting and telemetry, opt-in (the M14 Phase 4 item)
+
+`docs/00-platform/CRASH_TELEMETRY_SPEC.md` (v0.1.1 Draft, Informative) ·
+drafted 2026-09-26 per the DBG-001 design-note-first discipline · staged
+with the audit corrected the same session it was caught (see the
+pre-flight below) · the roadmap item stays `[ ]` — the draft proposes,
+the Group decides.
+
+**Pre-flight (2026-09-27, AI-verified against the tree — including the
+correction of the draft's own v0.1.0 audit claim):** CRY-001 v0.1.0
+opened with a FALSE null finding ("ZERO outbound HTTP clients in
+non-test backend code") — caught the next session by re-running the
+audit (the 0.29.35 lesson: re-probe hardest the claim that cannot fail).
+The tree carries FOUR outbound client sites, all in
+`backend/container.py`: `_send_webhook` (HMAC-signed POST, 2026-08-28,
+`5585532`), the registry pull/push/catalog family (2026-08-30,
+`56de456`; `registry_pull` wired to IPC + `nyrqisctl`), and a
+loopback-only health-check HTTP type — every one operator-
+destination-configured or loopback. The corrected finding: **no
+implicit/telemetry egress exists** — no crash reporter, no metrics
+pipeline, no phone-home; the live ISO boots `-net none` in every smoke.
+NPS-019's enumeration does not cover a daemon-side telemetry client
+(`SURFACE-NET-0001` is container egress), so Option B is still a new
+surface class for the NPS-019/NPS-020 pass. The existing substrate
+CRY-001 §2 builds on is real and verified: §4.5 crash-recovery
+reporting, the `--syslog` journal mirror, health/status ops, the
+bundle's redaction-default-on, the ADR-0018 chain, NPS-029 separation.
+
+**Decisions the Group must make (CRY-001 §6):**
+
+1. **Option choice:** A — local-only spool + a `nyrqisctl
+   crash list/show/purge` surface (the draft's recommendation: no new
+   threat surface, redaction inherited, audit-chained), or B — A plus
+   explicit audited opt-in egress to a self-operated collector
+   (accepting the first telemetry-class egress and the NPS-019/NPS-020
+   pass it triggers), or C — observational close (§4.5 + syslog +
+   health already answer crash reporting for operators).
+2. **Spool default (if A):** ON (inspectable, local-only) or OFF
+   (conservative) — the draft records both as defensible.
+3. **Schema floor (if A):** which fields are mandatory in a spooled
+   report — the §4.5 recovery record is the floor; fault-handler traces
+   and the container manifest are the candidates.
+4. **Retention/purge:** a cap (count or bytes) on the spool directory,
+   and whether purge is audit-chained.
+
+**What a decision unlocks:** Option A closes the M14 Phase 4 roadmap
+item with a small, pinned implementation (spool + CLI surface + redaction
+reuse + audit chaining); B's transmission half is explicitly split into
+its own future AG package (egress policy, endpoint governance, NPS-029
+payload review); C closes the item as covered with zero surface.
+DECISION-READY — purely judgment; no code has landed for this item.
 
 ---
 

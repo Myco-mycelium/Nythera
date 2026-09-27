@@ -1,13 +1,13 @@
 ---
 title: Opt-in Crash Reporting and Telemetry — design note for the M14 Phase 4 item
 document_id: CRY-001
-version: 0.1.0
+version: 0.1.1
 status: Draft
 classification: Informative
 owners:
   - Nyrqis Engineering
 created: 2026-09-26
-updated: 2026-09-26
+updated: 2026-09-27
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NPS-029, NPS-019, ADR-0018, DBG-001, NPC-001]
@@ -19,12 +19,19 @@ depends_on: [NPS-029, NPS-019, ADR-0018, DBG-001, NPC-001]
 
 This is the design note for the roadmap's M14 Phase 4 "Crash reporting
 and telemetry (opt-in)" item, recorded here because the honest scoping
-question comes **before** any code: the platform today has *no* outbound
-network path at all, so the item's default answer would quietly introduce
-the first egress surface the threat model has ever had to reason about.
-This document is **informative** — it proposes, it does not decide. The
-transmission question (and therefore which option is taken) belongs to
-the Architecture Group.
+question comes **before** any code. **v0.1.1 correction:** v0.1.0 opened
+with a false null finding — "the platform has no outbound network path
+at all" — caught the next session by re-running the audit (the 0.29.35
+lesson: re-probe hardest the claim that cannot fail). The corrected
+finding is the narrow one: the platform has no IMPLICIT or TELEMETRY
+egress — no crash reporter, no metrics pipeline, no phone-home — but
+operator-configured outbound HTTP client code has existed since
+2026-08-28 and is enumerated in §2.1. What the item's default answer
+would introduce is the first TELEMETRY-class egress: incident-driven,
+payload-carrying, not purely operator-initiated. This document is
+**informative** — it proposes, it does not decide. The transmission
+question (and therefore which option is taken) belongs to the
+Architecture Group.
 
 ## 2. What already exists (the audit, 2026-09-26)
 
@@ -40,14 +47,33 @@ platform already ships most of the *hard* parts, locally:
 | Audit chain | ADR-0018 hash-chained audit log; DBG-001's debug sessions are audit-chained | Tamper-evident record of *what was reported* |
 | Data separation | NPS-029 (Identity and User Data Separation, Draft) | The boundary telemetry payloads must respect |
 
-**The null finding that shapes everything:** a repo-wide search for
+### 2.1. The surface audit (corrected v0.1.1)
+
+**The v0.1.0 null finding was FALSE.** It claimed a repo-wide search for
 outbound HTTP clients (`urllib.request`, `requests`, `http.client`,
-`httpx`) across non-test backend code returns **zero** results. Nyrqis
-today makes no outbound network connections by design — the live ISO
-even boots with `-net none` in every smoke. Any option that transmits
-would be the platform's first egress path, a new class of surface for
-NPS-019/NPS-020, and a change to the "no phoning home" property users
-can currently take for granted.
+`httpx`) across non-test backend code returns zero results. Re-running
+that same search the next session returns hits in
+`backend/container.py`, and a 2026-09-27 whole-repo sweep confirms
+`backend/container.py` is the only non-test file carrying egress client
+code. The four sites:
+
+| Site | Introduced | Destination | Posture |
+|---|---|---|---|
+| `_send_webhook` — resource-usage webhooks, HMAC-signed POST | 2026-08-28 (`5585532`) | operator-configured URL | fires only after the operator registers a webhook |
+| `registry_pull` / `registry_push` / `registry_catalog` — HTTP registry client | 2026-08-30 (`56de456`) | operator-configured `registry_url` | `registry_pull` is wired to IPC + `nyrqisctl` (`op: registry_pull`) |
+| health-check `http` type | — | `127.0.0.1:<port>` | loopback only — not egress |
+
+**The corrected null finding is narrower but still real:** the platform
+has NO implicit or telemetry egress — no crash reporter, no metrics
+pipeline, no phone-home. The live ISO still boots `-net none` in every
+smoke, and every outbound call above requires the OPERATOR to configure
+the destination first. Option B (telemetry transmission) would still be
+a new surface class for NPS-019/NPS-020 — incident-driven,
+payload-carrying, not purely operator-initiated — and NPS-019's
+enumeration (`SURFACE-NET-0001`, outbound connections from a
+CAP-NETWORK container) does not cover a daemon-side telemetry client.
+The "no phoning home" property users can take for granted survives
+intact — but the record now carries the whole truth.
 
 ## 3. What "crash reporting" needs that does not exist
 
@@ -95,9 +121,11 @@ and a documented payload schema reviewed under NPS-029.
 
 - Pros: real fleet telemetry for those who deploy collectors; the
   opt-in is meaningful and inspectable.
-- Cons: the project ships egress code even if no endpoint; first
-  outbound surface in platform history; needs the NPS-019/NPS-020 pass
-  and an AG decision on payload schema before a line lands.
+- Cons: the project ships a telemetry EGRESS PATH even if no endpoint
+  is configured — distinct from the operator-configured webhook/registry
+  clients that already exist, and the first incident-driven,
+  payload-carrying egress; needs the NPS-019/NPS-020 pass and an AG
+  decision on payload schema before a line lands.
 
 ### Option C — Observational close (no code)
 
@@ -131,4 +159,5 @@ mechanism question this note carries forward.
 
 | Version | Date | Change |
 |---|---|---|
-| 0.1.0 | 2026-09-26 | First draft: surface audit (zero egress clients; §4.5/syslog/health/redaction as the existing substrate), three options, recommendation A, four open questions |
+| 0.1.1 | 2026-09-27 | Corrigendum: the v0.1.0 surface-audit null finding ("ZERO outbound HTTP clients in non-test backend code") was FALSE — `_send_webhook` (2026-08-28) and the registry pull/push/catalog family (2026-08-30) predate this note and return hits on the same search; corrected finding: no implicit/telemetry egress, all four sites operator-destination-configured or loopback (§2.1); options, recommendation, and open questions unchanged — the Group framing now rests on the corrected audit |
+| 0.1.0 | 2026-09-26 | First draft: surface audit (recorded as zero egress clients — corrected in 0.1.1), three options, recommendation A, four open questions |
