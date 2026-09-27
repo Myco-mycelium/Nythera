@@ -1,12 +1,24 @@
 ---
 title: Next Development Session Plan
-version: 6.40.0
+version: 6.41.0
 date: 2026-09-27
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Sun 2026-09-27 follow-up session item — the Bundle E pre-read brief
+landed, the 2026-09-27 digest written, the dailies verdict awaited
+in-band.** "Proceed with all the suggested followups" resolved to three
+items:
+
+| Item | Status |
+|------|--------|
+| **AG_BRIEF_CRY001 v1.0.0** | ✅ the Bundle E pre-read per the AG_BRIEF precedent (the DBG-PhaseB format): the corrected audit restated, the regulatory frame (A needs no new NPS-011 capability — the crash surface rides operator-only CLI authorization as `debug bundle` does; B triggers the NPS-019/NPS-020 pass; NPS-029 redaction + ADR-0018 chaining bind every option), three options with consequences ledgers, recommends **Option A** with the spool default flagged as THE open mechanism question (brief leans ON for symmetry with redaction-default-on; both recorded defensible). Registered: AG_AGENDA v2.3.1 E1, mkdocs nav, spec index 1.41.0, premise `cry001-brief-registered` (48/48) |
+| **Session digest** | ✅ `SESSION_DIGEST-2026-09-27.md` (the 09-25 convention: shipped/verified/parked with exact next commands + cold-open reading order); working record, not in mkdocs nav — same as its predecessor |
+| **Sunday dailies band check** | ⏳ checker exit 0 point-in-time ~07:36 and ~08:00 UTC (fires not yet due); the band is 10:02–11:49 UTC with a 12:45 no-show deadline; the verdict goes into the STANDING ITEM when captured — a post-record records commit if it lands this session, else the exact pending command stands |
+
 
 **Sun 2026-09-27 session item — CRY-001's v0.1.0 null finding caught FALSE
 and corrected (v0.1.1); the corrected design note staged as AG_AGENDA

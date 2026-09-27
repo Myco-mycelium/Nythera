@@ -627,6 +627,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="cry001-brief-registered",
+        pattern=r"AG_BRIEF_CRY001",
+        description="The CRY-001 (crash reporting/telemetry) decision has its pre-read brief (AG_BRIEF_CRY001 v1.0.0: the corrected audit restated, three options, recommends Option A local-only; spool default flagged as the open mechanism question) registered as AG_AGENDA v2.3.1 Bundle E1",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: AG-BRIEF-CRY001",
+            "files": ["docs/00-platform/AG_BRIEF_CRY001.md"],
+        },
+    ),
+    Claim(
         claim_id="cry001-design-note",
         pattern=r"CRY-001",
         description="The crash-reporting/telemetry design note exists (CRY-001, docs/00-platform/CRASH_TELEMETRY_SPEC.md, v0.1.1 Draft) — surface audit recorded with the 0.1.1 corrigendum (the 0.1.0 'zero outbound HTTP clients' null finding was FALSE: _send_webhook 2026-08-28 + the registry family 2026-08-30; the corrected finding is NO implicit/telemetry egress, §2.1), three options (A local-only recommended; B audited opt-in egress; C observational close), four open questions staged as AG_AGENDA v2.3.0 Bundle E",

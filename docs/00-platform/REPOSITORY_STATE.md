@@ -5,6 +5,15 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (the CRY-001 decision package completed: AG_BRIEF_CRY001
+v1.0.0 — the Bundle E pre-read per the AG_BRIEF precedent, recommending
+Option A local-only with the spool default flagged as the open
+mechanism question — registered on AG_AGENDA v2.3.1 E1, mkdocs nav,
+spec index 1.41.0, premise cry001-brief-registered (48/48);
+SESSION_DIGEST-2026-09-27.md written per the 09-25 convention; the
+corrigendum/staging commit 75d6492 CI-verified green 35/35; Sunday's
+dailies verdict pending the 10:02–11:49 UTC band at record time)
+
 2026-09-27 (CRY-001 v0.1.1 corrigendum + AG_AGENDA v2.3.0 Bundle E — the
 crash-reporting design note's v0.1.0 surface-audit null finding ("ZERO
 outbound HTTP clients in non-test backend code") was caught FALSE the

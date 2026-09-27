@@ -37,6 +37,7 @@ nav:
       - AG Brief Crypto (NPC-002 §6.2 review package): 00-platform/AG_BRIEF_NPS026_CRYPTO_SCHEME.md
       - AG Brief Duality (build-architecture): 00-platform/AG_BRIEF_BUILD_ARCH_DUALITY.md
       - AG Brief Debug Attach (DBG-001 Phase B): 00-platform/AG_BRIEF_DEBUG_ATTACH.md
+      - AG Brief CRY-001 (crash reporting and telemetry): 00-platform/AG_BRIEF_CRY001.md
       - Change Request Log: 00-platform/CHANGE_REQUEST_LOG.md
       - Rebrand Notice: 00-platform/REBRAND_NOTICE.md
       - M14 Milestone Plan: 00-platform/M14_PLAN.md

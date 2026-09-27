@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 2.3.0
-status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready
+version: 2.3.1
+status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready; E1 briefed 2026-09-27 (AG-BRIEF-CRY001 v1.0.0 — recommends Option A local-only, spool default flagged as the open mechanism question)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -529,8 +529,12 @@ ratify-vs-revert frame the ADR-0022 precedent set.
 
 ### E1. CRY-001 — crash reporting and telemetry, opt-in (the M14 Phase 4 item)
 
-`docs/00-platform/CRASH_TELEMETRY_SPEC.md` (v0.1.1 Draft, Informative) ·
-drafted 2026-09-26 per the DBG-001 design-note-first discipline · staged
+`docs/00-platform/CRASH_TELEMETRY_SPEC.md` (v0.1.1 Draft, Informative)
+· briefed by `AG_BRIEF_CRY001.md` (AG-BRIEF-CRY001 v1.0.0 — the
+corrected audit restated, the regulatory frame, three options with
+consequences ledgers, recommends Option A local-only with the spool
+default flagged as the open mechanism question) · drafted
+2026-09-26 per the DBG-001 design-note-first discipline · staged
 with the audit corrected the same session it was caught (see the
 pre-flight below) · the roadmap item stays `[ ]` — the draft proposes,
 the Group decides.
