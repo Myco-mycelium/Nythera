@@ -1,5 +1,14 @@
 # NyFS Mount Daemon — Lifecycle and Compaction Scheduling (design)
 
+> **Bundle D pre-stage (2026-09-27, AG_BRIEF_ADR0019 v1.1.0 §6):** on a
+> RATIFY-AS-IMPLEMENTED ruling, §4 item 3's "still open" caveat and §5's
+> "Architecture Group tuning review" open item are struck with the
+> decision note (the interval/threshold defaults ratified as tuning
+> knobs; the watcher resource profile remains a documented follow-up).
+> On a DEMOTE-TO-OPT-IN ruling, §4 is rewritten to the demoted posture
+> instead. NOT landed — the caveats below remain current until the
+> sitting rules.
+
 **Status: design note (not a normative spec) — partially implemented
 2026-08-12.** Written to answer ADR-0019's open question 1 — *should
 `auto_compact` become the default?* The shutdown contract (§2) and the

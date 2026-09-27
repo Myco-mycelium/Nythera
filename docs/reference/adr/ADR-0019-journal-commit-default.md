@@ -133,6 +133,30 @@ acceptance. The flip is reversible without migration
 
 ## Status
 
+**[RATIFY-VARIANT DRAFT — NOT LANDED. Staged 2026-09-27 inside
+AG_BRIEF_ADR0019 v1.1.0 §6 so the Group's Bundle D ruling converts to
+landed edits the same way Bundles E/F did; this block replaces the
+status line below only ON that ruling.]**
+
+**RATIFIED AS-IMPLEMENTED** — Bundle D decided 2026-09-27: the
+three ledgers from issue #1 resolved per AG_BRIEF_ADR0019's
+recommendation (fixed 60 s cadence retained as a tuning knob;
+`auto_compact=True` ratified as the shipped default — the ADR-0022
+as-implemented shape; shutdown ordering confirmed). The watcher's
+resource profile on real hardware is recorded as a tuning follow-up,
+NOT an acceptance blocker (the cost is bounded by
+`journal_compact_bytes`; the dirty gate bounds an interrupted pass).
+Decision record: AG_AGENDA decision-log row D1 (2026-09-27); the
+frontmatter and every index now read Accepted on this ruling. Issue #1
+is resolved by this decision (the close itself is a manual owner step
+— the PAT cannot close issues). Open questions 2 and 3 in this ADR
+resolve with the ratification: 64 MiB stands as the measured,
+six-week-shipped default; ~0.3% steady-state overhead is accepted as
+the known-cost ledger (the ADR-0022 precedent). The "tuning pending AG
+review" caveats are stripped from `DAEMON_LIFECYCLE.md` accordingly.
+
+---
+
 **Proposed** — implemented 2026-08-12, default flipped in `fuse/nyfs.py`.
 Journal commit is now the default save mode. Benchmark evidence in
 `tests/BENCHMARK_RESULTS.md` §7–§9, §12–§14. Architecture Group
