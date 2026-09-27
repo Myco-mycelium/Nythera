@@ -237,7 +237,8 @@ def _check_regex_counts(paths: list[str], args: dict) -> tuple[str, str]:
     """Per-file regex match counts equal the recorded counts, and no other
     scanned files match at all (the checker's own source is excluded —
     the registry's pin strings match their own patterns; the instrument
-    is not the specimen).
+    is not the specimen). Pass ``multiline`` to anchor patterns with
+    ``^``/``$``.
 
     Makes search-based audit claims ("this file carries exactly N sites
     and nothing else does") re-runnable instead of prose. ``expect``
@@ -249,6 +250,7 @@ def _check_regex_counts(paths: list[str], args: dict) -> tuple[str, str]:
     the same commit.
     """
     pattern = str(args["pattern"])
+    flags = re.MULTILINE if args.get("multiline") else 0
     expect = {str(k): int(v) for k, v in args.get("expect", {}).items()}
     scan_globs = [str(g) for g in args.get("scan_globs", [])]
     if not expect and not scan_globs:
@@ -257,7 +259,7 @@ def _check_regex_counts(paths: list[str], args: dict) -> tuple[str, str]:
         text = _read(REPO_ROOT / rel)
         if text.startswith("\0READ_ERROR"):
             return "fail", f"evidence file recorded with {expected} match(es) is gone: {rel}"
-        actual = len(re.findall(pattern, text))
+        actual = len(re.findall(pattern, text, flags))
         if actual != expected:
             return "fail", (
                 f"{rel}: regex matches {actual} time(s), "
@@ -277,7 +279,7 @@ def _check_regex_counts(paths: list[str], args: dict) -> tuple[str, str]:
             text = _read(p)
             if text.startswith("\0READ_ERROR"):
                 continue
-            if re.findall(pattern, text):
+            if re.findall(pattern, text, flags):
                 unrecorded.append(rel)
     if unrecorded:
         return "fail", (
@@ -685,6 +687,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="upd001-brief-registered",
+        pattern=r"AG_BRIEF_UPD001",
+        description="The UPD-001 (automatic updates/rollback) decision has its pre-read brief (AG_BRIEF_UPD001 v1.0.0: the corrected audit restated with the wired/unwired split, three options, recommends Option A compose-first; the rollback trigger/health contract flagged as the open mechanism question) registered as AG_AGENDA v2.3.6 Bundle F1",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: AG-BRIEF-UPD001",
+            "files": ["docs/00-platform/AG_BRIEF_UPD001.md"],
+        },
+    ),
+    Claim(
         claim_id="cry001-brief-registered",
         pattern=r"AG_BRIEF_CRY001",
         description="The CRY-001 (crash reporting/telemetry) decision has its pre-read brief (AG_BRIEF_CRY001 v1.0.0: the corrected audit restated, three options, recommends Option A local-only; spool default flagged as the open mechanism question) registered as AG_AGENDA v2.3.1 Bundle E1",
@@ -771,6 +783,48 @@ CLAIMS: list[Claim] = [
                 "sdk/nyrqis_sdk/*.py",
                 "tools/*.py",
             ],
+        },
+    ),
+    Claim(
+        claim_id="agenda-b1-autocompact-pin",
+        pattern=r"auto_compact: bool = True",
+        description="AG_AGENDA 09-19 pre-flight B1 current-state claim (RE-PROBED 2026-09-27 cell), pinned re-runnable: the auto_compact default is True at fuse/nyfs.py exactly once, resurfaced exactly once in backend/container.py",
+        check="regex_counts",
+        check_args={
+            "pattern": r"auto_compact: bool = True",
+            "expect": {
+                "source/nyhal-linux-backend/fuse/nyfs.py": 1,
+                "source/nyhal-linux-backend/backend/container.py": 1,
+            },
+            "scan_globs": [],
+        },
+    ),
+    Claim(
+        claim_id="agenda-b1-autocompact-test-pin",
+        pattern=r"test_auto_compact_is_the_mount_default",
+        description="AG_AGENDA 09-19 pre-flight B1 current-state claim, pinned re-runnable: the dedicated default pin test exists exactly once (test_backend.py::test_auto_compact_is_the_mount_default)",
+        check="regex_counts",
+        check_args={
+            "pattern": r"def test_auto_compact_is_the_mount_default",
+            "expect": {
+                "source/nyhal-linux-backend/test_backend.py": 1,
+            },
+            "scan_globs": [],
+        },
+    ),
+    Claim(
+        claim_id="agenda-b1-defaults-pin",
+        pattern=r"memory_mb=256",
+        description="AG_AGENDA 09-19 pre-flight B1 current-state claim, pinned re-runnable: the shipped ContainerConfig defaults are memory_mb=256 and pid_limit=64 at container.py:67-68 exactly (anchored lines, so unrelated function parameters at :27681/:31061 do not count), and FairTokenBucket is defined exactly once at ipc/core.py",
+        check="regex_counts",
+        check_args={
+            "pattern": r"^    memory_mb: int = 256$|^    pid_limit: int = 64$|^class FairTokenBucket",
+            "multiline": True,
+            "expect": {
+                "source/nyhal-linux-backend/backend/container.py": 2,
+                "source/nyhal-linux-backend/ipc/core.py": 1,
+            },
+            "scan_globs": [],
         },
     ),
     Claim(

@@ -5,6 +5,22 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (evening III — the Bundle F pre-read + the B1 pins:
+AG_BRIEF_UPD001 v1.0.0 registered per the AG_BRIEF precedent — the
+corrected audit restated with the wired/unwired split tabled, the
+regulatory frame (NPS-027/028 promise the surface; ADR-0018 chaining;
+A needs no new NPS-011 capability; B triggers the NPS-019/NPS-020 pass
+as a precondition), three options with ledgers, recommends Option A
+compose-first with the rollback trigger/health contract (UPD-001 §5
+Q4) flagged as the open mechanism question and the note that A is safe
+to accept before Q4 is answered; registered on AG_AGENDA v2.3.6 F1,
+mkdocs nav, spec index 1.47.0, premise upd001-brief-registered. Also:
+the AG_AGENDA 09-19 pre-flight's B1 current-state mechanism claims
+pinned re-runnably (three regex_counts entries: auto_compact default +
+resurface, the dedicated test, the anchored 256/64 defaults +
+FairTokenBucket — the dated 09-19 cells stay as the historical record);
+premises 56/56, cycles 0 across 89 docs, mkdocs strict clean)
+
 2026-09-27 (evening II — the audit-claim sweep + re-runnable pins:
 every search-based audit claim in the decision-critical notes re-probed
 untruncated — DBG-001's pinned test counts verified digit-for-digit
