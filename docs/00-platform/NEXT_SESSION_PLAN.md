@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.45.1
+version: 6.45.2
 date: 2026-09-27
 ---
 
@@ -38,6 +38,21 @@ pushes. The CI watch on this amendment commit is waived per the
 v6.37.0 precedent (docs-only, same shape as the prior waived stop
 declarations). Nothing actionable remains by decision, not omission;
 the session re-opens on a named trigger.
+
+**Sun 2026-09-27 ~11:20 UTC — the housekeeping pre-flight RAN CLEAN
+(cold close).** No stray qemu/smoke processes, no PID markers, clean
+tree at the tip (`74fa398`), workroot 712 MB (two kept ISOs + wrapper
+tooling + logs, unchanged), and the sanctioned `clean-smoke-tmp.sh`
+dry-run verdict CLEAN under /tmp (no smoke dirs; removes nothing by
+design). The /tmp footprint (34 MB vs the 4.4 MB record) is fully
+accounted, nothing ownerless: three 9.7 MB `.so` temp libs owned by
+the live `freebuff` client runtime — one actively mapped by its pid
+(left strictly in place: removing mapped objects under a live process
+is the runner-bug-#2 hazard class), two older generations left to that
+runtime's own lifecycle — plus OS-owned mintUpdate/systemd/X11 state
+and the legit `nyrqis-config`/`nyrqis-locks` runtime files. No
+removals performed. The next session opens cold, straight to the
+checklist, with all triggers external.
 
 **Sun 2026-09-27 ~08:35 UTC — SESSION CLOSED pending external triggers
 (stop declaration).** The third "proceed with all the suggested
