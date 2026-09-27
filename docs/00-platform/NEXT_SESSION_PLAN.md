@@ -8,6 +8,37 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~13:50 UTC — the audit-claim sweep: DBG-001 clean,
+CRY-001's exhaustiveness claim caught FALSE as stated, and the
+truncated-output failure mode made structural (three re-runnable
+pins, premises 49 → 52).** (1) DBG-001's pinned test counts verified
+digit-for-digit against the tree (test_debug_bundle 9 /
+test_debug_manifest_class 28 / test_debug_attach_ux 17) — zero drift.
+(2) CRY-001 §2.1's "whole-repo sweep confirms container.py is the only
+non-test file carrying egress client code" was FALSE AS STATED: the
+untruncated re-run found `tools/compare_benchmarks.py` (the CI
+benchmark-artifact downloader) — a second non-test egress site to a
+FIXED api.github.com destination, operator-authenticated, CI-side
+tooling, not platform runtime, not incident-driven or telemetry-class;
+corrected in CRY-001 v0.3.0, AG_BRIEF_CRY001, and AG_AGENDA v2.3.5's
+Bundle E pre-flight; the narrow finding — no implicit/telemetry egress —
+survives, so no option, recommendation, or open question changes.
+(3) The failure mode made structural: check_doc_premises.py gained the
+generic `regex_counts` checker (per-file regex match counts +
+scan-for-unrecorded-files, fail-on-change so implementation drift or a
+new consumer fails the pin and forces the same-commit document update;
+the checker's own source self-excluded — the instrument is not the
+specimen) and three pins: `cry001-egress-audit-pin` (container.py 16 +
+compare_benchmarks.py 5), `upd001-audit-rollback-pin` (the wired
+rollback family 110/50/71 per-file), `upd001-audit-unwired-pin`
+(verify/apply call sites — fails the moment anything wires in). Both
+failure paths verified on synthetic data BEFORE landing (drift → fail,
+unrecorded → fail, and an incomplete expect set correctly fails). CI
+on the landing commit watched to completion; the watch on this records
+commit is waived (docs-only text, v6.37.0 precedent). The dailies
+trigger: still Sunday, zero probes. The session re-opens on a named
+trigger.
+
 **Sun 2026-09-27 ~13:35 UTC — the re-probe round: UPD-001's own audit
 corrected (v0.2.1 corrigendum) and the full verification wave re-run,
 all green.** The three suggested followups resolved: (1) the §2.1
