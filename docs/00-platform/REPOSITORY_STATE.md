@@ -5,6 +5,39 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (evening V — Bundles E and F DECIDED (owner direction
+2026-09-27) and BOTH Option A implementations LANDED the same day:
+CRY-001 v0.4.0 — `backend/crash_spool.py` (write-time redaction of
+vault aggregates and per-container *_bytes, audit-chained
+generation/eviction/purge, fail-closed write that never breaks §4.5
+recovery, write-then-rename, retention 20 reports / 32 MiB) + the
+§4.5 integration (`service serve --crash-spool <dir>`, service
+default disabled — the conservative posture) + `nyrqisctl crash
+list/show/purge` (--yes-gated purge), 16 contract pins incl. the
+no-egress assertion; UPD-001 v0.3.0 — `backend/update_orchestrate.py`
+(resolve on the fully-verified signed index, verify BEFORE restore
+point BEFORE apply, a failed restore point refuses the apply,
+operator-invoked-only rollback behind the validate_rollback posture —
+Q4 resolved by construction; JSONL history; audit chain with the
+delta checksum) + `nyrqisctl packages verify/update/rollback/status`
+(client-side composition, zero new daemon surface, no CLI network
+I/O), 16 contract pins incl. the no-direct-egress assertion; the
+demo tree (`demo/run_demo.sh` + two guides — an 18-check five-act
+operator session on a real daemon and a real signed repo, incl. the
+tampered-delta refusal and a real restart-driven crash spool; the
+build stages it onto the live ISO); the upd001-audit-rollback-pin /
+upd001-audit-unwired-pin fired on the landing tree exactly as their
+fail-on-change descriptions prescribe and were updated per protocol
+(nyrqisctl rollback 71 → 79; update_orchestrate.py recorded as the
+first non-test apply_delta_update consumer); test_backend.py's two
+CLI-wiring doubles reconciled with the new crash_spool_dir argument;
+premises 58/58; full sweeps unittest 9317 OK (skipped=4) + pytest
+6664 passed (= the recorded baselines + 32, zero regression);
+mkdocs strict clean; CHANGELOG 0.29.36 + pyproject bumped (drift
+OK); spec index 1.50.0; roadmap Phase 4 items struck; AG_AGENDA
+v2.3.9 decision-log rows E1/F1, both bundles closed as implemented —
+Bundle D (ADR-0019) remains the only open decision item)
+
 2026-09-27 (evening IV — the Bundle D pre-read: AG_BRIEF_ADR0019
 v1.0.0 registered per the AG_BRIEF precedent — the measured case
 (11–15 s/123 s per-block-fsync commits → 0.20 s/2.0 s under the

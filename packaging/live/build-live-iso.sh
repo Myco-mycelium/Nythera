@@ -266,6 +266,13 @@ log "kept $cdies Rust FFI artifact(s) in rust/.cdylibs"
 rm -rf "$OPT/nyhal-linux-backend"/{.git,__pycache__,rust/*/target,.pytest_cache}
 find "$OPT" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
 
+# The demo tree (the guided session + guides) installs beside the
+# staged backend so the banner's 'run the full demo' line works on the
+# ISO — it is part of the backend tree and rides the same staging.
+if [ -d "$ROOTFS/opt/nyrqis/nyhal-linux-backend/demo" ]; then
+    chmod 0755 "$ROOTFS/opt/nyrqis/nyhal-linux-backend/demo/run_demo.sh"
+fi
+
 # Live overlay: autologin getty, demo session, demo banner.
 log "applying the live overlay (autologin, demo session, banner)"
 install -D "$SCRIPT_DIR/overlay/etc/systemd/system/getty@tty1.service.d/autologin.conf" \

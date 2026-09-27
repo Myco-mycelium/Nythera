@@ -739,14 +739,14 @@ CLAIMS: list[Claim] = [
     Claim(
         claim_id="upd001-audit-rollback-pin",
         pattern=r"rollback is ALREADY WIRED|rollback.*ALREADY WIRED",
-        description="UPD-001 §2.1 (v0.2.1) as-probed: the wired rollback family — container.py carries the rollback_to_snapshot/deployment-rollback implementation (110 'rollback' occurrences), ipc/control.py the five dispatch arms (50), nyrqisctl.py the five CLI verbs (71) — pinned per-file so implementation drift fails the pin",
+        description="UPD-001 §2.1 (v0.2.1) as-probed, counts updated 2026-09-27 when the owner accepted Option A and the wiring landed: container.py carries the rollback_to_snapshot/deployment-rollback implementation (110 'rollback' occurrences), ipc/control.py the five dispatch arms (50), nyrqisctl.py the five CLI verbs PLUS the new packages-rollback operator verb (79 — was 71 before the UPD-001 Option A surface landed) — pinned per-file so implementation drift fails the pin",
         check="regex_counts",
         check_args={
             "pattern": r"rollback",
             "expect": {
                 "source/nyhal-linux-backend/backend/container.py": 110,
                 "source/nyhal-linux-backend/ipc/control.py": 50,
-                "source/nyhal-linux-backend/nyrqisctl.py": 71,
+                "source/nyhal-linux-backend/nyrqisctl.py": 79,
             },
             "scan_globs": [],
         },
@@ -754,11 +754,12 @@ CLAIMS: list[Claim] = [
     Claim(
         claim_id="upd001-audit-unwired-pin",
         pattern=r"user-unreachable",
-        description="UPD-001 §2.1 (v0.2.1) as-probed: the signed-package verify/apply machinery is unwired — UpdateVerifier(/validate_rollback(/apply_delta_update( appear once each (their defining modules); the only other consumers are their own tests (8+11+1 calls) and test_package_repo.py (1); nyrqisctl_repo.py imports the delta GENERATION half only (its 'rollback' count is 0) — pinned per-file so wiring a consumer fails the pin (then update UPD-001 in the same commit)",
+        description="UPD-001 §2.1 (v0.2.1) as-probed, SUPERSEDED 2026-09-27 when the owner accepted Option A and the wiring landed: backend/update_orchestrate.py now consumes apply_delta_update (exactly 1 call — the verify-before-restore-point-before-apply sequence) and nyrqisctl.py surfaces it as the packages update/rollback family; the library-complete machinery is user-reachable as of the v0.3.0 landing — pinned per-file so FURTHER drift fails the pin (then update UPD-001 in the same commit)",
         check="regex_counts",
         check_args={            "pattern": r"validate_rollback\(|UpdateVerifier\(|apply_delta_update\(",
             "expect": {
                 "source/nyhal-linux-backend/backend/delta_update.py": 1,
+                "source/nyhal-linux-backend/backend/update_orchestrate.py": 1,
                 "source/nyhal-linux-backend/backend/update_signing.py": 1,
                 "source/nyhal-linux-backend/tests/test_delta_update.py": 8,
                 "source/nyhal-linux-backend/tests/test_package_repo.py": 1,

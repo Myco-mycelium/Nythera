@@ -1,8 +1,8 @@
 ---
 title: Automatic Updates and Rollback — design note for the M14 Phase 4 item
 document_id: UPD-001
-version: 0.2.1
-status: Draft
+version: 0.3.0
+status: Accepted (Option A, owner direction 2026-09-27 — implemented; see §7.1)
 classification: Informative
 owners:
   - Nyrqis Engineering
@@ -286,10 +286,56 @@ daemon trust decisions; audit-chained; fail-closed; contract-pinned.
 8. **On landing:** UPD-001 as-built revision; roadmap strike;
    CHANGELOG + pyproject at the release point.
 
+## 7.1. As-built (v0.3.0, 2026-09-27 — Option A accepted and landed)
+
+Option A was accepted by owner direction on 2026-09-27 (decision
+input: the repo operator via the recorded session; the row is on
+AG_AGENDA v2.3.9's decision log) and the §7 plan executed the same
+day. What the tree carries:
+
+- **`backend/update_orchestrate.py`** — `UpdateOrchestrator`:
+  `resolve_updates()` walks the FULLY-VERIFIED signed index
+  (`package_repo.load_index`, fail-closed against the trust store); a
+  delta is a candidate only when its content checksum re-verifies and
+  its target is strictly newer. `apply_update()` owns the ordering
+  pins: resolve → payload from the LOCAL repository path (no network
+  I/O here — fetch stays behind the operator-configured registry
+  client) → `apply_delta_update` verifies the signature against the
+  trust store BEFORE any filesystem mutation → the pre-apply restore
+  point (a failed snapshot REFUSES the apply; `--no-restore-point` is
+  the operator's explicit override) → apply → the installer-layout
+  manifest rewrite → JSONL history + the audit chain (package id,
+  version transition, delta checksum in the entry result).
+  `rollback()` is OPERATOR-INVOKED ONLY: restores the newest pre-apply
+  restore point; a same-or-newer target is refused per the
+  `validate_rollback` posture; NO automated health gate exists — §5
+  Q4 is resolved by construction in Option A. `verify_only()` is the
+  no-mutation index check.
+- **The operator surface** — `nyrqisctl packages verify|update|rollback|
+  status` (client-side composition, zero new daemon surface; the
+  packages-only scope default holds — no platform-update channel).
+- **Contract pins** — `tests/test_update_orchestrate.py` (16 tests):
+  verify-before-mutation (a tampered delta is refused with the
+  install untouched), restore-point-before-apply (a failed snapshot
+  refuses), rollback ordering + refusal semantics (same-or-newer,
+  no-restore-point), resolution (bad trust store fails closed),
+  numeric version ordering, and the NO-DIRECT-EGRESS assertion (the
+  module imports no HTTP client and only the shipped primitives).
+- **The pins did their job:** `upd001-audit-rollback-pin` and
+  `upd001-audit-unwired-pin` failed on the landing tree exactly as
+  their fail-on-change descriptions prescribe ("then update UPD-001
+  in the same commit") — nyrqisctl.py's rollback count 71 → 79 (the
+  new packages-rollback verb) and `update_orchestrate.py` recorded as
+  the first non-test consumer of `apply_delta_update`. The §2.1 gap
+  this note recorded (library-complete, user-unreachable) is CLOSED:
+  the signed-package verify/apply path is user-reachable as of this
+  landing.
+
 ## 8. Revision history
 
 | Version | Date | Change |
 |---|---|---|
+| 0.3.0 | 2026-09-27 | Option A ACCEPTED by owner direction and LANDED — §7.1 records the as-built (`backend/update_orchestrate.py` with the ordering pins + `nyrqisctl packages verify/update/rollback/status`, 16 contract pins incl. the no-direct-egress assertion); Q4 resolved by construction (rollback operator-judgment-only, no automated gate); Q5 as-built: restore points retained under `state_dir/restore-points/` (no automatic cleanup yet); the two upd001 audit pins updated per their fail-on-change protocol; status Draft → Accepted; AG_AGENDA v2.3.9 decision-log row |
 | 0.2.1 | 2026-09-27 | Corrigendum: the v0.2.0 surface audit was recorded from truncated search output — the untruncated whole-repo re-run caught the wired deployment/snapshot rollback family (`rollback_to_snapshot` dry-run-default, five rollback IPC ops + CLI verbs) and the wired delta GENERATION half (`nyrqisctl_repo publish-delta`); corrected load-bearing finding: the gap is the signed-package VERIFY/APPLY path (`UpdateVerifier`/`validate_rollback`/`apply_delta_update` — library-complete, user-unreachable) plus the policy questions; options, recommendation, open questions, and the §7 plan unchanged in scope |
 | 0.2.0 | 2026-09-27 | §7 added: the Option A implementation plan pre-staged (orchestration module composing the shipped primitives, ordering pins, operator-only rollback, CLI, the CLI-side-composition default, scope default, contract pins incl. the no-direct-egress assertion) — acceptance converts to landed work without re-planning; content unchanged otherwise |
 | 0.1.0 | 2026-09-27 | Initial draft per the DBG-001/CRY-001 design-note-first discipline: surface audit (the signed-update machinery is shipped, tested, and unwired — §2.1), three options, five open questions, downstream sizing. Roadmap item stays `[ ]` — the draft proposes, the Group decides |

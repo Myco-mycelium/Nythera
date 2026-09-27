@@ -5,6 +5,64 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.36] - 2026-09-27
+
+### Added
+
+- **CRY-001 Option A — the local-only crash-report spool (accepted by
+  owner direction 2026-09-27, implemented per the pre-staged §7 plan).**
+  `backend/crash_spool.py` (`CrashSpool`: write / list / read / purge;
+  `redact_recovery_record`; `spool_from_state_file`) — vault aggregates
+  and per-container `*_bytes` figures are stripped AT WRITE time (the
+  `--no-redact` flag is a read-view choice; the spooled bytes never
+  carry them); the generation, eviction, and purge events are
+  audit-chained (ADR-0018) with the report id in the entry result; the
+  spool write is fail-closed — it never raises, so §4.5 crash recovery
+  survives a broken spool; write-then-rename keeps partial reports
+  unlisted; retention 20 reports / 32 MiB, oldest first. The daemon
+  spools during dead-daemon recovery when `service serve --crash-spool
+  <dir>` is configured (service default: disabled). Operator surface:
+  `nyrqisctl crash list|show|purge` (purge requires `--yes`). Pinned by
+  `tests/test_crash_spool.py` (16 tests) including the no-egress
+  assertion — the module imports no HTTP client, so "local-only" is a
+  tested property, not prose. Registered as CRY-001 v0.4.0 as-built
+  (Draft → Accepted).
+- **UPD-001 Option A — the signed-package update/rollback surface
+  (accepted by owner direction 2026-09-27, implemented per the
+  pre-staged §7 plan).** `backend/update_orchestrate.py`
+  (`UpdateOrchestrator`): resolve over the fully-verified signed index
+  (`package_repo.load_index`, fail-closed against the trust store),
+  verify BEFORE restore point BEFORE apply (a failed restore point
+  refuses the apply; a tampered or untrusted delta is refused with the
+  install byte-identical), operator-invoked-only rollback behind the
+  `validate_rollback` posture (a same-or-newer target is refused; NO
+  automated health gate exists — the Option A contract), JSONL history
+  and audit-chain entries carrying the package id, version transition,
+  and delta checksum. Operator surface: `nyrqisctl packages
+  verify|update|rollback|status` (client-side composition — zero new
+  daemon surface; no network I/O in the CLI; fetch stays behind the
+  operator-configured registry client). Pinned by
+  `tests/test_update_orchestrate.py` (16 tests) including the
+  no-direct-egress assertion. Registered as UPD-001 v0.3.0 as-built
+  (Draft → Accepted).
+- **The live demo** — `demo/run_demo.sh` (+ `DEMO_GUIDE.md`,
+  `ISO_DEMO_GUIDE.md`): a five-act scripted operator session against a
+  real daemon (bring-up, containers, a REAL signed repository driving
+  the packages update cycle incl. a tampered-delta refusal, a real
+  daemon restart driving the §4.5 recovery spool, the DBG-001 bundle),
+  18 PASS/FAIL checks, exit 0 only on a full pass, no network egress;
+  the ISO demo guide mirrors the tour for the boot path and the
+  build script stages the demo tree onto the ISO.
+
+### Fixed
+
+- `test_backend.py`'s CLI-wiring test doubles reconciled with the new
+  `crash_spool_dir` argument (the D7-era `_FakeManager` reconciliation
+  shape); the `upd001-audit-rollback-pin` / `upd001-audit-unwired-pin`
+  registry entries updated per their fail-on-change protocol when the
+  wiring landed (nyrqisctl rollback 71 → 79; `update_orchestrate.py`
+  recorded as the first non-test `apply_delta_update` consumer).
+
 ## [0.29.35] - 2026-09-26
 
 ### Fixed

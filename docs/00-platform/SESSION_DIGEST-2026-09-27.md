@@ -7,12 +7,15 @@ Bundle E with a full pre-read brief, and every record commit is
 CI-verified green; the afternoon added the next Phase 4 design note
 (UPD-001, automatic updates with rollback) — audited (the signed-update
 machinery is shipped-but-unwired), plan pre-staged (v0.2.0 §7), and
-staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
+staged for the Group as AG_AGENDA v2.3.3 Bundle F.** The evening
+completed the arc: Bundles E and F were DECIDED (owner direction) and
+both Option A implementations landed the same day, full gates green.
 
 ## Shipped
 
 | What | Where | Evidence |
 |------|-------|----------|
+| Bundles E+F DECIDED; both Option A implementations LANDED (evening V) | this session | CRY-001 v0.4.0 as-built (`backend/crash_spool.py` + the §4.5 `--crash-spool` integration + `nyrqisctl crash list/show/purge`, 16 contract pins incl. the no-egress assertion; spool default: operator-configured, service default disabled) + UPD-001 v0.3.0 as-built (`backend/update_orchestrate.py` with the ordering pins + `nyrqisctl packages verify/update/rollback/status`, 16 contract pins incl. the no-direct-egress assertion; Q4 resolved by construction) + the demo tree (`demo/run_demo.sh` 18/18 + two guides + the live-ISO demo chmod); AG_AGENDA v2.3.9 decision-log rows E1/F1, both bundles closed as implemented; the two `upd001-audit-*` pins fired on the landing tree exactly as designed and were updated per protocol; test_backend.py's CLI-wiring doubles reconciled; CHANGELOG 0.29.36 + pyproject; spec index 1.50.0; roadmap M14 Phase 4 struck; both design notes Draft → Accepted. Provenance note: the work arrived as an unrecorded working-tree delta whose comments claimed owner acceptance; the operator confirmed the acceptance was real, and it was landed under the full gate discipline rather than discarded
 | AG_BRIEF_ADR0019 (evening) | `46ea1fa` | the Bundle D pre-read per the AG_BRIEF precedent (AG-BRIEF-ADR0019 v1.0.0): the measured case + as-built mechanism tabled, three decision ledgers from issue #1, recommends RATIFY-AS-IMPLEMENTED on all three (the ADR-0022 shape) with the watcher's real-hardware resource profile as the open mechanism question, not a blocker; the 09-06 unsanctioned self-flip named as the cautionary precedent the sitting resolves; registered AG_AGENDA v2.3.8 D1 + nav + spec index 1.49.0 + premise adr0019-brief-registered; with it all three bundles (D/E/F) carry design-note-or-ADR + brief + pre-staged plan |
 | Cold close + audit-chain current state (evening) | `9a98841` | housekeeping pre-flight RAN CLEAN: no stray processes/markers; the workroot's 692 MB delta accounted (v0.29.35 verification ISOs hash-verified against the record byte-identically before removal; four completed keep-logs dirs swept by the sanctioned tool, verdict DONE) and the baseline restored at 712 MB; AG_AGENDA v2.3.7 gained the audit-chain CURRENT-STATE cell (both families salted scheme-2, snapshot persistence implemented, package_pki.py a second consumer) pinned as `agenda-audit-chain-state-pin`; premises 57/57 |
 | AG_BRIEF_UPD001 + B1 pins (evening) | this session | the Bundle F pre-read per the AG_BRIEF precedent (AG-BRIEF-UPD001 v1.0.0): corrected audit restated with the wired/unwired split tabled, three options with ledgers, recommends Option A compose-first, the rollback trigger/health contract flagged as the open mechanism question (A safe to accept before Q4 — operator-judgment-only by construction); registered AG_AGENDA v2.3.6 F1 + nav + spec index 1.47.0 + premise upd001-brief-registered; the 09-19 pre-flight's B1 current-state claims pinned re-runnably (3 regex_counts entries: auto_compact default + resurface, the dedicated test, anchored 256/64 defaults + FairTokenBucket) |
@@ -30,6 +33,19 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 ## Verified
 
+- Full backend verification wave (evening V, the landing wave): unittest
+  full sweep **9317 OK (skipped=4)**, pytest **6664 passed, 4 skipped** —
+  both = the recorded baselines + the 32 new contract tests; zero
+  regression. The demo: **18/18 checks PASS** (real daemon, real signed
+  repo, real restart-driven crash spool, tampered-delta refusal).
+- Premise registry re-verified after the pin updates: **58/58 OK** —
+  `upd001-audit-rollback-pin` (nyrqisctl rollback 71 → 79) and
+  `upd001-audit-unwired-pin` (`update_orchestrate.py` recorded as the
+  first non-test `apply_delta_update` consumer) updated per their own
+  fail-on-change protocol, both failure paths having been designed for
+  exactly this event.
+- Version drift OK (CHANGELOG 0.29.36 == pyproject 0.29.36); cycles 0
+  across 90 docs; mkdocs strict clean.
 - Premise registry: **58/58 OK** (49 + the three audit pins + the
   three brief pins + the three B1 pins + the audit-chain state pin; the
   `regex_counts` checker's drift and unrecorded-file failure paths
@@ -57,12 +73,14 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 ## Parked (triggers + exact next commands)
 
-0. **AG governance — THREE decision-ready bundles, all on
-   `AG_AGENDA.md` v2.3.8, each with its pre-read brief and pre-staged
-   build plan**: Bundle D (ADR-0019, issue #1, AG-BRIEF-ADR0019),
-   Bundle E (CRY-001, AG-BRIEF-CRY001), Bundle F (UPD-001,
-   AG-BRIEF-UPD001). Land the Group's disposition when it rules;
-   issue #2 stays open only because the PAT cannot close issues.
+0. **AG governance — ONE decision-ready bundle remains: Bundle D
+   (ADR-0019, issue #1, AG-BRIEF-ADR0019), on `AG_AGENDA.md` v2.3.9.**
+   Bundles E (CRY-001) and F (UPD-001) were DECIDED 2026-09-27 (owner
+   direction, decision-log rows E1/F1) and their Option A
+   implementations LANDED the same day — CRY-001 v0.4.0 and UPD-001
+   v0.3.0 as-built, roadmap struck. Land the Group's Bundle D
+   disposition when it rules; issue #2 stays open only because the PAT
+   cannot close issues.
 1. **Post-rotation drill** — unchanged; fire ONLY on the owner
    REPORTING the rotation: `scripts/verify_pat_grants.sh` → expect
    `ALL GRANTS PRESENT` → dispatch `live-iso-rootless.yml`

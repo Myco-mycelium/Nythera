@@ -9654,10 +9654,177 @@ def _debug_bundle(args: argparse.Namespace) -> int:
     return 0
 
 
+def _crash(args: argparse.Namespace) -> int:
+    """CRY-001 Option A: the operator surface for the LOCAL-ONLY crash
+    spool — no daemon op, no network. The spool directory is operator-
+    local state; direct file access IS the read path (nothing new to
+    authorize)."""
+    try:
+        from backend.crash_spool import CrashSpool, CrashSpoolError
+    except ImportError as exc:
+        print(f"error: crash spool unavailable: {exc}", file=sys.stderr)
+        return 2
+    sp = CrashSpool(args.spool_dir)
+    try:
+        if args.crash_cmd == "list":
+            reports = sp.list_reports()
+            if not reports:
+                print("crash spool is empty")
+                return 0
+            print(f"{len(reports)} report(s) in {args.spool_dir}:")
+            for r in reports:
+                ts = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(r["modified"]))
+                print(f"  {r['report_id']}  {r['size_bytes']:>9} B  {ts}")
+            return 0
+        if args.crash_cmd == "show":
+            report = sp.read_report(args.report_id)
+            if getattr(args, "redact", True) is False:
+                # The operator's explicit choice for the READ VIEW —
+                # the spooled bytes never carried the redacted fields.
+                pass
+            print(json.dumps(report, indent=2, sort_keys=True))
+            return 0
+        if args.crash_cmd == "purge":
+            if args.report_id is None and not args.all:
+                print("error: purge needs a report id or --all",
+                      file=sys.stderr)
+                return 2
+            if args.report_id is not None and args.all:
+                print("error: purge takes a report id OR --all, "
+                      "not both", file=sys.stderr)
+                return 2
+            if not args.yes:
+                print("error: purge is destructive — pass --yes",
+                      file=sys.stderr)
+                return 2
+            removed = sp.purge(None if args.all else args.report_id)
+            print(f"purged {removed} report(s)")
+            return 0
+    except CrashSpoolError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"error: unknown crash subcommand {args.crash_cmd!r}",
+          file=sys.stderr)
+    return 2
+
+
+def _packages(args: argparse.Namespace) -> int:
+    """UPD-001 Option A: the operator update/rollback surface over the
+    SHIPPED signed-update machinery (verify → restore point → apply →
+    audit). Client-side composition: the delta payload comes from the
+    operator-configured registry client's local delivery; this CLI
+    performs no network I/O of its own."""
+    try:
+        from backend.update_orchestrate import (
+            UpdateOrchestrator, UpdateOrchestrationError, verify_only,
+        )
+        from backend.package_repo import RepoError
+    except ImportError as exc:
+        print(f"error: update orchestration unavailable: {exc}",
+              file=sys.stderr)
+        return 2
+    if args.packages_cmd == "verify":
+        try:
+            out = verify_only(args.repo_root, args.trust_store)
+        except RepoError as exc:
+            print(f"error: index verification failed: {exc}",
+                  file=sys.stderr)
+            return 1
+        print(f"index VERIFIED: {out['packages']} package(s), "
+              f"{out['deltas']} delta(s)")
+        return 0
+    try:
+        orch = UpdateOrchestrator(
+            repo_root=args.repo_root,
+            trust_store_path=args.trust_store,
+            install_root=args.install_root,
+            state_dir=args.state_dir,
+        )
+        if args.packages_cmd == "update":
+            installed = _installed_versions(args.install_root)
+            if args.package:
+                installed = {k: v for k, v in installed.items()
+                             if k == args.package}
+                if not installed:
+                    print(f"error: package {args.package} is not "
+                          "installed", file=sys.stderr)
+                    return 1
+            if not installed:
+                print("no installed packages found under "
+                      f"{args.install_root}")
+                return 0
+            results = []
+            failed = 0
+            for pid, ver in sorted(installed.items()):
+                try:
+                    res = orch.apply_update(
+                        pid, ver,
+                        restore_point=not args.no_restore_point)
+                    results.append(res)
+                    print(f"updated {pid} "
+                          f"{res['version_from']} → {res['version_to']} "
+                          f"(restore point: {res['restore_point']})")
+                except UpdateOrchestrationError as exc:
+                    failed += 1
+                    print(f"error: {pid}: {exc}", file=sys.stderr)
+            return 1 if failed else 0
+        if args.packages_cmd == "rollback":
+            res = orch.rollback(args.package, args.from_version,
+                                target_version=args.to_version)
+            print(f"rolled back {args.package} (restored from "
+                  f"{res['restored_from']})")
+            return 0
+        if args.packages_cmd == "status":
+            installed = _installed_versions(args.install_root)
+            print(f"installed packages under {args.install_root}:")
+            for pid, ver in sorted(installed.items()):
+                print(f"  {pid} {ver}")
+            for h in orch.history("apply")[-5:]:
+                print(f"  last apply: {h.get('package_id')} "
+                      f"{h.get('version_from')} → {h.get('version_to')}")
+            return 0
+    except (UpdateOrchestrationError, RepoError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"error: unknown packages subcommand "
+          f"{args.packages_cmd!r}", file=sys.stderr)
+    return 2
+
+
+def _installed_versions(install_root: str) -> Dict[str, str]:
+    """Installed package inventory: <install_root>/<pid>/manifest.json
+    carrying {package_id, version} — the installer's layout. A payload
+    directory without a manifest is listed by directory name with an
+    unknown version (updates for it are refused with a reason)."""
+    out: Dict[str, str] = {}
+    root = os.path.abspath(install_root)
+    if not os.path.isdir(root):
+        return out
+    for name in sorted(os.listdir(root)):
+        mpath = os.path.join(root, name, "manifest.json")
+        if os.path.isfile(mpath):
+            try:
+                with open(mpath, "r", encoding="utf-8") as fh:
+                    m = json.load(fh)
+                pid = m.get("package_id") or name
+                ver = m.get("version") or "0"
+                out[pid] = str(ver)
+                continue
+            except (ValueError, OSError):
+                pass
+        out.setdefault(name, "0")
+    return out
+
+
 def run(command: str, args: argparse.Namespace) -> int:
     """Execute ``command`` against the daemon; returns the exit code."""
     if command == "debug-bundle":
         return _debug_bundle(args)
+    if command.startswith("crash-"):
+        return _crash(args)
+    if command.startswith("packages-"):
+        return _packages(args)
     if command in STATUS_COMMANDS and args.health_socket:
         # ADR-0021: probe the dedicated health socket (no contention
         # with container traffic on the main service socket).
@@ -9944,6 +10111,96 @@ def build_parser() -> argparse.ArgumentParser:
                          "bundle (default: --redact; --no-redact keeps "
                          "the raw replies)")
     db.set_defaults(command="debug-bundle")
+
+    # CRY-001 Option A (accepted as owner direction 2026-09-27): the
+    # LOCAL-ONLY crash spool surface — no daemon op, no network. The
+    # spool directory is operator-local state; direct file access IS
+    # the read path.
+    cr = sub.add_parser(
+        "crash", help="Local crash-report spool (CRY-001 Option A; "
+                      "no daemon surface)")
+    crsub = cr.add_subparsers(dest="crash_cmd", required=True)
+    for _name, _help in (
+        ("list", "List spooled crash reports (ids, sizes, timestamps)"),
+        ("show", "Print one spooled crash report (JSON)"),
+        ("purge", "Remove one report (by id) or all (--all)"),
+    ):
+        csp = crsub.add_parser(_name, help=_help)
+        csp.add_argument("--spool-dir", default="/var/lib/nyrqis/crash-spool",
+                         help="Spool directory (default: "
+                              "/var/lib/nyrqis/crash-spool)")
+        csp.set_defaults(crash_cmd=_name)
+    crsub.choices["show"].add_argument("report_id", help="Report id")
+    crsub.choices["show"].add_argument(
+        "--no-redact", dest="redact", action="store_false", default=True,
+        help="Print the report as spooled (the spooled bytes never "
+             "carried vault aggregates; this only skips any future "
+             "read-view filtering)")
+    crsub.choices["purge"].add_argument(
+        "report_id", nargs="?", default=None, help="Report id")
+    crsub.choices["purge"].add_argument(
+        "--all", action="store_true", help="Purge every report")
+    crsub.choices["purge"].add_argument(
+        "--yes", action="store_true",
+        help="Confirm the destructive removal (required)")
+    for _name in ("list", "show", "purge"):
+        crsub.choices[_name].set_defaults(
+            command=f"crash-{_name}")
+
+    # UPD-001 Option A (accepted as owner direction 2026-09-27): the
+    # operator update/rollback surface over the SHIPPED signed-update
+    # machinery. Client-side; no network I/O here — fetch stays behind
+    # the operator-configured registry client.
+    pk = sub.add_parser(
+        "packages", help="Signed-package update/rollback "
+                         "(UPD-001 Option A; client-side)")
+    pksub = pk.add_subparsers(dest="packages_cmd", required=True)
+
+    pkv = pksub.add_parser(
+        "verify", help="Verify the repository index against the trust "
+                       "store (no mutation)")
+    pkv.add_argument("--repo-root", required=True,
+                     help="Signed repository root (index.json + packages/)")
+    pkv.add_argument("--trust-store", required=True,
+                     help="Trust-store JSON (trusted publisher keys)")
+    pkv.set_defaults(command="packages-verify")
+
+    pku = pksub.add_parser(
+        "update", help="Apply verified deltas: resolve → verify → "
+                        "restore point → apply → audit")
+    pku.add_argument("package", nargs="?", default=None,
+                     help="Update one package (default: all with "
+                          "verified deltas)")
+    pku.add_argument("--repo-root", required=True)
+    pku.add_argument("--trust-store", required=True)
+    pku.add_argument("--install-root", default="/var/lib/nyrqis/packages")
+    pku.add_argument("--state-dir", default="/var/lib/nyrqis/update-orchestrator")
+    pku.add_argument(
+        "--no-restore-point", action="store_true",
+        help="Skip the pre-apply snapshot (fail-closed default takes "
+             "one and refuses the apply when it fails)")
+    pku.set_defaults(command="packages-update")
+
+    pkr = pksub.add_parser(
+        "rollback", help="Operator-invoked rollback to the pre-apply "
+                          "restore point (no automated gate exists)")
+    pkr.add_argument("package")
+    pkr.add_argument("from_version", help="The currently-installed version")
+    pkr.add_argument("to_version", nargs="?", default=None,
+                     help="Optional target (must be strictly older)")
+    pkr.add_argument("--repo-root", required=True)
+    pkr.add_argument("--trust-store", required=True)
+    pkr.add_argument("--install-root", default="/var/lib/nyrqis/packages")
+    pkr.add_argument("--state-dir", default="/var/lib/nyrqis/update-orchestrator")
+    pkr.set_defaults(command="packages-rollback")
+
+    pks = pksub.add_parser(
+        "status", help="Installed packages + recent update history")
+    pks.add_argument("--install-root", default="/var/lib/nyrqis/packages")
+    pks.add_argument("--repo-root", default="")
+    pks.add_argument("--trust-store", default="")
+    pks.add_argument("--state-dir", default="/var/lib/nyrqis/update-orchestrator")
+    pks.set_defaults(command="packages-status")
 
     # D7 attach UX (DBG-001's last work item): client-side session
     # orchestration over the ALREADY-LANDED attach channel — the

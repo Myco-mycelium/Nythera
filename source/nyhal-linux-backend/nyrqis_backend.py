@@ -250,6 +250,7 @@ class StatusServiceHost:
     def __init__(
             self, socket_path: str, backend_version: Optional[str] = None,
             state_file: Optional[str] = None,
+        crash_spool_dir: Optional[str] = None,
             health_socket_path: Optional[str] = None,
             vault_dir: Optional[str] = None,
             vault_key_file: Optional[str] = None,
@@ -277,6 +278,9 @@ class StatusServiceHost:
         # for crash-recovery reporting (never auto-resumption). None
         # disables persistence.
         self.state_file = state_file
+        # CRY-001 Option A: local crash-report spool directory (None =
+        # disabled, the default — spooling only when the operator asks).
+        self.crash_spool_dir = crash_spool_dir
         self.state = DaemonStateFile(state_file) if state_file else None
         self._recovery: Optional[dict] = None
         self._started_at = time.time()
@@ -652,6 +656,25 @@ class StatusServiceHost:
                 "socket_path": prev.get("socket_path"),
                 "containers_left": prev.get("containers", []),
             }
+            # CRY-001 Option A: spool a local crash report for the
+            # dead daemon when a spool directory is configured.
+            # Fail-closed by contract — spool_from_state_file never
+            # raises, and recovery proceeds regardless.
+            if self.crash_spool_dir:
+                try:
+                    from backend.crash_spool import spool_from_state_file
+                    rid = spool_from_state_file(
+                        self.crash_spool_dir, self.state_file,
+                        audit_manager=getattr(self, "container_manager",
+                                              None))
+                    if rid:
+                        logger.warning(
+                            "daemon-state: crash report spooled locally "
+                            "(%s) — inspect with nyrqisctl crash show",
+                            rid)
+                except Exception as exc:  # noqa: BLE001 — fail-closed
+                    logger.warning(
+                        "daemon-state: crash spooling skipped (%s)", exc)
             orphan_ids = [
                 c.get("id") for c in self._recovery["containers_left"]
                 if c.get("id")
@@ -798,6 +821,7 @@ def cmd_service_serve(args) -> int:
         socket_path=args.socket,
         backend_version=args.backend_version or None,
         state_file=args.state_file or None,
+        crash_spool_dir=args.crash_spool or None,
         health_socket_path=args.health_socket or None,
         vault_dir=args.vault_dir or None,
         vault_key_file=args.vault_key_file or None,
@@ -1064,6 +1088,13 @@ Examples:
         help="Persist daemon identity + container manifest for "
         "crash-recovery reporting (plan 4.5; default: "
         "/run/nyrqis/daemon-state.json — disable with --state-file '')"
+    )
+    serve_parser.add_argument(
+        "--crash-spool", default="",
+        help="Spool a LOCAL crash report when a previous daemon is "
+             "recovered from the state file (CRY-001 Option A; "
+             "default: disabled '') — inspect with "
+             "'nyrqisctl crash list/show'"
     )
     serve_parser.add_argument(
         "--health-socket", default="",

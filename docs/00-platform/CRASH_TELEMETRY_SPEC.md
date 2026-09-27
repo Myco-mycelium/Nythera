@@ -1,8 +1,8 @@
 ---
 title: Opt-in Crash Reporting and Telemetry — design note for the M14 Phase 4 item
 document_id: CRY-001
-version: 0.3.0
-status: Draft
+version: 0.4.0
+status: Accepted (Option A, owner direction 2026-09-27 — implemented; see §7.1)
 classification: Informative
 owners:
   - Nyrqis Engineering
@@ -205,10 +205,52 @@ fail-closed, contract-pinned.
 8. **On landing:** CRY-001 as-built revision; roadmap strike;
    NPS-029 payload note; CHANGELOG + pyproject at the release point.
 
+## 7.1. As-built (v0.4.0, 2026-09-27 — Option A accepted and landed)
+
+Option A was accepted by owner direction on 2026-09-27 (decision
+input: the repo operator via the recorded session — the same
+acceptance shape every AG_AGENDA decision-log row records; the rows
+are on AG_AGENDA v2.3.9) and the §7 plan executed the same day. What
+the tree carries:
+
+- **`backend/crash_spool.py`** — `CrashSpool` (write / list / read /
+  purge) + `redact_recovery_record` + `spool_from_state_file` (the
+  §4.5 integration). Redaction-default-on AT WRITE: vault aggregates
+  and per-container `*_bytes` figures never reach the spooled bytes;
+  `--no-redact` is a READ-view choice only. Audit-chained generation,
+  eviction, and purge (best-effort — a chain failure never breaks the
+  spool). Fail-closed: `spool_report` returns the id or `None` and
+  never raises, so §4.5 recovery survives a broken spool.
+  Write-then-rename keeps partial reports unlisted. Retention: 20
+  reports / 32 MiB, oldest-first by mtime. Report ids
+  `crash-<utcstamp>-<rand4>`, validated on read (no traversal).
+- **The §4.5 integration** — `nyrqis_backend.py` spools via
+  `spool_from_state_file` during dead-daemon recovery when
+  `--crash-spool <dir>` is configured, and logs the report id. The
+  shipped default is NOT to spool (the flag defaults to disabled) —
+  the conservative posture for §6.2's open ON/OFF question; the brief
+  leaned ON, and flipping the service default is a one-line change if
+  a later sitting wants spooling unconditionally.
+- **The operator surface** — `nyrqisctl crash list|show|purge`
+  (`--spool-dir`, default `/var/lib/nyrqis/crash-spool`; `purge`
+  requires `--yes` and takes an id or `--all`, never both). Direct
+  file access is the read path — zero new daemon surface, per §7
+  item 3's default.
+- **Contract pins** — `tests/test_crash_spool.py` (16 tests): the
+  fail-closed write, write-time redaction (including a raw-bytes
+  assertion), the audit chain with the report id in the entry result,
+  purge/eviction chaining, id-validation refusals, retention caps,
+  and the NO-EGRESS assertion — the module imports no HTTP client, so
+  "local-only" is a tested property, not prose.
+- **Beyond the pins:** `demo/run_demo.sh` Act IV drives the real §4.5
+  recovery path end-to-end (a live daemon restart spools a redacted
+  report the operator then lists and shows).
+
 ## 8. Revision History
 
 | Version | Date | Change |
 |---|---|---|
+| 0.4.0 | 2026-09-27 | Option A ACCEPTED by owner direction and LANDED — §7.1 records the as-built (`backend/crash_spool.py` + the §4.5 `--crash-spool` integration + `nyrqisctl crash list/show/purge`, 16 contract pins incl. the no-egress assertion); spool default as-built: operator-configured `--crash-spool` (shipped default disabled — the conservative §6.2 posture); status Draft → Accepted; AG_AGENDA v2.3.9 decision-log row |
 | 0.3.0 | 2026-09-27 | Corrigendum: the "container.py is the only non-test egress file" claim was FALSE as stated — tools/compare_benchmarks.py (CI artifact downloader, fixed api.github.com destination, operator-authenticated, CI-side) is a second site; the narrow finding (no implicit/telemetry egress) survives; enumeration now pinned re-runnable (registry `cry001-egress-audit-pin`: container.py 16 + compare_benchmarks.py 5 pattern matches, scan-for-unrecorded) |
 | 0.2.0 | 2026-09-27 | §7 added: the Option A implementation plan pre-staged (module, retention, CLI, spool default, schema floor, contract pins incl. the no-egress assertion) — acceptance converts to landed work without re-planning; content unchanged otherwise |
 | 0.1.1 | 2026-09-27 | Corrigendum: the v0.1.0 surface-audit null finding ("ZERO outbound HTTP clients in non-test backend code") was FALSE — `_send_webhook` (2026-08-28) and the registry pull/push/catalog family (2026-08-30) predate this note and return hits on the same search; corrected finding: no implicit/telemetry egress, all four sites operator-destination-configured or loopback (§2.1); options, recommendation, and open questions unchanged — the Group framing now rests on the corrected audit |

@@ -307,6 +307,9 @@ cat <<TRY
     python3 $CTL --socket $SOCK ep-limits metrics --watch 1
     python3 $CTL --socket $SOCK containers list
     python3 $CTL --socket $SOCK vault status
+    python3 $CTL crash list --spool-dir /tmp/nyrqis-crash-spool   (CRY-001 spool)
+    python3 $CTL packages status                                  (UPD-001 updates)
+    cd $OPT && python3 demo/run_demo.sh                           (the full guided session)
     cd $OPT && python3 -m unittest test_backend.TestOperatorCli -v
 TRY
 

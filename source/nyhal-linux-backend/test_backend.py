@@ -12073,6 +12073,7 @@ class TestStatusServiceHost(unittest.TestCase):
         Host.assert_called_once_with(
             socket_path=self.sock, backend_version=None,
             state_file="/run/nyrqis/daemon-state.json",
+            crash_spool_dir=None,
             health_socket_path=None, vault_dir="/var/lib/nyrqis/vault",
             vault_key_file=None, vault_passphrase=None,
             commit_interval=5.0,
@@ -12096,6 +12097,7 @@ class TestStatusServiceHost(unittest.TestCase):
         Host.assert_called_once_with(
             socket_path=self.sock, backend_version=None,
             state_file="/run/nyrqis/daemon-state.json",
+            crash_spool_dir=None,
             health_socket_path=health, vault_dir="/var/lib/nyrqis/vault",
             vault_key_file=None, vault_passphrase=None,
             commit_interval=5.0,

@@ -1,12 +1,53 @@
 ---
 title: Next Development Session Plan
-version: 6.45.2
+version: 6.46.0
 date: 2026-09-27
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Sun 2026-09-27 ~19:45 UTC — Bundles E and F DECIDED (owner direction)
+and BOTH Option A implementations LANDED; full gates green.** The
+session opened cold and found the tree NOT clean — an unrecorded
+working-tree delta implementing both pre-staged §7 plans (CRY-001
+Option A + UPD-001 Option A), their code comments claiming "accepted as
+owner direction 2026-09-27" with no acceptance recorded anywhere. The
+operator CONFIRMED the acceptance was real (decision input: the repo
+operator via the recorded session — the same shape every AG_AGENDA
+decision-log row records) and directed a full-gates landing. What
+landed: CRY-001 v0.4.0 as-built — `backend/crash_spool.py`
+(write-time redaction, audit-chained generation/eviction/purge,
+fail-closed write never breaking §4.5 recovery, write-then-rename,
+retention 20/32 MiB) + the §4.5 integration (`--crash-spool`, service
+default disabled — the conservative §6.2 posture) + `nyrqisctl crash
+list/show/purge`, 16 contract pins incl. the no-egress assertion;
+UPD-001 v0.3.0 as-built — `backend/update_orchestrate.py` (resolve on
+the fully-verified signed index, verify BEFORE restore point BEFORE
+apply, failed restore point refuses, operator-invoked-only rollback
+behind the validate_rollback posture — Q4 resolved by construction) +
+`nyrqisctl packages verify/update/rollback/status`, 16 contract pins
+incl. the no-direct-egress assertion; plus the demo tree
+(`demo/run_demo.sh` — an 18-check five-act operator session on a real
+daemon and a real signed repo, proven 18/18 this session — and two
+guides; the build stages the tree onto the live ISO). The premise
+checker did exactly its designed job: both `upd001-audit-*` pins fired
+on the landing tree ("fails when a consumer wires in"; "then update
+UPD-001 in the same commit") and were updated per protocol —
+nyrqisctl rollback 71 → 79, `update_orchestrate.py` recorded as the
+first non-test `apply_delta_update` consumer. test_backend.py's two
+CLI-wiring doubles reconciled with the new `crash_spool_dir` argument
+(the D7-era _FakeManager shape). Gates: full sweeps unittest **9317 OK
+(skipped=4)** + pytest **6664 passed** (= baselines 9285/6632 + 32,
+zero regression), premises 58/58, version drift OK (CHANGELOG 0.29.36
++ pyproject bumped), cycles 0 across 90 docs, mkdocs strict clean.
+Registered: both design notes Draft → Accepted (§7.1 as-built sections
++ revision rows), AG_AGENDA v2.3.9 decision-log rows E1/F1 (both
+bundles closed as implemented — BUNDLE D IS NOW THE ONLY OPEN DECISION
+ITEM), spec index 1.50.0, roadmap M14 Phase 4 struck, REPOSITORY_STATE
+newest paragraph, digest updated. The watch on this records commit is
+NOT waived (backend code landed) — watch CI to completion.
 
 **Sun 2026-09-27 ~15:05 UTC — the Bundle D pre-read landed; the
 three-bundle decision package is COMPLETE in format as well as
