@@ -5,6 +5,23 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (cold close — housekeeping pre-flight RAN CLEAN and the
+day's workspace restored to baseline: no stray qemu/smoke processes,
+no PID markers anywhere, clean tree; the workroot's unrecorded 692 MB
+delta was fully accounted — release-verify/ held the v0.29.35
+verification ISOs whose on-disk sha256 values matched the recorded
+verification record byte-identically before removal, and tmp/ held
+four completed keep-logs smoke-evidence dirs with no live markers —
+the ISOs removed hash-verified and the tmp dirs swept by the
+sanctioned clean-smoke-tmp.sh --yes (verdict DONE); workroot back to
+the recorded 712 MB (the two kept ISOs + wrapper tooling + logs),
+tmp/ empty, /tmp 4.5 MB OS-owned plus one 28 KB empty mktemp left to
+its owner (mtime minutes old — the runner-bug-2 hazard-class
+discipline); also the audit-chain CURRENT-STATE cell landed on
+AG_AGENDA v2.3.7 (both families salted scheme-2, snapshot persistence
+implemented, package_pki.py a second scheme-2 consumer) pinned
+re-runnably as agenda-audit-chain-state-pin; premises 57/57)
+
 2026-09-27 (evening III — the Bundle F pre-read + the B1 pins:
 AG_BRIEF_UPD001 v1.0.0 registered per the AG_BRIEF precedent — the
 corrected audit restated with the wired/unwired split tabled, the

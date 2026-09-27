@@ -828,6 +828,30 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="agenda-audit-chain-state-pin",
+        pattern=r"Audit-chain current state",
+        description="AG_AGENDA audit-chain CURRENT-STATE cell (2026-09-27), pinned re-runnably: the chain surface lives in container.py (create_audit_chain/append_audit_entry/verify_audit_chain once each, _audit_autosave x4, container._audit_salt x8, the scheme-2 tag x1, audit_snapshot_dir x12) with package_pki.py a second scheme-2 consumer (tag x1) and the persistence contract surfacing in nyrqis_backend.py x1 + test_backend.py x3 — drift in any count fails the pin",
+        check="regex_counts",
+        check_args={
+            "pattern": r"def create_audit_chain|def append_audit_entry|def verify_audit_chain|_audit_autosave|container\._audit_salt|return \"2\|\" \+ \"\|\"\.join\(|audit_snapshot_dir",
+            "expect": {
+                "source/nyhal-linux-backend/backend/container.py": 28,
+                "source/nyhal-linux-backend/backend/package_pki.py": 1,
+                "source/nyhal-linux-backend/nyrqis_backend.py": 1,
+                "source/nyhal-linux-backend/test_backend.py": 3,
+            },
+            "scan_globs": [
+                "source/nyhal-linux-backend/backend/*.py",
+                "source/nyhal-linux-backend/ipc/*.py",
+                "source/nyhal-linux-backend/ui/*.py",
+                "source/nyhal-linux-backend/fuse/*.py",
+                "source/nyhal-linux-backend/*.py",
+                "sdk/nyrqis_sdk/*.py",
+                "tools/*.py",
+            ],
+        },
+    ),
+    Claim(
         claim_id="debug-bundle-tests",
         pattern=r"test_debug_bundle",
         description="The debug-bundle contract is pinned (9 tests: redaction default, --no-redact opt-out, per-container audit requirement, chain capture, no-partial-bundle abort, supplementary-error survival)",

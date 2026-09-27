@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 2.3.6
-status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready; E1 briefed 2026-09-27 (AG-BRIEF-CRY001 v1.0.0 — recommends Option A local-only, spool default flagged as the open mechanism question) and CRY-001 v0.2.0 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning. Re-probed 2026-09-27: the 09-19 pre-flight's frontmatter cells marked as a dated snapshot (frontmatter and index now agree per the sanctioned reconciliation; the B1/B2 mechanism claims re-verified, zero false claims found). Staged 2026-09-27 (afternoon): Bundle F — the UPD-001 automatic-updates/rollback design decision (v0.2.1 Draft — the surface audit CORRECTED the same session it was re-probed: the first pass's truncated search output had understated the wired surface; §7 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning), decision-ready
+version: 2.3.7
+status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready; E1 briefed 2026-09-27 (AG-BRIEF-CRY001 v1.0.0 — recommends Option A local-only, spool default flagged as the open mechanism question) and CRY-001 v0.2.0 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning. Re-probed 2026-09-27: the 09-19 pre-flight's frontmatter cells marked as a dated snapshot (frontmatter and index now agree per the sanctioned reconciliation; the B1/B2 mechanism claims re-verified, zero false claims found). Staged 2026-09-27 (afternoon): Bundle F — the UPD-001 automatic-updates/rollback design decision (v0.2.1 Draft — the surface audit CORRECTED the same session it was re-probed: the first pass's truncated search output had understated the wired surface; §7 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning), decision-ready; an audit-chain current-state cell added the same evening (both families now salted scheme-2 with snapshot persistence — see the RE-PROBED marker)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -51,6 +51,20 @@ suggestion: §A ≈ 45 min, §B ≈ 60 min, §C ≈ 30 min.
 > (`memory_mb=256`/`pid_limit=64`) and `FairTokenBucket`
 > (`ipc/core.py`) hold. Zero false claims found; the cells above are
 > retained as the 09-19 record, not current state.]
+>
+> **Audit-chain current state (2026-09-27, tree-verified and pinned
+> re-runnably — `agenda-audit-chain-state-pin`):** both families are
+> now salted scheme-2 hashers. The first family hashes
+> `salt‖prev_hash‖op‖repr(ts)‖details` (`_audit_event_content`,
+> canonical JSON — `details` covered per the B1-directed fix); the
+> second family's chains carry a per-chain salt (`create_audit_chain`
+> mints and persists it before any entry references it) and
+> prev_hash continuity checks; snapshot persistence is implemented
+> (`_audit_autosave`, the `audit_snapshot_dir` contract — the
+> ADR-0018 review-decision-4 persistence), and a second scheme-2
+> consumer exists in `backend/package_pki.py`. The 09-19 "unsalted /
+> memory-only" cells above describe the pre-hardening record, not
+> current state.]
 
 ---
 
