@@ -1,7 +1,7 @@
 ---
 title: Automatic Updates and Rollback — design note for the M14 Phase 4 item
 document_id: UPD-001
-version: 0.2.0
+version: 0.2.1
 status: Draft
 classification: Informative
 owners:
@@ -27,15 +27,20 @@ entirely a POLICY decision, not a mechanism one.** This document is
 **informative** — it proposes, it does not decide. Which option is
 taken (§4) and the answers to §5's questions belong to the
 Architecture Group. The note has NOT yet been through the re-probe
-wave CRY-001 went through; its claims carry the same re-probe
-obligation as any other (the 0.29.35 lesson applies to this document
-first of all).
+wave CRY-001 went through — the v0.2.1 corrigendum (§2.1) IS that
+re-probe, run the same day the note was written: the first pass's
+truncated search output had understated the wired surface
+(deployment/snapshot rollback IS wired; the delta GENERATION half is
+wired via `nyrqisctl_repo`), and the corrected finding narrows the gap
+to the signed-package VERIFY/APPLY path plus the policy questions. The
+remaining claims carry the same re-probe obligation as any other.
 
 ## 2. What already exists (the audit, 2026-09-27)
 
-The item name suggests a greenfield update system. In fact the trust
-and integrity machinery for updates is shipped, tested, and — the
-surprising part — **not yet wired to any user-facing surface**:
+The item name suggests a greenfield update system. In fact much of the
+machinery is shipped and tested — and part of the rollback story
+(container/deployment scope) is already wired end-to-end; what is NOT
+wired is the **signed-package verify/apply path** (§2.1):
 
 | Layer | Surface | Already answers |
 |---|---|---|
@@ -48,35 +53,67 @@ surprising part — **not yet wired to any user-facing surface**:
 | Delivery (fetch) | `registry_pull` — operator-configured `registry_url`, wired end-to-end (IPC op `ipc/control.py:265`, CLI `nyrqisctl.py:314`) | How content reaches the machine |
 | System state snapshots | `sdk/nyrqis_sdk/restore.py` RestoreManager — create/restore/list/cleanup restore points (references NPC-010/NPS-026) | The rollback safety-net primitive |
 | Audit chain | ADR-0018 hash-chained audit log | Tamper-evident record of update events |
+| Rollback (wired, other scope) | `rollback_to_snapshot` (dry-run default) + deployment version rollback; five rollback IPC ops (`rollback_snapshot`/`rollback_deployment`/`get_rollback_candidates`/`rollback_bluegreen`/`rollback_canary`) + five `nyrqisctl rollback-*` verbs; `ui/system_restore.py`, `ui/update_manager.py` (UI model) | Rollback IS wired for containers/deployments — the gap is the signed-PACKAGE update path, not the rollback CONCEPT |
 | Capability gate | NPS-011 registry (operator-only authorization posture) | Which surfaces may trigger installs |
 
 ### 2.1 The surface audit — the load-bearing finding
 
-**Verified 2026-09-27 against the current tree (searches recorded so a
-future re-probe can re-run them):**
+**v0.2.1 corrigendum:** the v0.2.0 audit below was recorded from
+TRUNCATED search output (`head`-capped result lists) and an
+under-scoped importer sweep — the 0.29.35 lesson (re-probe hardest the
+claim that cannot fail) applied to this document the same day it was
+written. The untruncated, whole-repo re-run caught a real surface the
+first pass missed: **deployment/snapshot-scoped rollback is ALREADY
+WIRED end-to-end.** The corrected reading keeps the load-bearing
+finding intact but states it narrowly (see the revised table and the
+narrowed gap list below); the revised §7 plan is unaffected — its
+compose-first scope (packages) does not overlap the wired
+deployment-rollback surface.
 
-- `grep -rn 'rollback' --include='*.py' backend/` returns hits ONLY in
-  `update_signing.py` (`validate_rollback`) and `delta_update.py`
-  (docstring references to NPS-026 §6). Nothing else in backend code
-  performs or schedules a rollback.
-- The only importers of `update_signing` / `delta_update` anywhere in
-  the tree are their own tests (`tests/test_update_signing.py`,
-  `tests/test_delta_update.py`). **No IPC op, no CLI command, and no
-  daemon path consumes the signed-update machinery** — the
-  verify/apply half of the update story is library-complete and
-  user-unreachable.
+**Verified 2026-09-27 against the current tree (untruncated re-run;
+searches recorded so a future re-probe can re-run them):**
+
+- Whole-repo non-test `rollback` hits (counted per file):
+  `backend/container.py` (102 — `rollback_to_snapshot` at :18516,
+  DRY-RUN-DEFAULT, plus deployment version rollback at :20636),
+  `nyrqisctl.py` (61 — five `rollback-*` CLI verbs: snapshot,
+  deployment, candidates, bluegreen, canary), `ipc/control.py` (49 —
+  five dispatch arms: `rollback_snapshot`, `rollback_deployment`,
+  `get_rollback_candidates`, `rollback_bluegreen`,
+  `rollback_canary`), `ui/terminal.py` (14), `ui/system_restore.py`
+  (8), `ui/update_manager.py` (3), `backend/update_signing.py` (16),
+  `backend/delta_update.py` (2).
+- Importers of the signed-update machinery, non-test:
+  `delta_update`'s GENERATION half is wired — `nyrqisctl_repo.py:96`
+  imports `create_delta_update` (the `publish-delta` front-end for
+  the signed repo). The VERIFY/APPLY half is not:
+  `UpdateVerifier` / `validate_rollback` / `apply_delta_update`
+  consumers remain their own modules and tests
+  (`test_update_signing.py`, `test_delta_update.py`, plus
+  `test_package_repo.py` exercising `apply_delta_update`) — **no IPC
+  op, no CLI command, and no daemon path consumes the signed-update
+  VERIFY/APPLY machinery**.
 - `PackageManager.update_package()` (the 2026-09-23 store wiring)
   verifies the delta entry but does NOT apply it through
   `apply_delta_update` — it reports success and flips status after
   verification. There is no payload mutation to apply in that UI
   model; the real apply path exists only at the delta library layer.
-- No self-update / platform-update code exists:
-  `grep -rln 'self.update|self_update|self-update|platform update'
-  backend/ nyrqisctl.py` returns nothing.
+- No self-update / platform-update code exists (whole-repo
+  non-test sweep for `self_update`/`self-update`: zero hits).
+- Adjacent shipped surfaces (characterized, not load-bearing for the
+  gap): `ui/system_restore.py` (snapshot/restore/backup-scheduling
+  model), `ui/update_manager.py` (an update-management UI MODEL —
+  check/history/rollback_update in-memory), and the
+  deployment-rollback family above.
 
-**The honest gap is therefore NOT cryptography or trust (shipped,
-Accepted) and NOT application mechanics (shipped, tested) — it is
-WIRING and POLICY:**
+**The corrected load-bearing finding, stated narrowly:** the trust
+machinery (shipped, Accepted) and the package-apply mechanics
+(shipped, tested) are NOT the gap, and container/deployment rollback
+is wired — the gap is that the SIGNED-PACKAGE update path
+(verify→apply over `UpdateVerifier`/`apply_delta_update`) and the
+update-scoped rollback gate (`validate_rollback`) are
+**library-complete and user-unreachable**, and every POLICY question
+(automaticity, trigger, scope) is unanswered. Concretely:
 
 1. **A delivery-to-apply path**: fetch (registry_pull exists) →
    verify (exists) → apply (exists) → record (audit chain exists) is
@@ -253,5 +290,6 @@ daemon trust decisions; audit-chained; fail-closed; contract-pinned.
 
 | Version | Date | Change |
 |---|---|---|
+| 0.2.1 | 2026-09-27 | Corrigendum: the v0.2.0 surface audit was recorded from truncated search output — the untruncated whole-repo re-run caught the wired deployment/snapshot rollback family (`rollback_to_snapshot` dry-run-default, five rollback IPC ops + CLI verbs) and the wired delta GENERATION half (`nyrqisctl_repo publish-delta`); corrected load-bearing finding: the gap is the signed-package VERIFY/APPLY path (`UpdateVerifier`/`validate_rollback`/`apply_delta_update` — library-complete, user-unreachable) plus the policy questions; options, recommendation, open questions, and the §7 plan unchanged in scope |
 | 0.2.0 | 2026-09-27 | §7 added: the Option A implementation plan pre-staged (orchestration module composing the shipped primitives, ordering pins, operator-only rollback, CLI, the CLI-side-composition default, scope default, contract pins incl. the no-direct-egress assertion) — acceptance converts to landed work without re-planning; content unchanged otherwise |
 | 0.1.0 | 2026-09-27 | Initial draft per the DBG-001/CRY-001 design-note-first discipline: surface audit (the signed-update machinery is shipped, tested, and unwired — §2.1), three options, five open questions, downstream sizing. Roadmap item stays `[ ]` — the draft proposes, the Group decides |

@@ -5,6 +5,26 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (evening: UPD-001 v0.2.1 corrigendum — the re-probe
+discipline (the 0.29.35 lesson: re-probe hardest the claim that cannot
+fail) applied to the note the SAME DAY it was written: the v0.2.0
+surface audit had been recorded from truncated search output
+(head-capped) and an under-scoped importer sweep, so it understated
+the wired surface — the untruncated whole-repo re-run found
+deployment/snapshot-scoped rollback ALREADY WIRED end-to-end
+(`rollback_to_snapshot` dry-run-default + deployment version rollback
+in container.py; five rollback IPC dispatch arms with five matching
+`nyrqisctl rollback-*` verbs) and the delta GENERATION half wired
+(`nyrqisctl_repo publish-delta`); the corrected load-bearing finding:
+the gap is the SIGNED-PACKAGE verify/apply path (`UpdateVerifier`/
+`validate_rollback`/`apply_delta_update` — library-complete,
+user-unreachable) plus the policy questions — not cryptography, not
+the rollback concept; AG_AGENDA v2.3.4 Bundle F pre-flight corrected
+to match; options, recommendation, open questions, and the §7 plan
+unchanged in scope; full verification wave the same session: unittest
+full sweep 9285 OK (skipped=4), pytest 6632 passed + 4 skipped, both
+matching the last recorded counts — zero regression)
+
 2026-09-27 (late afternoon: UPD-001 v0.2.0 + AG_AGENDA v2.3.3 Bundle F —
 UPD-001 §7 pre-stages the Option A implementation plan (the CRY-001
 §7 precedent: acceptance converts to landed work without re-planning):
