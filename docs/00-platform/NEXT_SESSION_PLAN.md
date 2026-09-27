@@ -8,6 +8,30 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~13:05 UTC — the UPD-001 thread completed its
+pre-acceptance arc in one afternoon: v0.2.0 §7 (the Option A build
+plan) pre-staged and the decision staged as AG_AGENDA v2.3.3 Bundle
+F1, DECISION-READY.** Follows the CRY-001 §7 precedent — acceptance
+converts to landed work without a re-planning session. The §7 plan:
+`backend/update_orchestrate.py` composing the shipped primitives
+(`package_repo.load_index`, `UpdateVerifier`, `apply_delta_update`,
+the SDK RestoreManager restore point, the ADR-0018 chain), ordering
+pins (verify BEFORE restore point BEFORE apply), operator-invoked-only
+rollback behind `validate_rollback`, `nyrqisctl packages
+update/rollback`, the CLI-side-composition default (zero new daemon
+surface), packages-only scope default, and contract pins including a
+no-direct-egress assertion. Bundle F1 carries a tree-verified
+pre-flight (the §2.1 finding restated with the recorded searches) and
+the five §5 questions. Registered: spec index 1.44.0, premise
+description updated (still 49/49, needle unchanged), REPOSITORY_STATE
+paragraph in the same commit `493174a`; gates clean (cycles 0 across
+88 docs, mkdocs strict); CI on `493174a` green 35/35 watched to
+completion. THREE AG bundles now decision-ready (D: ADR-0019, E:
+CRY-001, F: UPD-001) — all parked on the Group's rulings; roadmap
+items stay `[ ]`. The CI watch on this records commit is waived per
+the v6.37.0 precedent (docs-only text). Nothing actionable remains by
+decision; the session re-opens on a named trigger.
+
 **Sun 2026-09-27 ~12:45 UTC — NEW SCOPE: UPD-001 v0.1.0, the
 automatic-updates-with-rollback design note, LANDED and CI-verified
 (35/35).** All three suggested followups were dispositioned honestly:
