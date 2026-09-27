@@ -687,6 +687,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="adr0019-brief-registered",
+        pattern=r"AG_BRIEF_ADR0019",
+        description="The ADR-0019 (auto_compact tuning review, issue #1) decision has its pre-read brief (AG_BRIEF_ADR0019 v1.0.0: the measured case and as-built mechanism tabled, three decision ledgers, recommends ratify-as-implemented with the watcher's resource profile as the open mechanism question) registered as AG_AGENDA v2.3.8 Bundle D1",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: AG-BRIEF-ADR0019",
+            "files": ["docs/00-platform/AG_BRIEF_ADR0019.md"],
+        },
+    ),
+    Claim(
         claim_id="upd001-brief-registered",
         pattern=r"AG_BRIEF_UPD001",
         description="The UPD-001 (automatic updates/rollback) decision has its pre-read brief (AG_BRIEF_UPD001 v1.0.0: the corrected audit restated with the wired/unwired split, three options, recommends Option A compose-first; the rollback trigger/health contract flagged as the open mechanism question) registered as AG_AGENDA v2.3.6 Bundle F1",

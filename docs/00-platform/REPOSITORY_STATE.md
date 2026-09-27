@@ -5,6 +5,24 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (evening IV — the Bundle D pre-read: AG_BRIEF_ADR0019
+v1.0.0 registered per the AG_BRIEF precedent — the measured case
+(11–15 s/123 s per-block-fsync commits → 0.20 s/2.0 s under the
+journal default, ~0.3% overhead, the deferred ~27 ms/block compaction
+cost bounded by journal_compact_bytes) tabled alongside the as-built
+mechanism (auto_compact default + dedicated pin + dirty gate +
+shutdown ordering + crash-atomicity preservation, claims pinned
+re-runnably), the three decision ledgers from issue #1, recommends
+RATIFY-AS-IMPLEMENTED on all three (the ADR-0022 shape) with the
+watcher's real-hardware resource profile as the open mechanism
+question — not an acceptance blocker; the 09-06 unsanctioned self-flip
+named as the cautionary precedent this sitting resolves; registered on
+AG_AGENDA v2.3.8 D1, mkdocs nav, spec index 1.49.0, premise
+adr0019-brief-registered (58/58); with it, ALL THREE bundles (D/E/F)
+carry design-note-or-ADR + pre-read brief + pre-staged build plan —
+the decision package is complete; cycles 0 across 90 docs, mkdocs
+strict clean)
+
 2026-09-27 (cold close — housekeeping pre-flight RAN CLEAN and the
 day's workspace restored to baseline: no stray qemu/smoke processes,
 no PID markers anywhere, clean tree; the workroot's unrecorded 692 MB
