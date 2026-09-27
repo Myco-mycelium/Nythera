@@ -8,6 +8,18 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~12:20 UTC — the one open tail closed: CI on the
+cold-close records commit `f6157f9` is GREEN, 35/35 check runs
+completed success** (read via the authenticated check-runs API,
+`per_page=100` — zero non-success). The prior session's
+every-commit-verified property now extends through its final push.
+Zero new PAT-grant probes spent; the parked threads stay trigger-gated
+per the standing rule — the AG's Bundle D/E rulings, the owner
+REPORTING the rotation, and Monday 2026-09-28's dailies band. The CI
+watch on this amendment commit is waived per the v6.37.0 precedent
+(docs-only text). Nothing actionable remains by decision; the session
+re-opens on a named trigger.
+
 **Sun 2026-09-27 ~10:58 UTC — the dailies band verdict captured in-band:
 PASS, SEVENTH consecutive day.** The one trigger that was due inside
 the stop declaration (digest parked item #2) fired and was dispositioned
