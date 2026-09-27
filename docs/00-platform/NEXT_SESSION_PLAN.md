@@ -8,6 +8,30 @@ date: 2026-09-27
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Sun 2026-09-27 ~15:05 UTC — the Bundle D pre-read landed; the
+three-bundle decision package is COMPLETE in format as well as
+substance.** AG_BRIEF_ADR0019 v1.0.0 (the AG_BRIEF precedent): the
+measured case tabled (11–15 s / 123 s per-block-fsync commits → 0.20 s
+/ 2.0 s under the journal default, ~0.3% overhead, the deferred ~27
+ms/block compaction cost bounded by `journal_compact_bytes`), the
+as-built mechanism tabled (every claim already pinned re-runnably —
+the B1 pins carry it), the three decision ledgers from issue #1
+(cadence / default posture / shutdown ordering), recommends
+**RATIFY-AS-IMPLEMENTED on all three** (the ADR-0022 shape) with the
+watcher's real-hardware resource profile as the open mechanism
+question — NOT an acceptance blocker, since the compaction cost is
+already bounded and the dirty gate bounds what an interrupted pass can
+lose; the 09-06 unsanctioned self-flip named as the cautionary
+precedent this sitting resolves. Registered: AG_AGENDA v2.3.8 D1,
+mkdocs nav, spec index 1.49.0, premise `adr0019-brief-registered`.
+Gates: premises 58/58, cycles 0 across 90 docs, mkdocs strict clean;
+CI on the landing commit `46ea1fa` green 35/35 watched to completion;
+the watch on this records commit is waived (docs-only text, v6.37.0
+precedent). All trigger-gated threads were re-affirmed NOT due at
+~14:44 UTC this hour (tracker read: issues #1/#2/#3 untouched, 0 open
+PRs — recorded at `4b83162`) and NO new probes were spent. The session
+re-opens on a named trigger.
+
 **Sun 2026-09-27 ~14:45 UTC — the followup round dispositioned; the
 stop state holds.** "Proceed with all the suggested followups" resolved
 to the three named triggers, each verified not yet due with

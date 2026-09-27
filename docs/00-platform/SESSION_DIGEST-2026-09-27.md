@@ -13,6 +13,7 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 | What | Where | Evidence |
 |------|-------|----------|
+| AG_BRIEF_ADR0019 (evening) | `46ea1fa` | the Bundle D pre-read per the AG_BRIEF precedent (AG-BRIEF-ADR0019 v1.0.0): the measured case + as-built mechanism tabled, three decision ledgers from issue #1, recommends RATIFY-AS-IMPLEMENTED on all three (the ADR-0022 shape) with the watcher's real-hardware resource profile as the open mechanism question, not a blocker; the 09-06 unsanctioned self-flip named as the cautionary precedent the sitting resolves; registered AG_AGENDA v2.3.8 D1 + nav + spec index 1.49.0 + premise adr0019-brief-registered; with it all three bundles (D/E/F) carry design-note-or-ADR + brief + pre-staged plan |
 | Cold close + audit-chain current state (evening) | `9a98841` | housekeeping pre-flight RAN CLEAN: no stray processes/markers; the workroot's 692 MB delta accounted (v0.29.35 verification ISOs hash-verified against the record byte-identically before removal; four completed keep-logs dirs swept by the sanctioned tool, verdict DONE) and the baseline restored at 712 MB; AG_AGENDA v2.3.7 gained the audit-chain CURRENT-STATE cell (both families salted scheme-2, snapshot persistence implemented, package_pki.py a second consumer) pinned as `agenda-audit-chain-state-pin`; premises 57/57 |
 | AG_BRIEF_UPD001 + B1 pins (evening) | this session | the Bundle F pre-read per the AG_BRIEF precedent (AG-BRIEF-UPD001 v1.0.0): corrected audit restated with the wired/unwired split tabled, three options with ledgers, recommends Option A compose-first, the rollback trigger/health contract flagged as the open mechanism question (A safe to accept before Q4 — operator-judgment-only by construction); registered AG_AGENDA v2.3.6 F1 + nav + spec index 1.47.0 + premise upd001-brief-registered; the 09-19 pre-flight's B1 current-state claims pinned re-runnably (3 regex_counts entries: auto_compact default + resurface, the dedicated test, anchored 256/64 defaults + FairTokenBucket) |
 | Audit-claim sweep + re-runnable pins (evening) | this session | every search-based audit claim re-probed untruncated: DBG-001's test counts exact (9/28/17, zero drift); CRY-001's "only non-test egress file" claim caught FALSE as stated — `tools/compare_benchmarks.py` (CI artifact downloader, fixed api.github.com destination) is a second site; corrected in CRY-001 v0.3.0 + the brief + AG_AGENDA v2.3.5 Bundle E pre-flight, narrow finding (no implicit/telemetry egress) survives; check_doc_premises.py gained the generic `regex_counts` checker + three pins (`cry001-egress-audit-pin`, `upd001-audit-rollback-pin`, `upd001-audit-unwired-pin`), both failure paths verified on synthetic data; premises 49 → 52 |
@@ -29,8 +30,8 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 ## Verified
 
-- Premise registry: **57/57 OK** (49 + the three audit pins + the
-  brief pin + the three B1 pins + the audit-chain state pin; the
+- Premise registry: **58/58 OK** (49 + the three audit pins + the
+  three brief pins + the three B1 pins + the audit-chain state pin; the
   `regex_counts` checker's drift and unrecorded-file failure paths
   exercised on synthetic data before landing).
 - Premise registry at the brief wave: **56/56 OK** (49 + the three audit pins + the
@@ -56,12 +57,12 @@ staged for the Group as AG_AGENDA v2.3.3 Bundle F.**
 
 ## Parked (triggers + exact next commands)
 
-0. **AG governance — THREE decision-ready bundles now, all on
-   `AG_AGENDA.md` v2.3.6, D/E/F each with its pre-read brief and
-   pre-staged build plan**: Bundle D (ADR-0019, issue #1), Bundle E
-   (CRY-001, AG-BRIEF-CRY001), Bundle F (UPD-001, AG-BRIEF-UPD001).
-   Land the Group's disposition when it rules; issue #2 stays open
-   only because the PAT cannot close issues.
+0. **AG governance — THREE decision-ready bundles, all on
+   `AG_AGENDA.md` v2.3.8, each with its pre-read brief and pre-staged
+   build plan**: Bundle D (ADR-0019, issue #1, AG-BRIEF-ADR0019),
+   Bundle E (CRY-001, AG-BRIEF-CRY001), Bundle F (UPD-001,
+   AG-BRIEF-UPD001). Land the Group's disposition when it rules;
+   issue #2 stays open only because the PAT cannot close issues.
 1. **Post-rotation drill** — unchanged; fire ONLY on the owner
    REPORTING the rotation: `scripts/verify_pat_grants.sh` → expect
    `ALL GRANTS PRESENT` → dispatch `live-iso-rootless.yml`
