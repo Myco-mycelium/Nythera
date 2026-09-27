@@ -647,6 +647,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="upd001-design-note",
+        pattern=r"UPD-001",
+        description="The automatic-updates/rollback design note exists (UPD-001, docs/00-platform/UPDATE_ROLLBACK_SPEC.md, v0.1.0 Draft) — surface audit recorded (the signed-update machinery update_signing.py/delta_update.py is shipped and tested but consumed only by its own tests; no IPC op or CLI wires fetch→verify→apply→audit, PackageManager.update_package verifies without applying), three options (A compose-first operator-invoked recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C observational close), five open questions staged for the Group",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: UPD-001",
+            "files": ["docs/00-platform/UPDATE_ROLLBACK_SPEC.md"],
+        },
+    ),
+    Claim(
         claim_id="debug-bundle-tests",
         pattern=r"test_debug_bundle",
         description="The debug-bundle contract is pinned (9 tests: redaction default, --no-redact opt-out, per-container audit requirement, chain capture, no-partial-bundle abort, supplementary-error survival)",

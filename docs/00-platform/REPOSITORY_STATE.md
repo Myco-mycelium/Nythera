@@ -5,6 +5,28 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (afternoon: UPD-001 v0.1.0 — the M14 Phase 4
+"Automatic updates with rollback" design note drafted first per the
+DBG-001/CRY-001 discipline (docs/00-platform/UPDATE_ROLLBACK_SPEC.md):
+the surface audit's load-bearing finding is that the signed-update
+machinery — backend/update_signing.py (FULL/DELTA/PATCH verification +
+validate_rollback) and backend/delta_update.py (signed delta
+generate/apply, fail-closed without PyNaCl) — is shipped and tested
+but consumed only by its own tests; no IPC op or CLI wires
+fetch→verify→apply→audit, and PackageManager.update_package (the
+2026-09-23 store wiring) verifies the delta without applying it, so
+the honest gap is WIRING and POLICY, not cryptography; three options
+(A compose-first operator-invoked update surface, recommended;
+B A + opt-in automaticity, triggering the NPS-019/NPS-020 pass for a
+daemon-initiated fetch; C observational close), five open questions
+(option choice, package-vs-platform scope, automaticity posture, the
+rollback trigger/health contract, restore-point retention); the CI
+verdict on the morning's cold-close records commit f6157f9 was also
+captured (35/35 success — the every-commit-verified property extends
+through it); registered: spec index v1.43.0, mkdocs nav, premise
+upd001-design-note (49/49), cycles 0 across 88 docs, mkdocs strict
+clean; roadmap item stays [ ] — the draft proposes, the Group decides)
+
 2026-09-27 (fourth wave: the extended re-probe audit — the AG_AGENDA
 09-19 pre-flight's frontmatter cells marked as a dated snapshot via an
 inline RE-PROBED marker (the sanctioned 09-19/09-20 reconciliation has
