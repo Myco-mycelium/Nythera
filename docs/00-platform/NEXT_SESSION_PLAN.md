@@ -1,12 +1,33 @@
 ---
 title: Next Development Session Plan
-version: 6.43.0
+version: 6.44.0
 date: 2026-09-27
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Sun 2026-09-27 ~08:35 UTC — SESSION CLOSED pending external triggers
+(stop declaration).** The third "proceed with all the suggested
+followups" round re-verified all three suggested items trigger-gated,
+in-session, with evidence: (1) dailies — the latest scheduled fires are
+still Saturday's (10:08:33Z / 10:19:32Z), pre-band at 08:34 UTC; (2)
+Bundle E — no ruling on the agenda (zero DECIDED/Accepted markers;
+remote tip unchanged), Option A stays behind the pre-staged §7 plan;
+(3) PAT rotation — no owner report (the plan's single "GRANTS PRESENT"
+hit is the parked drill's own expect-text). Four waves landed today,
+all CI-verified green 35/35: `75d6492` (the CRY-001 corrigendum +
+staging), `566ebce` (the brief + digest), `b17316a` (the DBG-001
+re-probe + the pre-staged plan), `d5c17b9` (the extended audit — one
+stale snapshot marked, zero false claims). Per the v6.37.0 standing
+rule the parked threads fire ONLY on their named triggers — the AG's
+Bundle D/E rulings, the owner REPORTING the rotation, and the
+10:02–11:49 UTC dailies band (Monday's fires are the named
+verification point) — and re-running the gates on generic proceed
+prompts is the anti-pattern. The CI watch on this stop-declaration
+commit is explicitly waived (docs-only text, same shape as the four
+green ones today). The next session opens cold from this checklist.
 
 **Sun 2026-09-27 fourth-wave item — the extended re-probe audit:
 AG_AGENDA pre-flights + spec-index status cells, zero false claims.**
