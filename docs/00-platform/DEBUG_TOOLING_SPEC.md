@@ -1,13 +1,13 @@
 ---
 title: Debug Tooling — `nyrqisctl debug` (design note for the M14 Phase 3 item)
 document_id: DBG-001
-version: 0.8.0
+version: 0.8.1
 status: Draft
 classification: Informative
 owners:
   - Nyrqis Engineering
 created: 2026-09-23
-updated: 2026-09-26
+updated: 2026-09-27
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NPC-001, NPS-010, ADR-0018, ADR-0021, NPS-019]
@@ -186,7 +186,11 @@ in the module docstring:
    key (even `{}`); the order is initialize → attach → the
    `initialized` EVENT → setBreakpoints (earlier config requests are
    refused: "Breakpoints may only be set after the launch request is
-   received") → configurationDone.
+   received") → configurationDone. Also: pydevd answers a
+   debug-server request only after authentication — with NO access
+   token configured the first request works as-is (the
+   class-conditional grant is the platform's gate); adopted from the
+   module docstring by the 0.8.1 re-probe audit (§7).
 
 **The proof (2026-09-26, live container):** manifest command
 `python3 -Xfrozen_modules=off -m debugpy --listen 127.0.0.1:5678
@@ -303,10 +307,37 @@ this rider when there is demand.
    sweep test. The bundle still composes the ops' wire shapes
    directly, so it never depended on the fix either way.
 
+## 7. Re-probe audit (2026-09-27)
+
+The CRY-001 corrigendum (v0.1.1, same day) re-proved the 0.29.35
+lesson on a design note; this note's load-bearing as-built claims got
+the same discipline. **Result: 12/12 verified against the current
+tree, zero drift** — `_setup_debug_staging` exists and is wired into
+`spawn()` (backend/container.py ~2445/36542); the `debug-endpoints.json`
+loopback marker is written at 0600; `container_debug` exists on the
+manager with IPC dispatch + handler arms; the CLI resolves
+`containers debug-info/attach/detach/bind`, `debug attach/detach/
+dap-bridge`, and `containers run --debug-class` (payload passthrough
+`"debug_class": bool(...)` verified); `_redact_vault` and the bundle
+internals (`per-container.json`, `audit-chains.json`) are as recorded;
+`CAP_DEBUG_ATTACH` is class-conditional in `CapabilityManager`
+(`_CLASS_CONDITIONAL` → `"debug_class"`) with `declare_container_class`
+the feed; test counts match the records digit-for-digit (bundle 9,
+manifest-class 28, attach-UX 17).
+
+**One supplementary finding (recorded, minor):** §4.2's transport
+lesson 3 is carried in `debug_attach.py`'s module docstring with an
+authentication nuance this note lacked — pydevd answers a debug-server
+request only after authentication, and with NO access token configured
+the first request works as-is (the class-conditional grant is the
+platform's gate). Adopted into §4.2 lesson 3's wording by this
+revision; the docstring remains the pin.
+
 ## Revision History
 
 | Version | Date       | Change       |
 |---------|------------|---------------|
+| 0.8.1   | 2026-09-27 | Re-probe audit (§7): all 12 load-bearing as-built claims verified against the current tree (staging/spawn wiring, marker, op family, IPC+CLI wiring, payload passthrough, bundle internals, class-conditional grant, test counts 9/28/17) — zero drift; one supplementary finding adopted (the pydevd authentication nuance in lesson 3) |
 | 0.1.0   | 2026-09-23 | Initial draft — surface audit, three-phase split, the trust case for the attach channel |
 | 0.2.0   | 2026-09-23 | Phase A + Phase C rider landed; §3/§5 rewritten as built with four recorded deviations; §6 updated — Phase B stays Group-gated, item stays open |
 | 0.3.0   | 2026-09-23 | Deviations 2+3 resolved: redaction default-on (--redact/--no-redact); per-container audit trails (correcting a real wire-contract violation the scripted tests had masked); --chain-id summary+verification capture; the build_payload "audit-summary" shadow recorded for its owner |

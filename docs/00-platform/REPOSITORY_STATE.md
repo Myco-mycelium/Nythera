@@ -5,6 +5,14 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (third wave: DBG-001 v0.8.1's re-probe audit — 12/12
+as-built claims verified against the current tree, zero drift, the
+pydevd authentication nuance adopted into §4.2 lesson 3 — and CRY-001
+v0.2.0's §7, the Option A implementation plan pre-staged so an
+acceptance ruling converts directly to landed work, contract pins
+including a no-egress assertion; Sunday's dailies verdict still
+pending the 10:02–11:49 UTC band at record time)
+
 2026-09-27 (the CRY-001 decision package completed: AG_BRIEF_CRY001
 v1.0.0 — the Bundle E pre-read per the AG_BRIEF precedent, recommending
 Option A local-only with the spool default flagged as the open

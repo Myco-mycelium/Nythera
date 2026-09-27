@@ -1,7 +1,7 @@
 ---
 title: Opt-in Crash Reporting and Telemetry — design note for the M14 Phase 4 item
 document_id: CRY-001
-version: 0.1.1
+version: 0.2.0
 status: Draft
 classification: Informative
 owners:
@@ -155,9 +155,50 @@ mechanism question this note carries forward.
 4. Retention/purge: a cap (count or bytes) on the spool directory, and
    does purge need to be audit-chained?
 
-## 7. Revision History
+## 7. Pre-staged implementation plan (if the Group accepts Option A) — 2026-09-27
+
+Recorded so acceptance converts to landed work without a re-planning
+session (the D7 precedent: DBG-001 §4 carried its work-item list the
+same way). Ground rule throughout: the DBG-001 Phase A discipline —
+client-side composition, redaction-default-on, audit-chained,
+fail-closed, contract-pinned.
+
+1. **`backend/crash_spool.py`** (new module): spool directory under
+   the daemon state root, beside the §4.5 state file;
+   `spool_report()` composes the §4.5 recovery record + the
+   fault-handler trace + a container-manifest snapshot; REDACTION
+   APPLIED at write (the bundle's `_redact_vault` discipline); the
+   generation event is audit-chained (`create_audit_chain`/
+   `append_audit_entry`) with the report id in the entry result;
+   fail-closed in the recovery path — a spool failure never breaks
+   §4.5 recovery itself.
+2. **Retention cap** per the Group's §6.4 answer (count or bytes);
+   enforced at write time; purge audit-chained if the Group says so.
+3. **Spool reads — the one implementation choice this plan flags:**
+   direct operator-CLI file access (the spool is operator-local
+   state, like the bundle's `--out` directory; nothing new to
+   authorize) vs a minimal read op. DEFAULT: direct file access —
+   no new daemon surface.
+4. **CLI:** `nyrqisctl crash list` (ids + timestamps),
+   `crash show <id>` (redaction-view default), `crash purge <id|--all>`
+   (confirmation required).
+5. **Spool default** per the Group's §6.2 answer (the brief
+   recommends ON).
+6. **Schema floor** per the Group's §6.3 answer (the §4.5 record is
+   the floor; fault trace + manifest snapshot are the candidates).
+7. **Contract pins (the test plan):** fail-closed spool write;
+   redaction-default-on in show; audit chain present with the report
+   id; purge refusal semantics; cap enforcement; and — new class of
+   pin the corrected audit makes possible — **a no-egress assertion**:
+   the module imports no HTTP client, so "local-only" stays a tested
+   property, not a prose claim.
+8. **On landing:** CRY-001 as-built revision; roadmap strike;
+   NPS-029 payload note; CHANGELOG + pyproject at the release point.
+
+## 8. Revision History
 
 | Version | Date | Change |
 |---|---|---|
+| 0.2.0 | 2026-09-27 | §7 added: the Option A implementation plan pre-staged (module, retention, CLI, spool default, schema floor, contract pins incl. the no-egress assertion) — acceptance converts to landed work without re-planning; content unchanged otherwise |
 | 0.1.1 | 2026-09-27 | Corrigendum: the v0.1.0 surface-audit null finding ("ZERO outbound HTTP clients in non-test backend code") was FALSE — `_send_webhook` (2026-08-28) and the registry pull/push/catalog family (2026-08-30) predate this note and return hits on the same search; corrected finding: no implicit/telemetry egress, all four sites operator-destination-configured or loopback (§2.1); options, recommendation, and open questions unchanged — the Group framing now rests on the corrected audit |
 | 0.1.0 | 2026-09-26 | First draft: surface audit (recorded as zero egress clients — corrected in 0.1.1), three options, recommendation A, four open questions |

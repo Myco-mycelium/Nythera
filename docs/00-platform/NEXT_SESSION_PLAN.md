@@ -1,12 +1,23 @@
 ---
 title: Next Development Session Plan
-version: 6.41.0
+version: 6.42.0
 date: 2026-09-27
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Sun 2026-09-27 third-wave item — the DBG-001-era claims re-probed
+(12/12, zero drift), the Option A build plan pre-staged.** Continuing
+"proceed with all the suggested followups":
+
+| Item | Status |
+|------|--------|
+| **DBG-001 v0.8.1 re-probe audit (§7)** | ✅ the CRY-001 discipline applied to the older design note: 12 load-bearing as-built claims verified against the current tree — staging + spawn wiring, the 0600 loopback marker, the op family + IPC dispatch, all CLI commands incl. payload passthrough, bundle internals, the class-conditional grant, test counts (bundle 9 / manifest-class 28 / attach-UX 17, digit-for-digit) — ZERO drift. One supplementary find: the module docstring's lesson 3 carries a pydevd AUTHENTICATION nuance (no token configured → first request works as-is; the class-conditional grant is the gate) absent from §4.2 — adopted into the note; the docstring stays the pin |
+| **CRY-001 v0.2.0 — the Option A plan pre-staged (§7)** | ✅ crash_spool.py beside the §4.5 state file; redaction at write; audit-chained generation with the report id; fail-closed (spool failure never breaks §4.5 recovery); retention per the Group's §6.4 answer; direct operator-CLI file access as the default read path (no new daemon surface); `nyrqisctl crash list/show/purge`; contract pins incl. a NO-EGRESS assertion (the module imports no HTTP client — local-only becomes a tested property, not prose). Acceptance converts to landed work without a re-planning session |
+| **Sunday dailies band check** | ⏳ STILL pending (checker re-run exit 0 at ~08:13 UTC; band opens ~10:02 UTC) — the exact pending command stands in the digest; verdict goes to the STANDING ITEM when captured |
+
 
 **Sun 2026-09-27 follow-up session item — the Bundle E pre-read brief
 landed, the 2026-09-27 digest written, the dailies verdict awaited
