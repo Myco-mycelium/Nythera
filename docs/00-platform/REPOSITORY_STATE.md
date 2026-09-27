@@ -5,6 +5,15 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-27 (fourth wave: the extended re-probe audit — the AG_AGENDA
+09-19 pre-flight's frontmatter cells marked as a dated snapshot via an
+inline RE-PROBED marker (the sanctioned 09-19/09-20 reconciliation has
+since landed: ADR-0007/0009/0013/0016/0018/0022/0023 Accepted in both
+frontmatter and index; ADR-0024 still Proposed) while every underlying
+mechanism claim re-verified — auto_compact default + pin + shutdown
+ordering, the shipped container defaults, FairTokenBucket; zero false
+claims found; AG_AGENDA v2.3.2)
+
 2026-09-27 (third wave: DBG-001 v0.8.1's re-probe audit — 12/12
 as-built claims verified against the current tree, zero drift, the
 pydevd authentication nuance adopted into §4.2 lesson 3 — and CRY-001

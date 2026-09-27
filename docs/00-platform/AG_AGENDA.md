@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 2.3.1
-status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready; E1 briefed 2026-09-27 (AG-BRIEF-CRY001 v1.0.0 — recommends Option A local-only, spool default flagged as the open mechanism question) and CRY-001 v0.2.0 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning
+version: 2.3.2
+status: The 2026-09-23 sitting DECIDED (D5–D7): D5 NPS-028 Accepted with amendments (v1.0.0 — §5.3 thaw trigger named, decision-day evidence recorded); D6 BUILD-ARCH canonical (v2.0.0 — BUILD-001's policy absorbed, the copy removed, the Accepted marking D6-sanctioned); D7 debug attach via developer-mode manifests (Option B — CAP-DEBUG-ATTACH + debug:true manifest class, ptrace relaxation inside debugged containers; the NPS-021 addendum (v1.1.0, FIND-CAPABILITY-006) and NPS-011 v1.4.0 landed 2026-09-23; launcher plumbing + IPC ops remain). All prior items decided (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted; D4 the concrete crypto scheme accepted, landed as NPS-026 v1.3.0 §6.7). Staged 2026-09-25: Bundle D — the ADR-0019 tuning review (issue #1), evidence tree-verified, decision-ready. Staged 2026-09-27: Bundle E — the CRY-001 crash-reporting/telemetry design decision (v0.1.1 Draft, audit corrected the same day), decision-ready; E1 briefed 2026-09-27 (AG-BRIEF-CRY001 v1.0.0 — recommends Option A local-only, spool default flagged as the open mechanism question) and CRY-001 v0.2.0 pre-stages the Option A implementation plan so acceptance converts to landed work without re-planning. Re-probed 2026-09-27: the 09-19 pre-flight's frontmatter cells marked as a dated snapshot (frontmatter and index now agree per the sanctioned reconciliation; the B1/B2 mechanism claims re-verified, zero false claims found)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -37,6 +37,20 @@ suggestion: §A ≈ 45 min, §B ≈ 60 min, §C ≈ 30 min.
 > recommendations, and a consequences ledger exists at
 > `AG_DECISION_BRIEF.md` — every recommendation there is overridable
 > Group judgment (NPC-001 §11.1), not a decision.
+>
+> **[RE-PROBED 2026-09-27 — the status cells above are a dated
+> snapshot, superseded by the sanctioned reconciliation this agenda's
+> own decision records describe (spec index 1.23.0/1.24.0):]
+> ADR-0007/0009/0013/0016/0018/0022/0023 now read `Accepted` in BOTH
+> frontmatter and the index (verified against the tree); ADR-0024
+> remains `Proposed`. The B1 mechanism claims themselves re-verified
+> unchanged: `auto_compact: bool = True` ships at `fuse/nyfs.py` with
+> the dedicated pin (`test_backend.py::
+> test_auto_compact_is_the_mount_default`) and the dirty-gated
+> shutdown ordering in `shutdown()`; the shipped container defaults
+> (`memory_mb=256`/`pid_limit=64`) and `FairTokenBucket`
+> (`ipc/core.py`) hold. Zero false claims found; the cells above are
+> retained as the 09-19 record, not current state.]
 
 ---
 

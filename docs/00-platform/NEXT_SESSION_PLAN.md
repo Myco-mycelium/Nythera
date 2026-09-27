@@ -1,12 +1,24 @@
 ---
 title: Next Development Session Plan
-version: 6.42.0
+version: 6.43.0
 date: 2026-09-27
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Sun 2026-09-27 fourth-wave item — the extended re-probe audit:
+AG_AGENDA pre-flights + spec-index status cells, zero false claims.**
+
+| Item | Status |
+|------|--------|
+| **The extended audit's target** | ✅ the agenda's 2026-09-19 pre-flight block and the B1/B2/B3 mechanism claims — the one block of decision-critical prose never re-probed since it was written |
+| **The one stale finding** | ❌→✅ the pre-flight's frontmatter sweep ("ADR-0007/0009/0013/0016/0024 Proposed; the index still says Proposed for all three") is a DATED SNAPSHOT: the sanctioned 09-19/09-20 reconciliation its own decision trail records (index rows 1.23.0/1.24.0) has since landed — ADR-0007/0009/0013/0016/0018/0022/0023 now read Accepted in BOTH frontmatter and index (verified against the tree); ADR-0024 still Proposed. Fixed with an inline RE-PROBED marker per the repo's correction convention (content retained as the 09-19 record) — AG_AGENDA v2.3.2 |
+| **Zero false mechanism claims** | ✅ B1: `auto_compact: bool = True` at fuse/nyfs.py:1864, resurfaced in container.py + nyrqisctl.py, the dedicated pin at test_backend.py:21651, `shutdown()` implements stop-watcher → dirty-gated save → unmount exactly (signal-safe, best-effort, DAEMON_LIFECYCLE.md §2). B2: `memory_mb=256`/`pid_limit=64` ship at container.py:67-68; FairTokenBucket at ipc/core.py:204. D1/D2/D3/D4/D5/D6 claims covered by the 48-claim premise registry (exit 0) |
+| **Dailies band check** | ⏳ STILL pre-band (fires latest = Saturday's; checker exit 0 at ~08:23 UTC) — the exact pending command stands |
+| **Option A build** | ⏳ decision-gated — the agenda status confirms no Bundle E ruling has landed; the pre-staged §7 plan executes only on acceptance (no manufactured work) |
+
 
 **Sun 2026-09-27 third-wave item — the DBG-001-era claims re-probed
 (12/12, zero drift), the Option A build plan pre-staged.** Continuing
