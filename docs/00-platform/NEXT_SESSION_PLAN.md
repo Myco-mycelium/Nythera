@@ -55,7 +55,16 @@ STANDING ITEM exists to track (yesterday's fires were 10:41/10:51;
 the prior days ran ~10:28–10:36). Tracker re-probe at ~12:47 UTC:
 identical — issues #1/#2/#3 open, pre-today `updated_at`, 0 comments,
 0 open PRs; no Bundle D ruling. The ninth-day question becomes:
-whether Tuesday's fires return to band or the drift extends.
+whether Tuesday's fires return to band or the drift extends. **Hold
+disposition (~12:55 UTC):** the suggested-followups round resolved to
+one dated item — the Tuesday band check, captured after the drifted
+envelope closes (~12:55 UTC Tue 2026-09-29, using Monday's 12:44:52Z
+latest fire + the 12:45 no-show convention as the envelope) — plus
+the standing tracker watch. Two tracker probes this afternoon
+(~12:47, ~12:53): both identical, no ruling. The session holds open
+through the bounded wait to Tuesday's capture; the stop state holds
+throughout — the only triggers that shorten the wait are the AG's
+Bundle D ruling or the owner rotation report, checked at each wake.
 
 **Sun 2026-09-27 ~19:45 UTC — Bundles E and F DECIDED (owner direction)
 and BOTH Option A implementations LANDED; full gates green.** The
