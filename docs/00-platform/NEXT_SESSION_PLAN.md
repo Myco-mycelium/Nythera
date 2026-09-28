@@ -40,7 +40,22 @@ new probes beyond the reads. The weekly arm64 fire had NOT landed by
 scripts/check_scheduled_runs.sh` after the 11:49 UTC band close
 (no-show deadline 12:45 UTC per the STANDING ITEM convention); a
 post-record captures it if the session is open then, else the exact
-pending command stands.
+pending command stands. **Captured ~12:47 UTC: the arm64 fire LANDED —
+in-band family-wide drift day, not a no-show.** All four scheduled
+workflows fired Monday, roughly an hour late vs the 10:02–11:49 band:
+pat-expiry-watch 11:56:02Z and scheduled-runs-watch 12:02:35Z (both
+completed success by the 12:47 capture), and live-iso-arm64.yml fired
+12:44:52Z on `55fb2f4` — 56 min late but 8 min inside the 12:45 UTC
+no-show deadline, run in progress at capture (amd64's live-iso had
+fired in band at 09:33:33Z on `9d1b6d3`). The checker's own verdict:
+SCHEDULED RUNS: OK, exit 0 point-in-time ~12:47 UTC. So the eighth-day
+verdict is IN BAND WITH LATE FIRES — the dailies held, but the whole
+family drifted ~1 h on the same morning, which is the pattern the
+STANDING ITEM exists to track (yesterday's fires were 10:41/10:51;
+the prior days ran ~10:28–10:36). Tracker re-probe at ~12:47 UTC:
+identical — issues #1/#2/#3 open, pre-today `updated_at`, 0 comments,
+0 open PRs; no Bundle D ruling. The ninth-day question becomes:
+whether Tuesday's fires return to band or the drift extends.
 
 **Sun 2026-09-27 ~19:45 UTC — Bundles E and F DECIDED (owner direction)
 and BOTH Option A implementations LANDED; full gates green.** The
