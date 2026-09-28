@@ -1,12 +1,29 @@
 ---
 title: Next Development Session Plan
-version: 6.46.0
-date: 2026-09-27
+version: 6.47.0
+date: 2026-09-28
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Mon 2026-09-28 ~10:31 UTC — Monday's dailies verified in band; the
+stop state holds.** "Proceed" resolved to the named trigger set, each
+dispositioned with point-in-time evidence and zero new probes: (1)
+Monday's dailies band — `check_scheduled_runs.sh` at ~10:31 UTC returned
+SCHEDULED RUNS: OK, with live-iso.yml fired and green in band today at
+09:33:33 UTC on `9d1b6d3` (the arm64 fire was 2026-09-21, its prior
+band) — the eighth-day question answered IN BAND; (2) the tracker read
+(authenticated, read-only) is identical to every prior one: issues
+#1/#2/#3 all open with pre-today `updated_at` timestamps (issue #1
+still 2026-08-12T20:13:08Z), 0 open PRs — no AG Bundle D ruling, so the
+pre-staged AG_BRIEF_ADR0019 §6 disposition does NOT land per the
+standing rule; (3) the post-rotation drill — still no owner report of
+the PAT rotation, so the drill remains not due. The records commit is
+docs-only; the CI watch is waived per the v6.37.0 precedent. The
+session re-opens on a named trigger (the AG's Bundle D ruling or the
+owner rotation report).
 
 **Sun 2026-09-27 ~19:45 UTC — Bundles E and F DECIDED (owner direction)
 and BOTH Option A implementations LANDED; full gates green.** The
