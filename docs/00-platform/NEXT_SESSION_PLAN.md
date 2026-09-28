@@ -25,6 +25,23 @@ docs-only; the CI watch is waived per the v6.37.0 precedent. The
 session re-opens on a named trigger (the AG's Bundle D ruling or the
 owner rotation report).
 
+**Mon 2026-09-28 ~10:45 UTC — the suggested-followups round
+dispositioned; the stop state holds.** Pushed the morning's records
+commit (`9d1b6d3..685d4ae`, main in sync, remote tip verified via
+ls-remote); the cold-open checklist walked (tip verified, clean tree,
+reading order walked — REPOSITORY_STATE → NEXT_SESSION_PLAN v6.47.0 →
+SESSION_DIGEST-2026-09-27 → AG_BRIEF_ADR0019 — nothing actionable by
+decision); two tracker re-probes (~10:35 and ~10:42 UTC,
+authenticated, read-only) both identical to the morning's: issues
+#1/#2/#3 open with pre-today `updated_at`, 0 comments, 0 open PRs —
+no Bundle D ruling, the pre-staged disposition stays unlanded, zero
+new probes beyond the reads. The weekly arm64 fire had NOT landed by
+10:41 UTC — its verdict is time-gated, not due: `bash
+scripts/check_scheduled_runs.sh` after the 11:49 UTC band close
+(no-show deadline 12:45 UTC per the STANDING ITEM convention); a
+post-record captures it if the session is open then, else the exact
+pending command stands.
+
 **Sun 2026-09-27 ~19:45 UTC — Bundles E and F DECIDED (owner direction)
 and BOTH Option A implementations LANDED; full gates green.** The
 session opened cold and found the tree NOT clean — an unrecorded
