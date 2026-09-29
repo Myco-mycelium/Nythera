@@ -80,7 +80,15 @@ Tuesday iso fires, consistent with the weekly cadence (Monday's
 Bundle D ruling; the pre-staged disposition stays unlanded. The
 tenth-day question: whether the watchers hold inside the band or
 resume drifting (the ~11:30 fires sit close enough to the band's 11:49
-close that one more slip lands outside it).
+close that one more slip lands outside it). **Hold disposition (Tue
+~13:07 UTC):** the suggested-followups round resolved to one dated
+item — the Wednesday band check, captured after ~12:55 UTC Wed
+2026-09-30 (covers the nominal band, Monday's drift envelope, and
+margin) — plus the standing tracker watch. Fifth consecutive tracker
+probe (~13:06 UTC): identical, no ruling. The session holds open
+through the bounded wait to Wednesday's capture; the stop state holds
+throughout — the only triggers that shorten the wait are the AG's
+Bundle D ruling or the owner rotation report, checked at each wake.
 
 **Sun 2026-09-27 ~19:45 UTC — Bundles E and F DECIDED (owner direction)
 and BOTH Option A implementations LANDED; full gates green.** The
