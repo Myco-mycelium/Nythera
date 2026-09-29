@@ -65,6 +65,22 @@ the standing tracker watch. Two tracker probes this afternoon
 through the bounded wait to Tuesday's capture; the stop state holds
 throughout — the only triggers that shorten the wait are the AG's
 Bundle D ruling or the owner rotation report, checked at each wake.
+**Ninth-day verdict (Tue 2026-09-29 ~12:56 UTC): the dailies RETURNED
+TO BAND — Monday's drift did not extend.** pat-expiry-watch fired
+11:30:54Z and scheduled-runs-watch 11:36:48Z (on `735e92c`), both
+completed success INSIDE the nominal 10:02–11:49 band, though ~30 min
+later than the days-1–7 pattern (~10:28–10:51) — a partial reversion,
+not a full one. Checker verdict SCHEDULED RUNS: OK, exit 0 point-in-
+time ~12:56 UTC. Residual closed: Monday's live-iso-arm64 run (in
+progress at the 12:47 capture) now reads completed/success; no
+Tuesday iso fires, consistent with the weekly cadence (Monday's
+09:33Z amd64 / 12:44Z arm64 were this week's). Tracker probe at
+~12:56 UTC: unchanged for the FOURTH consecutive read — issues
+#1/#2/#3 open, pre-today `updated_at`, 0 comments, 0 open PRs; no
+Bundle D ruling; the pre-staged disposition stays unlanded. The
+tenth-day question: whether the watchers hold inside the band or
+resume drifting (the ~11:30 fires sit close enough to the band's 11:49
+close that one more slip lands outside it).
 
 **Sun 2026-09-27 ~19:45 UTC — Bundles E and F DECIDED (owner direction)
 and BOTH Option A implementations LANDED; full gates green.** The
