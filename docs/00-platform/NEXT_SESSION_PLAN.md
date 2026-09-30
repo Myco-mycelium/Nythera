@@ -33,8 +33,19 @@ not stay up (expected on some VMs)" — handled by design as a warn,
 not a failure; daemon + quickstart banner confirmed in the same boot
 (TCG, no KVM — the stay-up path needs a KVM host or real hardware).
 Stale-ISO cleanup: the Sep 24 `nyrqis-live-rootless.iso` removed;
-dist/ holds only the verified 20260930 image. No repo-code changes —
-dist/ is gitignored; this entry is the record. Next: arm64 rebuild remains
+dist/ holds only the verified 20260930 image. **arm64 REBUILT the
+same evening (~20:58 local):** the stale stamp survived the sweep but
+the tree didn't (caught by pre-consumption verification — stamp
+removed, re-acquired fresh: 813 MB emulated debootstrap through
+qemu-aarch64-static); zig 0.13.0 segfaults on this host (CPU lacks an
+instruction — 0.12.0 works, downloaded with curl-resume after two
+truncated fetches, xz-verified, cross-compile proven on a test
+binary via NYRQIS_AARCH64_CC); assembly all-gates-green; output
+`dist/nyrqis-live-arm64-20260930.iso` = the workroot's canonical
+`nyrqis-live-arm64.iso`: 351 MB, sha256 437644cf…d907; BOTH boot
+smokes PASS fully emulated (direct + GRUB menu, qemu-system-aarch64
+TCG, --arch arm64). No repo-code changes — dist/ is gitignored; this
+entry is the record. Next: nothing — both ISOs fresh at tip;
 optional (Sep 24 arm64 ISO also stale but unused this cycle); the
 staged drill still waits on the token grants.
 

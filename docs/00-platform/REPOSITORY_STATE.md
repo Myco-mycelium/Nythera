@@ -5,6 +5,20 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-30 (late evening — BOTH live ISOs REBUILT at tip and
+boot-verified, rootless end to end. amd64: direct + GRUB menu smokes
+PASS on a clean second loop, desktop-path smoke with virtio-gpu
+reached the DRM probe (the demo's documented VM warn outcome), stale
+Sep 24 image removed — dist/ holds only the verified builds. arm64:
+caught a swept-tree/stamped-survived hazard (stamp removed, fresh
+813 MB emulated acquisition), zig 0.13.0→0.12.0 fallback (0.13
+segfaults on this CPU; downloads needed curl-resume; cross-compile
+proven before use), assembly all-gates-green, output
+`dist/nyrqis-live-arm64-20260930.iso` = workroot canonical: 351 MB,
+sha256 437644cf…d907, BOTH smokes PASS fully emulated (qemu-system-
+aarch64 TCG). dist/: amd64 359 MB eb618087…01f7 + arm64 351 MB
+437644cf…d907. No repo-code changes — dist/ gitignored)
+
 2026-09-30 (evening — the live ISO REBUILT at tip (owner-directed
 work): the dist ISO was stale (Sep 24, pre-CRY-001/UPD-001/
 demo-tree), so a full rootless two-phase build ran on the reference
