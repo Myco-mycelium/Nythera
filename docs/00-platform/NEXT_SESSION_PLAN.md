@@ -32,7 +32,12 @@ session's reach, so further probes were stopped as manufactured
 motion. The drill re-runs in one pass on the owner's word after the
 grants are saved (or a re-mint): grants check → ALL GRANTS PRESENT →
 dispatch 204 → watch → close issue #1 (row D1 reference) → issue #3
-comment (expect 201) → set PAT_EXPIRES_AT.
+comment (expect 201) → set PAT_EXPIRES_AT. **The sequence is now a
+single command:** `scripts/run_staged_drill.sh` (landed ~14:58 UTC,
+the band-checker precedent — every staged procedure becomes an
+executable tool): asserts each step's expected outcome, dry-run mode
+tested against the red gate (stops cleanly at step 1 with DRILL
+STOP), idempotent on PAT_EXPIRES_AT.
 
 **Wed 2026-09-30 ~13:35 UTC — the Bundle-D followup wave: issue #1
 probed (403 point-in-time — the records' prediction; the close stays

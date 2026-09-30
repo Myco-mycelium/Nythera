@@ -5,6 +5,15 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-30 (`scripts/run_staged_drill.sh` — the post-rotation owner
+session became ONE COMMAND, the band-checker precedent: grants check →
+dispatch live-iso-rootless (204) → watch to completion → close issue
+#1 with the row-D1 decision record as the closing comment (200/201) →
+issue #3 close-out comment (201) → PAT_EXPIRES_AT (idempotent);
+asserts every expected outcome, `--dry-run` proven against the red
+gate — stops cleanly with DRILL STOP; the owner session is now:
+flip the grants, run the script, record the verdict)
+
 2026-09-30 (the rotation/drill wave v6.50.0: the credential store was
 rotated ~13:44 UTC (single token, fresh mtime — owner-reported); the
 staged post-rotation drill FIRED as designed and returned **GRANTS
