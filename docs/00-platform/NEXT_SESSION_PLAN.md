@@ -18,7 +18,11 @@ the shipped 60 s cadence, ~0.0004% duty — plus ~5 KiB traced loop
 allocations, the active pass held to §14's bounds, and the stop path
 confirmed. Real-hardware capture (SSD/HDD §14 re-run, a 24 h idle-RSS
 soak, wake jitter) is named as the remaining open part with its
-method — a tuning follow-up, not a gate. Thursday's band read rides
+method — a tuning follow-up, not a gate. **CI on `c1bc675` green
+37/38 (0 failed, 1 skipped/neutral), watched to completion ~13:40 UTC
+the same session** — the commit added a repo file, so the docs-only
+waiver did not apply; the every-commit-verified property extends
+through the harness commit. Thursday's band read rides
 the next session's checklist.
 
 **Wed 2026-09-30 ~13:15 UTC — BUNDLE D DECIDED (owner direction,
