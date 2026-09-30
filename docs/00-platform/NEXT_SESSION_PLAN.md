@@ -22,7 +22,12 @@ method — a tuning follow-up, not a gate. **CI on `c1bc675` green
 37/38 (0 failed, 1 skipped/neutral), watched to completion ~13:40 UTC
 the same session** — the commit added a repo file, so the docs-only
 waiver did not apply; the every-commit-verified property extends
-through the harness commit. Thursday's band read rides
+through the harness commit. **Session digest written:
+`SESSION_DIGEST-2026-09-30.md`** (working record, not in mkdocs nav —
+the 09-25/09-27 precedent): shipped/verified/parked tables, the
+cold-open reading order ending at ADR-0019 §Status and decision-log
+row D1. **Ninth consecutive identical tracker read** (~13:42 UTC,
+final probe of the session). Thursday's band read rides
 the next session's checklist.
 
 **Wed 2026-09-30 ~13:15 UTC — BUNDLE D DECIDED (owner direction,
