@@ -1,12 +1,30 @@
 ---
 title: Next Development Session Plan
-version: 6.49.0
+version: 6.50.0
 date: 2026-09-30
 ---
 
 # Next Development Session Plan
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
+
+**Wed 2026-09-30 ~13:50 UTC — the rotation is REAL and the drill
+FIRED: verdict GRANTS MISSING — the new PAT needs re-minting with the
+full grant set.** The credential store was rotated ~13:44 UTC (single
+token, fresh mtime — the owner's report confirmed). The staged drill
+ran immediately: identity OK (Myco-mycelium); **variables write
+MISSING (403)**; **actions write MISSING (403 — cannot dispatch, so
+no drill workflow and no PAT_EXPIRES_AT set)**. This matches
+`rotate_push_pat.sh`'s documented requirements (Actions RW for
+dispatch/re-run, Variables RW for PAT_EXPIRES_AT) — the minted token
+is scoped too narrowly. **Remedy (owner, one step):** edit the PAT's
+permissions in GitHub settings (or re-mint) with Contents RW,
+Workflows RW, **Actions RW, Variables RW**, Pull requests RW (the
+09-19 round's finding) — then say the word and the drill re-runs:
+grants check → dispatch 204 → watch → close issue #1 (row D1
+reference) → issue #3 comment (expect 201). The new token's git-push
+path is verified by this very commit. Everything downstream stays
+staged; nothing is blocked except on the re-mint.
 
 **Wed 2026-09-30 ~13:35 UTC — the Bundle-D followup wave: issue #1
 probed (403 point-in-time — the records' prediction; the close stays
