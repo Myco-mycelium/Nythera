@@ -24,7 +24,15 @@ Workflows RW, **Actions RW, Variables RW**, Pull requests RW (the
 grants check → dispatch 204 → watch → close issue #1 (row D1
 reference) → issue #3 comment (expect 201). The new token's git-push
 path is verified by this very commit. Everything downstream stays
-staged; nothing is blocked except on the re-mint.
+staged; nothing is blocked except on the re-mint. **Session closed
+cold ~14:05 UTC**: three drill re-runs after the first verdict all
+returned the identical GRANTS MISSING state (last probe ~14:04 UTC)
+— the permission edit is a github.com web-UI act outside the
+session's reach, so further probes were stopped as manufactured
+motion. The drill re-runs in one pass on the owner's word after the
+grants are saved (or a re-mint): grants check → ALL GRANTS PRESENT →
+dispatch 204 → watch → close issue #1 (row D1 reference) → issue #3
+comment (expect 201) → set PAT_EXPIRES_AT.
 
 **Wed 2026-09-30 ~13:35 UTC — the Bundle-D followup wave: issue #1
 probed (403 point-in-time — the records' prediction; the close stays
