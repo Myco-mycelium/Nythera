@@ -24,8 +24,17 @@ image (TCG, no KVM): DIRECT PASS (ready marker, daemon ping answered,
 probe packages complete, nyrqisctl on PATH) and MENU PASS (GRUB
 default entry → same); serial + qemu-stderr evidence kept under
 `~/nyrqis-work/tmp/` (nyrqis-boot-smoke-7s_adabe,
-nyrqis-boot-smoke-menu-lpjry_d4). No repo-code changes — dist/ is
-gitignored; this entry is the record. Next: arm64 rebuild remains
+nyrqis-boot-smoke-menu-lpjry_d4). **Desktop-path smoke (virtio-gpu,
+~18:30 local):** a third boot with `virtio-gpu-pci` (no
+NYRQIS_BOOT_SMOKE var — the full demo path) reached the DRM probe:
+"DRM device available — attempting the desktop session" fired, and
+the attempt returned the demo's documented VM outcome — "desktop did
+not stay up (expected on some VMs)" — handled by design as a warn,
+not a failure; daemon + quickstart banner confirmed in the same boot
+(TCG, no KVM — the stay-up path needs a KVM host or real hardware).
+Stale-ISO cleanup: the Sep 24 `nyrqis-live-rootless.iso` removed;
+dist/ holds only the verified 20260930 image. No repo-code changes —
+dist/ is gitignored; this entry is the record. Next: arm64 rebuild remains
 optional (Sep 24 arm64 ISO also stale but unused this cycle); the
 staged drill still waits on the token grants.
 
