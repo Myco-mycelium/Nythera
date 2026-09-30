@@ -37,7 +37,8 @@ single command:** `scripts/run_staged_drill.sh` (landed ~14:58 UTC,
 the band-checker precedent — every staged procedure becomes an
 executable tool): asserts each step's expected outcome, dry-run mode
 tested against the red gate (stops cleanly at step 1 with DRILL
-STOP), idempotent on PAT_EXPIRES_AT.
+STOP), idempotent on PAT_EXPIRES_AT; CI on the landing commit
+`29cdfcd` green **35/35**, watched to completion ~14:58 UTC.
 
 **Wed 2026-09-30 ~13:35 UTC — the Bundle-D followup wave: issue #1
 probed (403 point-in-time — the records' prediction; the close stays
