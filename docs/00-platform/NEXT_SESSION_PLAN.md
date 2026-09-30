@@ -8,6 +8,19 @@ date: 2026-09-30
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Wed 2026-09-30 ~13:35 UTC — the Bundle-D followup wave: issue #1
+probed (403 point-in-time — the records' prediction; the close stays
+the manual owner step) and the ADR-0019 tuning follow-up got its
+first measurement.** DAEMON_LIFECYCLE §3 gained a Resource-profile
+section: the idle no-op wakeup measured at 24.71 µs over a 120,000-
+call sample (journal below the half-threshold) — ~35.6 ms CPU/day at
+the shipped 60 s cadence, ~0.0004% duty — plus ~5 KiB traced loop
+allocations, the active pass held to §14's bounds, and the stop path
+confirmed. Real-hardware capture (SSD/HDD §14 re-run, a 24 h idle-RSS
+soak, wake jitter) is named as the remaining open part with its
+method — a tuning follow-up, not a gate. Thursday's band read rides
+the next session's checklist.
+
 **Wed 2026-09-30 ~13:15 UTC — BUNDLE D DECIDED (owner direction,
 Variant 1 RATIFY-AS-IMPLEMENTED) and the pre-staged §6 disposition
 LANDED the same day — NO OPEN BUNDLES REMAIN.** After the eighth

@@ -5,6 +5,20 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-30 (the Bundle D followup wave: issue #1's close PROBED —
+HTTP 403 point-in-time, "Resource not accessible by personal access
+token", exactly as the records predicted; the close stays a manual
+owner step while the resolution-by-decision stands. The ADR-0019
+tuning follow-up got its FIRST measurement: DAEMON_LIFECYCLE §3
+gained a Resource-profile section — the idle no-op wakeup measured at
+24.71 µs (120k-call sample, journal below the half-threshold),
+~35.6 ms CPU/day at the shipped 60 s cadence (~0.0004% duty), ~5 KiB
+traced loop allocations, the active pass kept bounded by §14 and the
+lock serialization, the stop path confirmed (join(5 s), never blocks
+exit); the remaining REAL-HARDWARE capture is named precisely (SSD vs
+HDD §14 re-run, a 24 h idle-RSS soak, wake jitter under load) with
+the method — explicitly a tuning follow-up, not a gate)
+
 2026-09-30 (Bundle D DECIDED — ADR-0019 RATIFIED AS-IMPLEMENTED — and
 the pre-staged §6 Variant-1 disposition LANDED the same day (owner
 direction via the recorded session, the E1/F1 same-day shape; the

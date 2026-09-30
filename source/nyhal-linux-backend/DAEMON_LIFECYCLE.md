@@ -6,7 +6,8 @@
 > item are struck with the decision note — the interval/threshold
 > defaults are ratified as tuning knobs, not correctness properties;
 > the watcher resource profile on real hardware remains a documented
-> follow-up (tracked in AG_BRIEF_ADR0019 §5). The §2 shutdown contract
+> follow-up (first measurement recorded in §3's Resource profile;
+> real-hardware capture is the open part). The §2 shutdown contract
 > and §4 default flip are now fully sanctioned by ADR-0019's
 > acceptance.
 
@@ -83,6 +84,36 @@ Design intent: compaction is *amortized background work*, not a
 transaction cost. The journal grows between compactions by design; the
 two thresholds bound that growth (inline at 64 MiB, background at
 ~32 MiB).
+
+### Resource profile (the ADR-0019 tuning follow-up)
+
+First measurement 2026-09-30, dev-VM class — real-hardware numbers
+remain the open follow-up (capture method below):
+
+- **Idle (no-op) path — measured:** under the background threshold,
+  `maybe_compact` does a journal-bytes check under the filesystem lock
+  — no I/O. **24.71 µs/wakeup** over a 120,000-call sample (warm,
+  journal below 32 MiB), i.e. ~**35.6 ms CPU/day** at the shipped 60 s
+  cadence (~0.0004% duty cycle). Wake is `Event.wait(60.0)` — a timer,
+  not busy-polling.
+- **Loop machinery memory — measured:** ~5 KiB current / ~6 KiB peak
+  traced allocations for the watcher loop itself (thread object +
+  Event + frame; excludes the interpreter's thread stack).
+- **Active pass — bounded, not re-measured:** a real pass is §14's
+  interleaved save of referenced blocks (~27 ms/block), bounded by the
+  background threshold (~32 MiB default) and serialized with saves
+  under the filesystem lock; §14's 11.2 s / 417-block figure is the
+  scaling anchor.
+- **Stop path — implemented:** `Event.set()` + `join(5.0)`; a pass in
+  flight completes and the daemon thread exits at the next interval —
+  it never blocks process exit (the §2 shutdown contract).
+- **What real hardware still must show** (the follow-up this records):
+  (1) the §14 pass cost re-run on target-class storage (SSD vs HDD);
+  (2) a 24 h idle-RSS soak of a live mount (thread-stack residency is
+  not visible to `tracemalloc`); (3) wake-to-wake jitter under
+  concurrent load. Method: the `tests/benchmarks.py` §14 harness plus
+  a 24 h soak mount with RSS sampling; nothing here is a gate — the
+  defaults are ratified as tuning knobs (§4).
 
 ## 4. Making auto_compact the default
 
