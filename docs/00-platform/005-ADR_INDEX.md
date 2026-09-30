@@ -1,13 +1,13 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.22.0
+version: 1.23.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-09-21
+updated: 2026-09-30
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -40,7 +40,7 @@ only.
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Accepted | 2026-07-13 | — |
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** | 2026-07-13 | — |
 | ADR-0018 | Hash-chained append-only log for capability audit records | Accepted | 2026-07-13 | — |
-| ADR-0019 | Journal commit as the default NyFS save() mode | Proposed | 2026-08-12 | — |
+| ADR-0019 | Journal commit as the default NyFS save() mode | **Accepted** | 2026-09-30 | — |
 | ADR-0020 | Implementation languages and the platform boundary | **Accepted** | 2026-08-13 | ADR-0020 v1 superseded by v2 (Python and Rust, 2026-08-12) |
 | ADR-0021 | NyRuntime direction — IPC serving loop behind the FFI boundary | **Accepted** | 2026-08-15 | — |
 | ADR-0022 | NyVault — storage as a daemon-hosted service on the IPC transport | Accepted | 2026-08-15 | — |
@@ -84,6 +84,7 @@ only.
 | 1.20.0  | 2026-09-16 | Add ADR-0027 (wire-verified protocol constants and fail-closed acceptance gates) — **Accepted** |
 | 1.21.0  | 2026-09-20 | Add the missing ADR-0025/0026 status rows; correct six stale adr/README.md cells (0007/0009/0013/0016/0022/0023 still read pre-2026-09-19-review Proposed); the ADR-0019 frontmatter reverted to Proposed per its own governance line and this index (its 2026-09-06 flip to Accepted was not sanctioned by any Group record) — caught by the frontmatter-vs-index status sweep |
 | 1.22.0  | 2026-09-21 | ADR-0009 v1.3.2 — the standing dynamic-shares-as-default item decided (AG decision log D1): static default retained; nothing remains open in the ADR. Frontmatter version caught up to this table (it had lagged at 1.18.0 through the 1.19–1.21 entries) |
+| 1.23.0  | 2026-09-30 | ADR-0019 **Accepted** — RATIFIED AS-IMPLEMENTED, Bundle D decided (AG decision-log row D1, owner direction via the recorded session, the E1/F1 same-day shape): all three issue-#1 ledgers resolved per AG_BRIEF_ADR0019's recommendation (60 s cadence retained; `auto_compact=True` ratified — the ADR-0022 as-implemented shape; shutdown ordering confirmed); the watcher resource profile recorded as a tuning follow-up, not a blocker. The sanctioned flip supersedes the 2026-09-06 unsanctioned self-flip reverted 2026-09-20 |
 
 ---
 **End of Document**

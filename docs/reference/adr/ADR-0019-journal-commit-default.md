@@ -1,11 +1,11 @@
 ---
 title: Journal Commit as the Default NyFS save() Mode
 document_id: ADR-0019
-version: 1.0.0
-status: Proposed
+version: 1.1.0
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-09-30
 ai_assisted: true
 depends_on: [NPS-004, ADR-0002, ADR-0007, ADR-0016]
 ---
@@ -133,10 +133,34 @@ acceptance. The flip is reversible without migration
 
 ## Status
 
-**[RATIFY-VARIANT DRAFT — NOT LANDED. Staged 2026-09-27 inside
-AG_BRIEF_ADR0019 v1.1.0 §6 so the Group's Bundle D ruling converts to
-landed edits the same way Bundles E/F did; this block replaces the
-status line below only ON that ruling.]**
+**Accepted** — RATIFIED AS-IMPLEMENTED, Bundle D decided 2026-09-30
+(owner direction via the recorded session, the E1/F1 same-day-landing
+shape): the three ledgers from issue #1 resolved per
+AG_BRIEF_ADR0019's recommendation — (1) the fixed 60 s watcher
+cadence retained as a tuning knob, not a correctness property; (2)
+`auto_compact=True` ratified as the shipped default (the ADR-0022
+as-implemented shape — the mechanism has run as the de-facto default
+since 2026-08-12 with the measured 60–70×/61× commit wins on record);
+(3) the shutdown ordering confirmed as implemented (stop watcher →
+dirty-gated final save → unmount). The watcher's resource profile on
+real hardware is recorded as a tuning follow-up, NOT an acceptance
+blocker (the compaction cost is bounded by `journal_compact_bytes`;
+the dirty gate bounds what an interrupted pass can lose). Decision
+record: AG_AGENDA decision-log row D1 (2026-09-30); the frontmatter
+and every index read Accepted on this ruling. Issue #1 is resolved by
+this decision (the close itself is a manual owner step — the PAT
+cannot close issues). Open questions 2 and 3 resolve with the
+ratification: 64 MiB stands as the measured, six-week-shipped
+default; ~0.3% steady-state overhead is accepted as the known-cost
+ledger (the ADR-0022 precedent). This ruling supersedes and sanctions
+the governance defect it closes: the 2026-09-06 self-flip (reverted
+2026-09-20 as unsanctioned) is hereby given the Group record it
+lacked. (v1.1.0 — status Accepted; the staged draft paragraph below
+is retained as the pre-stage record.)
+
+**[RATIFY-VARIANT DRAFT — SUPERSEDED BY THE RULING ABOVE 2026-09-30.
+Staged 2026-09-27 inside AG_BRIEF_ADR0019 v1.1.0 §6; landed with the
+2026-09-30 ruling date per the E1/F1 same-day convention.]**
 
 **RATIFIED AS-IMPLEMENTED** — Bundle D decided 2026-09-27: the
 three ledgers from issue #1 resolved per AG_BRIEF_ADR0019's
@@ -165,3 +189,6 @@ flipped this to Accepted without any Group decision record — this
 section's own governance line and the ADR index both read Proposed,
 so the frontmatter is reverted to match. The ADR-0025/0026 statuses
 carry the same 2026-09-06 flag and are recorded in the index.)
+**Superseded 2026-09-30 by the Accepted ruling at the top of this
+section** — retained as the historical record of the Proposed period
+and the 09-06/09-20 governance correction.

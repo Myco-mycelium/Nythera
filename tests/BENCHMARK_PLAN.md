@@ -269,7 +269,8 @@ watcher); §13 measured a mixed write/read/commit loop — journal commits
 MB/s, CoW-compress-bound); §14 measured the deferred compaction pass —
 an interleaved save of referenced blocks (~27 ms/block; 11.2 s per
 417-block / 2.5 MB journal). The default flip's governance review
-package is ADR-0019 (Proposed). **§15** closed the last §9 gap:
+package is ADR-0019 — RATIFIED AS-IMPLEMENTED 2026-09-30 (Bundle D
+decided; AG decision-log row D1), closing the review. **§15** closed the last §9 gap:
 journal × block-size interplay — under journal commit, save time is
 flat across 64 KiB → 1 MiB blocks (0.18–0.25 s) because the journal
 fsyncs once regardless of block count; block size remains relevant

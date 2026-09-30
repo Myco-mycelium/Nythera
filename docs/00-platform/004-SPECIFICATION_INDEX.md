@@ -1,13 +1,13 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.39.0
+version: 1.51.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-09-26
+updated: 2026-09-30
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -56,7 +56,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** |
 | ADR-0018 | Hash-chained append-only log for capability audit records | Accepted |
-| ADR-0019 | Journal commit as the default NyFS save() mode | Proposed |
+| ADR-0019 | Journal commit as the default NyFS save() mode | Accepted |
 | ADR-0020 | Implementation languages and the platform boundary | **Accepted** |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
@@ -100,7 +100,7 @@ index.
 | CRY-001 | Opt-in Crash Reporting and Telemetry (design note, M14 Phase 4) | platform | Accepted |
 | UPD-001 | Automatic Updates and Rollback (design note, M14 Phase 4) | platform | Accepted |
 | AG-BRIEF-UPD001 | AG Brief — Automatic Updates and Rollback (UPD-001, Bundle F) | platform | Proposed |
-| AG-BRIEF-ADR0019 | AG Brief — ADR-0019 auto_compact Tuning Review (issue #1, Bundle D) | platform | Proposed |
+| AG-BRIEF-ADR0019 | AG Brief — ADR-0019 auto_compact Tuning Review (issue #1, Bundle D) | platform | Superseded |
 | AG-BRIEF-DBG-PHASEB | AG Brief — Container Debug Attach (DBG-001 Phase B) | platform | Proposed |
 
 Following the Milestone 9 Architecture Group review and the 2026-09-19/21
@@ -191,6 +191,7 @@ change process.
 | 1.35.0  | 2026-09-23 | D5/D6/D7 landed across the tree: NPS-028 v1.0.0 (Accepted + amendments), BUILD-ARCH v2.0.0 (canonical, merged, refreshed), TUT-003 depends_on + sdk citations re-pointed to BUILD-ARCH, DBG-001 v0.4.0 (Phase B decided, work items listed), AG_AGENDA v2.0.0 (all three standing items decided), the duality premise pin replaced by build-architecture-unified |
 | 1.36.0  | 2026-09-23 | D7 preconditions landed: NPS-021 v1.1.0 (§4.8 debug-attach surface analysis — the PID-namespace fence, the construction-time seccomp gate, the authorization fence; §5.5 FIND-CAPABILITY-006 with five MUST requirements) and NPS-011 v1.4.0 (`CAP-DEBUG-ATTACH`: High tier, denied by default, class-conditional per new §4.4, operator-only ops); AG_AGENDA v2.1.0 (D7 record updated); DBG-001 work-items list updated |
 | 1.37.0  | 2026-09-23 | D7 design review (DBG-001 v0.5.0 §4.1: all five §5.5 MUSTs mapped to verified enforcement sites, one open choice recorded and resolved same day) + the D7 manifest-class plumbing LANDED: `ContainerConfig.debug_class`, evaluation-time rejection in `create()` per NPS-011 §4.4, the class-conditional grant guard centralized in `CapabilityManager`, the construction-time seccomp gate (`build_policy`/`build_allowlist_policy` keyword-only `debug_class`), class-through-policy-file launcher parity, state-surface visibility (state dict, daemon-state manifest, checkpoint round-trip, creation event), IPC create passthrough — pinned by `tests/test_debug_manifest_class.py` (16 tests); DBG-001 v0.6.0 |
+| 1.51.0  | 2026-09-30 | **Bundle D DECIDED — ADR-0019 RATIFIED AS-IMPLEMENTED (AG decision-log row D1, owner direction via the recorded session, the E1/F1 same-day shape):** all three issue-#1 ledgers resolved per AG_BRIEF_ADR0019's recommendation — the fixed 60 s watcher cadence retained as a tuning knob; `auto_compact=True` ratified as the shipped default (the ADR-0022 as-implemented shape, six weeks as the de-facto default with the 60–70×/61× commit wins on record); the shutdown ordering confirmed (stop watcher → dirty-gated final save → unmount). The watcher's real-hardware resource profile recorded as a tuning follow-up, NOT an acceptance blocker (the compaction cost bounded by journal_compact_bytes; the dirty gate bounds an interrupted pass). ADR-0019 frontmatter v1.1.0 → Accepted; the ADR index (1.23.0), adr/README.md, the spec-index ADR cell, and DAEMON_LIFECYCLE.md's caveats reconciled; AG_BRIEF_ADR0019 → Superseded; AG_AGENDA v2.4.0 D1 decision-log row, Bundle D block marked DECIDED; issue #1 resolved by the decision (the close is a manual owner step). The ruling sanctions the governance record the 2026-09-06 unsanctioned self-flip (reverted 2026-09-20) lacked |
 | 1.50.0  | 2026-09-27 | **Bundles E and F DECIDED (owner direction) and the Option A implementations LANDED the same day:** CRY-001 v0.4.0 — `backend/crash_spool.py` (write-time redaction of vault aggregates + `*_bytes`, audit-chained generation/eviction/purge, fail-closed spool write never breaking §4.5 recovery, write-then-rename, retention 20/32 MiB, validated report ids) + the §4.5 integration (`--crash-spool`, service default disabled) + `nyrqisctl crash list/show/purge` (`--yes`-gated purge); 16 contract pins (`tests/test_crash_spool.py`) incl. the NO-EGRESS assertion. UPD-001 v0.3.0 — `backend/update_orchestrate.py` (`UpdateOrchestrator`: resolve over the fully-verified signed index, verify BEFORE restore point BEFORE apply, failed restore point refuses, operator-invoked-only rollback behind the validate_rollback posture — no automated gate, JSONL history, audit chain with the delta checksum) + `nyrqisctl packages verify/update/rollback/status` (client-side composition, zero new daemon surface); 16 contract pins (`tests/test_update_orchestrate.py`) incl. the NO-DIRECT-EGRESS assertion. The demo tree (`demo/run_demo.sh` + two guides, 18-check five-act operator session on a real daemon + real signed repo, rides the live ISO via the build-live-iso.sh demo chmod) exercises both end-to-end. The `upd001-audit-rollback-pin` and `upd001-audit-unwired-pin` failed on the landing tree exactly as designed and were updated per their protocol (nyrqisctl rollback 71 → 79; `update_orchestrate.py` recorded as the first non-test `apply_delta_update` consumer); test double reconciliation in test_backend.py's CLI-wiring pins (`crash_spool_dir=None`); premises 58/58; full sweeps unittest 9317 OK (skipped=4) + pytest 6664 passed (= baselines + 32, zero regression); AG_AGENDA v2.3.9 decision-log rows E1/F1; design notes Draft → Accepted |
 | 1.49.0  | 2026-09-27 | AG_BRIEF_ADR0019 registered (v1.0.0): the Bundle D pre-read per the AG_BRIEF precedent — the measured case tabled (11–15 s/123 s → 0.20 s/2.0 s journal-commit wins, ~0.3% overhead, the deferred ~27 ms/block compaction cost bounded by journal_compact_bytes) alongside the as-built mechanism (auto_compact default + dedicated pin + dirty gate + shutdown ordering + crash-atomicity preservation, all claims pinned re-runnably), the three decision ledgers from issue #1 (cadence/default-posture/shutdown-ordering), recommends RATIFY-AS-IMPLEMENTED on all three (the ADR-0022 shape) with the watcher's real-hardware resource profile flagged as the open mechanism question — not an acceptance blocker; the 09-06 unsanctioned self-flip incident named as the cautionary precedent this sitting resolves; mkdocs nav wired; AG_AGENDA v2.3.8 D1 registration |
 | 1.48.0  | 2026-09-27 | AG_AGENDA v2.3.7 — an audit-chain CURRENT-STATE cell added to the RE-PROBED marker (both families now salted scheme-2: the first hashes salt‖prev_hash‖op‖repr(ts)‖details via `_audit_event_content` canonical JSON; the second mints and persists a per-chain salt with prev_hash continuity checks; snapshot persistence implemented — `_audit_autosave`/`audit_snapshot_dir` — and `package_pki.py` a second scheme-2 consumer), pinned re-runnably as `agenda-audit-chain-state-pin` (container.py 28 + package_pki.py 1 + nyrqis_backend.py 1 + test_backend.py 3 combined pattern counts, scan-for-unrecorded) — the 09-19 "unsalted/memory-only" cells stay as the historical record; premises 56 → 57 |

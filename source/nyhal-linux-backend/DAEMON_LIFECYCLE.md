@@ -1,13 +1,14 @@
 # NyFS Mount Daemon — Lifecycle and Compaction Scheduling (design)
 
-> **Bundle D pre-stage (2026-09-27, AG_BRIEF_ADR0019 v1.1.0 §6):** on a
-> RATIFY-AS-IMPLEMENTED ruling, §4 item 3's "still open" caveat and §5's
-> "Architecture Group tuning review" open item are struck with the
-> decision note (the interval/threshold defaults ratified as tuning
-> knobs; the watcher resource profile remains a documented follow-up).
-> On a DEMOTE-TO-OPT-IN ruling, §4 is rewritten to the demoted posture
-> instead. NOT landed — the caveats below remain current until the
-> sitting rules.
+> **Bundle D DECIDED 2026-09-30 (RATIFY-AS-IMPLEMENTED, AG decision-log
+> row D1, owner direction via the recorded session):** §4 item 3's
+> "still open" caveat and §5's "Architecture Group tuning review" open
+> item are struck with the decision note — the interval/threshold
+> defaults are ratified as tuning knobs, not correctness properties;
+> the watcher resource profile on real hardware remains a documented
+> follow-up (tracked in AG_BRIEF_ADR0019 §5). The §2 shutdown contract
+> and §4 default flip are now fully sanctioned by ADR-0019's
+> acceptance.
 
 **Status: design note (not a normative spec) — partially implemented
 2026-08-12.** Written to answer ADR-0019's open question 1 — *should
@@ -17,9 +18,9 @@
 `NyFSFilesystem.dirty` gate, `mount(auto_compact=True)` default),
 with tests (`test_shutdown_commits_dirty_state`,
 `test_auto_compact_is_the_mount_default`, `test_dirty_flag_tracking`).
-The strict async-signal-safety refinement and the Architecture Group
-tuning review of the interval/threshold defaults remain open (ADR-0019
-open question 1).
+The strict async-signal-safety refinement remains open (§5); the
+Architecture Group tuning review closed 2026-09-30 with ADR-0019's
+ratification — the interval/threshold defaults stand as tuning knobs.
 
 ## 1. Process lifecycle today
 
@@ -99,12 +100,16 @@ question 1:
    ~11 s pass per ~2.5 MB of new blocks (§14).
 3. **Default tuning is reviewed by Architecture Group:** interval
    60 s and half-threshold are starting points, not measurements —
-   still open.
+   **DONE 2026-09-30**: the review sat as AG_AGENDA Bundle D and
+   RATIFIED the shipped defaults AS-IMPLEMENTED (AG decision-log row
+   D1) — the values stand as tuning knobs, not correctness
+   properties; the watcher's real-hardware resource profile remains a
+   documented follow-up, not a gate.
 
 **2026-08-12 status:** items 1 and 2 are satisfied, so the default
-flip was made (`NyFSMount.mount(auto_compact=True)`); item 3 (AG
-tuning review) remains the formal gate for the interval/threshold
-values themselves.
+flip was made (`NyFSMount.mount(auto_compact=True)`). **2026-09-30:
+item 3 closed** — the formal gate is satisfied by the ratification;
+nothing remains open in §4.
 
 ## 5. Open items
 
@@ -115,8 +120,11 @@ values themselves.
 - Measure the watcher's idle-CPU cost (one `stat()` + possibly one
   compaction per interval — expected negligible, but the plan's
   pending concurrent-load CPU measurement (§2/§4) can quantify it).
-- Architecture Group tuning review of the `compact_interval` /
-  half-threshold defaults (ADR-0019 open question 1, item 3).
+- ~~Architecture Group tuning review of the `compact_interval` /
+  half-threshold defaults~~ **CLOSED 2026-09-30** — ratified
+  AS-IMPLEMENTED with ADR-0019's acceptance (Bundle D, decision-log
+  row D1); only the real-hardware resource-profile documentation
+  remains, as a tuning follow-up rather than an open decision.
 
 ## References
 

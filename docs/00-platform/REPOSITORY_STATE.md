@@ -5,6 +5,29 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-30 (Bundle D DECIDED — ADR-0019 RATIFIED AS-IMPLEMENTED — and
+the pre-staged §6 Variant-1 disposition LANDED the same day (owner
+direction via the recorded session, the E1/F1 same-day shape; the
+three ledgers from issue #1 resolved per AG_BRIEF_ADR0019's
+recommendation: the fixed 60 s watcher cadence retained as a tuning
+knob; `auto_compact=True` ratified as the shipped default — the
+ADR-0022 as-implemented shape, six weeks de-facto with the 60–70×/61×
+commit wins on record; the shutdown ordering confirmed — stop watcher
+→ dirty-gated final save → unmount; the watcher's real-hardware
+resource profile recorded as a tuning follow-up, NOT a blocker): ADR-0019
+frontmatter v1.1.0 → Accepted, its Status section carries the
+ratification paragraph with the staged draft marked superseded; the
+ADR index (1.23.0), the spec index (1.51.0), adr/README.md, and
+tests/BENCHMARK_PLAN.md reconciled; DAEMON_LIFECYCLE.md's §4/§5
+tuning-review caveats struck with the decision note; AG_BRIEF_ADR0019
+v1.2.0 → Superseded; AG_AGENDA v2.4.0 — decision-log row D1, the
+Bundle D block marked DECIDED — NO OPEN BUNDLES REMAIN; issue #1
+resolved by the decision (the close is a manual owner step — the PAT
+cannot close issues); the ruling gives the 2026-09-06 unsanctioned
+self-flip (reverted 2026-09-20) the Group record it lacked — this is
+the sanctioned flip the sitting existed to produce; gates: premises
+58/58, cycles 0, mkdocs strict clean, version drift OK)
+
 2026-09-27 (evening V — Bundles E and F DECIDED (owner direction
 2026-09-27) and BOTH Option A implementations LANDED the same day:
 CRY-001 v0.4.0 — `backend/crash_spool.py` (write-time redaction of
@@ -536,7 +559,7 @@ named), 1 rejected. The 2026-09-19 Architecture Group decisions
 - [x] ADR-0016 NyFS Linux Backend as user-space FUSE filesystem — **Accepted** (2026-09-19): FUSE-first confirmed; kernel-module fallback = named reopen criterion; data §5–§15
 - [x] ADR-0017 Reject domain-grouped NPS renumbering — **Rejected** (the project's first; considered and explicitly declined, not left unresolved)
 - [x] ADR-0018 Hash-chained append-only log for capability audit records — **Accepted, review CLOSED** (2026-09-19): status reconciled to Accepted everywhere; tamper-scope fix DIRECTED and landed (scheme-2 hashing, details covered, 22.5 µs/event; merged from `audit-b1-hardening`); dual mechanisms consolidated behind one hasher; persistence requirement set (opt-in JSONL snapshots, daemon path wired) — all six sign-off checklist items ticked in the review package
-- [ ] ADR-0019 Journal commit as the default NyFS save() mode — **Proposed**, review package for the 2026-08-12 implementer default flip; daemon lifecycle design note (`source/nyhal-linux-backend/DAEMON_LIFECYCLE.md`) answers its open question 1, AG tuning review pending. **(Frontmatter corrected 2026-09-20**: a 2026-09-06 edit had flipped it to Accepted with no Group record — reverted per this line, the index, and the ADR's own governance text; the ADR-0025/0026 statuses carry the same unsanctioned-flip flag in the index**)**
+- [x] ADR-0019 Journal commit as the default NyFS save() mode — **Accepted, review CLOSED** (2026-09-30): RATIFIED AS-IMPLEMENTED, Bundle D decided (AG decision-log row D1, owner direction via the recorded session, the E1/F1 same-day shape) — all three issue-#1 ledgers resolved per AG_BRIEF_ADR0019's recommendation (60 s cadence retained as a tuning knob; `auto_compact=True` ratified, the ADR-0022 as-implemented shape; shutdown ordering confirmed), the watcher's real-hardware resource profile a tuning follow-up, not a blocker. The daemon lifecycle design note (`source/nyhal-linux-backend/DAEMON_LIFECYCLE.md`) answered open question 1; the 2026-09-30 ruling supplies the Group record the 2026-09-06 unsanctioned self-flip (reverted 2026-09-20) lacked — the sanctioned flip. The ADR-0025/0026 index flag cells keep the historical 09-06 note
 - [x] ADR-0020 Implementation languages and the platform boundary — **Accepted** (v2.0.0, 2026-08-13), canonical language matrix (Rust/C++/C platform languages; NyHAL resolved Rust-first) + platform-boundary principle: platform-critical execution paths must not depend on the Python interpreter; supersedes v1 (Python + Rust, 2026-08-12); Architecture Group acceptance recorded in issue #2 (closing the issue itself is a manual step — the PAT cannot comment/close issues)
 - [x] ADR-0021 NyRuntime direction — IPC serving loop behind the FFI boundary — **Accepted** (2026-08-15), close gate met (wire p50 82–95 µs vs <100 µs target, §22)
 - [x] ADR-0022 NyVault — storage as a daemon-hosted service on the IPC transport — **Accepted, RATIFIED** (2026-09-19): the Group CONFIRMED the 2026-09-06 acceptance (`3262618`) as sanctioned and ratified as-implemented (the §27/§29 performance record is the known-cost ledger); the stale index/body statuses were the discrepancy
@@ -2479,7 +2502,8 @@ Documentation hygiene, fixed earlier this session:
   (131 vs 504 ms) at identical write throughput; §14 compaction cost —
   the deferred pass is an interleaved save of referenced blocks
   (~27 ms/block; 11.2 s per 417-block / 2.5 MB journal). The default
-  flip's governance review package is **ADR-0019** (Proposed).
+  flip's governance review package is **ADR-0019** — Accepted
+  2026-09-30 (RATIFIED AS-IMPLEMENTED, Bundle D).
 - 2026-08-12 (**journal commit is now the default commit mode**):
   `save()` defaults to `use_journal=True` (one fsync per transaction;
   interleaved path kept as `use_journal=False`). The full suite passes

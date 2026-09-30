@@ -25,7 +25,7 @@ directory; this index tracks status only.
 | [ADR-0016](ADR-0016-nyfs-linux-backend-fuse.md) | NyFS Linux Backend implemented as a user-space FUSE filesystem | Accepted |
 | [ADR-0017](ADR-0017-reject-nps-renumbering.md) | Reject domain-grouped NPS renumbering | **Rejected** |
 | [ADR-0018](ADR-0018-hash-chained-audit-log.md) | Hash-chained append-only log for capability audit records | Accepted |
-| [ADR-0019](ADR-0019-journal-commit-default.md) | Journal commit as the default NyFS save() mode | Proposed |
+| [ADR-0019](ADR-0019-journal-commit-default.md) | Journal commit as the default NyFS save() mode | Accepted |
 | [ADR-0020](ADR-0020-implementation-languages.md) | Implementation languages and the platform boundary | **Accepted** |
 | [ADR-0021](ADR-0021-nyruntime-transport-serving-loop.md) | NyRuntime direction — IPC serving loop behind the FFI boundary | **Accepted** — close gate met |
 | [ADR-0022](ADR-0022-nyvault-storage-service.md) | NyVault — storage as a daemon-hosted service on the IPC transport | Accepted |

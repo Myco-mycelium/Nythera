@@ -1,13 +1,13 @@
 ---
 title: AG Brief — ADR-0019 Journal-Commit Default and the Daemon Lifecycle (issue #1, Bundle D)
 document_id: AG-BRIEF-ADR0019
-version: 1.1.0
-status: Proposed (decision-ready; §6 pre-stages the ratify variant's landing edits)
+version: 1.2.0
+status: Superseded (the decision it staged has landed — Bundle D decided 2026-09-30, Variant 1 RATIFY-AS-IMPLEMENTED per the recommendation)
 classification: Internal
 owners:
   - Nyrqis Engineering
 created: 2026-09-27
-updated: 2026-09-27 (v1.1.0 — §6 added)
+updated: 2026-09-30 (v1.2.0 — superseded by the ruling)
 ai_assisted: true
 review_cycle: One sitting
 depends_on: [ADR-0019, NPS-004, ADR-0016, NPC-001]
