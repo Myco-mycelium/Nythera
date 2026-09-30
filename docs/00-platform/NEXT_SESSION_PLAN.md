@@ -45,7 +45,18 @@ binary via NYRQIS_AARCH64_CC); assembly all-gates-green; output
 `nyrqis-live-arm64.iso`: 351 MB, sha256 437644cf…d907; BOTH boot
 smokes PASS fully emulated (direct + GRUB menu, qemu-system-aarch64
 TCG, --arch arm64). No repo-code changes — dist/ is gitignored; this
-entry is the record. Next: nothing — both ISOs fresh at tip;
+entry is the record. Next: nothing — both ISOs fresh at tip. **Followup round (~21:15
+local): arm64 desktop smoke MATCHES amd64 exactly** (virtio-gpu-pci,
+full demo path: DRM probe fired, "desktop did not stay up (expected
+on some VMs)" — the documented warn; daemon + banner confirmed) —
+both ISOs now verified across the full path matrix. **Workdir sweep:**
+superseded smoke dirs + both iso-build workdirs removed (~250 MB);
+kept today's evidence (amd64+arm64 desktop serial logs, one keep-logs
+pair per arch) — tmp at 166 MB; workroot ~3.1 GB (two rootfs trees +
+three ISOs + the zig toolchain, kept deliberately for the next
+rebuild). **Release attach: still gated** — GRANTS MISSING verdict
+unchanged; the staged attach_release_asset.sh flow runs when the
+token grants land.
 optional (Sep 24 arm64 ISO also stale but unused this cycle); the
 staged drill still waits on the token grants.
 
