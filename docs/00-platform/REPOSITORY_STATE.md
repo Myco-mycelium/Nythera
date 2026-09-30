@@ -5,6 +5,16 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-30 (the capture-method wave: the ADR-0019 real-hardware
+follow-up became EXECUTABLE — `tests/bench_watcher_profile.py`, the
+device-labeled harness for §3's named method (§14 pass re-run + idle-
+RSS soak with the watcher live + wake jitter), proven end-to-end on
+the dev VM via --quick: first real pass 26.9 ms/block (inside §14's
+~27 ms anchor band), RSS drift 4 KiB over the 90 s soak, wake jitter
+p95 +4.2 ms at the 1 s-scaled cadence; one command on target hardware
+now produces the paste-ready labeled record — a tuning follow-up, not
+a gate)
+
 2026-09-30 (the Bundle D followup wave: issue #1's close PROBED —
 HTTP 403 point-in-time, "Resource not accessible by personal access
 token", exactly as the records predicted; the close stays a manual

@@ -111,9 +111,14 @@ remain the open follow-up (capture method below):
   (1) the §14 pass cost re-run on target-class storage (SSD vs HDD);
   (2) a 24 h idle-RSS soak of a live mount (thread-stack residency is
   not visible to `tracemalloc`); (3) wake-to-wake jitter under
-  concurrent load. Method: the `tests/benchmarks.py` §14 harness plus
-  a 24 h soak mount with RSS sampling; nothing here is a gate — the
-  defaults are ratified as tuning knobs (§4).
+  concurrent load. **Method (executable): `python3
+  tests/bench_watcher_profile.py`** — device-labeled, self-checking;
+  `--quick` is a ~2 min smoke, the default runs the full 24 h soak.
+  Proven end-to-end on the dev VM 2026-09-30 (first real pass 26.9
+  ms/block — inside §14's ~27 ms band; RSS drift 4 KiB over 90 s with
+  the watcher live; wake jitter p95 +4.2 ms at a 1 s-scaled cadence).
+  Nothing here is a gate — the defaults are ratified as tuning knobs
+  (§4).
 
 ## 4. Making auto_compact the default
 
