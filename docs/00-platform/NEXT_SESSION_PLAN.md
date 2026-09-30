@@ -1,7 +1,7 @@
 ---
 title: Next Development Session Plan
-version: 6.47.0
-date: 2026-09-28
+version: 6.48.0
+date: 2026-09-30
 ---
 
 # Next Development Session Plan
@@ -89,6 +89,26 @@ probe (~13:06 UTC): identical, no ruling. The session holds open
 through the bounded wait to Wednesday's capture; the stop state holds
 throughout — the only triggers that shorten the wait are the AG's
 Bundle D ruling or the owner rotation report, checked at each wake.
+**Tenth-day verdict (Wed 2026-09-30 ~12:56 UTC): the watchers HELD
+the band — second consecutive in-band day, the drift fully
+reverted.** pat-expiry-watch fired 11:19:14Z and scheduled-runs-watch
+11:24:36Z (on `b7cd7c8`), both completed success inside the nominal
+10:02–11:49 band and ~10 min earlier than Tuesday's 11:30/11:36 —
+the post-Monday trajectory (Mon ~11:56–12:44 drifted; Tue
+11:30/11:36; Wed 11:19/11:24) is a steady early-ward reversion
+toward the days-1–7 ~10:30 pattern. Checker verdict SCHEDULED RUNS:
+OK, exit 0 point-in-time ~12:56 UTC; no new iso fires (weekly
+cadence — Monday's 09:33Z amd64 / 12:44Z arm64 remain this week's,
+both completed success). Tracker probe at ~12:56 UTC: unchanged for
+the SIXTH consecutive read — issues #1/#2/#3 open, pre-today
+`updated_at`, 0 comments, 0 open PRs; no Bundle D ruling; the
+pre-staged AG_BRIEF_ADR0019 §6 disposition stays unlanded.
+**Session CLOSED at owner direction (no open-ended holds):** the
+stop state holds; the session re-opens cold on a named trigger (the
+AG's Bundle D ruling, the owner rotation report, or a dailies
+no-show), with Thursday's band read (due after the nominal band
+window) the next scheduled verification if the session opens for
+it.
 
 **Sun 2026-09-27 ~19:45 UTC — Bundles E and F DECIDED (owner direction)
 and BOTH Option A implementations LANDED; full gates green.** The
