@@ -8,6 +8,27 @@ date: 2026-09-30
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Wed 2026-09-30 ~18:00 local (owner-directed work): the live ISO
+REBUILT at tip — both boot smokes PASS.** The dist ISO was stale (Sep
+24 — pre-CRY-001/UPD-001/demo-tree). Full rootless two-phase build on
+the reference machine: acquire (`--acquire-rootfs ~/nyrqis-work/lr`,
+debootstrap bookworm/amd64, stamp written, resumable cache) → assemble
+(rootless userns + shim, workdir `~/nyrqis-work/tmp/iso-build-20260930`,
+ALL builder gates green: dpkg audit, probe parity, byte-compile,
+initrd verify, size gate, ownership proof). Output:
+`dist/nyrqis-live-rootless-20260930.iso` = the new canonical
+`dist/nyrqis-live-rootless.iso`, **359 MB (376,952,832 B), sha256
+`eb618087ae822ba94a5cd71f8994a9a102cd866f87ea09743604d993b06701f7`**
+(+186 KB over Sep 24 — the new content). Boot smokes on the fresh
+image (TCG, no KVM): DIRECT PASS (ready marker, daemon ping answered,
+probe packages complete, nyrqisctl on PATH) and MENU PASS (GRUB
+default entry → same); serial + qemu-stderr evidence kept under
+`~/nyrqis-work/tmp/` (nyrqis-boot-smoke-7s_adabe,
+nyrqis-boot-smoke-menu-lpjry_d4). No repo-code changes — dist/ is
+gitignored; this entry is the record. Next: arm64 rebuild remains
+optional (Sep 24 arm64 ISO also stale but unused this cycle); the
+staged drill still waits on the token grants.
+
 **Wed 2026-09-30 ~13:50 UTC — the rotation is REAL and the drill
 FIRED: verdict GRANTS MISSING — the new PAT needs re-minting with the
 full grant set.** The credential store was rotated ~13:44 UTC (single

@@ -5,6 +5,21 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-30 (evening — the live ISO REBUILT at tip (owner-directed
+work): the dist ISO was stale (Sep 24, pre-CRY-001/UPD-001/
+demo-tree), so a full rootless two-phase build ran on the reference
+machine — debootstrap bookworm/amd64 acquisition (resumable, stamp
+`~/nyrqis-work/lr.complete`) then the unmodified builder under the
+userns+shim with all gates green (dpkg audit, probe parity,
+byte-compile, initrd verify, size gate, ownership proof). New
+canonical `dist/nyrqis-live-rootless.iso` = the dated
+`…-20260930.iso`: 359 MB, sha256 eb618087…01f7 (+186 KB over Sep 24
+— the CRY-001/UPD-001/demo content). BOTH boot smokes PASS on the
+fresh image (TCG): direct (daemon ping answered, probe packages
+complete, nyrqisctl on PATH) and GRUB menu path; serial evidence
+kept in the workroot tmp. No repo-code changes — dist/ gitignored;
+recorded in NEXT_SESSION_PLAN v6.50.0)
+
 2026-09-30 (`scripts/run_staged_drill.sh` — the post-rotation owner
 session became ONE COMMAND, the band-checker precedent: grants check →
 dispatch live-iso-rootless (204) → watch to completion → close issue
