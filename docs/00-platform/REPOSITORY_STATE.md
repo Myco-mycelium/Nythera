@@ -5,6 +5,24 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-09-30 (the rotation/drill wave v6.50.0: the credential store was
+rotated ~13:44 UTC (single token, fresh mtime — owner-reported); the
+staged post-rotation drill FIRED as designed and returned **GRANTS
+MISSING** — identity OK (Myco-mycelium) and the Contents-RW push path
+VERIFIED LIVE (the records commit `13f8f18` went through the new
+token), but variables-write and actions-write both 403, so the
+dispatch drill, PAT_EXPIRES_AT set, issue #1 close, and issue #3
+comment stay gated on the owner flipping the token's Actions/
+Variables/Workflows/Pull-requests permissions to RW (or re-minting);
+six grants checks over the afternoon all identical — the session
+closed cold at `825dc53` rather than loop. Full-suite re-verification
+at the new tip: pytest **9313 passed, 4 skipped, 0 failed** (+3
+subtests, ~5 min) — 9313+4 = **9317 = the recorded unittest baseline
+count digit-for-digit**, zero regression; the unittest binary aborts
+exit-141 early in this environment (a local artifact — CI runs that
+channel green on the same commits); the digest for the whole day
+(`SESSION_DIGEST-2026-09-30.md`) landed at `8a6c390`)
+
 2026-09-30 (the capture-method wave: the ADR-0019 real-hardware
 follow-up became EXECUTABLE — `tests/bench_watcher_profile.py`, the
 device-labeled harness for §3's named method (§14 pass re-run + idle-
