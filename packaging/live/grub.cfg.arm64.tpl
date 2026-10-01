@@ -29,6 +29,11 @@ menuentry "Nyrqis Live (demo — stock shell)" {
     initrd /live/initrd
 }
 
+menuentry "Nyrqis Live (Cupertino shell — Apple-style desktop)" {
+    linux /live/vmlinuz boot=live nyrqis.variant=cupertino quiet splash console=tty0 console=ttyAMA0,115200
+    initrd /live/initrd
+}
+
 menuentry "Nyrqis Live (pill shell — registry-1.1 cornerRadius demo)" {
     linux /live/vmlinuz boot=live nyrqis.variant=pill quiet splash console=tty0 console=ttyAMA0,115200
     initrd /live/initrd

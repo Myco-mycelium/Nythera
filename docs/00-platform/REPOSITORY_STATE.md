@@ -43,6 +43,20 @@ asserts every expected outcome, `--dry-run` proven against the red
 gate — stops cleanly with DRILL STOP; the owner session is now:
 flip the grants, run the script, record the verdict)
 
+2026-10-01, second round (the Android-surfaces + Cupertino wave:
+QuickSettings renders M3's tile grid and the AppGrid a home-screen
+icon grid — both token-gated (tiles.grid/apps.grid), implemented in
+BOTH compositors (SDL gained per-document token parsing), token-less
+documents pixel-safe; the INTERACTIVE STRESS passed on the real
+DesktopSession pipeline (drag/click-focus/minimize/close/workspace/
+Ctrl+W/undo/theme-behavior click, all verified); cupertino variant
+landed (restyle-never-fork + GRUB/isolinux entry, non-default) and
+verified live — cupertino direct boots with the desktop STARTING on
+both arches (151 s amd64 / 258 s arm64 TCG); full sweep 9336 passed /
+4 skipped; ISOs rebuilt: amd64 447 MB 1fea6d62…db9a, arm64 438 MB
+1dd7123b…4dea, DIRECT+MENU+desktop matrix green on both arches and
+both variants)
+
 2026-10-01 (the Material-UI wave: owner direction "the UI should
 resemble Android while still following Apple HIG" executed end to end —
 TWO new brand themes in both compositors (**Material** = M3 baseline

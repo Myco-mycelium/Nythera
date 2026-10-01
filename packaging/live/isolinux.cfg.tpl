@@ -19,6 +19,10 @@ LABEL nyrqis
     KERNEL /live/vmlinuz
     APPEND initrd=/live/initrd boot=live quiet splash console=tty0 console=ttyS0,115200
 
+LABEL nyrqis-cupertino
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd boot=live nyrqis.variant=cupertino quiet splash console=tty0 console=ttyS0,115200
+
 LABEL nyrqis-pill
     KERNEL /live/vmlinuz
     APPEND initrd=/live/initrd boot=live nyrqis.variant=pill quiet splash console=tty0 console=ttyS0,115200

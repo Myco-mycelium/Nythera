@@ -179,6 +179,8 @@ DESIGN_TOKENS = {
     # Defaults render the historical chrome exactly as before.
     "window": {},
     "start": {},
+    "tiles": {},
+    "apps": {},
 }
 
 
@@ -272,7 +274,7 @@ class Compositor:
         self.tokens = DESIGN_TOKENS
         if isinstance(doc_tokens, dict) and doc_tokens:
             for group in ("space", "radius", "motion", "surface",
-                          "target", "window", "start"):
+                          "target", "window", "start", "tiles", "apps"):
                 if group in doc_tokens:
                     self.tokens = dict(self.tokens)
                     self.tokens[group] = _merge_tokens(
@@ -371,7 +373,9 @@ class Compositor:
             self._render_context_menu(img, draw, x, y, w, h, props, comp, font, font_small, document)
         elif comp_type in ("MenuItem",):
             self._render_menu_item(img, draw, x, y, w, h, props, font_small)
-        elif comp_type in ("List", "AppGrid"):
+        elif comp_type == "AppGrid":
+            self._render_app_grid(img, draw, x, y, w, h, props, comp, font, font_small)
+        elif comp_type in ("List",):
             self._render_list(img, draw, x, y, w, h, props, comp, font, font_small, document)
         elif comp_type in ("TreeView",):
             self._render_tree_view(img, draw, x, y, w, h, props, font_small)
@@ -686,10 +690,56 @@ class Compositor:
         draw.text((x+16, y+12), "Notifications", fill=self.theme["text_primary"], font=font)
 
     def _render_quick_settings(self, img, draw, x, y, w, h, props, comp, font, fs, doc):
-        """Render a QuickSettings panel."""
-        draw.rectangle([x, y, x+w, y+h], fill=self.theme["surface_elevated"])
-        draw.rectangle([x, y, x+w, y+h], outline=self.theme["border"], width=1)
-        draw.text((x+16, y+12), "Quick Settings", fill=self.theme["text_primary"], font=font)
+        """Render a QuickSettings panel.
+
+        Android-surface style under the token ``tiles.grid``: the
+        panel's ``toggles`` list becomes Material's tile grid — rounded
+        accent tiles for ON states, tonal surface tiles for OFF, laid
+        out two-per-row on the ``target.min`` height (HIG touch target).
+        The historical panel renders exactly as before without it."""
+        tiles_grid = (self.tokens.get("tiles", {}) or {}).get("grid", False)
+        surface = self.theme["surface_elevated"]
+        radius = int(self.tokens.get("radius", {}).get("md", 12))
+        if tiles_grid:
+            draw.rounded_rectangle([x, y, x+w, y+h], radius=radius,
+                                   fill=surface)
+        else:
+            draw.rectangle([x, y, x+w, y+h], fill=surface)
+            draw.rectangle([x, y, x+w, y+h], outline=self.theme["border"], width=1)
+        draw.text((x+16, y+12), "Quick Settings",
+                  fill=self.theme["text_primary"], font=font)
+        if not tiles_grid:
+            return
+        toggles = props.get("toggles", [])
+        if isinstance(toggles, dict):
+            toggles = [{"label": k, "value": v}
+                       for k, v in toggles.items()]
+        # Bare-string toggles (the shell document's data): index 0 ON —
+        # Android's stock Wi-Fi-on state — the rest OFF.
+        toggles = [
+            {"label": t, "value": i == 0} if isinstance(t, str) else t
+            for i, t in enumerate(toggles)]
+        target_min = int(self.tokens.get("target", {}).get("min", 44))
+        gap = int(self.tokens.get("target", {}).get("gap", 8))
+        tile_w = (w - 32 - gap) // 2
+        row_y = y + 40
+        for i, t in enumerate(toggles[:8]):
+            label = str(t.get("label", t) if isinstance(t, dict) else t)
+            on = bool(t.get("value", False)) if isinstance(t, dict) else False
+            col, row = i % 2, i // 2
+            tx = x + 16 + col * (tile_w + gap)
+            ty = row_y + row * (target_min + gap)
+            if ty + target_min > y + h:
+                break
+            fill = self.theme["accent"] if on else \
+                self.theme["surface_overlay"]
+            fg = self.theme.get("on_accent", (255, 255, 255)) if on \
+                else self.theme["text_primary"]
+            draw.rounded_rectangle(
+                [tx, ty, tx + tile_w, ty + target_min],
+                radius=max(8, target_min // 2), fill=fill)
+            draw.text((tx + 12, ty + target_min // 2 - 7), label,
+                      fill=fg, font=fs)
 
     def _render_workspace_switcher(self, img, draw, x, y, w, h, props, fs):
         """Render a WorkspaceSwitcher."""
@@ -707,11 +757,24 @@ class Compositor:
         draw.text((x+16, y+12), "Command Palette", fill=self.theme["text_primary"], font=font)
 
     def _render_launcher(self, img, draw, x, y, w, h, props, comp, font, fs, doc):
-        """Render a Launcher."""
-        draw.rectangle([x, y, x+w, y+h], fill=self.theme["surface_elevated"])
-        draw.rectangle([x, y, x+w, y+h], outline=self.theme["border"], width=1)
-        draw.text((x+16, y+12), "Launcher", fill=self.theme["text_primary"], font=font)
+        """Render a Launcher.
 
+        Android-surface style under the token ``apps.grid``: the
+        launcher's ``AppGrid`` data renders as a home-screen icon grid
+        — squircle-ish rounded tiles (``radius.lg``), one accent glyph
+        chip + label per app, flowing left-to-right on the ``target
+        .min`` cell. Historical panel without the token, as before."""
+        apps_grid = (self.tokens.get("apps", {}) or {}).get("grid", False)
+        surface = self.theme["surface_elevated"]
+        radius = int(self.tokens.get("radius", {}).get("lg", 16))
+        if apps_grid:
+            draw.rounded_rectangle([x, y, x+w, y+h], radius=radius,
+                                   fill=surface)
+        else:
+            draw.rectangle([x, y, x+w, y+h], fill=surface)
+            draw.rectangle([x, y, x+w, y+h], outline=self.theme["border"], width=1)
+        draw.text((x+16, y+12), "Launcher",
+                  fill=self.theme["text_primary"], font=font)
     def _render_lock_screen(self, img, draw, x, y, w, h, props, font, fs, ft):
         """Render a LockScreen."""
         draw.rectangle([x, y, x+w, y+h], fill=(20, 20, 40))
@@ -744,6 +807,47 @@ class Compositor:
         else:
             draw.text((x + 8, y + 6), label,
                       fill=self.theme["text_primary"], font=fs)
+
+    def _render_app_grid(self, img, draw, x, y, w, h, props, comp, font, fs):
+        """Render an AppGrid.
+
+        Android-surface style under the token ``apps.grid``: a
+        home-screen icon grid — accent glyph chips + labels flowing on
+        ``target.min`` cells. Without the token the historical
+        list-row rendering applies (one implementation, two skins)."""
+        apps = props.get("apps", [])
+        if isinstance(apps, dict):
+            apps = list(apps.keys())
+        if not (self.tokens.get("apps", {}).get("grid", False)) or not apps:
+            # Historical skin: reuse the List renderer verbatim.
+            self._render_list(img, draw, x, y, w, h, props, comp, font, fs, None)
+            return
+        cols = max(1, int(props.get("columns", 4) or 4))
+        target_min = int(self.tokens.get("target", {}).get("min", 44))
+        gap = int(self.tokens.get("target", {}).get("gap", 8))
+        cell_w = (w - (cols - 1) * gap) // cols
+        cell_h = target_min + 20
+        for i, app in enumerate(apps):
+            label = str(app)
+            col, row = i % cols, i // cols
+            cx = x + col * (cell_w + gap)
+            cy = y + row * (cell_h + gap)
+            if cy + cell_h > y + h or cx + cell_w > x + w:
+                break
+            chip = min(40, cell_h - 20)
+            draw.rounded_rectangle(
+                [cx + (cell_w - chip) // 2, cy,
+                 cx + (cell_w - chip) // 2 + chip, cy + chip],
+                radius=max(10, chip // 3), fill=self.theme["accent"])
+            draw.text(
+                (cx + (cell_w - chip) // 2 + chip // 2 - 5,
+                 cy + chip // 2 - 7),
+                label[:1].upper(),
+                fill=self.theme.get("on_accent", (255, 255, 255)), font=fs)
+            bbox = draw.textbbox((0, 0), label, font=fs)
+            tw = bbox[2] - bbox[0]
+            draw.text((cx + max(0, (cell_w - tw) // 2), cy + chip + 2),
+                      label, fill=self.theme["text_primary"], font=fs)
 
     def _render_list(self, img, draw, x, y, w, h, props, comp, font, fs, doc):
         """Render a List (row pitch + selection from ``space`` tokens).

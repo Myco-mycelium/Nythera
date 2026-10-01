@@ -145,6 +145,49 @@ class TestMaterialVariantShell(unittest.TestCase):
         self.assertGreater(diffs, 100,
                            "the material restyle must visibly differ")
 
+    def test_quick_settings_renders_the_android_tile_grid(self):
+        """tiles.grid: the QS panel becomes M3's tile grid — the first
+        tile (Wi-Fi, Android's stock-on state) carries the accent with
+        on-accent text; the second (Bluetooth, off) the tonal surface."""
+        img = Compositor(theme_name="Material").render_screen(
+            self.material_doc, screen_id="desktop")
+        m = THEMES["Material"]
+        # QS panel at (1040, 468, 384x368): tile row 1 y≈508-552,
+        # tile 1 x≈1056-1224, tile 2 x≈1232-1400.
+        self.assertEqual(img.getpixel((1100, 528)), m["accent"],
+                         "the Wi-Fi tile must be the M3 accent")
+        self.assertEqual(img.getpixel((1300, 528)), m["surface_overlay"],
+                         "the Bluetooth tile must be the tonal surface")
+
+    def test_app_grid_renders_chips_in_the_appgrid_box(self):
+        """apps.grid: the launcher's AppGrid paints accent chips +
+        labels (the home-screen grid) instead of list rows."""
+        img = Compositor(theme_name="Material").render_screen(
+            self.material_doc, screen_id="desktop")
+        accent = THEMES["Material"]["accent"]
+        # Count accent pixels inside the AppGrid's rendered area (the
+        # document's launcher-relative convention places it at ~(32,96);
+        # the historical renderer uses the same absolute treatment).
+        hits = sum(
+            1 for y in range(80, 720, 3) for x in range(20, 820, 3)
+            if img.getpixel((x, y)) == accent)
+        self.assertGreater(hits, 200,
+                           "the app grid must paint its accent chips")
+
+    def test_tokenless_documents_keep_the_historical_surfaces(self):
+        """The stock shell (no tiles/apps tokens) must render the
+        historical QS panel and list rows — opt-in only, pixel-safe."""
+        img = Compositor(theme_name="Eclipse").render_screen(
+            self.stock_doc, screen_id="desktop")
+        # The stock QS panel draws its outline border — probe any
+        # non-accent pixel inside the panel: no accent tile may exist.
+        accent = THEMES["Eclipse"]["accent"]
+        hits = sum(
+            1 for y in range(468, 836, 4) for x in range(1040, 1424, 4)
+            if img.getpixel((x, y)) == accent)
+        self.assertEqual(hits, 0,
+                         "the stock QS panel must not grow Material tiles")
+
 
 if __name__ == "__main__":
     unittest.main()

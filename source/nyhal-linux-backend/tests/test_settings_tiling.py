@@ -123,7 +123,10 @@ class TestSettingsPanel(unittest.TestCase):
         # Second press: the wheel advances to material (still pending).
         self.assertEqual(self.panel.handle_key("v"), "variant")
         self.assertEqual(self.panel.swap_requested, "material")
-        # Third press wraps onto the active variant → request cancelled.
+        # Third press: cupertino (still pending — the wheel is 4 wide).
+        self.assertEqual(self.panel.handle_key("v"), "variant")
+        self.assertEqual(self.panel.swap_requested, "cupertino")
+        # Fourth press wraps onto the active variant → request cancelled.
         self.assertEqual(self.panel.handle_key("v"), "variant")
         self.assertIsNone(self.panel.swap_requested)
 

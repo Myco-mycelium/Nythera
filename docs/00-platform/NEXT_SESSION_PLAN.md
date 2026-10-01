@@ -8,6 +8,47 @@ date: 2026-09-30
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Thu 2026-10-01, second round (owner-approved followups): the Android
+surfaces, the INTERACTIVE STRESS, and the Cupertino variant LANDED;
+ISOs rebuilt and re-verified.** What shipped:
+
+1. **Android surfaces, token-gated** (`tiles.grid`, `apps.grid`): the
+   QuickSettings panel renders M3's tile grid (accent tiles for ON —
+   the first tile defaults ON, Android's stock Wi-Fi state — tonal
+   tiles for OFF, on-accent labels, `target.min` cells), and the
+   Launcher's AppGrid renders a home-screen icon grid (accent glyph
+   chips + labels). Both in the PIL compositor AND the SDL compositor
+   (which gained per-document token parsing — previously none).
+   Token-less documents keep the historical panels pixel-for-pixel
+   (pinned by test). The material variant opts in; the restyle
+   contract still holds (tokens are allowed diffs).
+2. **Interactive stress — PASS on the real pipeline** (the exact
+   DesktopSession the SDL loop feeds, material doc): window open →
+   drag by title bar (+100,+60 verified), click-to-focus switch,
+   minimize/restore/close, workspace cycle, Ctrl+W close,
+   undo-restores-close (track_undo), theme-behavior click
+   (btn_solar → themes.active="Solar"), live render after the storm.
+   Honest findings: windows must attach to a component_id that exists
+   in the doc (hit_test's screen-root fallback explains clicks on
+   closed overlays — pre-existing convention, not regressed), and the
+   document's launcher-relative child coordinates render absolutely
+   (pre-existing compositor convention, unchanged).
+3. **Cupertino (Apple) variant**: `shell/variants/cupertino.nstudio`
+   (restyle-never-fork, verified), `cupertino` joined
+   KNOWN_SHELL_VARIANTS + the panel picker, and a GRUB/isolinux entry
+   ("Nyrqis Live (Cupertino shell — Apple-style desktop)") on both
+   arches — Material stays the default. **Verified live: cupertino
+   direct boots with the desktop STARTING on both arches** (amd64
+   151 s, arm64 258 s under TCG — `shell variant: cupertino (kernel
+   cmdline)` → `desktop session started`).
+4. **Full sweep 9336 passed / 4 skipped / 0 failed** (+3 over the
+   morning: the QS-tile, app-grid, token-less-surfaces tests; variant
+   cycle test updated for the 4-variant wheel).
+5. **ISOs rebuilt and re-verified**: `SHA256SUMS-20261001.txt` → amd64
+   447 MB **1fea6d62…db9a**, arm64 438 MB **1dd7123b…4dea**. Boot
+   matrix: DIRECT + MENU PASS both arches; desktop-path boots PASS
+   (material, both arches) + cupertino boots PASS (both arches).
+
 **Thu 2026-10-01 (owner-directed): the Material (Android-style) UI
 LANDED and BOTH ISOs REBUILT — desktop session verified STARTING on
 both arches.** Owner direction: "the UI should resemble Android while

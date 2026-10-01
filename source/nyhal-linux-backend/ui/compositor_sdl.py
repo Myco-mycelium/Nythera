@@ -345,6 +345,9 @@ class SDLCompositor:
             raise ImportError("pysdl2 is required: pip install pysdl2 pysdl2-dll")
         self.theme_name = theme_name
         self.theme = THEMES.get(theme_name, THEMES["Eclipse"])
+        # Design-token skin (parsed per render_screen; same groups as
+        # the PIL compositor — window/start/tiles/apps chrome tokens).
+        self.tokens: Dict[str, Any] = {}
         self.scale = scale
         self.headless = headless
         self._use_wayland = wayland
@@ -442,6 +445,17 @@ class SDLCompositor:
         w = int(screen.size.get("width", 1440) * self.scale)
         h = int(screen.size.get("height", 900) * self.scale)
 
+        # Merge the document's designTokens over the module defaults
+        # (same depth-1 rule as the PIL compositor).
+        from ui.compositor import DESIGN_TOKENS, _merge_tokens
+        doc_tokens = getattr(document, "design_tokens", None)
+        self.tokens = dict(DESIGN_TOKENS)
+        if isinstance(doc_tokens, dict) and doc_tokens:
+            for group in ("space", "radius", "motion", "surface",
+                          "target", "window", "start", "tiles", "apps"):
+                if group in doc_tokens:
+                    self.tokens[group] = _merge_tokens(
+                        DESIGN_TOKENS.get(group, {}), doc_tokens[group])
         try:
             self._init_sdl(w, h)
 
@@ -604,14 +618,73 @@ class SDLCompositor:
                               theme["text_primary"])
         elif comp_type == "QuickSettings":
             _fill_rect(surface, x, y, w, h, theme["surface_elevated"])
-            _draw_rect(surface, x, y, w, h, theme["border"])
+            if not self.tokens.get("tiles", {}).get("grid", False):
+                _draw_rect(surface, x, y, w, h, theme["border"])
             _draw_text_bitmap(surface, x + 16, y + 12, "Quick Settings",
                               theme["text_primary"])
+            if self.tokens.get("tiles", {}).get("grid", False):
+                toggles = props.get("toggles", [])
+                if isinstance(toggles, dict):
+                    toggles = [{"label": k, "value": v}
+                               for k, v in toggles.items()]
+                target_min = int(self.tokens.get("target", {}).get(
+                    "min", 44))
+                gap = int(self.tokens.get("target", {}).get("gap", 8))
+                tile_w = (w - 32 - gap) // 2
+                row_y = y + 40
+                for i, t in enumerate(toggles[:8]):
+                    label = str(t.get("label", t) if isinstance(t, dict)
+                                else t)
+                    on = bool(t.get("value", False)) if isinstance(
+                        t, dict) else False
+                    col, row = i % 2, i // 2
+                    tx = x + 16 + col * (tile_w + gap)
+                    ty = row_y + row * (target_min + gap)
+                    if ty + target_min > y + h:
+                        break
+                    fill = theme["accent"] if on else \
+                        theme["surface_overlay"]
+                    _fill_rect(surface, tx + 4, ty + 4,
+                               tile_w - 8, target_min - 8, fill)
+                    _draw_text_bitmap(
+                        surface, tx + 12, ty + target_min // 2 - 6,
+                        label, theme.get("on_accent", (255, 255, 255))
+                        if on else theme["text_primary"])
         elif comp_type == "Launcher":
             _fill_rect(surface, x, y, w, h, theme["surface_elevated"])
-            _draw_rect(surface, x, y, w, h, theme["border"])
+            if not self.tokens.get("apps", {}).get("grid", False):
+                _draw_rect(surface, x, y, w, h, theme["border"])
             _draw_text_bitmap(surface, x + 16, y + 12, "Launcher",
                               theme["text_primary"])
+            if self.tokens.get("apps", {}).get("grid", False):
+                apps = props.get("apps", [])
+                if isinstance(apps, dict):
+                    apps = list(apps.keys())
+                cols = max(1, int(props.get("columns", 4)))
+                target_min = int(self.tokens.get("target", {}).get(
+                    "min", 44))
+                gap = int(self.tokens.get("target", {}).get("gap", 8))
+                cell_w = (w - 32 - (cols - 1) * gap) // cols
+                cell_h = target_min + 20
+                row_y = y + 44
+                for i, app in enumerate(apps[:cols * 8]):
+                    label = str(app)
+                    col, row = i % cols, i // cols
+                    cx = x + 16 + col * (cell_w + gap)
+                    cy = row_y + row * (cell_h + gap)
+                    if cy + cell_h > y + h:
+                        break
+                    chip = min(40, cell_h - 20)
+                    _fill_rect(
+                        surface, cx + (cell_w - chip) // 2, cy,
+                        chip, chip, theme["accent"])
+                    _draw_text_bitmap(
+                        surface, cx + (cell_w - chip) // 2 + chip // 2 - 4,
+                        cy + chip // 2 - 6, label[:1].upper(),
+                        theme.get("on_accent", (255, 255, 255)))
+                    _draw_text_bitmap(
+                        surface, cx + 2, cy + chip + 2, label,
+                        theme["text_primary"])
         elif comp_type == "CommandPalette":
             _fill_rect(surface, x, y, w, h, theme["surface_elevated"])
             _draw_rect(surface, x, y, w, h, theme["border"])

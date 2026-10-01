@@ -52,9 +52,10 @@ DEFAULT_HEALTH_SOCKET = "/tmp/nyrqis-health.sock"
 DEFAULT_STATE_DIR = os.path.expanduser("~/.nyrqis")
 DEFAULT_DESIGN = os.path.join(DEFAULT_STATE_DIR, "shell.nstudio")
 # Runtime-selectable shell variants (registry-1.1 pill reference design,
-# material = the Android-style restyle — the live ISO's default boot):
-# explicit --design > NYRQIS_SHELL_VARIANT name > the stock shell.
-KNOWN_SHELL_VARIANTS = ("stock", "pill", "material")
+# material = the Android-style restyle — the live ISO's default boot,
+# cupertino = the Apple-style restyle): explicit --design >
+# NYRQIS_SHELL_VARIANT name > the stock shell.
+KNOWN_SHELL_VARIANTS = ("stock", "pill", "material", "cupertino")
 DEFAULT_SHELL_VARIANT = "stock"
 DEFAULT_VAULT_DIR = "/var/lib/nyrqis/vault"
 DEFAULT_VAULT_KEY = ""

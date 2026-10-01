@@ -1,10 +1,10 @@
 {
   "version": "1.0.0",
   "project": {
-    "name": "Nyrqis Desktop Shell (Material Variant)",
-    "id": "example-nyrqis-desktop-shell-material",
-    "created": "2026-09-30T00:00:00+00:00",
-    "updated": "2026-09-30T00:00:00+00:00"
+    "name": "Nyrqis Desktop Shell (Cupertino Variant)",
+    "id": "example-nyrqis-desktop-shell-cupertino",
+    "created": "2026-10-01T00:00:00+00:00",
+    "updated": "2026-10-01T00:00:00+00:00"
   },
   "designTokens": {
     "$comment": "Nyrqis Design Language v1 (docs/reference/design-language.md). Same vocabulary as the default-shell reference implementation.",
@@ -16,11 +16,10 @@
       "xl": 24
     },
     "radius": {
-      "sm": 16,
-      "md": 20,
-      "lg": 24,
-      "full": "height/2",
-      "control": 10
+      "sm": 8,
+      "md": 12,
+      "lg": 16,
+      "full": "height/2"
     },
     "surface": {
       "bar": {
@@ -64,20 +63,14 @@
       "gap": 8
     },
     "window": {
-      "style": "material"
+      "style": "cupertino"
     },
     "start": {
       "pill": true
-    },
-    "tiles": {
-      "grid": true
-    },
-    "apps": {
-      "grid": true
     }
   },
   "themes": {
-    "active": "Material",
+    "active": "Cupertino",
     "overrides": {}
   },
   "components": [
@@ -88,7 +81,7 @@
         "text": "Taskbar",
         "icon": "NyrqisMark",
         "enabled": true,
-        "cornerRadius": 22
+        "cornerRadius": 12
       },
       "layout": {
         "x": 0,
@@ -1038,7 +1031,7 @@
                   "accessibility": {
                     "label": "Switch to Eclipse theme"
                   },
-                  "cornerRadius": 22
+                  "cornerRadius": 12
                 },
                 "layout": {
                   "x": 16,
@@ -1059,7 +1052,7 @@
                   "accessibility": {
                     "label": "Switch to Solar theme"
                   },
-                  "cornerRadius": 22
+                  "cornerRadius": 12
                 },
                 "layout": {
                   "x": 192,
@@ -1138,7 +1131,7 @@
                   "accessibility": {
                     "label": "Unlock screen"
                   },
-                  "cornerRadius": 22
+                  "cornerRadius": 12
                 },
                 "layout": {
                   "x": 640,

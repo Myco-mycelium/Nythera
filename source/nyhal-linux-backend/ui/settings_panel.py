@@ -134,7 +134,7 @@ class Toggle:
 
 # Shell variants the panel can request (mirrors
 # nyrqis_init.KNOWN_SHELL_VARIANTS; file stem = variant name).
-SHELL_VARIANTS = ("stock", "pill", "material")
+SHELL_VARIANTS = ("stock", "pill", "material", "cupertino")
 
 
 class SettingsPanel:
