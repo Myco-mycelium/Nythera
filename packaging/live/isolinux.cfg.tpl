@@ -4,9 +4,16 @@
 # Every entry carries console=tty0 console=ttyS0,115200 (same rationale
 # as grub.cfg.tpl: the human menu path stays serial-observable for the
 # menu-path boot smoke).
-DEFAULT nyrqis
+#
+# The DEFAULT entry boots the Material (Android-style) shell variant —
+# the product face of the ISO, matching grub.cfg.tpl.
+DEFAULT nyrqis-material
 TIMEOUT 50
 PROMPT 0
+
+LABEL nyrqis-material
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd boot=live nyrqis.variant=material quiet splash console=tty0 console=ttyS0,115200
 
 LABEL nyrqis
     KERNEL /live/vmlinuz

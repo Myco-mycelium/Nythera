@@ -163,6 +163,31 @@ class TestMenuSerialObservability(unittest.TestCase):
                 f"isolinux label {name!r} has no serial console — the "
                 f"menu-path smoke would be blind to this boot path")
 
+    def test_material_shell_is_the_default_boot_entry(self):
+        """The Material (Android-style) shell is the product face of the
+        ISO: both GRUB templates and the isolinux fallback must default
+        to the nyrqis.variant=material entry (2026-09-30 UI restyle)."""
+        for name, text in (("grub.cfg.tpl", self.grub),
+                           ("grub.cfg.arm64.tpl", read(GRUB_ARM64))):
+            self.assertRegex(
+                text, r"set default=0",
+                f"{name}: default must be entry 0")
+            first = re.search(r'menuentry "([^"]+)"', text)
+            self.assertIsNotNone(first)
+            self.assertIn(
+                "Material", first.group(1),
+                f"{name}: the FIRST menu entry must be the Material shell")
+            block = re.search(r"menuentry \"[^\"]*Material[^\"]*\" \{(.*?)\}",
+                              text, re.S)
+            self.assertIsNotNone(block)
+            self.assertIn(
+                "nyrqis.variant=material", block.group(1),
+                f"{name}: the Material entry must select the variant")
+        m = re.search(r"^DEFAULT (\S+)", self.isolinux, re.M)
+        self.assertIsNotNone(m, "isolinux.cfg.tpl must name a DEFAULT label")
+        self.assertEqual(m.group(1), "nyrqis-material",
+                         "isolinux must default to the Material entry")
+
 
 class TestArm64BootContract(unittest.TestCase):
     """The arm64 image boots through a DIFFERENT machine: UEFI-only (no
@@ -649,6 +674,7 @@ class TestProbeParityContract(unittest.TestCase):
 
     def setUp(self):
         self.builder = read(BUILDER)
+        self.script = read(DEMO)
 
     def test_debootstrap_includes_the_probe_requirements(self):
         # The include list ends with a line-continuation before "$SUITE".
@@ -660,6 +686,41 @@ class TestProbeParityContract(unittest.TestCase):
                 pkg, include,
                 f"debootstrap --include must carry {pkg}: the probe prints "
                 "MISSING for it at boot")
+
+    def test_debootstrap_includes_the_desktop_session_requirements(self):
+        """The interactive desktop session (nyrqis_session.py) needs
+        pysdl2 (python3-sdl2), PIL (python3-pil) for the compositor's
+        frames, and TrueType fonts for text; zstd + xz-utils are the
+        CLI tools the probe reports on. Without these the session
+        degrades to headless/absent on the ISO while passing on dev
+        machines that have them — the 2026-09-30 stress test found
+        exactly that divergence."""
+        m = re.search(r"--include=(\S+)\s*\\\n\s*\"\$SUITE\"", self.builder)
+        self.assertIsNotNone(m)
+        include = m.group(1)
+        for pkg in ("python3-sdl2", "python3-pil", "fonts-dejavu-core",
+                    "zstd", "xz-utils"):
+            self.assertIn(
+                pkg, include,
+                f"debootstrap --include must carry {pkg}: the desktop "
+                "session silently degrades without it on the live ISO")
+
+    def test_ensure_packages_covers_the_desktop_session_requirements(self):
+        """Tarball/--rootfs acquisitions skip debootstrap — the
+        ensure-packages top-up must carry the desktop deps too."""
+        self.assertIn(
+            "python3-sdl2 python3-pil fonts-dejavu-core zstd xz-utils",
+            self.builder,
+            "ensure-packages must cover the desktop session deps")
+
+    def test_probe_parity_gate_covers_the_desktop_session_modules(self):
+        """The probe-parity gate must check sdl2 and PIL inside the
+        rootfs, or an image whose session falls back to headless ships
+        silently."""
+        self.assertIn('for mod in zstandard nacl lz4.frame sdl2 PIL',
+                      self.builder,
+                      "probe-parity must verify sdl2 + PIL import inside "
+                      "the rootfs")
 
     def test_debootstrap_includes_virtual_dep_providers(self):
         """python3-zstandard depends on the VIRTUAL packages
@@ -701,6 +762,52 @@ class TestProbeParityContract(unittest.TestCase):
                       "the ensure-packages step must cover all probe packages")
         self.assertIn("dpkg -s \"$p\"", self.builder,
                       "ensure-packages must check installed state, not assume")
+
+    def test_demo_desktop_start_never_kills_a_healthy_session(self):
+        """2026-09-30, second stress round: the historical
+        ``timeout 30 python3 nyrqis_init.py`` killed HEALTHY interactive
+        sessions at 30 s (exit 124 read as 'did not stay up' — a fast,
+        working desktop could never report 'started'). The fixed flow
+        starts the session in the BACKGROUND, polls the readiness
+        marker, and leaves the session running. The old pattern must
+        never come back."""
+        self.assertIsNone(
+            re.search(r"(?m)^\s*timeout \d+ python3 nyrqis_init\.py",
+                      self.script),
+            "the demo must not run nyrqis_init under timeout — it kills "
+            "healthy sessions; start it in the background and poll instead "
+            "(mentions in comments are fine)")
+        self.assertIn(
+            "python3 nyrqis_init.py >/tmp/nyrqis-desktop.log 2>&1) &",
+            self.script,
+            "the desktop session must start in the background (survives "
+            "past the readiness verdict)")
+        self.assertIn(
+            'grep -q "desktop session" /tmp/nyrqis-desktop.log',
+            self.script,
+            "the readiness poll must grep the marker nyrqis_init prints")
+
+    def test_demo_daemon_line_enables_the_crash_spool(self):
+        """The banner teaches 'nyrqisctl crash list'; the staged daemon
+        must actually spool (CRY-001 Option A) or the taught command
+        lists an empty dir forever."""
+        self.assertIn("--crash-spool /tmp/nyrqis-crash-spool",
+                      self.script,
+                      "the demo daemon must enable the CRY-001 spool at "
+                      "the path the banner documents")
+
+    def test_demo_crate_probe_matches_what_the_builder_ships(self):
+        """The builder strips rust/*/target after moving cdylibs to
+        rust/.cdylibs — the demo probe must check the shipped location,
+        not the pruned build tree (the stale check warned 'crate
+        absent' on images with 17/17 cdylibs loaded)."""
+        demo = self.script
+        self.assertIn("$NYRQIS_CDYLIB_DIR", demo,
+                      "the crate probe must check rust/.cdylibs")
+        self.assertNotIn(
+            '$OPT/rust/ipc/target/release', demo,
+            "the stale target/release check must not come back — the "
+            "builder prunes that tree in every shipped image")
 
     def test_builder_has_probe_parity_gate(self):
         """Fail-closed gate: no image ships whose own boot probe would

@@ -102,8 +102,13 @@ probe() {
                                                               || missing "PyNaCl — package signing/verification refuses to run (fail-closed)"
     python3 -c "import lz4.frame"  2>/dev/null && ok "lz4 fast path" \
                                                               || warn "python lz4 module absent — LZ4 fast-path override unavailable"
-    [[ -d "$OPT/rust/ipc/target/release" ]] && ok "Rust IPC crate prebuilt" \
-                                                              || warn "Rust serving-loop crate absent — Python floor serves (slower, same behavior)"
+    # The builder stages compiled artifacts in rust/.cdylibs (it strips
+    # rust/*/target after copying them) — check what actually ships, not
+    # the build tree that was pruned (the old target/release check always
+    # warned on the ISO even with 17/17 cdylibs loaded).
+    ls "$NYRQIS_CDYLIB_DIR"/libnyrqis_*.so >/dev/null 2>&1 \
+        && ok "Rust IPC cdylibs shipped ($(ls "$NYRQIS_CDYLIB_DIR"/libnyrqis_*.so 2>/dev/null | wc -l))" \
+        || warn "Rust serving-loop crate absent — Python floor serves (slower, same behavior)"
     have nyrqisctl  && ok "nyrqisctl on PATH"                 || warn "nyrqisctl not on PATH — use: python3 $CTL"
     # Boot-smoke handshake markers (the CI driver greps the serial log).
     [[ -f /tmp/nyrqis-boot-smoke-ready ]] && ok "boot smoke: ready marker seen" \
@@ -132,9 +137,13 @@ start_daemon() {
     (
         flock -n 9 || exit 0
         rm -f "$SOCK"
+        # --crash-spool: CRY-001 Option A — a daemon recovering a
+        # previous crash spools a LOCAL report the banner's crash list
+        # line can show. Fail-closed by design; never breaks startup.
         exec python3 "$BACKEND" service serve --socket "$SOCK" \
             --state-file /tmp/nyrqis-daemon-state.json \
             --vault-dir /tmp/nyrqis-vault \
+            --crash-spool /tmp/nyrqis-crash-spool \
             >>"$LOG" 2>&1
     ) 9>/tmp/nyrqis-daemon.lock &
 }
@@ -271,9 +280,10 @@ else
     if python3 "$OPT/ui/drm_backend.py" probe >/dev/null 2>&1 \
        || [[ -w /dev/dri/card0 ]] || [[ -w /dev/dri/card1 ]]; then
         ok "DRM device available — attempting the desktop session"
-        # Boot-menu variant selection: `nyrqis.variant=pill` on the
-        # kernel cmdline (GRUB/isolinux "pill shell" entry) selects the
-        # shell variant for this boot; --design still wins.
+        # Boot-menu variant selection: `nyrqis.variant=<name>` on the
+        # kernel cmdline (GRUB/isolinux menu entries: material = the
+        # Android-style default, pill = the registry-1.1 corner demo)
+        # selects the shell variant for this boot; --design still wins.
         variant=""
         for word in $(cat /proc/cmdline); do
             case "$word" in
@@ -286,9 +296,46 @@ else
             *) export NYRQIS_SHELL_VARIANT="$variant"
                ok "shell variant: $variant (kernel cmdline)" ;;
         esac
-        (cd "$OPT" && timeout 8 python3 nyrqis_init.py >/tmp/nyrqis-desktop.log 2>&1) \
-            && ok "desktop session started (log: /tmp/nyrqis-desktop.log)" \
-            || warn "desktop did not stay up (expected on some VMs) — see /tmp/nyrqis-desktop.log"
+        # The session is STARTED IN THE BACKGROUND and left running —
+        # the historical `timeout 30 python3 nyrqis_init.py` killed a
+        # HEALTHY interactive session after 30 s (exit 124 read as the
+        # 'did not stay up' warn; a fast start could never report
+        # 'started'). Now: launch detached, then wait up to 30 s for
+        # the readiness marker nyrqis_init prints when the session is
+        # up; the verdict reflects whether it CAME UP, not how long it
+        # stayed. Under NYRQIS_BOOT_SMOKE the init short-circuits after
+        # its marker and exits, so the smoke path is unchanged.
+        : > /tmp/nyrqis-desktop.log
+        (cd "$OPT" && python3 nyrqis_init.py >/tmp/nyrqis-desktop.log 2>&1) &
+        desk_pid=$!
+        up=0
+        for _ in $(seq 1 30); do
+            kill -0 "$desk_pid" 2>/dev/null || break
+            grep -q "desktop session" /tmp/nyrqis-desktop.log 2>/dev/null && { up=1; break; }
+            sleep 1
+        done
+        if [ "$up" = 1 ]; then
+            ok "desktop session started (log: /tmp/nyrqis-desktop.log)"
+        elif ! kill -0 "$desk_pid" 2>/dev/null; then
+            # Exited before the marker: a genuine failure — show why.
+            warn "desktop exited before reporting ready — see /tmp/nyrqis-desktop.log"
+            tail -5 /tmp/nyrqis-desktop.log 2>/dev/null | sed 's/^/      /'
+        else
+            # Still running but no marker yet: give it a longer grace
+            # (TCG cold start), then report honestly whichever way it
+            # lands; a live session is LEFT RUNNING either way.
+            for _ in $(seq 1 60); do
+                kill -0 "$desk_pid" 2>/dev/null || break
+                grep -q "desktop session" /tmp/nyrqis-desktop.log 2>/dev/null && { up=1; break; }
+                sleep 1
+            done
+            if [ "$up" = 1 ]; then
+                ok "desktop session started (log: /tmp/nyrqis-desktop.log)"
+            else
+                warn "desktop starting slowly (still running; log: /tmp/nyrqis-desktop.log)"
+            fi
+        fi
+        unset desk_pid up
     else
         warn "no usable DRM device — the compositor will fall back to software frames"
         warn "desktop autostart skipped; try:  cd $OPT && python3 nyrqis_init.py"

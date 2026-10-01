@@ -8,6 +8,77 @@ date: 2026-09-30
 
 ## NEXT SESSION — opening checklist (Sat 2026-09-26+)
 
+**Thu 2026-10-01 (owner-directed): the Material (Android-style) UI
+LANDED and BOTH ISOs REBUILT — desktop session verified STARTING on
+both arches.** Owner direction: "the UI should resemble Android while
+still following Apple HIG." What shipped:
+
+1. **Two new brand themes** in `ui/compositor.py` (+ the verbatim
+   mirror in `ui/compositor_sdl.py`): **Material** (M3 baseline dark —
+   tonal surfaces #141218/#1C1B1F/#242329, primary #D0BCFF,
+   on-primary #381E72; text/bg contrast 14.45:1 = AAA) and
+   **Cupertino** (Apple dark — systemBackground #121214, tertiary
+   #2C2C2E, systemBlue #0A84FF, systemGreen switches; label contrast
+   18.71:1). Both registered in `ui/theme_engine.py` (hex encodings
+   pinned equal to the compositor tuples by test) and in the settings
+   panel's theme wheel. Every theme gained the `on_accent` key (text
+   drawn ON accent fills — the old code hardcoded white).
+2. **Token-gated chrome** (`window.style` = material|cupertino,
+   `start.pill`): Material windows render borderless flat tonal
+   surfaces with no grip dots and pill window controls; Cupertino
+   windows render the HIG hairline title separator with hidden grips;
+   documents WITHOUT the tokens render exactly as before
+   (pixel-compatible default — the established token contract).
+3. **`shell/variants/material.nstudio`** — the Android restyle of the
+   stock shell, generated from it (restyle never fork, pinned by
+   `tests/test_shell_material_variant.py`: same structure, allowed
+   diffs = project header + requiresRegistry + themes.active +
+   designTokens + Button cornerRadius). `nyrqis_init.KNOWN_SHELL_VARIANTS`
+   and the settings panel's variant picker learned `material`.
+4. **The desktop-start bug FIXED** (found by the stress rounds): the
+   demo wrapper ran `timeout 30 python3 nyrqis_init.py` — which
+   KILLED healthy interactive sessions at 30 s (exit 124 read as
+   "did not stay up"; a working desktop could never report started).
+   Now the session starts IN THE BACKGROUND, the wrapper polls for
+   the new machine-greppable readiness marker ("desktop session
+   starting — window will appear", printed by nyrqis_init just before
+   the event loop), and the session is LEFT RUNNING. Contract-pinned
+   (`test_demo_desktop_start_never_kills_a_healthy_session`).
+5. **Material is the DEFAULT BOOT ENTRY**: both GRUB templates and
+   isolinux lead with "Nyrqis Live (Material shell — Android-style
+   desktop)" (`nyrqis.variant=material`); stock and pill remain one
+   menu selection away. Pinned
+   (`test_material_shell_is_the_default_boot_entry`).
+6. **Builder completeness**: debootstrap `--include` and the
+   ensure-packages top-up now carry `python3-sdl2,python3-pil,
+   fonts-dejavu-core,zstd,xz-utils` (the desktop stack the Sep 30
+   stress test found missing), with the rootless-safe
+   `APT::Sandbox::User=root` fetch fix.
+
+**Verification:** full backend sweep 9333 passed / 4 skipped / 0
+failed (baseline 9317 + 16 new tests; the one failure en route was a
+DATE-BOMB in `test_month_name` — CalendarApp starts at TODAY and the
+assert hardcoded "September", true only until Oct 1; fixed by pinning
+the month deterministically). **Both ISOs rebuilt rootless from the
+patched tree:** `dist/nyrqis-live-rootless-20261001.iso` = canonical
+`dist/nyrqis-live-rootless.iso`, **447 MB, sha256 a0a91ae3…769b**;
+`dist/nyrqis-live-arm64-20261001.iso` = canonical arm64, **438 MB,
+sha256 ae2d395a…11c7** (`SHA256SUMS-20261001.txt` records both; +100
+MB over Sep 30 = the sdl2/pil/fonts desktop stack + Material content).
+Boot matrix on the new images (TCG): **amd64 DIRECT + MENU PASS**;
+**arm64 DIRECT + MENU PASS**; the GRUB menu serial capture shows the
+Material entry as the starred default on both arches, and the demo
+confirms `shell variant: material (kernel cmdline)`. **Desktop-path
+boots (virtio-gpu, full demo path): amd64 PASS at 145 s, arm64 PASS at
+256 s — `desktop session started` on both** (the previously impossible
+verdict); session left running, serial evidence under
+`~/nyrqis-work/tmp/desktop-material-20261001{,-arm64}/`. The session's
+own pipeline renders the Material frame (start-control pixel = M3
+accent `(208,188,255)`, verified). arm64 note: `NYRQIS_AARCH64_CC` is
+invoked as a plain cc-style driver — zig must go through the script's
+own zig-candidate loop (`NYRQIS_ZIG=…/zig-linux-x86_64-0.12.0/zig`);
+the `tools/zig/zig` copy is the broken 0.13.0.
+
 **Wed 2026-09-30 ~18:00 local (owner-directed work): the live ISO
 REBUILT at tip — both boot smokes PASS.** The dist ISO was stale (Sep
 24 — pre-CRY-001/UPD-001/demo-tree). Full rootless two-phase build on

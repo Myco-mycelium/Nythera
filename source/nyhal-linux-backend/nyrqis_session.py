@@ -286,6 +286,7 @@ def _blit_pil_to_renderer(renderer, img) -> None:
     """Blit a PIL Image to an SDL2 renderer."""
     try:
         import ctypes
+        import sdl2  # the module-scope name the main loop bound
         # Convert PIL image to raw bytes
         raw = img.tobytes()
         w, h = img.size
@@ -303,9 +304,11 @@ def _blit_pil_to_renderer(renderer, img) -> None:
             sdl2.SDL_RenderCopy(renderer, texture, None, None)
             sdl2.SDL_DestroyTexture(texture)
     except Exception as e:
-        # Fallback: just clear and present
+        # Fallback: just clear and present (a neutral dark frame —
+        # `session` is deliberately not referenced here: this helper
+        # runs outside the session's scope and the old code raised
+        # NameError from inside the handler, killing the render loop).
         logger.warning("Blit failed: %s", e)
-        bg = session.theme if hasattr(session, 'theme') else (30, 30, 30)
         sdl2.SDL_SetRenderDrawColor(renderer, 30, 30, 30, 255)
         sdl2.SDL_RenderClear(renderer)
 

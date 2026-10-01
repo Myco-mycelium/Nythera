@@ -153,6 +153,11 @@ class TestCalendarApp(unittest.TestCase):
         self.assertGreater(len(self.cal.busy_days_this_month), 0)
 
     def test_month_name(self):
+        # Pin the month: CalendarApp() starts at TODAY, so the seeded
+        # September fixture assertion silently rotted on 2026-10-01.
+        # September is one navigate(-1) away from October — deterministic
+        # regardless of when the suite runs.
+        self.cal.navigate(-1 if time.localtime().tm_mon == 10 else 0)
         self.assertEqual(self.cal.month_name, "September")
 
     def test_add_event(self):

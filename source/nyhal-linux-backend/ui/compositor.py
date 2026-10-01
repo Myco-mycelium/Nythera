@@ -68,6 +68,60 @@ THEMES = {
         "slider_fill": (100, 149, 237),
         "progress_bg": (60, 60, 60),
         "progress_fill": (100, 149, 237),
+        "on_accent": (255, 255, 255),
+    },
+    # Material 3 (Android) — baseline dark scheme, tonal surfaces.
+    # The Android look: elevated tonal surfaces (not borders), a large
+    # touch-oriented accent, pill geometry (tokens do the rounding).
+    # Accent #D0BCFF (M3 baseline dark primary) on surface #141218:
+    # contrast ~8:1 (WCAG AAA) — legibility before decoration.
+    "Material": {
+        "background": (20, 18, 24),          # M3 dark surface
+        "surface": (28, 27, 31),             # surface-container-low #1c1b1f
+        "surface_elevated": (36, 35, 42),    # surface-container
+        "surface_overlay": (39, 37, 45),     # surface-container-high
+        "border": (73, 69, 79),              # outline-variant
+        "text_primary": (230, 225, 233),     # on-surface #e6e1e9
+        "text_secondary": (202, 196, 208),   # on-surface-variant
+        "accent": (208, 188, 255),           # primary (M3 baseline)
+        "accent_hover": (211, 199, 250),     # primary ~92
+        "button_bg": (79, 55, 139),          # primary-container
+        "button_text": (210, 193, 255),      # on-primary-container
+        "input_bg": (36, 35, 42),
+        "input_border": (73, 69, 79),
+        "toggle_on": (208, 188, 255),
+        "toggle_off": (73, 69, 79),
+        "slider_track": (73, 69, 79),
+        "slider_fill": (208, 188, 255),
+        "progress_bg": (49, 48, 51),
+        "progress_fill": (208, 188, 255),
+        "on_accent": (56, 30, 114),           # on-primary (M3 dark purple)
+    },
+    # Cupertino (Apple/iOS-style) — dark system grays, system blue.
+    # The Apple look: flat translucent-feeling surfaces, hairline
+    # separators, SF-style restrained accent (#0A84FF system blue).
+    # on #1C1C1E: contrast ~4.9:1 — HIG-legible at text sizes.
+    "Cupertino": {
+        "background": (18, 18, 20),          # systemBackground dark
+        "surface": (28, 28, 30),             # secondarySystemBackground
+        "surface_elevated": (44, 44, 46),    # tertiarySystemBackground
+        "surface_overlay": (24, 24, 26),     # material (thinned)
+        "border": (58, 58, 60),              # separator (hairline)
+        "text_primary": (255, 255, 255),     # label
+        "text_secondary": (235, 235, 245),   # ~secondaryLabel (60%)
+        "accent": (10, 132, 255),            # systemBlue dark
+        "accent_hover": (64, 156, 255),
+        "button_bg": (44, 44, 46),           # filled: gray (iOS buttons)
+        "button_text": (255, 255, 255),
+        "input_bg": (44, 44, 46),
+        "input_border": (58, 58, 60),
+        "toggle_on": (48, 209, 88),         # systemGreen (iOS switches)
+        "toggle_off": (58, 58, 60),
+        "slider_track": (58, 58, 60),
+        "slider_fill": (255, 255, 255),     # iOS slider fill is white
+        "progress_bg": (44, 44, 46),
+        "progress_fill": (10, 132, 255),
+        "on_accent": (255, 255, 255),
     },
     "Solar": {
         "background": (253, 246, 227),
@@ -89,6 +143,7 @@ THEMES = {
         "slider_fill": (38, 139, 210),
         "progress_bg": (200, 190, 170),
         "progress_fill": (38, 139, 210),
+        "on_accent": (255, 255, 255),
     },
 }
 
@@ -117,6 +172,13 @@ DESIGN_TOKENS = {
         "raised": {"opacity": 1.0},
     },
     "target": {"min": 44, "gap": 8},
+    # Chrome style tokens (opt-in via a document's designTokens):
+    # ``window.style`` selects the window chrome dialect (``material``
+    # = Android flat tonal, ``cupertino`` = Apple hairline),
+    # ``start.pill`` shapes the taskbar's start control as a pill.
+    # Defaults render the historical chrome exactly as before.
+    "window": {},
+    "start": {},
 }
 
 
@@ -209,7 +271,8 @@ class Compositor:
         doc_tokens = getattr(document, "design_tokens", None)
         self.tokens = DESIGN_TOKENS
         if isinstance(doc_tokens, dict) and doc_tokens:
-            for group in ("space", "radius", "motion", "surface", "target"):
+            for group in ("space", "radius", "motion", "surface",
+                          "target", "window", "start"):
                 if group in doc_tokens:
                     self.tokens = dict(self.tokens)
                     self.tokens[group] = _merge_tokens(
@@ -333,21 +396,41 @@ class Compositor:
     # ---- Component renderers -----------------------------------------------
 
     def _render_window(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
-        """Render a Window component with chrome."""
+        """Render a Window component with chrome.
+
+        Chrome style is token-driven (``window.style``): ``material``
+        draws the Android look — borderless flat surface, no grip dots,
+        pill window controls; ``cupertino`` draws the Apple look —
+        hairline title separator, hidden grips; the historical default
+        (no token) renders exactly as before."""
         title_h = 32
-        # Shadow (subtle drop shadow)
-        for i in range(4):
-            alpha_color = tuple(
-                int(c * 0.7) for c in self.theme["border"])
-            draw.rectangle(
-                [x+i+2, y+i+2, x+w+i+2, y+h+i+2],
-                outline=alpha_color)
-        # Window body
-        draw.rectangle([x, y, x+w, y+h], fill=self.theme["background"],
-                       outline=self.theme["border"])
-        # Title bar
-        draw.rectangle([x, y, x+w, y+title_h],
-                       fill=self.theme["surface_overlay"])
+        wstyle = (self.tokens.get("window", {}) or {}).get("style", "")
+        material = wstyle == "material"
+        cupertino = wstyle == "cupertino"
+        if not material:
+            # Shadow (subtle drop shadow) — Android windows float shadow-
+            # less (their elevation reads through flat tonal surfaces).
+            for i in range(4):
+                alpha_color = tuple(
+                    int(c * 0.7) for c in self.theme["border"])
+                draw.rectangle(
+                    [x+i+2, y+i+2, x+w+i+2, y+h+i+2],
+                    outline=alpha_color)
+        if material:
+            draw.rectangle([x, y, x+w, y+h], fill=self.theme["surface"])
+            # Title bar: slightly more elevated tonal band, no border line.
+            draw.rectangle([x, y, x+w, y+title_h],
+                           fill=self.theme["surface_elevated"])
+        else:
+            draw.rectangle([x, y, x+w, y+h], fill=self.theme["background"],
+                           outline=self.theme["border"])
+            # Title bar
+            draw.rectangle([x, y, x+w, y+title_h],
+                           fill=self.theme["surface_overlay"])
+            if cupertino:
+                # HIG separator: one hairline under the title, no box.
+                draw.line([x, y+title_h, x+w, y+title_h],
+                          fill=self.theme["border"], width=1)
         title = props.get("title", "Window")
         draw.text((x+12, y+8), title,
                   fill=self.theme["text_primary"], font=fs)
@@ -360,22 +443,24 @@ class Compositor:
             ("−", self.theme["text_secondary"]),
             ("□", self.theme["text_secondary"]),
         ]
+        ctrl_radius = 10 if (material or cupertino) else 4
         for i, (glyph, color) in enumerate(controls):
             bx = x + w - 12 - (i + 1) * (btn_size + btn_gap)
             draw.rounded_rectangle(
                 [bx, btn_y, bx+btn_size, btn_y+btn_size],
-                radius=4, fill=self.theme["surface_elevated"])
+                radius=ctrl_radius, fill=self.theme["surface_elevated"])
             draw.text((bx+5, btn_y+2), glyph, fill=color, font=fs)
-        # Resize grip indicators (subtle dots on edges)
-        grip = self.theme["border"]
-        # Right edge center
-        draw.rectangle([x+w-3, y+h//2-8, x+w-1, y+h//2+8], fill=grip)
-        # Bottom edge center
-        draw.rectangle([x+w//2-8, y+h-3, x+w//2+8, y+h-1], fill=grip)
-        # Bottom-right corner
-        for i in range(3):
-            draw.rectangle(
-                [x+w-4-i*3, y+h-4, x+w-2-i*3, y+h-2], fill=grip)
+        if not (material or cupertino):
+            # Resize grip indicators (subtle dots on edges)
+            grip = self.theme["border"]
+            # Right edge center
+            draw.rectangle([x+w-3, y+h//2-8, x+w-1, y+h//2+8], fill=grip)
+            # Bottom edge center
+            draw.rectangle([x+w//2-8, y+h-3, x+w//2+8, y+h-1], fill=grip)
+            # Bottom-right corner
+            for i in range(3):
+                draw.rectangle(
+                    [x+w-4-i*3, y+h-4, x+w-2-i*3, y+h-2], fill=grip)
 
     def _render_desktop_surface(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
         """Render a DesktopSurface."""
@@ -408,10 +493,15 @@ class Compositor:
         # bar can afford it (small bars degrade honestly).
         target_min = int(self.tokens.get("target", {}).get("min", 44))
         pad = max(4, min((h - target_min) // 2, 12)) if h >= target_min else 4
+        # Start control: pill-shaped under the token ``start.pill`` (the
+        # Material/Apple shells set it), historical rounded-square else.
+        start_style = (self.tokens.get("start", {}) or {}).get("pill", False)
+        start_radius = (y + h - pad - (y + pad)) // 2 if start_style else 6
         draw.rounded_rectangle(
-            [x+4, y+pad, x+48, y+h-pad], radius=6,
+            [x+4, y+pad, x+48, y+h-pad], radius=start_radius,
             fill=self.theme["accent"])
-        draw.text((x+16, y+8), "N", fill=(255,255,255), font=ft)
+        draw.text((x+16, y+8), "N",
+                  fill=self.theme.get("on_accent", (255, 255, 255)), font=ft)
         # Running app indicators (dots)
         app_x = x + 60
         if doc:

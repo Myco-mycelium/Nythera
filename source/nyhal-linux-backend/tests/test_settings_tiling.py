@@ -45,10 +45,14 @@ class TestTheme(unittest.TestCase):
         self.assertEqual(t.bg, (30, 30, 42))
 
     def test_builtin_themes(self):
-        self.assertEqual(len(BUILTIN_THEMES), 3)
+        # 2026-09-30: Material (Android) and Cupertino (Apple) joined
+        # the wheel — the same palettes the compositor renders.
+        self.assertEqual(len(BUILTIN_THEMES), 5)
         self.assertEqual(BUILTIN_THEMES[0].name, "Eclipse")
         self.assertEqual(BUILTIN_THEMES[1].name, "Solar")
         self.assertEqual(BUILTIN_THEMES[2].name, "Dracula")
+        self.assertEqual(BUILTIN_THEMES[3].name, "Material")
+        self.assertEqual(BUILTIN_THEMES[4].name, "Cupertino")
 
 
 class TestToggle(unittest.TestCase):
@@ -110,13 +114,17 @@ class TestSettingsPanel(unittest.TestCase):
 
     def test_variant_cycle_and_render(self):
         """[V] cycles through the variants and the panel still renders
-        with the Shell Variant section present. Cycling back onto the
-        running variant cancels the pending swap."""
+        with the Shell Variant section present. Cycling onto the
+        running variant cancels the pending swap (with a 3-variant
+        wheel — stock/pill/material — that is the third press)."""
         nxt = self.panel.cycle_variant()
         self.assertEqual(nxt, "pill")
         self.assertEqual(self.panel.swap_requested, "pill")
+        # Second press: the wheel advances to material (still pending).
         self.assertEqual(self.panel.handle_key("v"), "variant")
-        # Cycled back onto the active variant → pending swap cancelled.
+        self.assertEqual(self.panel.swap_requested, "material")
+        # Third press wraps onto the active variant → request cancelled.
+        self.assertEqual(self.panel.handle_key("v"), "variant")
         self.assertIsNone(self.panel.swap_requested)
 
         # And a fresh cycle starts a new request.
@@ -158,6 +166,10 @@ class TestSettingsPanel(unittest.TestCase):
         self.assertEqual(theme.name, "Solar")
         theme = self.panel.cycle_theme()
         self.assertEqual(theme.name, "Dracula")
+        theme = self.panel.cycle_theme()
+        self.assertEqual(theme.name, "Material")
+        theme = self.panel.cycle_theme()
+        self.assertEqual(theme.name, "Cupertino")
         theme = self.panel.cycle_theme()
         self.assertEqual(theme.name, "Eclipse")
 

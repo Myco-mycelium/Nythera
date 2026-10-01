@@ -51,9 +51,10 @@ DEFAULT_SOCKET = "/tmp/nyrqis-status.sock"
 DEFAULT_HEALTH_SOCKET = "/tmp/nyrqis-health.sock"
 DEFAULT_STATE_DIR = os.path.expanduser("~/.nyrqis")
 DEFAULT_DESIGN = os.path.join(DEFAULT_STATE_DIR, "shell.nstudio")
-# Runtime-selectable shell variants (registry-1.1 pill reference design):
+# Runtime-selectable shell variants (registry-1.1 pill reference design,
+# material = the Android-style restyle — the live ISO's default boot):
 # explicit --design > NYRQIS_SHELL_VARIANT name > the stock shell.
-KNOWN_SHELL_VARIANTS = ("stock", "pill")
+KNOWN_SHELL_VARIANTS = ("stock", "pill", "material")
 DEFAULT_SHELL_VARIANT = "stock"
 DEFAULT_VAULT_DIR = "/var/lib/nyrqis/vault"
 DEFAULT_VAULT_KEY = ""
@@ -649,6 +650,11 @@ Examples:
         if not design_path:
             logger.error("No shell design available for session")
             return 1
+        # Machine-greppable readiness line: the live demo wrapper polls
+        # /tmp/nyrqis-desktop.log for exactly this marker to report
+        # "desktop session started" without killing the session (the
+        # session itself blocks in its event loop until logout).
+        print("desktop session starting — window will appear", flush=True)
 
         exit_code = phase_start_session(
             design_path=design_path,

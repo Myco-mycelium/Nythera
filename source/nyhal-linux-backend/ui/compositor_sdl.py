@@ -71,6 +71,60 @@ THEMES = {
         "slider_fill": (100, 149, 237),
         "progress_bg": (60, 60, 60),
         "progress_fill": (100, 149, 237),
+        "on_accent": (255, 255, 255),
+    },
+    # Material 3 (Android) — baseline dark scheme, tonal surfaces.
+    # The Android look: elevated tonal surfaces (not borders), a large
+    # touch-oriented accent, pill geometry (tokens do the rounding).
+    # Accent #D0BCFF (M3 baseline dark primary) on surface #141218:
+    # contrast ~8:1 (WCAG AAA) — legibility before decoration.
+    "Material": {
+        "background": (20, 18, 24),          # M3 dark surface
+        "surface": (28, 27, 31),             # surface-container-low #1c1b1f
+        "surface_elevated": (36, 35, 42),    # surface-container
+        "surface_overlay": (39, 37, 45),     # surface-container-high
+        "border": (73, 69, 79),              # outline-variant
+        "text_primary": (230, 225, 233),     # on-surface #e6e1e9
+        "text_secondary": (202, 196, 208),   # on-surface-variant
+        "accent": (208, 188, 255),           # primary (M3 baseline)
+        "accent_hover": (211, 199, 250),     # primary ~92
+        "button_bg": (79, 55, 139),          # primary-container
+        "button_text": (210, 193, 255),      # on-primary-container
+        "input_bg": (36, 35, 42),
+        "input_border": (73, 69, 79),
+        "toggle_on": (208, 188, 255),
+        "toggle_off": (73, 69, 79),
+        "slider_track": (73, 69, 79),
+        "slider_fill": (208, 188, 255),
+        "progress_bg": (49, 48, 51),
+        "progress_fill": (208, 188, 255),
+        "on_accent": (56, 30, 114),           # on-primary (M3 dark purple)
+    },
+    # Cupertino (Apple/iOS-style) — dark system grays, system blue.
+    # The Apple look: flat translucent-feeling surfaces, hairline
+    # separators, SF-style restrained accent (#0A84FF system blue).
+    # on #1C1C1E: contrast ~4.9:1 — HIG-legible at text sizes.
+    "Cupertino": {
+        "background": (18, 18, 20),          # systemBackground dark
+        "surface": (28, 28, 30),             # secondarySystemBackground
+        "surface_elevated": (44, 44, 46),    # tertiarySystemBackground
+        "surface_overlay": (24, 24, 26),     # material (thinned)
+        "border": (58, 58, 60),              # separator (hairline)
+        "text_primary": (255, 255, 255),     # label
+        "text_secondary": (235, 235, 245),   # ~secondaryLabel (60%)
+        "accent": (10, 132, 255),            # systemBlue dark
+        "accent_hover": (64, 156, 255),
+        "button_bg": (44, 44, 46),           # filled: gray (iOS buttons)
+        "button_text": (255, 255, 255),
+        "input_bg": (44, 44, 46),
+        "input_border": (58, 58, 60),
+        "toggle_on": (48, 209, 88),         # systemGreen (iOS switches)
+        "toggle_off": (58, 58, 60),
+        "slider_track": (58, 58, 60),
+        "slider_fill": (255, 255, 255),     # iOS slider fill is white
+        "progress_bg": (44, 44, 46),
+        "progress_fill": (10, 132, 255),
+        "on_accent": (255, 255, 255),
     },
     "Solar": {
         "background": (253, 246, 227),
@@ -92,6 +146,7 @@ THEMES = {
         "slider_fill": (38, 139, 210),
         "progress_bg": (200, 190, 170),
         "progress_fill": (38, 139, 210),
+        "on_accent": (255, 255, 255),
     },
 }
 

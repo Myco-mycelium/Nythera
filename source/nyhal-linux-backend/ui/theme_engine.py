@@ -413,6 +413,116 @@ def _register_builtin_themes():
         },
     )
 
+    # Material 3 (Android) — baseline dark. Mirrors Compositor.THEMES
+    # ["Material"] in ui/compositor.py (hex vs tuple form).
+    BUILTIN_THEMES["Material"] = ThemeDefinition(
+        name="Material",
+        mode=ThemeMode.DARK,
+        description="Material 3 dark — Android tonal surfaces, baseline purple",
+        colors={
+            "bg_primary": "#141218",
+            "bg_secondary": "#1c1b1f",
+            "bg_tertiary": "#211f26",
+            "bg_surface": "#1c1b1f",
+            "bg_overlay": "#27252dee",
+            "bg_hover": "#2b2930",
+            "bg_active": "#36343b",
+            "bg_disabled": "#25242a",
+            "fg_primary": "#e6e1e9",
+            "fg_secondary": "#cac4d0",
+            "fg_tertiary": "#948f99",
+            "fg_inverse": "#141218",
+            "fg_disabled": "#6f6d76",
+            "fg_link": "#d0bcff",
+            "accent": "#d0bcff",
+            "accent_hover": "#d3c7fa",
+            "accent_active": "#c5b3f5",
+            "success": "#7ddb8a",
+            "warning": "#ffb990",
+            "error": "#ffb4ab",
+            "info": "#a8c8ff",
+            "border": "#49454f",
+            "border_focus": "#d0bcff",
+            "border_error": "#ffb4ab",
+            "shadow_color": "#00000099",
+        },
+        metrics={
+            "border_radius": 16,       # M3: large pill-leaning radii
+            "shadow_blur": 12,
+            "shadow_offset_y": 3,
+            "font_size_xs": 11,
+            "font_size_sm": 14,        # Android body-large is 16 sp; -2 for PIL
+            "font_size_md": 16,
+            "font_size_lg": 20,
+            "font_size_xl": 26,
+            "font_family": "DejaVu Sans",
+            "font_mono": "DejaVu Sans Mono",
+            "spacing_xs": 4,
+            "spacing_sm": 8,
+            "spacing_md": 16,
+            "spacing_lg": 24,
+            "spacing_xl": 32,
+            "opacity_disabled": 0.38,
+            "opacity_overlay": 0.9,
+            "transition_ms": 200,
+        },
+    )
+
+    # Cupertino (Apple) — dark system grays + system blue. Mirrors
+    # Compositor.THEMES["Cupertino"] in ui/compositor.py.
+    BUILTIN_THEMES["Cupertino"] = ThemeDefinition(
+        name="Cupertino",
+        mode=ThemeMode.DARK,
+        description="Apple-style dark — system grays, hairline separators, system blue",
+        colors={
+            "bg_primary": "#121214",
+            "bg_secondary": "#1c1c1e",
+            "bg_tertiary": "#2c2c2e",
+            "bg_surface": "#1c1c1e",
+            "bg_overlay": "#18181aee",
+            "bg_hover": "#2c2c2e",
+            "bg_active": "#3a3a3c",
+            "bg_disabled": "#252527",
+            "fg_primary": "#ffffff",
+            "fg_secondary": "#ebebf5",
+            "fg_tertiary": "#98989f",
+            "fg_inverse": "#121214",
+            "fg_disabled": "#6c6c70",
+            "fg_link": "#0a84ff",
+            "accent": "#0a84ff",
+            "accent_hover": "#409cff",
+            "accent_active": "#0980f0",
+            "success": "#30d158",
+            "warning": "#ff9f0a",
+            "error": "#ff453a",
+            "info": "#64d2ff",
+            "border": "#3a3a3c",
+            "border_focus": "#0a84ff",
+            "border_error": "#ff453a",
+            "shadow_color": "#00000088",
+        },
+        metrics={
+            "border_radius": 12,       # iOS continuous-corner feel
+            "shadow_blur": 10,
+            "shadow_offset_y": 2,
+            "font_size_xs": 11,
+            "font_size_sm": 13,
+            "font_size_md": 15,
+            "font_size_lg": 18,
+            "font_size_xl": 24,
+            "font_family": "DejaVu Sans",
+            "font_mono": "DejaVu Sans Mono",
+            "spacing_xs": 4,
+            "spacing_sm": 8,
+            "spacing_md": 16,
+            "spacing_lg": 24,
+            "spacing_xl": 32,
+            "opacity_disabled": 0.4,
+            "opacity_overlay": 0.92,
+            "transition_ms": 180,
+        },
+    )
+
 
 _register_builtin_themes()
 

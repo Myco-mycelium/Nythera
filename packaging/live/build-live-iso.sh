@@ -182,7 +182,7 @@ else
     # build dies in second stage (verified against bookworm).
     debootstrap --variant=minbase --arch="$DEB_ARCH" \
         "${FOREIGN[@]}" \
-        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
+        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3,python3-sdl2,python3-pil,fonts-dejavu-core,zstd,xz-utils \
         "$SUITE" "$ROOTFS_SRC" "$MIRROR"
     if ((${#FOREIGN[@]})); then
         log "second-stage debootstrap under $QEMU_STATIC (emulated)"
@@ -360,12 +360,17 @@ else
     log "ensuring the demo probe's required packages are present"
     chroot "$ROOTFS_SRC" sh -c '
         NEED=""
-        for p in python3 python3-zstandard python3-nacl python3-lz4 fuse3; do
+        for p in python3 python3-zstandard python3-nacl python3-lz4 fuse3 python3-sdl2 python3-pil fonts-dejavu-core zstd xz-utils; do
             dpkg -s "$p" >/dev/null 2>&1 || NEED="$NEED $p"
         done
         if [ -n "$NEED" ]; then
-            apt-get update -qq >/dev/null 2>&1
-            apt-get install -y -qq --no-install-recommends $NEED
+            # APT::Sandbox::User=root: inside the rootless userns the
+            # _apt drop-privilege setgroups fails (Operation not
+            # permitted) and the http method dies before fetching —
+            # the mapped root must stay root for the fetch (2026-09-30).
+            apt-get update -qq -o APT::Sandbox::User=root >/dev/null 2>&1
+            apt-get install -y -qq --no-install-recommends \
+                -o APT::Sandbox::User=root $NEED
             echo "installed:$NEED"
         fi
     ' || die "installing the demo probe's required packages failed
@@ -597,9 +602,10 @@ if [[ -n "$PROBE_GAPS" ]]; then
   run without them) — the build refuses to ship such an image.
   The ensure-packages step installs them when the rootfs has apt;
   under --skip-chroot you must supply a rootfs that already carries
-  python3 (+ python3-zstandard / python3-nacl / python3-lz4) and fuse3."
+  python3 (+ python3-zstandard / python3-nacl / python3-lz4), fuse3,
+  and the desktop session deps (python3-sdl2 / python3-pil)."
 fi
-for mod in zstandard nacl lz4.frame; do
+for mod in zstandard nacl lz4.frame sdl2 PIL; do
     if ! chroot "$ROOTFS_SRC" /usr/bin/python3 -c "import $mod" >/dev/null 2>&1; then
         PROBE_GAPS="$PROBE_GAPS python3-$mod"
     fi

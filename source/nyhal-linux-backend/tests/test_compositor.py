@@ -57,25 +57,69 @@ def _make_screen(screen_id="s", width=400, height=300, root_children=None):
 class TestCompositorThemes(unittest.TestCase):
     """Theme definitions are complete and consistent."""
 
+    _ALL_THEME_KEYS = {
+        "background", "surface", "surface_elevated", "surface_overlay",
+        "border", "text_primary", "text_secondary", "accent", "accent_hover",
+        "button_bg", "button_text", "input_bg", "input_border",
+        "toggle_on", "toggle_off", "slider_track", "slider_fill",
+        "progress_bg", "progress_fill", "on_accent",
+    }
+
     def test_eclipse_theme_has_all_keys(self):
-        expected = {
-            "background", "surface", "surface_elevated", "surface_overlay",
-            "border", "text_primary", "text_secondary", "accent", "accent_hover",
-            "button_bg", "button_text", "input_bg", "input_border",
-            "toggle_on", "toggle_off", "slider_track", "slider_fill",
-            "progress_bg", "progress_fill",
-        }
-        self.assertEqual(set(THEMES["Eclipse"].keys()), expected)
+        self.assertEqual(set(THEMES["Eclipse"].keys()), self._ALL_THEME_KEYS)
 
     def test_solar_theme_has_all_keys(self):
-        expected = {
-            "background", "surface", "surface_elevated", "surface_overlay",
-            "border", "text_primary", "text_secondary", "accent", "accent_hover",
-            "button_bg", "button_text", "input_bg", "input_border",
-            "toggle_on", "toggle_off", "slider_track", "slider_fill",
-            "progress_bg", "progress_fill",
-        }
-        self.assertEqual(set(THEMES["Solar"].keys()), expected)
+        self.assertEqual(set(THEMES["Solar"].keys()), self._ALL_THEME_KEYS)
+
+    def test_material_theme_has_all_keys(self):
+        """Material 3 (Android) baseline dark — complete palette."""
+        self.assertEqual(set(THEMES["Material"].keys()), self._ALL_THEME_KEYS)
+
+    def test_cupertino_theme_has_all_keys(self):
+        """Cupertino (Apple) dark — complete palette."""
+        self.assertEqual(set(THEMES["Cupertino"].keys()), self._ALL_THEME_KEYS)
+
+    def test_new_themes_match_theme_engine_hex_palette(self):
+        """Compositor.THEMES[Material/Cupertino] and the theme engine's
+        BUILTIN_THEMES of the same names describe the SAME palette (rgb
+        tuples vs hex strings) — one source of truth, two encodings."""
+        from ui.theme_engine import BUILTIN_THEMES
+        for name in ("Material", "Cupertino"):
+            hexes = BUILTIN_THEMES[name].colors
+            rgb = THEMES[name]
+            pairs = [
+                ("background", "bg_primary"),
+                ("surface", "bg_surface"),
+                ("text_primary", "fg_primary"),
+                ("accent", "accent"),
+                ("border", "border"),
+            ]
+            for ckey, hkey in pairs:
+                expected = tuple(int(hexes[hkey][i:i+2], 16) for i in (1, 3, 5))
+                self.assertEqual(
+                    rgb[ckey], expected,
+                    f"{name}.{ckey} diverges from theme-engine {hkey}")
+
+    def test_material_contrast_is_aaa(self):
+        """M3 baseline: on-surface text ≥ 7:1 (AAA) over the dark
+        surface — legibility before decoration."""
+        from ui.theme_engine import contrast_ratio
+        def _hex(rgb):
+            return "#%02x%02x%02x" % rgb
+        cr = contrast_ratio(
+            _hex(THEMES["Material"]["text_primary"]),
+            _hex(THEMES["Material"]["background"]))
+        self.assertGreaterEqual(cr, 7.0)
+
+    def test_cupertino_contrast_is_aa(self):
+        """HIG: label over systemBackground ≥ 4.5:1 (AA)."""
+        from ui.theme_engine import contrast_ratio
+        def _hex(rgb):
+            return "#%02x%02x%02x" % rgb
+        cr = contrast_ratio(
+            _hex(THEMES["Cupertino"]["text_primary"]),
+            _hex(THEMES["Cupertino"]["background"]))
+        self.assertGreaterEqual(cr, 4.5)
 
     def test_theme_colors_are_rgb_tuples(self):
         for name, theme in THEMES.items():

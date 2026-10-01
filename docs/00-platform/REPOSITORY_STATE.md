@@ -43,6 +43,32 @@ asserts every expected outcome, `--dry-run` proven against the red
 gate — stops cleanly with DRILL STOP; the owner session is now:
 flip the grants, run the script, record the verdict)
 
+2026-10-01 (the Material-UI wave: owner direction "the UI should
+resemble Android while still following Apple HIG" executed end to end —
+TWO new brand themes in both compositors (**Material** = M3 baseline
+dark, tonal surfaces, primary #D0BCFF, text/bg contrast 14.45:1 AAA;
+**Cupertino** = Apple dark system grays + systemBlue, label contrast
+18.71:1), registered in the theme engine and the settings panel's
+wheel; token-gated chrome (`window.style` material|cupertino,
+`start.pill`) with the no-tokens default pixel-compatible;
+**`shell/variants/material.nstudio`** — the Android restyle of the
+stock shell, restyle-never-fork pinned; `material` joined
+KNOWN_SHELL_VARIANTS and the panel picker; **Material is the default
+GRUB/isolinux boot entry on both arches**; and the DESKTOP-START BUG
+from the Sep 30 stress rounds FIXED — the demo no longer kills healthy
+sessions with `timeout 30`: it starts nyrqis_init in the background,
+polls the new readiness marker, and leaves the session up. Builder now
+ships the desktop stack (python3-sdl2/python3-pil/fonts-dejavu-core/
+zstd/xz-utils) via include + ensure-top-up with the rootless-safe
+APT::Sandbox::User=root fetch. Full sweep 9333 passed / 4 skipped /
+0 failed (baseline 9317 + 16 new tests); BOTH ISOs rebuilt rootless —
+amd64 447 MB sha256 a0a91ae3…769b, arm64 438 MB sha256
+ae2d395a…11c7; boot matrix DIRECT+MENU PASS on both arches with the
+Material entry as the starred GRUB default, and desktop-path boots
+PASS on both ("desktop session started" at 145 s amd64 / 256 s arm64
+under TCG, session left running) — the first arch-native start
+verdicts in the repo's record)
+
 2026-09-30 (the rotation/drill wave v6.50.0: the credential store was
 rotated ~13:44 UTC (single token, fresh mtime — owner-reported); the
 staged post-rotation drill FIRED as designed and returned **GRANTS

@@ -11,11 +11,20 @@
 # the HUMAN boot path observable by
 # tests/boot_smoke_menu.py --arch arm64, which boots the ISO with no
 # hand-built cmdline and lets GRUB run exactly as a real machine would.
+#
+# The DEFAULT entry boots the Material (Android-style) shell variant —
+# the product face of the ISO; the stock and pill variants remain
+# one menu selection away.
 
 set timeout=5
 set default=0
 
-menuentry "Nyrqis Live (demo)" {
+menuentry "Nyrqis Live (Material shell — Android-style desktop)" {
+    linux /live/vmlinuz boot=live nyrqis.variant=material quiet splash console=tty0 console=ttyAMA0,115200
+    initrd /live/initrd
+}
+
+menuentry "Nyrqis Live (demo — stock shell)" {
     linux /live/vmlinuz boot=live quiet splash console=tty0 console=ttyAMA0,115200
     initrd /live/initrd
 }

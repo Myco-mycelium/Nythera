@@ -87,7 +87,33 @@ THEME_DRACULA = Theme(
     border=(98, 114, 164),
 )
 
-BUILTIN_THEMES = [THEME_ECLIPSE, THEME_SOLAR, THEME_DRACULA]
+# Material 3 (Android) — mirrors Compositor.THEMES["Material"] and
+# theme_engine.BUILTIN_THEMES["Material"] (panel RGB encoding).
+THEME_MATERIAL = Theme(
+    name="Material",
+    bg=(20, 18, 24),          # M3 dark surface #141218
+    surface=(36, 35, 42),     # surface-container
+    accent=(208, 188, 255),   # primary #D0BCFF
+    text=(230, 225, 233),     # on-surface #E6E1E9
+    text_dim=(202, 196, 208), # on-surface-variant
+    border=(73, 69, 79),      # outline-variant
+)
+
+# Cupertino (Apple) — mirrors Compositor.THEMES["Cupertino"].
+THEME_CUPERTINO = Theme(
+    name="Cupertino",
+    bg=(18, 18, 20),          # systemBackground dark
+    surface=(44, 44, 46),     # tertiarySystemBackground
+    accent=(10, 132, 255),    # systemBlue
+    text=(255, 255, 255),     # label
+    text_dim=(235, 235, 245), # secondaryLabel
+    border=(58, 58, 60),      # separator
+)
+
+BUILTIN_THEMES = [
+    THEME_ECLIPSE, THEME_SOLAR, THEME_DRACULA,
+    THEME_MATERIAL, THEME_CUPERTINO,
+]
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +134,7 @@ class Toggle:
 
 # Shell variants the panel can request (mirrors
 # nyrqis_init.KNOWN_SHELL_VARIANTS; file stem = variant name).
-SHELL_VARIANTS = ("stock", "pill")
+SHELL_VARIANTS = ("stock", "pill", "material")
 
 
 class SettingsPanel:

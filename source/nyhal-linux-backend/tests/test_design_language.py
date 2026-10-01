@@ -100,8 +100,11 @@ class TestSettingsPanelAdoption(unittest.TestCase):
         self.assertEqual(THEME_SOLAR.accent, hig.ACCENT_SOLAR)
 
     def test_builtin_theme_count_and_order_unchanged(self):
+        # 2026-09-30: Material (Android) and Cupertino (Apple) appended
+        # — brand order preserved, new palettes at the wheel's end.
         self.assertEqual([t.name for t in BUILTIN_THEMES],
-                         ["Eclipse", "Solar", "Dracula"])
+                         ["Eclipse", "Solar", "Dracula",
+                          "Material", "Cupertino"])
 
     def test_interactive_rows_meet_target_minimum(self):
         self.assertGreaterEqual(SettingsPanel.TOGGLE_HEIGHT, hig.TARGET_MIN)
