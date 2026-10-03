@@ -502,13 +502,22 @@ class DesktopSession:
                     and window.y <= y < window.y + window.height):
                 continue
 
-            # Hit-test inside this window's component tree
+            # Hit-test inside this window's component tree. The window's
+            # own component is the SUBTREE ROOT: its layout is expressed
+            # in screen coordinates already (the session window tracks
+            # its live position separately), so children are relative to
+            # the window ORIGIN — pass the component's own layout as
+            # NEGATED offset so its children resolve window-relative
+            # while deeper nesting stays parent-relative.
             comp = self._doc.find_component(window.component_id)
             if comp is None:
                 continue
 
+            wlayout = getattr(comp, "layout", {})
             result = self._hit_component(
-                comp, x - window.x, y - window.y, window)
+                comp, x - window.x, y - window.y, window,
+                ox=-int(wlayout.get("x", 0)),
+                oy=-int(wlayout.get("y", 0)))
             if result.hit:
                 return result
 
@@ -539,18 +548,27 @@ class DesktopSession:
         local_x: int,
         local_y: int,
         window: Window,
+        ox: int = 0,
+        oy: int = 0,
     ) -> HitResult:
-        """Recursive hit-test inside a component tree."""
+        """Recursive hit-test inside a component tree.
+
+        ``ox``/``oy`` carry the parent's absolute origin — child layouts
+        are PARENT-RELATIVE (mirroring the compositor's offset
+        accumulation), so a component's hit box is layout + parent
+        origin. The screen-root call passes no offsets.
+        """
         layout = comp.layout
-        cx = layout.get("x", 0)
-        cy = layout.get("y", 0)
+        cx = layout.get("x", 0) + ox
+        cy = layout.get("y", 0) + oy
         cw = layout.get("width", 0)
         ch = layout.get("height", 0)
 
         # Test children first (deepest wins) — render order = child order,
         # last child is on top.
         for child in reversed(comp.children):
-            result = self._hit_component(child, local_x, local_y, window)
+            result = self._hit_component(child, local_x, local_y, window,
+                                         ox=cx, oy=cy)
             if result.hit:
                 return result
 

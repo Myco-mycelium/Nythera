@@ -127,9 +127,10 @@ class TestMaterialVariantShell(unittest.TestCase):
         # 0.85 from the doc's tokens) over the desktop surface:
         # bar 0.85 over surface = (37, 36, 43) — neither Eclipse value.
         self.assertEqual(img.getpixel((720, 10)), (37, 36, 43))
-        # The taskbar's start control is the M3 accent with the
-        # on-accent glyph — the Android signature.
-        self.assertEqual(img.getpixel((20, 20)), m["accent"])
+        # The taskbar's start control is the M3 accent pill with the
+        # on-accent glyph — the Android signature (probe the pill FILL,
+        # left of the glyph).
+        self.assertEqual(img.getpixel((30, 28)), m["accent"])
         # Desktop body: the M3 surface family (not Eclipse's #282828).
 
     def test_render_differs_from_stock(self):
@@ -176,16 +177,17 @@ class TestMaterialVariantShell(unittest.TestCase):
 
     def test_tokenless_documents_keep_the_historical_surfaces(self):
         """The stock shell (no tiles/apps tokens) must render the
-        historical QS panel and list rows — opt-in only, pixel-safe."""
+        historical QS toggle rows — opt-in only, geometry-safe: the
+        panel's first toggle sits at the row position (panel+16,+16),
+        NOT the Material grid's first-tile position (panel+16,+40)."""
         img = Compositor(theme_name="Eclipse").render_screen(
             self.stock_doc, screen_id="desktop")
-        # The stock QS panel draws its outline border — probe any
-        # non-accent pixel inside the panel: no accent tile may exist.
-        accent = THEMES["Eclipse"]["accent"]
-        hits = sum(
-            1 for y in range(468, 836, 4) for x in range(1040, 1424, 4)
-            if img.getpixel((x, y)) == accent)
-        self.assertEqual(hits, 0,
+        e = THEMES["Eclipse"]
+        # Historical toggle row: toggle_wifi ON at panel+(16,16).
+        self.assertEqual(img.getpixel((1070, 494)), e["toggle_on"],
+                         "the stock toggle row must stay at (+16,+16)")
+        # No Material tile at the grid's first-tile center (panel+60,+60).
+        self.assertEqual(img.getpixel((1100, 528)), e["surface_elevated"],
                          "the stock QS panel must not grow Material tiles")
 
 

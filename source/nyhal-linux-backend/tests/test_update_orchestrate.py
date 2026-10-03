@@ -21,6 +21,7 @@ import importlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -260,6 +261,92 @@ class VerifyOnlyTests(unittest.TestCase):
         self.assertTrue(out["verified"])
         self.assertEqual(out["packages"], 1)
         self.assertEqual(out["deltas"], 1)
+
+
+class ReadHistoryTests(unittest.TestCase):
+    """read_history is the status-only half of the orchestrator's
+    history: readable WITHOUT the repo-bound constructor (the bare
+    `packages status` form the demo banner teaches)."""
+
+    def test_round_trip_and_malformed_lines_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            hp = state / "history-apply.jsonl"
+            hp.write_text(
+                json.dumps({"package_id": "demo-app", "version_from": "1.0.0",
+                            "version_to": "1.1.0"}) + "\n"
+                + "not-json-at-all\n"
+                + json.dumps({"package_id": "other", "version_from": "2.0.0",
+                              "version_to": "2.1.0"}) + "\n",
+                encoding="utf-8")
+            out = uo.read_history(str(state), "apply")
+            self.assertEqual(len(out), 2)
+            self.assertEqual(out[0]["package_id"], "demo-app")
+            self.assertEqual(out[1]["version_to"], "2.1.0")
+
+    def test_missing_state_dir_reads_empty(self):
+        self.assertEqual(
+            uo.read_history("/nonexistent-nyrqis-state-xyz", "apply"), [])
+
+    def test_orchestrator_history_delegates_to_read_history(self):
+        # Same layout, one source of truth.
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "orch"
+            state.mkdir()
+            (state / "history-apply.jsonl").write_text(
+                json.dumps({"package_id": "p", "version_from": "1",
+                            "version_to": "2"}) + "\n", encoding="utf-8")
+            orch = UpdateOrchestrator(
+                repo_root=str(Path(td) / "repo"),
+                trust_store_path=str(Path(td) / "trust.json"),
+                install_root=str(Path(td) / "install"),
+                state_dir=str(state))
+            self.assertEqual(orch.history("apply")[0]["package_id"], "p")
+            self.assertEqual(
+                uo.read_history(str(state), "apply"),
+                orch.history("apply"))
+
+
+class PackagesStatusCliTests(unittest.TestCase):
+    """The bare `packages status` form must WORK: the parser defaults
+    --repo-root to "" and the demo banner teaches exactly that form, but
+    the CLI used to construct the repo-bound orchestrator first and die
+    on ValueError (in-VM ops drill finding, 2026-10-02)."""
+
+    @classmethod
+    def _ctl(cls, *argv: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(Path(_HERE) / "nyrqisctl.py"), *argv],
+            capture_output=True, text=True, timeout=120)
+
+    def test_bare_status_answers_without_a_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            r = self._ctl("packages", "status",
+                          "--install-root", str(Path(td) / "install"),
+                          "--state-dir", str(Path(td) / "orch"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("installed packages under", r.stdout)
+        self.assertIn("(none)", r.stdout)
+
+    def test_status_lists_inventory_and_last_apply(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            app = root / "install" / "demo-app"
+            app.mkdir(parents=True)
+            (app / "manifest.json").write_text(
+                json.dumps({"package_id": "demo-app", "version": "1.1.0"}),
+                encoding="utf-8")
+            orch = root / "orch"
+            orch.mkdir()
+            (orch / "history-apply.jsonl").write_text(
+                json.dumps({"package_id": "demo-app", "version_from": "1.0.0",
+                            "version_to": "1.1.0"}) + "\n", encoding="utf-8")
+            r = self._ctl("packages", "status",
+                          "--install-root", str(root / "install"),
+                          "--state-dir", str(orch))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("demo-app 1.1.0", r.stdout)
+        self.assertIn("last apply: demo-app 1.0.0 → 1.1.0", r.stdout)
 
 
 class NoEgressTests(unittest.TestCase):

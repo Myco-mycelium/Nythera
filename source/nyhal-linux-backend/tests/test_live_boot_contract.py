@@ -137,6 +137,60 @@ class TestBuilderProfileContract(unittest.TestCase):
             ".bash_profile must exec the demo session on autologin")
 
 
+class TestWrapperRunsContract(unittest.TestCase):
+    """The PATH entry-point wrappers must RUN inside the image.
+
+    The in-VM ops drill (2026-10-02) found the wrappers baking the
+    builder's staging path ($ROOTFS_SRC-prefixed $OPT) — `command -v
+    nyrqisctl` passed the boot smoke forever while every operator
+    command died on the build host's path. The builder must name the
+    IN-IMAGE path, refuse a build-host leak, and the smoke handshake
+    must answer through the wrapper itself.
+    """
+
+    def setUp(self):
+        self.builder = read(BUILDER)
+        self.demo = read(DEMO)
+        self.direct = read(DIRECT_SMOKE)
+
+    def test_wrapper_printf_names_the_in_image_path(self):
+        # The wrapper-printf line must not interpolate the builder-side
+        # staging variable $OPT — the wrapper runs in the guest.
+        m = re.search(
+            r"printf '#!/bin/sh\\nexec python3 %s/%s \"\$\@\"\\n' "
+            r"\"(\$[A-Z_]+)\" \"\$script\"", self.builder)
+        self.assertIsNotNone(
+            m, "builder must write the entry-point wrappers with a "
+               "printf naming the in-image path")
+        self.assertEqual(
+            m.group(1), "$IMG_OPT",
+            "entry-point wrappers must exec the IN-IMAGE path ($IMG_OPT = "
+            "/opt/nyrqis/nyhal-linux-backend), not the builder's "
+            "$ROOTFS_SRC-prefixed staging path — a baked staging path "
+            "ships a broken nyrqisctl (ops drill 2026-10-02)")
+        self.assertIn(
+            'IMG_OPT="/opt/nyrqis/nyhal-linux-backend"', self.builder,
+            "IMG_OPT must be the in-image backend path")
+
+    def test_builder_refuses_a_build_host_path_leak(self):
+        self.assertIn(
+            'grep -l -F "$ROOTFS_SRC" "$ROOTFS_SRC"/usr/local/bin/nyrqis-*',
+            self.builder,
+            "builder must gate: no guest-visible nyrqis-* wrapper may "
+            "reference the build-host path ($ROOTFS_SRC)")
+
+    def test_smoke_handshake_answers_through_the_wrapper(self):
+        self.assertIn(
+            'NYRQIS_BOOT_SMOKE_CTL_PING=1', self.demo,
+            "the smoke handshake must RUN the PATH wrapper (nyrqisctl ping), "
+            "not merely `command -v` it — a broken wrapper passed the old "
+            "check forever")
+        self.assertIn(
+            'MARKER_CTL_PING_OK = "NYRQIS_BOOT_SMOKE_CTL_PING=1"',
+            self.direct,
+            "the direct boot smoke must assert the wrapper-run marker")
+
+
 class TestMenuSerialObservability(unittest.TestCase):
     """The menu-path smoke can only see what the serial line carries."""
 

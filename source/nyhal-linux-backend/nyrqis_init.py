@@ -174,22 +174,43 @@ def run_diagnostics() -> List[DiagnosticCheck]:
         "Install fuse3: sudo apt install fuse3" if not fuse_path.exists() else None,
     ))
     
-    # 5. State directory
+    # 5. Shell design — probe through the SAME resolution chain boot
+    # uses (`_find_design`): a bare `~/.nyrqis` with no user copy is
+    # NOT a fault while the shipped defaults exist (boot falls back to
+    # `shell/defaults/default-shell.nstudio`), so an honest diagnose
+    # must not report "not found" where a boot would succeed (found on
+    # the 2026-10-03 fresh-host pass).
     state_dir = Path(DEFAULT_STATE_DIR)
     if state_dir.exists():
-        shell_file = state_dir / "shell.nstudio"
+        try:
+            resolved = _find_design(None, variant="stock",
+                                    daemon_state_dir=str(state_dir))
+        except ValueError:
+            resolved = ""
         checks.append(DiagnosticCheck(
             "Shell design",
-            shell_file.exists(),
-            str(shell_file) if shell_file.exists() else "not found",
-            "Copy a shell design to ~/.nyrqis/shell.nstudio" if not shell_file.exists() else None,
+            bool(resolved),
+            resolved if resolved else "no design found on the resolution "
+                                     "path (user copy, persisted choice, "
+                                     "or shipped default)",
+            None if resolved else
+            "Copy a shell design to ~/.nyrqis/shell.nstudio, or run the "
+            "backend from its own tree so shell/defaults/ is present",
         ))
     else:
+        # No ~/.nyrqis yet is a first-boot norm, not a failure: boot
+        # resolves the shipped default; mention the optional user copy.
+        try:
+            resolved = _find_design(None, variant="stock", daemon_state_dir=None)
+        except ValueError:
+            resolved = ""
         checks.append(DiagnosticCheck(
-            "State directory",
-            False,
-            f"{state_dir} not found",
-            f"Create: mkdir -p {state_dir}",
+            "Shell design",
+            bool(resolved),
+            (resolved + " (shipped default; no ~/.nyrqis yet)")
+            if resolved else "no design found on the resolution path",
+            None if resolved else
+            "Run the backend from its own tree so shell/defaults/ is present",
         ))
     
     # 6. Socket availability
@@ -208,7 +229,11 @@ def run_diagnostics() -> List[DiagnosticCheck]:
             "available",
         ))
     
-    # 7. Vault directory
+    # 7. Vault directory — REQUIRED only when the daemon cannot create
+    # it. The daemon now self-provisions its configured vault dir at
+    # start (best effort), and ipc/storage creates it lazily on first
+    # volume create; so the check passes when the dir exists OR its
+    # parent is writable (the daemon's mkdir will succeed at boot).
     vault_dir = Path(DEFAULT_VAULT_DIR)
     if vault_dir.exists():
         checks.append(DiagnosticCheck(
@@ -217,11 +242,15 @@ def run_diagnostics() -> List[DiagnosticCheck]:
             str(vault_dir),
         ))
     else:
+        parent = vault_dir.parent
+        creatable = parent.is_dir() and os.access(parent, os.W_OK)
         checks.append(DiagnosticCheck(
             "Vault directory",
-            False,
-            f"{vault_dir} not found",
-            f"Create: sudo mkdir -p {vault_dir}",
+            creatable,
+            f"{vault_dir} will be created by the daemon at start"
+            if creatable else f"{vault_dir} not found and {parent} is not "
+                              "writable by this user",
+            f"Create: sudo mkdir -p {vault_dir}" if not creatable else None,
         ))
     
     return checks

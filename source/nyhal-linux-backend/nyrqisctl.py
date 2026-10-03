@@ -9718,6 +9718,7 @@ def _packages(args: argparse.Namespace) -> int:
     try:
         from backend.update_orchestrate import (
             UpdateOrchestrator, UpdateOrchestrationError, verify_only,
+            read_history,
         )
         from backend.package_repo import RepoError
     except ImportError as exc:
@@ -9733,6 +9734,23 @@ def _packages(args: argparse.Namespace) -> int:
             return 1
         print(f"index VERIFIED: {out['packages']} package(s), "
               f"{out['deltas']} delta(s)")
+        return 0
+    if args.packages_cmd == "status":
+        # Status is repo-INDEPENDENT: the inventory and the persisted
+        # history are local. The parser deliberately defaults --repo-root
+        # to "" (the banner teaches the bare form), but constructing the
+        # orchestrator before this branch raised
+        # ValueError(repo_root required) instead of degrading honestly
+        # (in-VM ops drill finding, 2026-10-02).
+        installed = _installed_versions(args.install_root)
+        print(f"installed packages under {args.install_root}:")
+        if not installed:
+            print("  (none)")
+        for pid, ver in sorted(installed.items()):
+            print(f"  {pid} {ver}")
+        for h in read_history(args.state_dir, "apply")[-5:]:
+            print(f"  last apply: {h.get('package_id')} "
+                  f"{h.get('version_from')} → {h.get('version_to')}")
         return 0
     try:
         orch = UpdateOrchestrator(
@@ -9774,15 +9792,6 @@ def _packages(args: argparse.Namespace) -> int:
                                 target_version=args.to_version)
             print(f"rolled back {args.package} (restored from "
                   f"{res['restored_from']})")
-            return 0
-        if args.packages_cmd == "status":
-            installed = _installed_versions(args.install_root)
-            print(f"installed packages under {args.install_root}:")
-            for pid, ver in sorted(installed.items()):
-                print(f"  {pid} {ver}")
-            for h in orch.history("apply")[-5:]:
-                print(f"  last apply: {h.get('package_id')} "
-                      f"{h.get('version_from')} → {h.get('version_to')}")
             return 0
     except (UpdateOrchestrationError, RepoError) as exc:
         print(f"error: {exc}", file=sys.stderr)

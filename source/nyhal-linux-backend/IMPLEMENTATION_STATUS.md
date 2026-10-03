@@ -1,13 +1,45 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.29.0  
-**Date**: 2026-09-11  
+**Version**: 0.29.37  
+**Date**: 2026-10-03  
 **Repository**: github.com/Myco-mycelium/Nythera
 
 ## Overview
 
 This document tracks the implementation status of the Nyrqis Linux backend,
 providing the hardware abstraction layer for the Nyrqis OS.
+
+## Ops-Drill Fixes + First-Boot Self-Provisioning (0.29.37)
+
+Closed from the 2026-10-02 in-VM ops drill and the 2026-10-03 fresh-host
+pass:
+
+- **Shell parent-relative rendering** — `ui/compositor.py`,
+  `ui/compositor_sdl.py`, and `ui/desktop_session.py` (hit-test) now
+  accumulate parent offsets: children of offset containers (the stock
+  shell's QuickSettings panel et al.) render inside their parent instead
+  of at raw layout coordinates, structural marker components no longer
+  paint placeholder boxes over real chrome, and hit-testing agrees with
+  rendering.
+- **`packages status` without a repo** — repo-independent status via
+  `backend/update_orchestrate.read_history`; the bare form the live-demo
+  banner teaches now answers instead of `ValueError`.
+- **Demo slow-host budgets** — env-overridable daemon wait (60 s) and
+  ctl timeout (90 s); a ctl timeout is a FAIL verdict, not a traceback.
+- **Wrapper-runs contract** — live-ISO entry-point wrappers name the
+  in-image path (`$IMG_OPT`), the builder refuses a `$ROOTFS_SRC` leak,
+  and the boot smoke runs `nyrqisctl ping` THROUGH the PATH wrapper
+  (`NYRQIS_BOOT_SMOKE_CTL_PING`), hard-failing on a wrapper that merely
+  exists.
+- **First-boot self-provisioning** — the daemon pre-creates its
+  configured vault dir (best effort);
+  `nyrqis_init --diagnose` resolves the shell design through boot's
+  real resolution chain and accepts a daemon-creatable vault dir — the
+  fresh-host diagnose reports 8/8 where boot succeeds.
+
+Suite: 6,700 pytest (`tests/`) + 2,548 (`test_backend.py`), 0 failures;
+`demo/run_demo.sh` 18/18; `nyrqis_init.py --diagnose` 8/8 on a host
+where the vault parent is writable.
 
 ## What's Working
 

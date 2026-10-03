@@ -5,6 +5,75 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.37] - 2026-10-03
+
+### Fixed
+
+- **Shell components render PARENT-RELATIVE (the offset-container fix).**
+  `ui/compositor.py` `_render_component` now accumulates the parent's
+  absolute origin (`ox`/`oy`) and adds it to each child's layout: the
+  stock shell's QuickSettings toggle at (16,16) inside the QS panel at
+  (1040,468) painted at the screen's top-left corner since the nested
+  documents shipped — every child of every offset container was
+  displaced by its parent's origin. Mirrored in `ui/compositor_sdl.py`
+  (SDL path) and `ui/desktop_session.py` (hit-testing: the window's
+  component subtree root carries screen-space layout, so its children
+  resolve window-relative while deeper nesting stays parent-relative).
+  Empty-typed components (the taskbar's btn_start/btn_search structural
+  markers) no longer paint an opaque placeholder box over the bar's real
+  chrome. `tests/test_compositor.py` pins the toggle-inside-panel pixel;
+  `test_shell_material_variant.py`/`test_shell_pill_variant.py` updated
+  to the corrected geometry.
+- **`packages status` works without a repo (the bare form the demo
+  banner teaches).** The CLI constructed the repo-bound orchestrator
+  before the status branch and died on `ValueError(repo_root required)`;
+  status is repo-INDEPENDENT (inventory + persisted history are local).
+  `backend/update_orchestrate.py` extracts `read_history(state_dir,
+  kind)` so history is readable without the orchestrator;
+  `nyrqisctl.py packages status` answers the bare form, prints `(none)`
+  for an empty inventory, and keeps `orch.history()` delegating to the
+  same function (one source of truth). Found by the in-VM ops drill
+  2026-10-02. Pinned by `tests/test_update_orchestrate.py`
+  (`ReadHistoryTests`, `PackagesStatusCliTests`).
+- **Demo timeouts are honest FAIL verdicts, not tracebacks.**
+  `demo/run_demo.sh`'s fixed 15 s socket wait / 20 s ctl budget died in
+  Act I on a TCG-slowed host (2026-10-02 in-VM drill) — `TimeoutExpired`
+  escaped before a single verdict printed. Budgets are now
+  env-overridable (`NYRQIS_DEMO_DAEMON_WAIT_S`, default 60;
+  `NYRQIS_DEMO_CTL_TIMEOUT_S`, default 90) and a ctl timeout returns a
+  `CompletedProcess` (rc 124) that the act reports as a normal FAIL.
+
+### Added
+
+- **First-boot self-provisioning + honest diagnostics.** The daemon
+  (`nyrqis_backend.py service serve`) now pre-creates its configured
+  vault dir at start (best effort, non-fatal — `ipc/storage` creates it
+  lazily on first volume create too, but only if the parent exists);
+  a fresh host no longer needs `sudo mkdir -p /var/lib/nyrqis/vault`
+  before the first volume. `nyrqis_init.py --diagnose` now reports what
+  BOOT will do instead of a stricter world: the shell-design check goes
+  through `_find_design`'s real resolution chain (a missing user copy is
+  not a fault while `shell/defaults/` ships a default — the old check
+  printed "not found" where every boot succeeded), and the vault check
+  passes when the daemon can create the dir (parent writable) with a
+  message saying so, still failing with the operator fix when it cannot.
+  Pinned by `tests/test_boot_init.py` (`TestVaultSelfProvisioning`,
+  `TestDiagnosticsFirstBoot`).
+- **Live ISO: the PATH entry-point wrappers must RUN, not merely exist
+  (the wrapper-runs contract).** The 2026-10-02 in-VM ops drill found
+  the wrappers baking the builder's staging path ($ROOTFS_SRC-prefixed
+  $OPT): `command -v nyrqisctl` passed the boot smoke forever while
+  every operator command died on the build host's path.
+  `packaging/live/build-live-iso.sh` writes the wrappers with the
+  IN-IMAGE path (`IMG_OPT=/opt/nyrqis/nyhal-linux-backend`) and refuses
+  a build (`die`) when any guest-visible wrapper still references
+  $ROOTFS_SRC; the overlay smoke handshake answers
+  `NYRQIS_BOOT_SMOKE_CTL_PING=1` by RUNNING `nyrqisctl ping` through
+  the PATH wrapper (against the live daemon); `tests/boot_smoke.py`
+  hard-fails on the 0 marker, on the marker missing entirely (a stale
+  image), and prints the broken-wrapper explanation. Pinned by
+  `tests/test_live_boot_contract.py::TestWrapperRunsContract`.
+
 ## [0.29.36] - 2026-09-27
 
 ### Added

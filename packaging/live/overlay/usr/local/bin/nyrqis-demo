@@ -207,6 +207,16 @@ if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
     else
         echo "NYRQIS_BOOT_SMOKE_NYRQISCTL=0"
     fi
+    # The wrapper must RUN, not merely exist: a wrapper that baked the
+    # builder's staging path (in-VM ops drill finding, 2026-10-02) passed
+    # `command -v` forever while every operator command died on the build
+    # host's path. Answer through the PATH wrapper itself — the daemon on
+    # $SOCK is up at this point, so a working wrapper pongs.
+    if nyrqisctl --socket "$SOCK" ping >/dev/null 2>&1; then
+        echo "NYRQIS_BOOT_SMOKE_CTL_PING=1"
+    else
+        echo "NYRQIS_BOOT_SMOKE_CTL_PING=0"
+    fi
     # BEFORE the ready marker (drivers may stop reading at READY): the
     # probe's required-package class must be complete in the image.
     pkg_marker

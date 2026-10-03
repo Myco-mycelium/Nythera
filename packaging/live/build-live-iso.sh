@@ -296,6 +296,15 @@ chmod 0755 "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
 # installed system. pip install is deliberately avoided — minbase has
 # no packaging stack and the tree is already staged at $OPT.
 log "installing console entry-point wrappers on PATH"
+# The wrapper RUNS INSIDE the image: it must name the IN-IMAGE path.
+# $OPT is the builder-side staging path ($ROOTFS_SRC-prefixed) that does
+# not exist in the live system — baking it into the wrappers made every
+# PATH entry point fail with the build host's path in the error while
+# `command -v nyrqisctl` kept passing (found by the in-VM ops drill
+# 2026-10-02: nyrqisctl → "python3: can't open file
+# '/home/…/lr/opt/nyrqis/nyrqisctl.py'"). The scripts also live under
+# nyhal-linux-backend/, one level below the in-image /opt/nyrqis.
+IMG_OPT="/opt/nyrqis/nyhal-linux-backend"
 for entry in \
     nyrqisctl:nyrqisctl.py \
     nyrqis-backend:nyrqis_backend.py \
@@ -303,10 +312,19 @@ for entry in \
     nyrqis-run:nyrqis_run.py \
     nyrqis-init:nyrqis_init.py; do
     name="${entry%%:*}"; script="${entry#*:}"
-    printf '#!/bin/sh\nexec python3 %s/%s "$@"\n' "$OPT" "$script" \
+    printf '#!/bin/sh\nexec python3 %s/%s "$@"\n' "$IMG_OPT" "$script" \
         > "$ROOTFS_SRC/usr/local/bin/$name"
     chmod 0755 "$ROOTFS_SRC/usr/local/bin/$name"
 done
+# Gate: nothing guest-visible on PATH may reference the build host — a
+# $ROOTFS_SRC leak ships a broken command that `command -v` cannot see
+# (the boot smoke now RUNS the wrapper; the builder refuses here first).
+leaked="$(grep -l -F "$ROOTFS_SRC" "$ROOTFS_SRC"/usr/local/bin/nyrqis-* 2>/dev/null || true)"
+if [[ -n "$leaked" ]]; then
+    die "entry-point wrappers reference the BUILD-HOST path ($ROOTFS_SRC):
+$leaked
+the wrappers run inside the image and must name in-image paths only."
+fi
 
 # Byte-compile the shipped tree with the ROOTFS's OWN interpreter —
 # the builder's python may be newer (PEP 701 allows nested same-quote

@@ -46,6 +46,14 @@ PASS = "  PASS "
 FAIL = "  FAIL "
 _results: list = []
 
+# Slow-machine budgets. TCG-slowed runners boot far slower than a fixed
+# sleep can guess (the boot smoke's own philosophy) — the 2026-10-02
+# in-VM ops drill died in Act I on the fixed 15 s socket wait / 20 s ctl
+# budget: a cold daemon start under TCG with a live desktop session
+# exceeds both. Env-overridable so CI and slow hardware can go wider.
+DAEMON_WAIT_S = int(os.environ.get("NYRQIS_DEMO_DAEMON_WAIT_S", "60"))
+CTL_TIMEOUT_S = int(os.environ.get("NYRQIS_DEMO_CTL_TIMEOUT_S", "90"))
+
 
 def verdict(name: str, ok: bool, detail: str = "") -> bool:
     print(f"{PASS if ok else FAIL} {name}" + (f" — {detail}" if detail else ""))
@@ -77,7 +85,7 @@ class Daemon:
             cmd += ["--crash-spool", self.spool]
         self.proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        self._wait_socket()
+        self._wait_socket(DAEMON_WAIT_S)
 
     def _wait_socket(self, timeout: float = 15.0) -> bool:
         import socket as sock_mod
@@ -95,12 +103,25 @@ class Daemon:
             time.sleep(0.1)
         return False
 
-    def ctl(self, *argv: str, timeout: int = 20) -> subprocess.CompletedProcess:
+    def ctl(self, *argv: str,
+            timeout: int | None = None) -> subprocess.CompletedProcess:
         # Global flags precede the command in nyrqisctl's CLI grammar.
-        return subprocess.run(
-            [sys.executable, str(BACKEND / "nyrqisctl.py"),
-             "--socket", self.socket, *argv],
-            capture_output=True, text=True, timeout=timeout)
+        # A timeout is an HONEST FAIL verdict, not a traceback: the
+        # TimeoutExpired used to escape act1 and kill the whole demo
+        # before a single verdict printed (2026-10-02 in-VM drill).
+        if timeout is None:
+            timeout = CTL_TIMEOUT_S
+        try:
+            return subprocess.run(
+                [sys.executable, str(BACKEND / "nyrqisctl.py"),
+                 "--socket", self.socket, *argv],
+                capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            return subprocess.CompletedProcess(
+                list(argv), 124,
+                stdout="",
+                stderr=(exc.stderr or "") if isinstance(exc.stderr, str)
+                else f"timed out after {timeout}s")
 
     def stop(self) -> None:
         self.proc.terminate()

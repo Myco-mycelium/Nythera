@@ -310,11 +310,20 @@ class Compositor:
         font_small: ImageFont.FreeTypeFont,
         font_title: ImageFont.FreeTypeFont,
         document: Any = None,
+        ox: int = 0,
+        oy: int = 0,
     ) -> None:
-        """Render a single component and its children."""
+        """Render a single component and its children.
+
+        ``ox``/``oy`` carry the parent's absolute origin: child layouts
+        are PARENT-RELATIVE (the shell documents nest everything under
+        offset containers — a QS Toggle at (16,16) lives inside the QS
+        panel at (1040,468)), so children render at parent+offset.
+        The root call passes no offsets; every nested level accumulates.
+        """
         layout = getattr(comp, "layout", {})
-        x = int(layout.get("x", 0) * self.scale)
-        y = int(layout.get("y", 0) * self.scale)
+        x = int(layout.get("x", 0) * self.scale) + ox
+        y = int(layout.get("y", 0) * self.scale) + oy
         w = int(layout.get("width", 100) * self.scale)
         h = int(layout.get("height", 30) * self.scale)
 
@@ -383,11 +392,21 @@ class Compositor:
             self._render_title_bar(img, draw, x, y, w, h, props, font_small)
         elif comp_type in ("WindowControls",):
             self._render_window_controls(img, draw, x, y, w, h, font_small)
+        elif comp_type == "":
+            # Empty type = a structural MARKER in the document (e.g. the
+            # taskbar's btn_start/btn_search position markers): the bar
+            # draws its own chrome for these locations — an opaque
+            # placeholder box here would paint over the bar's real
+            # start control (visible once children render nested).
+            pass
         else:
             # Generic placeholder
             self._render_placeholder(img, draw, x, y, w, h, comp_type, font_small)
 
-        # Render children (for container types)
+        # Render children (for container types) — accumulate this
+        # component's absolute origin so nested layouts stay relative
+        # to their parent (the fix for offset-container children that
+        # previously painted at raw layout coordinates).
         children = getattr(comp, "children", [])
         if children and comp_type not in ("Text", "Label", "Heading", "Paragraph",
                                            "Button", "Link", "Input", "PasswordField",
@@ -395,7 +414,8 @@ class Compositor:
                                            "Slider", "ProgressBar", "Image", "Icon",
                                            "DesktopIcon", "Clock", "MenuItem"):
             for child in children:
-                self._render_component(img, draw, child, font, font_small, font_title, document)
+                self._render_component(img, draw, child, font, font_small,
+                                       font_title, document, ox=x, oy=y)
 
     # ---- Component renderers -----------------------------------------------
 

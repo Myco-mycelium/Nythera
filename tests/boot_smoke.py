@@ -58,6 +58,12 @@ MARKER_PKGS_BAD = "NYRQIS_BOOT_SMOKE_PKGS=missing"
 # Entry-point wrappers on PATH inside the image (informational: printed
 # in the verdict, never gates pass/fail by itself).
 MARKER_NYRQISCTL = "NYRQIS_BOOT_SMOKE_NYRQISCTL="
+# The PATH wrapper must RUN, not merely exist: `command -v` kept passing
+# while every operator command died on the builder's baked staging path
+# (in-VM ops drill finding, 2026-10-02). The overlay answers through the
+# wrapper itself; a 0 here is a hard fail.
+MARKER_CTL_PING_OK = "NYRQIS_BOOT_SMOKE_CTL_PING=1"
+MARKER_CTL_PING_FAIL = "NYRQIS_BOOT_SMOKE_CTL_PING=0"
 
 # `debug=y` (the debug=* form) makes initramfs-tools AND live-boot
 # trace every command to the CONSOLE — the plain `debug` token would
@@ -307,6 +313,7 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
         deadline = time.monotonic() + timeout_s
         saw_ready = saw_pong_ok = saw_pong_fail = False
         saw_pkgs_ok = saw_pkgs_bad = False
+        saw_ctl_ok = saw_ctl_fail = False
         dead_hit = None
         while time.monotonic() < deadline:
             # Read first: the markers must be parsed even when qemu exits
@@ -322,6 +329,8 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             saw_pong_fail = saw_pong_fail or MARKER_PONG_FAIL in text
             saw_pkgs_ok = saw_pkgs_ok or MARKER_PKGS_OK in text
             saw_pkgs_bad = saw_pkgs_bad or MARKER_PKGS_BAD in text
+            saw_ctl_ok = saw_ctl_ok or MARKER_CTL_PING_OK in text
+            saw_ctl_fail = saw_ctl_fail or MARKER_CTL_PING_FAIL in text
             if saw_ready and (saw_pong_ok or saw_pong_fail):
                 break
             if dead_hit is None:
@@ -342,7 +351,8 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
 
         print(f"[boot-smoke] markers: ready={saw_ready} "
               f"pong_ok={saw_pong_ok} pong_fail={saw_pong_fail} "
-              f"pkgs_ok={saw_pkgs_ok} pkgs_bad={saw_pkgs_bad}")
+              f"pkgs_ok={saw_pkgs_ok} pkgs_bad={saw_pkgs_bad} "
+              f"ctl_ping_ok={saw_ctl_ok} ctl_ping_fail={saw_ctl_fail}")
         if saw_pkgs_bad:
             # Name the gaps: the marker line carries them.
             pkg_line = "(marker line not found)"
@@ -356,6 +366,11 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
         if MARKER_NYRQISCTL in text:
             print(f"[boot-smoke] nyrqisctl-on-PATH: "
                   f"{text.split(MARKER_NYRQISCTL)[1].splitlines()[0][0]}")
+        if MARKER_CTL_PING_FAIL in text:
+            print("[boot-smoke] the PATH wrapper did not answer ping — "
+                  "the entry-point wrapper is broken (see the builder's "
+                  "IMG_OPT gate; a wrapper that bakes the builder's "
+                  "staging path passes command -v and never runs)")
         try:
             with open(serial_log, "r", errors="replace") as fh:
                 tail = fh.read()[-2000:]
@@ -410,11 +425,23 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                 f"full serial log follows in chunks",
                 qemu_stderr=qerr_tail)
 
-        if saw_ready and saw_pong_ok and saw_pkgs_ok:
+        if saw_ready and saw_pong_ok and saw_pkgs_ok and saw_ctl_ok:
             print("[boot-smoke] PASS: the demo session reached the serial "
-                  "console, the daemon answered ping, and the probe's "
-                  "required packages are complete")
+                  "console, the daemon answered ping, the probe's "
+                  "required packages are complete, and the PATH wrapper "
+                  "answered a ping of its own")
             return 0
+        if saw_ready and saw_pong_ok and saw_pkgs_ok and saw_ctl_fail:
+            print("[boot-smoke] FAIL: the daemon answers and packages are "
+                  "complete, but the PATH wrapper does not RUN — the "
+                  "entry-point wrapper must execute, not merely exist "
+                  "(it baked the builder's staging path once)")
+            return 1
+        if saw_ready and saw_pong_ok and saw_pkgs_ok:
+            print("[boot-smoke] FAIL: no NYRQIS_BOOT_SMOKE_CTL_PING "
+                  "marker — the image predates the wrapper-run check; "
+                  "rebuild the ISO")
+            return 1
         if saw_ready and saw_pong_ok and not saw_pkgs_ok:
             print("[boot-smoke] FAIL: pong answered but the package-parity "
                   "marker never read ok — the image is incomplete")

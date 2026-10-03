@@ -349,6 +349,22 @@ class StatusServiceHost:
         # get wrapped DEKs + at-rest-encrypted blocks; without them the
         # vault runs plaintext (the crate-less fallback).
         self.vault_dir = vault_dir
+        # First-boot self-provisioning: the vault backing directory is
+        # the daemon's OWN configured state (not an operator artifact),
+        # so a fresh host should not need a manual `sudo mkdir` before
+        # the first volume create (ipc/storage creates it lazily too,
+        # but only when a volume is made — and the packaged layout
+        # documents /var/lib/nyrqis/vault as present). Best effort and
+        # non-fatal: a path we cannot create (read-only /var, sandbox)
+        # is logged and left to fail loudly at first REAL use.
+        if vault_dir:
+            try:
+                os.makedirs(vault_dir, exist_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "status host: could not pre-create vault dir %s (%s) — "
+                    "volume creation will surface the real error",
+                    vault_dir, exc)
         vault_kek = None
         if vault_key_file:
             if not vault_passphrase:

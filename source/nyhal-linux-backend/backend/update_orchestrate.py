@@ -373,19 +373,30 @@ class UpdateOrchestrator:
                 "update_orchestrate: history write failed (%s)", exc)
 
     def _read_history(self, kind: str) -> List[Dict[str, Any]]:
-        path = self._history_path(kind)
-        if not path.is_file():
-            return []
-        out = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            try:
-                out.append(json.loads(line))
-            except ValueError:
-                continue
-        return out
+        return read_history(self.state_dir, kind)
 
     def history(self, kind: str = "apply") -> List[Dict[str, Any]]:
         return self._read_history(kind)
+
+
+def read_history(
+    state_dir: str, kind: str = "apply"
+) -> List[Dict[str, Any]]:
+    """The persisted history for `kind` (history-<kind>.jsonl, one JSON
+    object per line; malformed lines are skipped). Readable WITHOUT the
+    repo-bound orchestrator — `packages status` reports inventory +
+    history with no repository configured (the bare form the demo
+    banner teaches crashed on a required repo before this)."""
+    path = Path(state_dir) / f"history-{kind}.jsonl"
+    if not path.is_file():
+        return []
+    out: List[Dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
 
 
 def verify_only(
@@ -411,6 +422,7 @@ __all__ = [
     "UpdateOrchestrationError",
     "version_tuple",
     "verify_only",
+    "read_history",
     "ORCHESTRATION_SCHEMA_VERSION",
     "DEFAULT_INSTALL_ROOT",
     "DEFAULT_STATE_DIR",

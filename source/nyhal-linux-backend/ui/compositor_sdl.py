@@ -490,11 +490,17 @@ class SDLCompositor:
         import time
         time.sleep(0.5)
 
-    def _render_component(self, target, comp: Any, document: Any) -> None:
-        """Render a single component and its children."""
+    def _render_component(self, target, comp: Any, document: Any,
+                          ox: int = 0, oy: int = 0) -> None:
+        """Render a single component and its children.
+
+        ``ox``/``oy`` carry the parent's absolute origin — child layouts
+        are PARENT-RELATIVE (mirrors the PIL compositor's offset
+        accumulation fix).
+        """
         layout = getattr(comp, "layout", {})
-        x = int(layout.get("x", 0) * self.scale)
-        y = int(layout.get("y", 0) * self.scale)
+        x = int(layout.get("x", 0) * self.scale) + ox
+        y = int(layout.get("y", 0) * self.scale) + oy
         w = int(layout.get("width", 100) * self.scale)
         h = int(layout.get("height", 30) * self.scale)
 
@@ -519,7 +525,7 @@ class SDLCompositor:
         }
         if children and comp_type not in leaf_types:
             for child in children:
-                self._render_component(target, child, document)
+                self._render_component(target, child, document, ox=x, oy=y)
 
     def _render_on_surface(self, surface, x, y, w, h, props, comp_type, comp, document):
         """Render a component onto an SDL2 surface."""
@@ -706,6 +712,8 @@ class SDLCompositor:
                            "WindowFrame", "Dock", "SplitView", "ScrollView",
                            "Tabs", "FlexLayout", "AppGrid", "List"):
             pass  # Containers are transparent
+        elif comp_type == "":
+            pass  # Structural marker — the bar draws its own chrome
         else:
             _fill_rect(surface, x, y, w, h, theme["surface_elevated"])
             _draw_rect(surface, x, y, w, h, theme["border"])
@@ -722,6 +730,11 @@ class SDLCompositor:
         elif comp_type == "LockScreen":
             sdl2.SDL_SetRenderDrawColor(renderer, 20, 20, 40, 0xFF)
             sdl2.SDL_RenderFillRect(renderer, sdl2.SDL_Rect(x, y, w, h))
+        elif comp_type == "":
+            # Empty type = structural marker (taskbar's btn_start etc.)
+            # — the bar draws its own chrome; never paint a placeholder
+            # box over it (mirrors the PIL compositor).
+            pass
         else:
             # For windowed mode, use fill rect as placeholder
             sdl2.SDL_SetRenderDrawColor(renderer, *theme["surface"], 0xFF)

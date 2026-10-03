@@ -128,15 +128,19 @@ class TestPillVariantShell(unittest.TestCase):
             for s in self.stock_doc.screens:
                 if s.id != "desktop":
                     continue
-                stack = [s.root]
-                while stack:
-                    c = stack.pop()
+                # Walk with parent-offset accumulation — child layouts
+                # are PARENT-RELATIVE (the renderer nests children at
+                # parent origin + layout since the offset fix).
+                def walk(c, ox=0, oy=0):
+                    L = c.layout
+                    ax, ay = ox + L.get("x", 0), oy + L.get("y", 0)
                     if c.id == comp_id:
-                        L = c.layout
-                        boxes.append((L["x"], L["y"],
-                                      L["x"] + L["width"],
-                                      L["y"] + L["height"]))
-                    stack.extend(c.children)
+                        boxes.append((ax, ay,
+                                      ax + L.get("width", 0),
+                                      ay + L.get("height", 0)))
+                    for ch in c.children:
+                        walk(ch, ax, ay)
+                walk(s.root)
         self.assertTrue(boxes, "desktop screen must contain the buttons")
         tol = 6  # shadow/chrome slop around each box
         for x, y in diffs:

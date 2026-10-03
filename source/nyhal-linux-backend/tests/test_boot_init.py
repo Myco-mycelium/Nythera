@@ -605,5 +605,89 @@ class TestShellDefaults(unittest.TestCase):
                 f"Unexpected design path: {result}")
 
 
+class TestVaultSelfProvisioning(unittest.TestCase):
+    """The daemon's vault dir is the daemon's OWN configured state: a
+    fresh host must not need a manual `sudo mkdir` before the first
+    volume create (ipc/storage creates the dir lazily too, but only
+    when a volume is made — and only if the parent already exists).
+    StatusServiceHost pre-creates the configured vault dir at
+    construction, best effort (2026-10-03 first-boot gap).
+    """
+
+    def test_construction_creates_a_missing_vault_dir(self):
+        from nyrqis_backend import StatusServiceHost
+
+        tmp = tempfile.mkdtemp(prefix="nyrqis-vault-provision-")
+        try:
+            vault = os.path.join(tmp, "var", "lib", "nyrqis", "vault")
+            self.assertFalse(os.path.exists(vault))
+            host = StatusServiceHost(
+                socket_path=os.path.join(tmp, "status.sock"),
+                state_file=os.path.join(tmp, "daemon-state.json"),
+                vault_dir=vault,
+            )
+            self.assertTrue(
+                os.path.isdir(vault),
+                "the daemon must pre-create its configured vault dir "
+                "(never started, so no serve loop to stop)")
+            del host
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestDiagnosticsFirstBoot(unittest.TestCase):
+    """--diagnose must report what BOOT will actually do, not a
+    stricter world (2026-10-03 fresh-host pass): the shell check goes
+    through _find_design's real resolution chain (a missing user copy
+    is not a fault while the shipped defaults exist), and the vault
+    check accepts a daemon-creatable directory.
+    """
+
+    @staticmethod
+    def _by_name(checks):
+        return {c.name: c for c in checks}
+
+    def test_shell_design_check_resolves_through_boot_chain(self):
+        from nyrqis_init import run_diagnostics
+        checks = self._by_name(run_diagnostics())
+        self.assertIn("Shell design", checks)
+        self.assertTrue(
+            checks["Shell design"].passed,
+            "the shipped defaults exist, so the check must pass like a "
+            "boot would: " + checks["Shell design"].message)
+
+    def test_vault_check_passes_when_parent_is_writable(self):
+        import nyrqis_init
+        from unittest import mock
+        tmp = tempfile.mkdtemp(prefix="nyrqis-diag-vault-")
+        try:
+            vault = os.path.join(tmp, "vault")
+            with mock.patch.object(nyrqis_init, "DEFAULT_VAULT_DIR", vault):
+                checks = self._by_name(nyrqis_init.run_diagnostics())
+            self.assertTrue(
+                checks["Vault directory"].passed,
+                checks["Vault directory"].message)
+            self.assertIn(
+                "will be created", checks["Vault directory"].message,
+                "the message must say the daemon self-provisions")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_vault_check_still_fails_when_uncreatable(self):
+        import nyrqis_init
+        from unittest import mock
+        tmp = tempfile.mkdtemp(prefix="nyrqis-diag-vault-")
+        try:
+            vault = os.path.join(tmp, "missing-parent", "vault")
+            with mock.patch.object(nyrqis_init, "DEFAULT_VAULT_DIR", vault):
+                checks = self._by_name(nyrqis_init.run_diagnostics())
+            self.assertFalse(checks["Vault directory"].passed)
+            self.assertIsNotNone(
+                checks["Vault directory"].fix_hint,
+                "an uncreatable vault must still carry the operator fix")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

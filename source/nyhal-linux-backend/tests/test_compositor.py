@@ -394,6 +394,41 @@ class TestCompositorDesignTokens(unittest.TestCase):
         self.assertEqual(img.getpixel((11, 11)),
                          THEMES["Eclipse"]["button_bg"])
 
+    def test_children_nest_under_offset_parents(self):
+        """2026-10-01 offset fix: a child of an OFFSET parent renders at
+        parent origin + child layout (parent-relative), not at raw
+        layout coordinates. The stock shell's QuickSettings panel
+        (1040,468) has toggle_wifi at (16,16) — it must paint INSIDE
+        the panel, not at the screen's top-left corner (the long-
+        standing misplacement this fix removes)."""
+        panel = NstudioComponent(
+            id="qs", type="QuickSettings",
+            layout={"x": 300, "y": 200, "width": 384, "height": 200},
+            children=[
+                NstudioComponent(
+                    id="tog", type="Toggle",
+                    layout={"x": 16, "y": 16, "width": 352, "height": 44},
+                    properties={"value": True, "label": "Wi-Fi"},
+                ),
+            ])
+        screen = NstudioScreen(
+            id="s", size={"width": 800, "height": 600},
+            root=NstudioComponent(
+                id="root", type="Window",
+                layout={"x": 0, "y": 0, "width": 800, "height": 600},
+                children=[panel]))
+        doc = _make_doc(screens=[screen])
+        img = Compositor().render_screen(doc)
+        # Toggle ON paints its pill at panel+(16..56, 16..36).
+        self.assertEqual(img.getpixel((330, 226)),
+                         THEMES["Eclipse"]["toggle_on"],
+                         "the toggle must render inside its parent panel")
+        # And NOT at the raw layout position (16,16) on the screen.
+        self.assertEqual(img.getpixel((30, 22)),
+                         THEMES["Eclipse"]["surface_overlay"],
+                         "no component may paint at the raw (mismatched) "
+                         "layout position any more")
+
     def test_loader_parses_design_tokens(self):
         path = os.path.join(
             os.path.dirname(__file__), "..", "shell", "defaults",
