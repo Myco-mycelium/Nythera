@@ -53,6 +53,11 @@ say "grants OK"
 
 # ── 2. dispatch live-iso-rootless.yml ─────────────────────────────
 say "== 2/6 dispatch live-iso-rootless.yml (with-arm64: true) =="
+# Captured BEFORE the POST: step 3 selects the run by created_at >=
+# this instant (with slack), so a stale same-workflow run can never
+# satisfy the watch (the 2026-10-04 drill grabbed a previously
+# completed run and claimed SUCCESS in 12 s).
+DISPATCH_AT="$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
 if [ "$DRY" = 1 ]; then say "(dry-run: dispatch, watch, close, comment, variable skipped)"; exit 0; fi
 printf '{"ref":"main","inputs":{"with-arm64":"true"}}' > /tmp/drill-payload.json
 CODE="$(curl -s --netrc-file "$NETRC" -o /dev/null -w '%{http_code}' -X POST \
@@ -65,9 +70,14 @@ say "dispatch 204 OK"
 # ── 3. watch the dispatched run ────────────────────────────────────
 say "== 3/6 watching the dispatched run =="
 RUN_ID=""
+MAIN_SHA="$(gh "$API/repos/$REPO/commits/main" | python3 -c "import json,sys; print(json.load(sys.stdin)['sha'])")"
 for _ in $(seq 1 20); do
-  RUN_ID="$(gh "$API/repos/$REPO/actions/workflows/live-iso-rootless.yml/runs?event=workflow_dispatch&per_page=1" \
-    | python3 -c "import json,sys; rs=json.load(sys.stdin).get('workflow_runs',[]); print(rs[0]['id'] if rs else '')")"
+  RUN_ID="$(gh "$API/repos/$REPO/actions/workflows/live-iso-rootless.yml/runs?event=workflow_dispatch&head_sha=$MAIN_SHA&per_page=10" \
+    | DISPATCH_AT="$DISPATCH_AT" python3 -c "
+import json,sys,os
+rs=json.load(sys.stdin).get('workflow_runs',[])
+new=[r for r in rs if r['created_at'] >= os.environ['DISPATCH_AT']]
+print(new[0]['id'] if new else '')")"
   [ -n "$RUN_ID" ] && break
   sleep 10
 done

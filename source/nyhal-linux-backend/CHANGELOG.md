@@ -5,6 +5,35 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.38] - 2026-10-04
+
+### Fixed
+
+- **`verify_pat_grants.sh` actions probe dispatched without a ref
+  (422 read as a false GRANTS MISSING).** The probe POSTed `-d '{}'`
+  to pat-expiry-watch.yml/dispatches, but create-workflow-dispatch-
+event REQUIRES a `ref` — every grant flip since the probe shipped
+  reported `actions write: MISSING` no matter what the token held
+  (the real dispatch, which sends `{"ref":"main"}`, returned 204
+  throughout; the arm64 CI leg only closed because the real dispatch
+  was used). The payload now carries the ref and the api error body
+  prints inline on failure. End-to-end rerun: ALL GRANTS PRESENT.
+- **`run_staged_drill.sh` watched the wrong run (stale-run grab).**
+  The drill selected the "newest workflow_dispatch run" with no
+  identity check; with an earlier same-workflow dispatch in flight
+  (the manual with-arm64 verification), it claimed SUCCESS in 12 s
+  on an already-completed run and marched on to the issue steps.
+  Selection now pins head_sha (the dispatched ref) AND created_at
+  at/after the dispatch instant (captured before the POST).
+
+### Added
+
+- **PAT-grants tooling contract tests** (`tests/test_pat_grants_
+  contract.py`, 6 pins): both dispatch payloads must carry a ref;
+  the probe's failure path must print the api error body verbatim;
+  the drill's run selection must filter by head_sha and dispatch
+  instant, with the instant captured before the POST.
+
 ## [0.29.37] - 2026-10-03
 
 ### Fixed

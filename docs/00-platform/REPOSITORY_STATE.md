@@ -5,6 +5,23 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-04, 0.29.38 round (PAT-tooling contracts + CI re-proof: the
+staged drill RAN its CI core end to end — the grants check passed
+with the FIXED probe (its own 422 would have died there a day
+earlier), dispatch 204, run 37198401463 on tip 41b5916 completed
+SUCCESS with all three jobs green and the WARM-CACHE proof on
+record: arm64 Restore 7 s + Acquire 5 s (a logged no-op) vs ~25 min
+cold the run before. The drill itself still died at the issue
+steps — issue #1 close 403: the re-flipped token lacks Issues write
+(steps 1–3 verified live + 6 idempotent; owner decision: add Issues
+RW for the full six-step pass) — and its first attempt exposed the
+stale-run grab, now fixed: selection pins head_sha AND created_at
+>= the dispatch instant (captured before the POST). Both
+regressions pinned by the new tests/test_pat_grants_contract.py
+(6 pins; 136 contract tests green across the three contract
+files). Round opens: version 0.29.38, CHANGELOG +
+IMPLEMENTATION_STATUS entries)
+
 2026-10-04, followups round (three close-outs on the CI evidence:
 (1) verify_pat_grants.sh's actions probe FIXED — it dispatched with
 no "ref" field, which the endpoint rejects with 422 "ref wasn't

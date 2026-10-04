@@ -1,13 +1,35 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.29.37  
-**Date**: 2026-10-03  
+**Version**: 0.29.38  
+**Date**: 2026-10-04  
 **Repository**: github.com/Myco-mycelium/Nythera
 
 ## Overview
 
 This document tracks the implementation status of the Nyrqis Linux backend,
 providing the hardware abstraction layer for the Nyrqis OS.
+
+## CI Close-Out + PAT Tooling Contracts (0.29.38)
+
+- **CI proven on BOTH arches for the 0.29.37 tip:** push run
+  37192020596 (amd64: rootless acquire → build → no-root proof → both
+  TCG smokes) and dispatched run 37193858242 (all three jobs: amd64
+  direct+menu, arm64 zig-shim cross build + ttyAMA0 smoke, the
+  dispatch-only GRUB/UEFI menu job). The arm64 rootfs cache populated
+  (580 MB beside amd64's 523 MB) — the next dispatch's acquire phase
+  is a logged no-op. Evidence archived under
+  ~/nyrqis-work/logs/2026-10-04-02937-ci-evidence/ (sha256sums
+  included; the CI serial carries NYRQIS_BOOT_SMOKE_CTL_PING=1).
+- **`verify_pat_grants.sh`** — the actions probe's ref-less dispatch
+  (422 "ref wasn't supplied") read as a permanent false GRANTS
+  MISSING; the payload now carries `{"ref":"main"}` and the api
+  error body prints inline on failure.
+- **`run_staged_drill.sh`** — run selection now pins head_sha +
+  created_at at/after the dispatch instant (the stale-run grab that
+  claimed SUCCESS in 12 s on a previously completed run).
+- **`tests/test_pat_grants_contract.py`** pins both regressions
+  (6 tests); 136 contract tests green across the three contract
+  files.
 
 ## Ops-Drill Fixes + First-Boot Self-Provisioning (0.29.37)
 
