@@ -5,6 +5,29 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-03→04 (the 0.29.37 ISO round — BOTH arches REBUILT at tip
+(commit 24ead53) through the rootless two-phase pipeline exactly as CI
+does, and ALL FOUR boot smokes PASS with the NEW wrapper-runs gate
+green. Code round first: parent-relative shell rendering in BOTH
+compositors + desktop session, repo-less `packages status`, demo
+slow-host budgets (NYRQIS_DEMO_DAEMON_WAIT_S/NYRQIS_DEMO_CTL_TIMEOUT_S
+with timeout→FAIL verdict), the wrapper-runs contract (builder
+IMG_OPT=/opt/nyrqis/nyhal-linux-backend + $ROOTFS_SRC leak die-gate,
+overlay CTL_PING marker, boot_smoke.py hard-fails without it), and
+first-boot daemon self-provisions the vault dir — suite green: 6,700
+pytest + 2,548 backend, demo 18/18, root tests 54. Then the builds:
+amd64 acquisition stamp reused, arm64 fresh 924 MB emulated
+acquisition (zig 0.13.0 compiled the aarch64 guest shim fine — the
+old "0.13 segfaults" note is stale on this CPU), wrappers
+byte-verified inside the squashfs (every entry point execs
+/opt/nyrqis/nyhal-linux-backend/…, zero build-host refs). dist/:
+amd64 `dist/nyrqis-live-rootless.iso` 447 MB, sha256 f8e62ec8…4ede;
+arm64 `dist/nyrqis-live-arm64-rootless.iso` 438 MB, sha256
+6cf60582…ca88 (gitignored). Smokes (TCG for arm64): amd64 direct +
+menu PASS (Oct 3), arm64 direct + menu PASS (Oct 4, 1,680 s budgets) —
+READY/PONG/PKGS plus the new NYRQIS_BOOT_SMOKE_CTL_PING=1: the PATH
+wrapper answered a ping of its own on both arches)
+
 2026-09-30 (late evening — BOTH live ISOs REBUILT at tip and
 boot-verified, rootless end to end. amd64: direct + GRUB menu smokes
 PASS on a clean second loop, desktop-path smoke with virtio-gpu
