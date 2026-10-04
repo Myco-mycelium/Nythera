@@ -21,9 +21,12 @@
 #              otherwise create+delete a probe value (cleanup failure
 #              warns loudly — a stale probe variable would pacify
 #              pat-expiry-watch.yml)
-#   actions    POST a workflow_dispatch of pat-expiry-watch.yml (a
-#              harmless self-check run) — the exact permission the
-#              failed-jobs rerun and the release drill need
+#   actions    POST a workflow_dispatch of pat-expiry-watch.yml on the
+#              default branch (a harmless self-check run) — the exact
+#              permission the failed-jobs rerun and the release drill
+#              need. The payload MUST carry "ref": the endpoint rejects
+#              a ref-less dispatch with 422, which used to read as a
+#              false GRANTS MISSING regardless of the token's grants.
 set -euo pipefail
 
 REPO="Myco-mycelium/Nythera"
@@ -102,16 +105,18 @@ fi
 rm -f /tmp/vp-var.json
 
 # --- actions write ----------------------------------------------------
-CODE="$(curl -s --netrc-file "$NETRC" -o /dev/null -w '%{http_code}' -X POST \
-  -H "Accept: application/vnd.github+json" -d '{}' \
+CODE="$(curl -s --netrc-file "$NETRC" -o /tmp/vp-dispatch.json -w '%{http_code}' -X POST \
+  -H "Accept: application/vnd.github+json" -d '{"ref":"main"}' \
   "https://api.github.com/repos/$REPO/actions/workflows/pat-expiry-watch.yml/dispatches" \
   || true)"
 if [ "$CODE" = "204" ]; then
   echo "actions write:   OK (dispatched pat-expiry-watch.yml — harmless self-check)"
 else
   echo "actions write:   MISSING (dispatch HTTP $CODE) — cannot re-run failed jobs or run the drill"
+  [ "$CODE" = "422" ] && sed 's/^/  api says: /' /tmp/vp-dispatch.json
   MISSING=1
 fi
+rm -f /tmp/vp-dispatch.json
 
 # --- optional: the full dispatch drill --------------------------------
 if [ "$DRILL" = 1 ]; then

@@ -5,6 +5,24 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-04, followups round (three close-outs on the CI evidence:
+(1) verify_pat_grants.sh's actions probe FIXED — it dispatched with
+no "ref" field, which the endpoint rejects with 422 "ref wasn't
+supplied", so Actions write read as MISSING regardless of the token
+(a false negative that would also kill the staged drill); the payload
+now carries {"ref":"main"} and the api error body prints inline on
+failure — end-to-end rerun: ALL GRANTS PRESENT; (2) the 02937 CI
+evidence archived to ~/nyrqis-work/logs/2026-10-04-02937-ci-evidence/
+— local driver + serial logs for all four smokes plus the serial-log
+artifacts downloaded from CI runs 37192020596 and 37193858242
+(sha256sums included; the CI amd64-direct serial carries
+NYRQIS_BOOT_SMOKE_CTL_PING=1 — the gate is proven in CI evidence
+itself); (3) the arm64 rootfs cache VERIFIED already in place — the
+arm64 job's actions/cache step existed from the start, and today's
+dispatch (the first arm64 CI success) populated it:
+nyrqis-rootless-rootfs-arm64-… 580 MB now sits beside the amd64
+523 MB, so the next dispatch's acquire phase is a logged no-op)
+
 2026-10-04, dispatch round (the arm64 CI leg CLOSED — the 0.29.37
 round is now proven end to end in CI on BOTH arches, no caveats:
 grants flipped, verify_pat_grants.sh reads variables OK (its actions
