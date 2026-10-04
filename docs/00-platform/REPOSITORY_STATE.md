@@ -5,6 +5,23 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-04 (CI round on the pushed 0.29.37 tip: git push
+3e2165d..00f23f3 auto-triggered live-iso-rootless — run
+37192020596 completed SUCCESS in ~8 min on the stock runner
+(usrns posture OK, cached-rootfs restore, rootless debootstrap
+acquire + unmodified-builder build + no-root proof + BOTH TCG boot
+smokes green, serial logs + ISO uploaded); the arm64 cross-build
+job stayed workflow_dispatch-only as designed, and the dispatch
+POST returned 403 — the workstation PAT lacks Actions/Variables
+write (verify_pat_grants.sh: GRANTS MISSING; Workflows RW is the
+sibling grant the dispatch endpoint needs), so the arm64 CI leg
+is BLOCKED ON THE OWNER — flip the fine-grained token's
+Actions+Workflows+Variables to RW (or re-mint per the script
+recipe: Contents, Workflows, Actions, Variables, Pull requests
+all RW) then dispatch {"ref":"main","inputs":{"with-arm64":
+"true"}}; the local arm64 evidence stands: all four smokes PASS
+with the CTL_PING gate, hashes f8e62ec8…4ede / 6cf60582…ca88)
+
 2026-10-03→04 (the 0.29.37 ISO round — BOTH arches REBUILT at tip
 (commit 24ead53) through the rootless two-phase pipeline exactly as CI
 does, and ALL FOUR boot smokes PASS with the NEW wrapper-runs gate
