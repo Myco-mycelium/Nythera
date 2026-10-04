@@ -5,6 +5,17 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-04, dispatch round (the arm64 CI leg CLOSED — the 0.29.37
+round is now proven end to end in CI on BOTH arches, no caveats:
+grants flipped, verify_pat_grants.sh reads variables OK (its actions
+probe still prints MISSING only because pat-expiry-watch.yml 422s —
+the REAL dispatch to live-iso-rootless.yml returned 204); run
+37193858242 on tip bd44ed6 completed SUCCESS in ~50 min with ALL
+THREE jobs green — amd64 direct+menu TCG smokes, arm64 cross build
+(zig guest shim) incl. the direct ttyAMA0 TCG smoke, and the
+dispatch-only menu-path GRUB/UEFI job; serial logs + ISO artifacts
+uploaded)
+
 2026-10-04 (CI round on the pushed 0.29.37 tip: git push
 3e2165d..00f23f3 auto-triggered live-iso-rootless — run
 37192020596 completed SUCCESS in ~8 min on the stock runner
