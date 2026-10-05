@@ -5,6 +5,21 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-04, v0.29.38 RELEASED: tag v0.29.38 pushed → the tag
+trigger auto-built the amd64 ISO and published the GitHub release
+(nyrqis-live.iso, 342.5 MB); the arm64 asset shipped via dispatch
+(live-iso-arm64.yml, run 37202478328 SUCCESS) → nyrqis-live-arm64.iso
+350.8 MB attached — the release carries both arches as v0.29.36 did.
+Full suite green before tagging: 6,706 passed + 4 skipped (tests/),
+2,548 via the CANONICAL test_backend runner (python3 test_backend.py,
+exit 0), root tests 54. One quirk documented, NOT a failure: running
+test_backend.py under pytest exits 1 after a fully green 2,548-pass
+run — code under test closes root logging handlers and
+pytest_unconfigure hits EBADF closing the logging-plugin handler
+(pre-existing fd hygiene; CI runs selected classes only, unittest
+runner unaffected). Issues write is still absent from the PAT → the
+full six-step drill pass remains owner-blocked (steps 1–3 proven
+live). Earlier 0.29.38 entries below.
 2026-10-04, 0.29.38 round (PAT-tooling contracts + CI re-proof: the
 staged drill RAN its CI core end to end — the grants check passed
 with the FIXED probe (its own 422 would have died there a day
