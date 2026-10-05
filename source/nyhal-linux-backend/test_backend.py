@@ -19861,6 +19861,12 @@ class TestDirectSyscallLaunch(unittest.TestCase):
         # mocked so every fall-through point is patched too (the child
         # would otherwise continue into real syscalls).
         import backend.container as container_mod
+        # Regression pin (0.29.38): this test runs the child branch
+        # in-process and hands it fd 4 — a live fd in the pytest
+        # parent. Without mocking os.close the child's real
+        # os.close(write_fd) kills pytest's stdin-capture tmpfile fd
+        # and the whole suite exits EBADF after a fully green run
+        # (sibling tests below mock os.close for the same reason).
         with mock.patch("backend.container.rust_syscalls.unshare",
                         side_effect=OSError(errno.EPERM, "denied")), \
                 mock.patch("backend.container._write_root_maps"), \
@@ -19868,6 +19874,7 @@ class TestDirectSyscallLaunch(unittest.TestCase):
                 mock.patch("backend.container.os.fork", return_value=1), \
                 mock.patch("backend.container.os.waitpid",
                            return_value=(1, 0)), \
+                mock.patch("backend.container.os.close"), \
                 mock.patch("backend.container.os._exit") as exit_: 
             container_mod._direct_launch_child(4, ["/bin/true"])
         self.assertTrue(
