@@ -5,6 +5,27 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-05, §36 + v0.29.39 verification round: BOTH v0.29.39 release
+assets digest-matched and passed the direct boot smoke locally (all
+gates green incl. CTL_PING; the menu path was CI-proven on these same
+ISO bytes by the tag's dispatch-only menu job). BENCHMARK_PLAN §4 is
+now fully measured: the compression ON/OFF live-mount A/B ran as §36
+(--nyfs-mount-nocompress, identity-codec stub in the isolated child,
+no product change) — writes 5.9×/20.6× slower with zstd-3, but the
+ON-leg READ gap (~180×) is flagged as a compressed-read-path anomaly
+needing a profile; the OFF leg streams 420 MB/s through the same
+mount so FUSE itself is exonerated. Open repro recorded: the 16 MiB
+ON leg wedged 4/4 (main thread D-state in request_wait_answer with
+the fusepy daemon thread gone; SIGKILL leaves an unkillable corpse —
+§19 class, root abort needed; 4 MiB completes clean 3/3 and the 16
+MiB OFF leg is clean). Runner hardening shipped: parent scratch-dir
+cleanup on ALL exit paths + parent-side at-rest probe (child-side
+walked pre-commit and read ~0 — honest negative: NyFSMount.unmount()
+does not save(); at-rest cost stays §7/§9's data). Roadmap's
+four-benchmark pass is now fully measured. Commit 580e851 pushed;
+ci+docs green (live-iso path-filtered out). Drill status unchanged:
+Issues:write still 403 — the six-step pass remains the one owner
+decision.
 2026-10-05, v0.29.39 RELEASED (same-day follow-through): the
 release-ISO verification matrix is COMPLETE — both v0.29.38 assets
 boot green under BOTH smoke paths (direct + menu, amd64 + arm64,
