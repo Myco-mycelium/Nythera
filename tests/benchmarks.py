@@ -886,8 +886,12 @@ def _nyfs_mount_worker(total=16 * 1024 * 1024):
         return results
     finally:
         watchdog.cancel()
+        # §36: NYRQIS_BENCH_SAVE_ON_UNMOUNT=1 exercises the ADR-0019
+        # shutdown contract through unmount (dirty-gated commit), so the
+        # at-rest probe measures a real committed state.
         try:
-            m.unmount()
+            m.unmount(save=os.environ.get(
+                "NYRQIS_BENCH_SAVE_ON_UNMOUNT") == "1")
         except Exception:
             pass
         try:

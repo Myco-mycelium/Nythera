@@ -21602,6 +21602,120 @@ class TestNyFSPersistence(unittest.TestCase):
         self.assertEqual(fs2.read(fs2.resolve("/c.bin")), b"Z" * 12000)
 
 
+class TestNyFSMetadataWalkCost(unittest.TestCase):
+    """Regression pins for the §36 read-anomaly fix (0.29.40): the
+    per-read/write metadata walk (_normalize_blocks / _coalesce_blocks)
+    must NOT decompress or hash the inode's blocks — length checks are
+    plaintext-length metadata; integrity stays at read time. Pre-fix,
+    every 128 KiB kernel read re-decompressed (and post-half-fix,
+    re-hashed) the WHOLE file: a 4 MiB read paid ~180x its own bytes in
+    codec work (BENCHMARK_RESULTS.md §36).
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.fs = NyFSFilesystem(self.temp_dir, block_size=4096)
+
+    def _patch_codec(self, count):
+        import fuse.nyfs as nyfs_mod
+        real = nyfs_mod.nyfs_codec.decompress_verify
+
+        def counting(compressed, expected_checksum):
+            count[0] += 1
+            return real(compressed, expected_checksum)
+
+        return mock.patch.object(
+            nyfs_mod.nyfs_codec, "decompress_verify",
+            side_effect=counting), count
+
+    def test_read_decompresses_only_requested_blocks(self):
+        # 64 blocks written; loaded blocks lack in-memory plaintext, so
+        # the FIRST metadata walk decompresses each block exactly once
+        # (memoized by _decompress_verified). The contract: two reads
+        # cost ONE full pass (64), not two (the pre-fix behavior);
+        # repeat reads of memoized blocks decompress zero.
+        data = os.urandom(64 * 4096)
+        ino = self.fs.create_file("/b.bin")
+        self.fs.write(ino, data)
+        self.fs.save()
+        fs2 = NyFSFilesystem.load(self.temp_dir)
+        ino2 = fs2._as_inode("/b.bin")
+        count = [0]
+        patch, _ = self._patch_codec(count)
+        with patch:
+            fs2.read(ino2, 4096, 32 * 4096)
+            self.assertEqual(count[0], 64, "initial walk+read: one pass "
+                             "expected, got %d" % count[0])
+            fs2.read(ino2, 4096, 32 * 4096)
+            fs2.read(ino2, 4096, 8 * 4096)
+            self.assertEqual(count[0], 64, "memoized blocks re-decompressed "
+                             "(%d total)" % count[0])
+
+    def test_normalize_blocks_hashes_nothing(self):
+        # The uniformity check must be length-metadata only: zero
+        # decompress calls while normalizing, then the requested block
+        # decompresses once.
+        data = os.urandom(16 * 4096)
+        ino = self.fs.create_file("/b.bin")
+        self.fs.write(ino, data)
+        count = [0]
+        patch, _ = self._patch_codec(count)
+        with patch:
+            self.fs.read(ino, 4096, 0)
+            self.assertLessEqual(
+                count[0], 1, "metadata walk hashed/decompressed %d "
+                "blocks" % count[0])
+
+    def test_encrypted_blocks_never_memoize_plaintext(self):
+        # AEAD envelopes live in block.data; the memoization must not
+        # store plaintext there or the next read would return the
+        # envelope. Skip cleanly when the keys backend is unavailable.
+        try:
+            dek = os.urandom(32)
+            fs = NyFSFilesystem(self.temp_dir + "-enc", dek=dek,
+                                ad=b"pin")
+        except Exception:
+            self.skipTest("encrypted filesystem unavailable")
+        data = os.urandom(8 * 4096)
+        ino = fs.create_file("/e.bin")
+        fs.write(ino, data)
+        self.assertEqual(fs.read(ino), data)
+        for b in ino.blocks:
+            self.assertIsNotNone(b.data)
+            self.assertNotEqual(b.data, data[:4096],
+                                "plaintext memoized into an AEAD envelope")
+
+    def test_unmount_save_commits_dirty_state(self):
+        # The ADR-0019 shutdown contract, exposed on unmount: a dirty
+        # mount torn down with save=True commits; the reload sees the
+        # data. save=False keeps the legacy raw-teardown semantics.
+        for save_flag, expect in ((True, True), (False, False)):
+            base = self.temp_dir + ("-s" if save_flag else "-ns")
+            fs = NyFSFilesystem(base, block_size=4096)
+            ino = fs.create_file("/m.bin")
+            fs.write(ino, b"persist me" * 100)
+            mnt = os.path.join(self.temp_dir, "mnt" + ("s" if save_flag else "ns"))
+            os.makedirs(mnt, exist_ok=True)
+            m = NyFSMount(fs, mnt)
+            if not m.mount(foreground=True, blocking=False):
+                self.skipTest("FUSE mount unavailable")
+            if not m.wait_ready(timeout=5.0):
+                self.skipTest("FUSE mount never became live")
+            m.unmount(save=save_flag)
+            if not expect:
+                # Legacy raw-teardown semantics: nothing was committed,
+                # so load() must refuse (no metadata) rather than lie.
+                with self.assertRaises(NyFSError):
+                    NyFSFilesystem.load(base)
+                continue
+            fs2 = NyFSFilesystem.load(base)
+            inodes = [i for i in fs2.inodes.values()
+                      if getattr(i, "name", "") == "m.bin"]
+            self.assertTrue(inodes,
+                            "unmount(save=True) did not persist m.bin")
+            self.assertEqual(fs2.read("/m.bin"), b"persist me" * 100)
+
+
 class TestNyFSOperations(unittest.TestCase):
     """Test the FUSE operation handlers (ADR-0016) without a kernel mount."""
 

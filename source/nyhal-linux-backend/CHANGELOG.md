@@ -5,6 +5,34 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.40] - 2026-10-05
+
+### Fixed
+
+- **NyFS read-path metadata walk no longer decompresses/hashes the
+  whole inode on every read or write (BENCHMARK_RESULTS §36 anomaly
+  resolved).** `_normalize_blocks`' uniformity check paid O(file)
+  codec work per 128 KiB kernel read; `_block_len` is now
+  plaintext-length metadata only (integrity stays enforced by the
+  checksum at read time), and `_decompress_verified` memoizes the
+  verified plaintext of loaded blocks once. Live-mount reads: ~180×
+  anomaly → **0.89–0.91× of the uncompressed leg** (58.5 vs 64.2 MB/s
+  on 1 MiB reads); the 16 MiB ON-leg wedge resolved by the same fix.
+- **`NyFSMount.unmount(save=True)`** exposes the ADR-0019 dirty-gated
+  commit on the unmount path — callers tearing down a live mount
+  without `shutdown()` can now persist; default `save=False` keeps
+  the legacy raw-teardown semantics.
+
+### Added
+
+- `--nyfs-mount-nocompress` (§36 A/B OFF leg, identity codec stub) and
+  `NYRQIS_BENCH_SAVE_ON_UNMOUNT=1` in the benchmark runner; parent
+  scratch-dir cleanup on all exit paths and a parent-side at-rest
+  probe (issue #3 hygiene).
+- 4 regression pins (`TestNyFSMetadataWalkCost`): decompress counts,
+  no-plaintext-memoization on encrypted volumes, unmount(save)
+  durability both ways.
+
 ## [0.29.39] - 2026-10-05
 
 ### Fixed

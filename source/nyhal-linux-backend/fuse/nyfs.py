@@ -109,9 +109,22 @@ class NyFSBlock:
         )
 
     def decompress(self) -> bytes:
-        """Decompress the data, verifying its checksum (NPS-004 §4.3)."""
+        """Decompress the data, verifying its checksum (NPS-004 §4.3).
+
+        Fast path (0.29.40): when the in-memory plaintext ``data`` is
+        present (blocks freshly written through the path API keep it),
+        a single SHA256 over it proves it is the exact bytes the
+        checksum was computed from — the same verification
+        ``decompress_verify`` performs on the decompressed output — so
+        the zstd pass is skipped. Encrypted blocks store the AEAD
+        envelope in ``data`` (checksum covers the plaintext), so the
+        hash mismatches and they always take the full path.
+        """
         if self.compressed_data is None:
             return self.data
+        if self.data is not None and self.checksum:
+            if nyfs_codec.checksum(self.data) == self.checksum:
+                return self.data
         return nyfs_codec.decompress_verify(
             self.compressed_data, self.checksum
         )
@@ -385,6 +398,22 @@ class NyFSFilesystem:
     # Data operations (CoW + checksum + compression)
     # ------------------------------------------------------------------
 
+    def _block_len(self, block: NyFSBlock) -> int:
+        """Plaintext length of a block WITHOUT decompressing when the
+        in-memory plaintext is present.
+
+        Length metadata only — integrity is enforced by the checksum in
+        ``decompress()``/``_decompress_verified`` at read time, so no
+        hash is paid here (0.29.40: hashing every block of the inode on
+        EVERY read/write via the uniformity check was ~98% of the §36
+        read anomaly). Encrypted filesystems store the AEAD envelope in
+        ``data`` (length ≠ plaintext length) and always take the
+        decompress path.
+        """
+        if self.dek is None and block.data is not None:
+            return len(block.data)
+        return len(self._decompress_verified(block))
+
     def _decompress_verified(self, block: NyFSBlock) -> bytes:
         """Decompress a block, verify its checksum (NPS-004 §4.3), and
         (for an at-rest-encrypted filesystem) AEAD-decrypt it.
@@ -400,6 +429,14 @@ class NyFSFilesystem:
                 f"Checksum mismatch for block {block.block_id}: {e}"
             )
             raise
+        # Memoize the verified plaintext of plaintext-filesystem blocks
+        # (0.29.40): loaded blocks start with ``data`` unset, and without
+        # caching, every metadata walk (uniformity check, coalesce)
+        # re-decompressed the whole inode. Encryption must NOT memoize —
+        # ``data`` holds the AEAD envelope there and the plaintext would
+        # be mistaken for it on the next pass.
+        if self.dek is None and block.data is None:
+            block.data = data
         if self.dek is not None:
             # The block DATA is the AEAD envelope (nonce + ciphertext
             # + tag, produced by block_encrypt_any); the nonce rides
@@ -490,7 +527,7 @@ class NyFSFilesystem:
         """
         try:
             uniform = all(
-                len(self._decompress_verified(b)) == self.block_size
+                self._block_len(b) == self.block_size
                 for b in inode.blocks
             )
         except Exception as e:
@@ -520,7 +557,7 @@ class NyFSFilesystem:
         keep, tail, tail_start = [], [], None
         start = 0
         for block in blocks:
-            block_len = len(self._decompress_verified(block))
+            block_len = self._block_len(block)
             if start + block_len <= size:
                 keep.append(block)
             else:
@@ -2016,11 +2053,25 @@ class NyFSMount:
             time.sleep(0.05)
         return False
 
-    def unmount(self) -> None:
-        """Best-effort unmount via fusepy or ``fusermount -u``."""
+    def unmount(self, save: bool = False) -> None:
+        """Best-effort unmount via fusepy or ``fusermount -u``.
+
+        ``save=True`` commits the filesystem first when the dirty flag
+        is set (the ADR-0019 shutdown contract, minus the unmount) —
+        for callers that tear down a live mount without going through
+        ``shutdown()`` and still expect durability. ``save()`` failures
+        are logged, never raised, and never block the unmount.
+        """
         # Stop the background compaction watcher first so it cannot race
         # the teardown (Event.wait returns immediately once set).
         self._stop_compaction_watcher()
+        if save and self._mount_error is None:
+            try:
+                if self.filesystem.dirty:
+                    logger.info("unmount: committing uncommitted state")
+                    self.filesystem.save()
+            except Exception as e:
+                logger.warning("unmount: final save failed: %s", e)
         if self._mount_error is not None:
             # The background mount never came up; nothing to unmount.
             return

@@ -1,6 +1,6 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.29.39  
+**Version**: 0.29.40  
 **Date**: 2026-10-05  
 **Repository**: github.com/Myco-mycelium/Nythera
 
@@ -8,6 +8,18 @@
 
 This document tracks the implementation status of the Nyrqis Linux backend,
 providing the hardware abstraction layer for the Nyrqis OS.
+
+## NyFS Read-Path Fix + Unmount Durability (0.29.40)
+
+- **§36 read anomaly root-caused and fixed:** the per-read/write
+  uniformity check in `_normalize_blocks` decompressed (and, after the
+  first patch, hashed) every block of the inode — O(file) codec work
+  per kernel read. Now length-metadata only + verified-plaintext
+  memoization; live-mount reads at 0.89–0.91× of the uncompressed
+  leg; 16 MiB wedge resolved. 4 regression pins added.
+- **`unmount(save=True)`**: the ADR-0019 dirty-gated commit exposed on
+  the unmount path; benchmark at-rest probe went live with it.
+- Suite: 2,552 pytest + 6,706 tests/ + canonical runner, all exit 0.
 
 ## Test-Hygiene Fix + Release Verification (0.29.39)
 
