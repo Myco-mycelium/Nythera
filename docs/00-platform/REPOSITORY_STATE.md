@@ -5,6 +5,27 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-05, 0.29.40: the §36 read anomaly was ROOT-CAUSED and FIXED
+(same-day). cProfile put ~98% of the ON-leg read time in
+_normalize_blocks' uniformity check — it ran on EVERY read/write and
+decompressed (originally) / SHA256-hashed (after the first patch)
+every block of the inode, so each 128 KiB kernel read paid the whole
+file in codec work. Fix: _block_len is plaintext-length metadata only
+(integrity stays at read time via the checksum), _decompress_verified
+memoizes the verified plaintext of loaded blocks ONCE, and
+NyFSBlock.decompress gained a checksum-verified plaintext fast path.
+Encrypted volumes are handled: the AEAD envelope lives in block.data,
+so neither the length shortcut nor the memoization may touch them
+(pinned by test). Result: live-mount reads 0.89–0.91× of the
+uncompressed leg (58.5 vs 64.2 MB/s 1 MiB), the 16 MiB ON-leg wedge
+RESOLVED by the same fix (it was downstream O(file) pressure, not an
+independent FUSE defect), and unmount(save=True) exposes the ADR-0019
+dirty-gated commit (at-rest probe went live: 1,052,778 bytes for the
+4 MiB pattern set). 4 regression pins (TestNyFSMetadataWalkCost);
+2,552 pytest + 6,706 tests/ + canonical runner all exit 0. Tag
+v0.29.40 pushed; both arch assets ship automatically. Drill status:
+Issues:write still 403 — the six-step pass remains the one owner
+decision.
 2026-10-05, §36 + v0.29.39 verification round: BOTH v0.29.39 release
 assets digest-matched and passed the direct boot smoke locally (all
 gates green incl. CTL_PING; the menu path was CI-proven on these same
