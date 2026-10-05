@@ -1879,6 +1879,62 @@ No gate declared met — the default values themselves remain an
 Architecture Group decision (NPC-002 §5.2); this is the data §9
 deferral was waiting for, plus the freeze-accounting answer.
 
+## 36. §4 Close-Out — Compression ON/OFF Live-Mount A/B (2026-10-05)
+
+The last unmeasured §4 variant: the transparent-compression path on a
+live FUSE mount. OFF leg = identity codec stub injected in the isolated
+benchmark child (`--nyfs-mount-nocompress`; env-plumbed, zero product
+changes — nyfs.py resolves the codec functions on the module object at
+call time). Same 1 MiB / 4 KiB write+read patterns as §6, 4 MiB total,
+native baseline = the same ext4 tmpdir.
+
+| pattern (fuse leg) | compression ON | OFF | ON:OFF |
+|---|---|---|---|
+| write 1 MiB | 6.90 MB/s | 40.93 MB/s | 5.9× slower |
+| write 4 KiB | 0.22 MB/s | 4.53 MB/s | 20.6× slower |
+| read 1 MiB | 2.34 MB/s | 420.76 MB/s | 179.8× slower |
+| read 4 KiB | 2.06 MB/s | 294.77 MB/s | 143.1× slower |
+
+Native baselines (leg-internal): ON 2256/368/3156/960 MB/s, OFF
+1884/398/5488/964 MB/s — page-cache state differs per leg, so only
+within-leg ratios are compared. Kernel write batching is identical in
+both legs (8 requests per 1 MiB, max 128 KiB — the INIT-handshake
+negotiation is compression-independent).
+
+Findings:
+
+1. **Write costs land where §5/§6 pointed**: per-call block compress
+   dominates — 5.9× on streaming 1 MiB writes, 20.6× on 4 KiB writes
+   (0.22 MB/s ≈ the §6 per-op compress+checksum floor).
+2. **Read-path anomaly (flagged, not concluded)**: ON-leg reads are
+   ~180× slower than OFF. zstd-3 decompress + SHA256 verify per block
+   cannot plausibly cost two orders of magnitude (GB/s-class
+   primitives); suspect read amplification or re-decompression in the
+   compressed-block read path (e.g. per-request block walk without a
+   block cache). Needs a profile before any ADR-0016 conclusion — the
+   data challenges the compressed-read path's implementation, not FUSE
+   itself: the OFF leg streams reads at 420 MB/s through the same
+   mount.
+3. **16 MiB ON-leg wedge (open repro)**: the ON leg at 16 MiB total
+   wedged 4/4 attempts (main thread D-state in `request_wait_answer`
+   with the fusepy daemon thread gone; SIGKILL leaves an unkillable
+   corpse needing root `abort` — §19's documented class), while 4 MiB
+   completed cleanly 3/3 and the 16 MiB OFF leg ran clean. Correlated
+   with size × compression; autopsy blocked without root.
+4. **At-rest probe inert (honest negative)**: the parent-side
+   backing-dir walk reads ~0 in both legs — `NyFSMount.unmount()` does
+   not `save()`; §4 measures the in-memory FUSE path, and at-rest cost
+   remains §7/§9's lifecycle data (6.42 : 1 there). The probe stays
+   wired for future save()-performing runs.
+
+Runner fixes shipped with the data: the parent now removes its scratch
+dir on ALL exit paths (wedge and child-failure included — issue-#3
+hygiene), and the at-rest measurement moved parent-side (a child-side
+walk ran before the journal/block commit and read ~0).
+
+No gate declared met (doc policy); §36 closes the last unmeasured §4
+variant.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
@@ -1886,7 +1942,7 @@ deferral was waiting for, plus the freeze-accounting answer.
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
 | §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratios measured 2026-08-12: 6.42 : 1 synthetic (§7) vs 1.29 : 1 real /usr/share sample (§12)**; **§2 close-out data collected 2026-09-10 (§31)** — real-asset sweep (ratio flat ~1.07 at every level on already-compressed data; ≥7 buys ≤2% for 60× compute), real LZ4 fast path (2.7× zstd-1 at equal ratio on real data; the zlib approximation is retired), concurrent scaling (2.2× at 8 threads — GIL partially released); the level-choice data is now complete; no gate declared met |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); **sweep + adversarial interference collected 2026-09-10 (§32)** — steady state ≈ refill rate (burst only shapes spike absorption), shipped default 500/s ≈ 4.5% of path capacity, shared bucket starves a 250 Hz legitimate client under flood (per-sender fairness identified as the missing mechanism); no gate declared met |
-| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus, save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8–9) — block size helps ~40–60% (1 MiB, at small-write amplification cost); batched fsync is noise; **journal commit (one fsync per transaction) is decisive: ~60–70× faster** (0.20 s vs 11–15 s, §9) and ~61× on a small-file corpus (§12). **Mixed workload measured** (§13): ~3.7–4× lower per-commit latency in a repeated write/read/commit loop (131 vs 504 ms); write throughput unchanged by commit mode (~1.9 MB/s, CoW-compress-bound). **Compaction cost measured** (§14): the deferred materialize pass runs at ~27 ms/block — exactly an interleaved save of referenced blocks (11.2 s per 417-block / 2.5 MB journal); `NyFSMount(auto_compact=True)` moves it off the transaction path. **Journal × block size measured** (§15): under journal commit, save time is flat across 64 KiB → 1 MiB blocks (0.18–0.25 s — one fsync regardless of block count) while the ratio still improves 6.38 → 6.50 — the §8 block-size lever is an interleaved-mode lever only. **Cross-snapshot dedup measured** (§10): CoW sharing makes a 20%-churn snapshot cost ~2% of an independent copy (~49×). No gate declared met |
+| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus, save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8–9) — block size helps ~40–60% (1 MiB, at small-write amplification cost); batched fsync is noise; **journal commit (one fsync per transaction) is decisive: ~60–70× faster** (0.20 s vs 11–15 s, §9) and ~61× on a small-file corpus (§12). **Mixed workload measured** (§13): ~3.7–4× lower per-commit latency in a repeated write/read/commit loop (131 vs 504 ms); write throughput unchanged by commit mode (~1.9 MB/s, CoW-compress-bound). **Compaction cost measured** (§14): the deferred materialize pass runs at ~27 ms/block — exactly an interleaved save of referenced blocks (11.2 s per 417-block / 2.5 MB journal); `NyFSMount(auto_compact=True)` moves it off the transaction path. **Journal × block size measured** (§15): under journal commit, save time is flat across 64 KiB → 1 MiB blocks (0.18–0.25 s — one fsync regardless of block count) while the ratio still improves 6.38 → 6.50 — the §8 block-size lever is an interleaved-mode lever only. **Cross-snapshot dedup measured** (§10): CoW sharing makes a 20%-churn snapshot cost ~2% of an independent copy (~49×). **Compression ON/OFF A/B close-out collected 2026-10-05 (§36)** — identity-codec OFF leg via `--nyfs-mount-nocompress`; compression costs 5.9× (1 MiB write) / 20.6× (4 KiB write) but reads gap ~180× (per-read compressed-path anomaly flagged for profiling, not concluded); 16 MiB ON-leg wedges reproducibly (§19-class, needs root abort); at-rest probe inert pending a save()-performing run. No gate declared met |
 | §7 Default CPU/memory resource limits | **Data collected 2026-09-18 (§35)** — real cgroup-v2 enforcement: memory footprint of representative shapes 3.2–9.0 MB (256 MB default = 28–80× headroom at the floor); quota throttling shown to be a TAIL phenomenon (20% quota leaves p50 exactly at burst length, p95 +8×); the 64-PID default sits 1.5× above a modest supervisor's peak; **SUSPENDED accounting answered: frozen containers hold 100% of memory, consume 0% CPU, remain kernel-reclaimable** |
 | §7 Default CPU/memory resource limits | **Data collected 2026-09-18 (§35)** — real cgroup-v2 enforcement: memory footprint of representative shapes 3.2–9.0 MB (256 MB default = 28–80× headroom at the floor); quota throttling shown to be a TAIL phenomenon (20% quota leaves p50 exactly at burst length, p95 +8×); the 64-PID default sits 1.5× above a modest supervisor's peak; **SUSPENDED accounting answered: frozen containers hold 100% of memory, consume 0% CPU, remain kernel-reclaimable** |
 | §6 Hash-chain audit-log overhead | **Data collected 2026-09-18 (§34)** — append ~6.4 µs p50 / ≈100 k events/s sustained; verify O(n) at a stable ~3.3–3.5 µs/event to 100 k; the hash is ~19% of the append cost; overhead 2–8% of the audited IPC op. **Tamper-scope finding: the `details` payload is not hashed — tampering with it is undetectable by `verify_audit_integrity`** (demonstrated on the real code; fix is a spec decision) |

@@ -223,6 +223,16 @@ in one script (`--ipc`, `--bucket`, `--zstd`, `--nyfs`). Results in
   dominated by per-call block compress + per-read checksum verification
   (see `BENCHMARK_RESULTS.md` §5).
 
+**2026-10-05 close-out (compression A/B measured, §36):** the last
+unmeasured §4 variant is done — the transparent-compression path on a
+live mount, ON vs OFF (identity codec stub in the isolated child,
+`--nyfs-mount-nocompress`). Compression costs 5.9× on streaming 1 MiB
+writes and 20.6× on 4 KiB writes; the ON-leg READ path gap (~180× vs
+OFF) is flagged as an implementation anomaly needing a profile before
+ADR-0016 conclusions — the OFF leg streams 420 MB/s through the same
+mount, so FUSE itself is not the bottleneck. Full data and the open
+16 MiB ON-leg wedge repro in `BENCHMARK_RESULTS.md` §36.
+
 **2026-08-12 update (live FUSE mount + persisted image measured):** this
 host turned out to have fusepy + `/dev/fuse` all along, so the plan's
 "kernel mount" comparison was actually measured (`python3 tests/benchmarks.py

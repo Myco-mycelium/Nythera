@@ -806,6 +806,20 @@ def _nyfs_mount_worker(total=16 * 1024 * 1024):
     """
     from fuse.nyfs import NyFSMount
 
+    # §36 A/B OFF leg: when NYRQIS_BENCH_NOCOMPRESS=1, stub the codec
+    # to the identity transform — no product change (nyfs.py resolves
+    # nyfs_codec.compress/decompress_verify on the module object at
+    # call time). The SHA256 checksum still covers the true plaintext,
+    # so integrity semantics are intact; blocks simply store
+    # uncompressed. This is the "without the transparent compression
+    # path" variant BENCHMARK_PLAN §4's method asks for.
+    nocompress = os.environ.get("NYRQIS_BENCH_NOCOMPRESS") == "1"
+    if nocompress:
+        import fuse.nyfs as _nyfs_mod
+        _nyfs_mod.nyfs_codec.compress = lambda data, level=3: data
+        _nyfs_mod.nyfs_codec.decompress_verify = (
+            lambda compressed, expected_checksum: compressed)
+
     def mbps(bytes_, seconds):
         return round(bytes_ / seconds / (1024 * 1024), 2) if seconds else float("inf")
 
@@ -868,6 +882,7 @@ def _nyfs_mount_worker(total=16 * 1024 * 1024):
         results["write_requests_per_1m"] = ops.write_calls
         results["max_write_request_bytes"] = ops.max_write
         results["total_bytes"] = total
+        results["nocompress"] = nocompress
         return results
     finally:
         watchdog.cancel()
@@ -882,7 +897,8 @@ def _nyfs_mount_worker(total=16 * 1024 * 1024):
             pass
 
 
-def benchmark_nyfs_mount(total=16 * 1024 * 1024, timeout_s=150):
+def benchmark_nyfs_mount(total=16 * 1024 * 1024, timeout_s=150,
+                         nocompress=False):
     """Through a REAL FUSE mount vs native I/O on the same tmp dir (§4).
 
     First-pass, environment-gated (skipped when fusepy, /dev/fuse, or
@@ -919,6 +935,8 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024, timeout_s=150):
     env = dict(os.environ)
     env["NYRQIS_BENCH_MNT"] = mnt
     env["NYRQIS_BENCH_TOTAL"] = str(total)
+    if nocompress:
+        env["NYRQIS_BENCH_NOCOMPRESS"] = "1"
     proc = subprocess.Popen(
         [sys.executable, "-B", os.path.abspath(__file__),
          "--nyfs-mount-child"],
@@ -953,6 +971,9 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024, timeout_s=150):
                 proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
+        # Issue-#3 hygiene: the parent owns the scratch dir and must
+        # not leak it on the wedge path either.
+        shutil.rmtree(base, ignore_errors=True)
         return {
             "skipped": "live mount timed out after %ss (wedged FUSE "
                        "request); child %s may require root abort or "
@@ -961,10 +982,27 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024, timeout_s=150):
     try:
         result = json.loads(out.decode().strip().splitlines()[-1])
     except (ValueError, IndexError):
+        shutil.rmtree(base, ignore_errors=True)
         return {
             "skipped": "live-mount child failed (rc=%s): %s"
                        % (proc.returncode, err.decode()[:300]),
         }
+    # At-rest footprint, measured PARENT-side after the child exited:
+    # the mount is gone, so journal and block files are committed to
+    # the backing dir and the number is the true at-rest cost. (A
+    # child-side walk ran before the commit and read ~0 — moved here
+    # 2026-10-05.) CoW garbage from the overwrite patterns is included
+    # in both A/B legs equally, so the delta stays honest.
+    at_rest = 0
+    for root, _dirs, files in os.walk(os.path.join(base, "fs")):
+        for f in files:
+            try:
+                at_rest += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    result["nyfs_at_rest_bytes"] = at_rest
+    # Issue-#3 hygiene: remove the scratch dir once measured.
+    shutil.rmtree(base, ignore_errors=True)
     return result
 
 
@@ -2284,6 +2322,9 @@ def main():
     parser.add_argument("--nyfs", action="store_true", help="§4 NyFS vs native proxy")
     parser.add_argument("--nyfs-mount", action="store_true",
                         help="§4 live-mount FUSE vs native")
+    parser.add_argument("--nyfs-mount-nocompress", action="store_true",
+                        help="§36 compression-OFF live-mount A/B leg "
+                             "(identity codec stub)")
     parser.add_argument("--nyfs-persist", action="store_true",
                         help="§5 persisted-image lifecycle")
     parser.add_argument("--save-levers", action="store_true",
@@ -2348,7 +2389,8 @@ def main():
                 or args.container or args.ipcd_dispatch or args.ipcd_refresh
                 or args.ipcd_control or args.launcher_coldstart
                 or args.vault_io or args.vault_mount_io
-                or args.ledger_refresh or args.vault_stream or args.nui)
+                or args.ledger_refresh or args.vault_stream or args.nui
+                or args.nyfs_mount_nocompress)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -2397,6 +2439,9 @@ def main():
     if args.nyfs_mount:
         _print_section("NyFS live FUSE mount vs native (§4):",
                        benchmark_nyfs_mount())
+    if args.nyfs_mount_nocompress:
+        _print_section("NyFS live FUSE mount, compression OFF (§36):",
+                       benchmark_nyfs_mount(nocompress=True))
     if args.nyfs_persist:
         _print_section("NyFS persisted-image lifecycle (§5):",
                        benchmark_nyfs_persisted())
