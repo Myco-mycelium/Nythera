@@ -5,6 +5,27 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-05, release-ISO verification round: both v0.29.38 release
+assets downloaded, SHA-256 matched GitHub's published digests
+(amd64 e4d84e87…c377, arm64 5fa39083…5d08), and both booted GREEN
+under the direct smoke incl. the CTL_PING wrapper-runs gate
+(logs in ~/nyrqis-work/logs/smoke-release-{amd64,arm64}.log). Along
+the way the pytest exit-1 mystery was ROOT-CAUSED and fixed: the
+ERR-pipe child test ran _direct_launch_child(4, …) in-process and
+left os.close real — the child's os.close(write_fd) killed pytest's
+stdin-capture tmpfile fd (fd 4), pytest_unconfigure hit EBADF after
+a fully green run. Found via a class bisect (only the five
+direct_child tests repro'd, and only as a group — fd-number
+interplay) plus an os.fstat(fd4) probe plugin; os.close emits no
+Python audit event in 3.12, which is why the audit hook saw nothing.
+Fix: mock backend.container.os.close like the sibling tests →
+test_backend.py exits 0 under BOTH runners (pytest 2548 passed,
+PYTEST_EXIT=0; canonical unittest runner exit 0) — commit d8c14c5.
+Also learned: boot smokes serialize on a BUSY lock (issue #3
+hardening) — run them one at a time; and /tmp is periodically
+cleaned — keep all evidence logs under ~/nyrqis-work/. Issues:write
+still absent from the PAT (403), so the full six-step drill pass
+remains owner-blocked.
 2026-10-04, v0.29.38 RELEASED: tag v0.29.38 pushed → the tag
 trigger auto-built the amd64 ISO and published the GitHub release
 (nyrqis-live.iso, 342.5 MB); the arm64 asset shipped via dispatch
