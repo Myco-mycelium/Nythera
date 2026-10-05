@@ -5,6 +5,31 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.39] - 2026-10-05
+
+### Fixed
+
+- **pytest exit-1 after a fully green `test_backend.py` run.**
+  `test_direct_child_reports_errors_through_pipe` ran the
+  `_direct_launch_child` child branch in-process with a literal fd 4
+  (pytest's own stdin-capture tmpfile fd) and left `os.close` real, so
+  the child's `os.close(write_fd)` killed pytest's capture fd and
+  `pytest_unconfigure` exited EBADF after all 2,548 tests passed.
+  Diagnosed with a class bisect (only the five `direct_child` tests
+  reproduced, and only as a group — fd-number interplay) and an
+  `os.fstat(fd4)` probe plugin (`os.close` emits no Python audit event
+  in 3.12, which is why an audit hook saw nothing). Fix: mock
+  `backend.container.os.close` like the three sibling tests.
+  `test_backend.py` now exits 0 under BOTH runners (pytest 2,548
+  passed; canonical unittest runner unchanged).
+
+### Verified
+
+- **v0.29.38 release assets boot green on both arches.** Both release
+  ISOs downloaded, SHA-256 matched GitHub's published digests, and
+  both passed the direct boot smoke incl. the `CTL_PING` wrapper-runs
+  gate (amd64 and arm64, TCG).
+
 ## [0.29.38] - 2026-10-04
 
 ### Fixed

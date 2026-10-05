@@ -1,13 +1,28 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.29.38  
-**Date**: 2026-10-04  
+**Version**: 0.29.39  
+**Date**: 2026-10-05  
 **Repository**: github.com/Myco-mycelium/Nythera
 
 ## Overview
 
 This document tracks the implementation status of the Nyrqis Linux backend,
 providing the hardware abstraction layer for the Nyrqis OS.
+
+## Test-Hygiene Fix + Release Verification (0.29.39)
+
+- **pytest exit-1 root-caused and fixed:** the ERR-pipe child test
+  closed pytest's stdin-capture tmpfile fd (fd 4) via a real
+  `os.close(write_fd)` in the in-process child branch; with the fix
+  (mock `os.close` like the sibling tests) `test_backend.py` exits 0
+  under both runners. Documented in REPOSITORY_STATE with the full
+  diagnosis chain.
+- **Release assets verified bootable:** both v0.29.38 ISOs
+  digest-matched and passed the direct boot smoke (CTL_PING gate
+  green; menu-path runs in progress at release time).
+- **Operational lessons recorded:** boot smokes serialize on the
+  issue-#3 BUSY lock; /tmp is periodically cleaned — evidence logs
+  live under `~/nyrqis-work/`.
 
 ## CI Close-Out + PAT Tooling Contracts (0.29.38)
 
