@@ -5,6 +5,21 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-05, v0.29.39 RELEASED (same-day follow-through): the
+release-ISO verification matrix is COMPLETE — both v0.29.38 assets
+boot green under BOTH smoke paths (direct + menu, amd64 + arm64,
+4/4 PASS, CTL_PING gate green throughout). The staged drill re-ran
+end to end: grants check passed, dispatch 204, run 37296270688
+collected via the FIXED run-selection (first live exercise —
+SUCCESS) before DRILL_STOP at the issue-close 403 as designed
+(Issues:write still absent from the PAT — the only remaining owner
+decision). 0.29.39 tagged and released: both arch assets shipped
+AUTOMATICALLY from the tag trigger (no manual arm64 dispatch needed,
+unlike v0.29.38), hashes amd64 a6bdfd77…b65b / arm64 2309d66a…c11f,
+release body = boot-smoke summary. All five CI runs on the round
+green: main-ci, main-live-iso, the drill's rootless run, tag-amd64,
+tag-arm64. Menu-smoke evidence: ~/nyrqis-work/logs/menu-release-
+{amd64,arm64}.log.
 2026-10-05, release-ISO verification round: both v0.29.38 release
 assets downloaded, SHA-256 matched GitHub's published digests
 (amd64 e4d84e87…c377, arm64 5fa39083…5d08), and both booted GREEN
