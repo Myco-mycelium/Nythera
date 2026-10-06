@@ -5,6 +5,27 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-06, 0.29.42: the follow-up round to 0.29.41's release. A
+STRUCTURAL verification of the shipped v0.29.41 assets (byte-level,
+stand-in for a physical boot) confirmed the firmware payload on both
+arches (1,756 / 1,613 files under lib/firmware; 905 / 782 in the
+GPU/NIC/Wi-Fi dirs) — and found a real defect: GenuineIntel.bin rode
+the amd64 initrd's early cpio but AuthenticAMD.bin did NOT. Root
+cause: the initramfs-tools microcode hooks' auto mode probes
+/proc/cpuinfo ON THE BUILD HOST, and CI runners are Intel; the Intel
+hook self-selects early under MODULES=most which is why its blob made
+it. Builder CPU must not determine image contents: the builder now
+pins both hooks to early mode via
+/etc/initramfs-tools/conf.d/nyrqis-microcode.conf written before
+mkinitramfs, and the post-build check DIES unless BOTH vendor blobs
+appear in the raw initrd bytes (cpio -it stops at the first archive
+trailer — the check matches raw bytes). Same round: §37 benchmark
+(--gc-impact) quantified the 0.29.41 GC wiring — 64 CoW churn passes
+bloat the at-rest footprint 64.2×, one gc_blocks() pass reclaims
+100% of it in 5.6 ms. 0.29.42 tagged; the amd64 tag workflow re-runs
+with the fix (its new fail-closed gate is exercised by CI itself).
+Drill unchanged: Issues:write still 403 — the six-step pass remains
+the one owner decision.
 2026-10-06, 0.29.41: the ISO's missing real-hardware boot components
 shipped — and proven end-to-end on the tagged release. Every boot
 smoke had been passing because QEMU's virtio/bochs devices need NO

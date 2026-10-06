@@ -1,6 +1,6 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.29.41  
+**Version**: 0.29.42  
 **Date**: 2026-10-06  
 **Repository**: github.com/Myco-mycelium/Nythera
 
@@ -8,6 +8,20 @@
 
 This document tracks the implementation status of the Nyrqis Linux backend,
 providing the hardware abstraction layer for the Nyrqis OS.
+
+## Microcode Determinism + GC Impact Data (0.29.42)
+
+- **Early microcode made build-host-independent.** Structural
+  verification of the shipped v0.29.41 asset (byte-level, per arch)
+  found AuthenticAMD.bin missing from the initrd's early cpio — the
+  amd64-microcode hook's `auto` mode probes the BUILD HOST's CPU
+  vendor, and CI runners are Intel. Both hooks now pinned to `early`
+  via a conf.d fragment; the post-build check dies unless BOTH vendor
+  blobs ride the initrd. amd64/arm64 firmware verification: 1,756 /
+  1,613 files under lib/firmware on the shipped assets (905 / 782 in
+  the GPU/NIC/Wi-Fi driver dirs).
+- **§37 (`--gc-impact`)**: 64.2× CoW at-rest bloat reclaimed 100% by
+  a 5.6 ms gc_blocks() pass.
 
 ## Real-Hardware Boot Components + NyFS At-Rest GC (0.29.41)
 

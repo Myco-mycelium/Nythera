@@ -1034,12 +1034,41 @@ class TestBootFirmwareContract(unittest.TestCase):
                       "build, not ship")
 
     def test_builder_checks_the_initrd_microcode_on_amd64(self):
-        # Early microcode rides the initrd as a leading uncompressed cpio;
-        # the builder's post-build check must attempt both layouts.
-        self.assertIn('if cpio -it < "$INITRD"', self.builder,
-                      "the microcode check must read the uncompressed lead-in")
+        # Early microcode rides the initrd as leading uncompressed cpio
+        # segments — one per vendor. Plain `cpio -it` stops at the first
+        # archive's trailer, so the post-build check must match BOTH
+        # vendor blobs from the raw bytes.
+        self.assertIn(
+            "grep -aq 'kernel/x86/microcode/GenuineIntel.bin' \"$INITRD\"",
+            self.builder,
+            "the microcode check must require the Intel early blob")
+        self.assertIn(
+            "grep -aq 'kernel/x86/microcode/AuthenticAMD.bin' \"$INITRD\"",
+            self.builder,
+            "the microcode check must require the AMD early blob")
         self.assertIn("early CPU microcode present in the initrd",
                       self.builder)
+
+    def test_builder_forces_early_microcode_for_both_vendors(self):
+        # Found verifying the shipped v0.29.41 asset (2026-10-06): the
+        # microcode hooks' 'auto' mode probes /proc/cpuinfo ON THE BUILD
+        # HOST, so an Intel CI runner shipped an image with GenuineIntel
+        # but NO AuthenticAMD early blob. The builder must pin BOTH
+        # hooks to 'early' mode via a conf.d fragment written BEFORE
+        # mkinitramfs, and a missing vendor blob must fail the build.
+        self.assertIn("AMD64UCODE_INITRAMFS=early", self.builder,
+                      "the amd64-microcode hook must be forced to early mode")
+        self.assertIn("IUCODE_TOOL_INITRAMFS=early", self.builder,
+                      "the intel-microcode hook must be forced to early mode")
+        self.assertIn("conf.d/nyrqis-microcode.conf", self.builder,
+                      "the override must ship as an initramfs conf.d/*.conf "
+                      "fragment (the .conf suffix is what mkinitramfs sources)")
+        self.assertLess(
+            self.builder.index("nyrqis-microcode"),
+            self.builder.index("mkinitramfs -o"),
+            "the conf.d fragment must be written BEFORE mkinitramfs runs")
+        self.assertIn('die "early CPU microcode absent', self.builder,
+                      "a missing vendor blob must fail the build, not warn")
 
     def test_workflows_carry_the_boot_firmware_and_components(self):
         for wf, pkgs in ((self.amd64, self.FW_ALL + self.FW_AMD64),

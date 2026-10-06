@@ -583,6 +583,29 @@ EOF
                 2>/dev/null || true
         fi
         log "regenerating the initramfs with live-boot scripts + modules"
+        # Early microcode must be ARCHITECTURE-DETERMINISTIC, not
+        # build-host-dependent (found verifying the shipped v0.29.41
+        # asset, 2026-10-06: GenuineIntel.bin rode the initrd but
+        # AuthenticAMD.bin did not). Both microcode hooks default to
+        # 'auto' mode, which probes /proc/cpuinfo ON THE BUILD HOST:
+        # on an Intel builder the AMD hook exits silently ("no AMD
+        # processors detected") and the shipped image boots AMD CPUs
+        # with late-load-only microcode — exactly the class of
+        # build-machine-accident this builder exists to prevent.
+        # 'early' mode skips the host probe and packs the FULL vendor
+        # blob for the target arch. The post-build check below then
+        # REQUIRES both blobs, fail-closed.
+        if [[ "$ARCH" == amd64 ]]; then
+            mkdir -p "$ROOTFS_SRC/etc/initramfs-tools/conf.d"
+            # conf.d/*.conf — the .conf suffix is required (mkinitramfs
+            # sources conf.d/*.conf, not bare names).
+            cat > "$ROOTFS_SRC/etc/initramfs-tools/conf.d/nyrqis-microcode.conf" <<'EOF'
+# Nyrqis live (0.29.42): early microcode is packed for the TARGET
+# arch unconditionally — never probed from the build host's CPU.
+AMD64UCODE_INITRAMFS=early
+IUCODE_TOOL_INITRAMFS=early
+EOF
+        fi
         if chroot "$ROOTFS_SRC" mkinitramfs -o /boot/initrd.img-nyrqis-live \
             "$(basename "$KERNEL" | sed 's/^vmlinuz-//')"; then
             INITRD="$ROOTFS_SRC/boot/initrd.img-nyrqis-live"
@@ -797,19 +820,34 @@ if command -v cpio >/dev/null 2>&1; then
     if ! grep -q '^init$' <<<"$ITRD_HEAD" && [[ "$(wc -l <<<"$ITRD_HEAD")" -lt 3 ]]; then
         log "WARNING: cannot list the initramfs (first entries: $(echo "$ITRD_HEAD" | head -3 | tr '\n' ' ')) — concatenated-cpio layout or unexpected format; NOT failing the build"
     fi
-    # amd64: early CPU microcode rides the initrd as a leading UNCOMPRESSED
-    # cpio concatenated ahead of the gzip'd main archive (plain cpio lists
-    # it; gzip may refuse the mixed stream — hence the two attempts).
-    # Best-effort: warn, don't fail — layout details belong to
-    # initramfs-tools, and the microcode packages themselves are pinned
-    # by the firmware gate above.
+    # amd64: early CPU microcode rides the initrd as leading UNCOMPRESSED
+    # cpio segments concatenated ahead of the gzip'd main archive — one
+    # per vendor (the amd64-microcode hook builds AuthenticAMD.bin, the
+    # intel hook GenuineIntel.bin). Plain `cpio -it` stops at the first
+    # archive's trailer, so the vendor blobs are matched from the raw
+    # bytes. Fail-CLOSED (v0.29.42): the shipped v0.29.41 asset was
+    # missing AuthenticAMD.bin because the amd64-microcode hook probed
+    # the BUILD HOST's CPU vendor — a check that merely warned would
+    # have shipped it anyway. The kernel falls back to late loading,
+    # but early loading is what fixes CPU bugs before userspace runs.
     if [[ "$ARCH" == amd64 ]]; then
-        if cpio -it < "$INITRD" 2>/dev/null | grep -q 'microcode' \
-           || gzip -dc "$INITRD" 2>/dev/null | cpio -it 2>/dev/null | grep -q 'microcode'; then
-            log "early CPU microcode present in the initrd"
-        else
-            log "WARNING: no early CPU microcode detected in the initrd — amd64 images are expected to ship intel-microcode + amd64-microcode hooks"
+        ucode_missing=""
+        grep -aq 'kernel/x86/microcode/GenuineIntel.bin' "$INITRD" \
+            || ucode_missing="$ucode_missing intel-early(GenuineIntel.bin)"
+        grep -aq 'kernel/x86/microcode/AuthenticAMD.bin' "$INITRD" \
+            || ucode_missing="$ucode_missing amd-early(AuthenticAMD.bin)"
+        if [[ -n "$ucode_missing" ]]; then
+            die "early CPU microcode absent from the initrd:$ucode_missing
+  both vendor blobs must ride the early cpio so microcode applies
+  before userspace on ANY amd64 machine, regardless of the build
+  host's CPU vendor. The builder writes
+  /etc/initramfs-tools/conf.d/nyrqis-microcode.conf
+  (AMD64UCODE_INITRAMFS=early, IUCODE_TOOL_INITRAMFS=early) before
+  mkinitramfs; if this
+  fired, the microcode hooks did not run — check the mkinitramfs
+  step's output for hook errors."
         fi
+        log "early CPU microcode present in the initrd (Intel + AMD blobs)"
     fi
 fi
 cp "$KERNEL"  "$LIVE_DIR/vmlinuz"

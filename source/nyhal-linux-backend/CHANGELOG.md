@@ -5,6 +5,34 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.42] - 2026-10-06
+
+### Fixed
+
+- **Early CPU microcode is now architecture-deterministic, not
+  build-host-dependent.** Structural verification of the shipped
+  v0.29.41 asset found `GenuineIntel.bin` in the initrd's early cpio
+  but **no `AuthenticAMD.bin`**: the initramfs-tools microcode hooks'
+  `auto` mode probes `/proc/cpuinfo` ON THE BUILD HOST, and the CI
+  runners are Intel — the AMD hook silently skipped (the Intel hook
+  self-selects `early` under `MODULES=most`, which is why its blob
+  made it). The builder now pins both hooks to `early` mode via
+  `/etc/initramfs-tools/conf.d/nyrqis-microcode.conf` written before
+  `mkinitramfs`, and the post-build check was upgraded from a warning
+  to a **fail-closed gate** requiring BOTH vendor blobs in the raw
+  initrd bytes (`cpio -it` stops at the first archive trailer, so the
+  check matches raw bytes).
+
+### Added
+
+- **§37 benchmark (`--gc-impact`): NyFS at-rest GC impact.** 64 CoW
+  churn passes bloat the at-rest footprint **64.2×**; a single
+  `gc_blocks()` pass reclaims 100% of it in 5.6 ms — quantifying the
+  0.29.41 GC wiring.
+- 2 further contract pins (both-vendor early-microcode raw-byte gate
+  + early-mode override ordering); contract suite at 103 in
+  `test_live_boot_contract.py`.
+
 ## [0.29.41] - 2026-10-06
 
 ### Fixed

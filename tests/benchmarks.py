@@ -1010,6 +1010,75 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024, timeout_s=150,
     return result
 
 
+def benchmark_gc_impact(blocks=64, block_size=64 * 1024):
+    """NyFS at-rest garbage collection: CoW churn vs gc_blocks() (§37).
+
+    0.29.41 wired ``gc_blocks()`` into the mount's idle watcher and the
+    unmount()/shutdown() paths; this leg measures what that reclamation
+    is worth on a CoW-churn workload — the at-rest footprint overwrite
+    churn leaves behind, with and without a GC pass, plus the pass cost
+    itself (the number an operator needs to judge the idle-watcher
+    interval). All data is unique (``os.urandom``) so content-hash
+    dedup cannot mask the churn; ``gc_grace_seconds=0`` lets the
+    reclaim pass run without waiting out the default 1 h grace (the
+    grace is an at-rest safety property, not a benchmark subject —
+    aged reclaim is pinned by test).
+    """
+    base = tempfile.mkdtemp(prefix="nyrqis-bench-§37-")
+    try:
+        fs = NyFSFilesystem(os.path.join(base, "fs"),
+                            block_size=block_size, gc_grace_seconds=0)
+        f = fs.create_file("/churn.bin")
+
+        def at_rest():
+            total = 0
+            for root, _dirs, files in os.walk(os.path.join(base, "fs")):
+                for name in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+            return total
+
+        # Committed baseline: the initial file, saved once.
+        fs.write(f, os.urandom(block_size))
+        fs.save(use_journal=False)
+        baseline = at_rest()
+
+        # CoW churn: every pass rewrites the whole file with fresh data
+        # and commits — each pass orphans the previous block, whose
+        # .bin file stays on disk until gc_blocks() reclaims it.
+        churn_passes = blocks
+        t0 = time.perf_counter()
+        for _ in range(churn_passes):
+            fs.write(f, os.urandom(block_size))
+            fs.save(use_journal=False)
+        churn_s = time.perf_counter() - t0
+        bloated = at_rest()
+
+        # The reclamation pass (what the idle watcher now runs).
+        t0 = time.perf_counter()
+        reclaimed = fs.gc_blocks()
+        gc_s = time.perf_counter() - t0
+        reclaimed_bytes = bloated - at_rest()
+
+        return {
+            "baseline_bytes": baseline,
+            "block_size": block_size,
+            "churn_passes": churn_passes,
+            "after_churn_bytes": bloated,
+            "bloat_bytes": bloated - baseline,
+            "bloat_ratio": round(bloated / max(1, baseline), 3),
+            "gc_pass_seconds": round(gc_s, 4),
+            "gc_reclaimed_blocks": reclaimed,
+            "gc_reclaimed_bytes": reclaimed_bytes,
+            "after_gc_bytes": bloated - reclaimed_bytes,
+            "churn_seconds": round(churn_s, 3),
+        }
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def _vault_mount_worker():
     """The live encrypted-NyVault-mount benchmark — run in an isolated
     child process by ``benchmark_vault_mount_io`` (never call
@@ -2329,6 +2398,9 @@ def main():
     parser.add_argument("--nyfs-mount-nocompress", action="store_true",
                         help="§36 compression-OFF live-mount A/B leg "
                              "(identity codec stub)")
+    parser.add_argument("--gc-impact", action="store_true",
+                        help="§37 at-rest GC impact — CoW churn vs "
+                             "gc_blocks() reclamation")
     parser.add_argument("--nyfs-persist", action="store_true",
                         help="§5 persisted-image lifecycle")
     parser.add_argument("--save-levers", action="store_true",
@@ -2394,7 +2466,7 @@ def main():
                 or args.ipcd_control or args.launcher_coldstart
                 or args.vault_io or args.vault_mount_io
                 or args.ledger_refresh or args.vault_stream or args.nui
-                or args.nyfs_mount_nocompress)
+                or args.nyfs_mount_nocompress or args.gc_impact)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -2411,6 +2483,7 @@ def main():
         args.ledger_refresh = True
         args.vault_stream = True
         args.nui = True
+        args.gc_impact = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -2446,6 +2519,9 @@ def main():
     if args.nyfs_mount_nocompress:
         _print_section("NyFS live FUSE mount, compression OFF (§36):",
                        benchmark_nyfs_mount(nocompress=True))
+    if args.gc_impact:
+        _print_section("NyFS at-rest GC impact — CoW churn vs gc_blocks() (§37):",
+                       benchmark_gc_impact())
     if args.nyfs_persist:
         _print_section("NyFS persisted-image lifecycle (§5):",
                        benchmark_nyfs_persisted())
