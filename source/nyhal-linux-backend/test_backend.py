@@ -21226,8 +21226,10 @@ class TestNyFSPersistence(unittest.TestCase):
     def test_gc_removes_orphaned_blocks(self):
         # gc_blocks reclaims .bin files, so this scenario uses the
         # interleaved (materialized) path; journal garbage is reclaimed
-        # by compaction instead.
-        fs = NyFSFilesystem(self.base, block_size=4096)
+        # by compaction instead. gc_grace_seconds=0 keeps the
+        # immediate-reclaim semantics this test predates (0.29.41
+        # introduced a default 1 h grace for at-rest safety).
+        fs = NyFSFilesystem(self.base, block_size=4096, gc_grace_seconds=0)
         f = fs.create_file("/g.bin")
         fs.write(f, b"a" * 100)
         old_id = f.blocks[0].block_id
@@ -21251,8 +21253,12 @@ class TestNyFSPersistence(unittest.TestCase):
         unlink loop, and gc deletes a block the tree already
         references — silent data loss on the next load. libfuse's
         multithreaded session makes this a real concurrency surface,
-        not a theoretical one."""
-        fs = NyFSFilesystem(self.base, block_size=4096)
+        not a theoretical one. gc_grace_seconds=0 preserves the
+        immediate-reclaim semantics this audit was written against
+        (the 0.29.41 default grace would otherwise spare the young
+        orphans the writer creates and void the race).
+        """
+        fs = NyFSFilesystem(self.base, block_size=4096, gc_grace_seconds=0)
         fs.create_file("/seed.bin")
         fs.write("/seed.bin", b"s" * 1000)
         fs.create_file("/hot.bin")
@@ -21295,6 +21301,75 @@ class TestNyFSPersistence(unittest.TestCase):
         self.assertEqual(reloaded.read("/seed.bin"), b"s" * 1000)
         hot = reloaded.getattr("/hot.bin")["st_size"]
         self.assertEqual(hot, 8192)
+
+    def test_gc_grace_period_spares_young_orphans(self):
+        # 0.29.41: an unreferenced block YOUNGER than gc_grace_seconds
+        # is never reclaimed. A concurrent save() writes block files
+        # before the metadata swap commits them, so age — not mere
+        # absence from the referenced set — is the at-rest safety
+        # criterion. Both sides are pinned without sleeping an hour by
+        # faking the clock for the aged pass.
+        base2 = os.path.join(self.temp_dir, "fs-grace")
+        fs = NyFSFilesystem(base2, block_size=4096, gc_grace_seconds=3600)
+        f = fs.create_file("/g.bin")
+        fs.write(f, b"a" * 100)
+        orphan_id = f.blocks[0].block_id
+        snap = fs.create_snapshot()
+        fs.write(f, b"b" * 100)  # CoW: orphans the 'a' block live-side
+        fs.save(use_journal=False)
+        del fs.snapshots[snap]   # drops the last reference
+        orphan_path = os.path.join(
+            base2, "state", "blocks", f"{orphan_id}.bin")
+        # Young orphan: spared.
+        self.assertEqual(fs.gc_blocks(), 0)
+        self.assertTrue(os.path.exists(orphan_path))
+        # Aged past the cutoff: reclaimed.
+        with mock.patch("fuse.nyfs.time") as fake_time:
+            fake_time.time.return_value = time.time() + 7200
+            self.assertGreaterEqual(fs.gc_blocks(), 1)
+        self.assertFalse(os.path.exists(orphan_path))
+
+    def test_gc_rejects_negative_grace(self):
+        # A negative grace period is a configuration error, not a
+        # silently-inverted one: fail construction.
+        with self.assertRaises(ValueError):
+            NyFSFilesystem(
+                os.path.join(self.temp_dir, "fs-neg"),
+                gc_grace_seconds=-1)
+
+    def test_idle_watcher_and_unmount_drive_gc(self):
+        # 0.29.41 wiring: the mounted idle watcher runs _run_idle_gc()
+        # every interval (auto_gc defaults True), and unmount() runs a
+        # final pass after its save — a mount session's CoW orphans are
+        # reclaimed at rest without an operator's manual gc_blocks().
+        from fuse import nyfs as nyfs_mod
+        fs = NyFSFilesystem(
+            os.path.join(self.temp_dir, "fs-wire"),
+            block_size=4096, gc_grace_seconds=0)
+        m = nyfs_mod.NyFSMount(
+            fs, os.path.join(self.temp_dir, "mnt-wire"))
+        real_gc = m._run_idle_gc
+        calls = []
+
+        def recording_gc():
+            calls.append(1)
+            return real_gc()
+
+        with mock.patch.object(m, "_run_idle_gc", side_effect=recording_gc), \
+                mock.patch.object(m, "attach", return_value=True), \
+                mock.patch.object(m, "_build_fuse"):
+            m.mount(blocking=False, foreground=False,
+                    compact_interval=0.05, handle_signals=False)
+            try:
+                deadline = time.time() + 5
+                while not calls and time.time() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(
+                    calls, "the idle watcher must drive _run_idle_gc")
+            finally:
+                m.unmount()
+            self.assertGreaterEqual(
+                len(calls), 2, "unmount must run a final GC pass")
 
     def test_batched_fsync_save_roundtrip(self):
         # Grouped-fsync save (all temps written, then all fsynced, then

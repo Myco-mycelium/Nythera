@@ -476,11 +476,12 @@ class TestIsoSizeGate(unittest.TestCase):
         self.assertIsNotNone(
             m, "the size gate must die (fail the build) over the ceiling")
         ceiling = int(m.group(1))
-        # The envelope: known-good builds are ~354 MB (amd64 356M max
-        # observed). The ceiling must have headroom above that but stay
+        # The envelope: known-good builds were ~354 MB before 0.29.41
+        # added the real-hardware boot firmware (expected ~365-380 MB).
+        # The ceiling must have headroom above that but stay
         # low enough to catch tree duplication (~2x = 700+ MB).
         self.assertGreaterEqual(ceiling, 450,
-                                "ceiling too tight — known-good builds are ~354 MB")
+                                "ceiling too tight — known-good builds are ~365+ MB")
         self.assertLessEqual(ceiling, 600,
                              "ceiling too loose — duplication produces 700+ MB")
 
@@ -970,6 +971,96 @@ class TestWorkflowProbeTopUp(unittest.TestCase):
                           f"live-iso-arm64.yml rootfs step must install {pkg}")
 
 
+class TestBootFirmwareContract(unittest.TestCase):
+    """The ISO must carry the non-free boot firmware + CPU microcode that
+    REAL hardware needs (0.29.41).
+
+    (Found the hard way: every boot smoke passed because QEMU's
+    virtio/bochs devices need NO firmware, while a real AMD/Intel/NVIDIA
+    GPU machine would black-screen and Wi-Fi/Realtek NICs would never
+    come up — the kernel asked for firmware files the image never
+    carried. debootstrap defaults to the main component ONLY, so the
+    explicit --components is load-bearing, not cosmetic.)
+    """
+
+    def setUp(self):
+        self.builder = read(BUILDER)
+        self.amd64 = read(LIVE_ISO_WF)
+        self.arm64 = read(LIVE_ISO_ARM64_WF)
+
+    FW_ALL = ("firmware-linux-nonfree", "firmware-misc-nonfree",
+              "firmware-linux-free", "firmware-linux")
+    FW_AMD64 = ("amd64-microcode", "intel-microcode")
+    COMPONENTS = "--components=main,contrib,non-free,non-free-firmware"
+
+    def test_builder_debootstrap_carries_the_boot_firmware(self):
+        # The amd64 case line pins all six; the arm64 line the four
+        # arch-all packages; the include list must reference $BOOT_FW so
+        # the case branches actually reach debootstrap.
+        self.assertIn(
+            "firmware-linux-nonfree,firmware-misc-nonfree,"
+            "firmware-linux-free,firmware-linux,amd64-microcode,"
+            "intel-microcode",
+            self.builder,
+            "builder must name the full amd64 boot-firmware set (BOOT_FW)")
+        self.assertIn(
+            "firmware-linux-nonfree,firmware-misc-nonfree,"
+            "firmware-linux-free,firmware-linux",
+            self.builder,
+            "builder must name the arch-all firmware set for arm64")
+        m = re.search(r"--include=(\S+)\s*\\", self.builder)
+        self.assertIsNotNone(m, "builder lost its debootstrap include line")
+        self.assertIn("$BOOT_FW", m.group(1),
+                      "the include list must carry $BOOT_FW — the firmware "
+                      "case branch must reach debootstrap")
+        self.assertIn(self.COMPONENTS, self.builder,
+                      "debootstrap must enable contrib/non-free/"
+                      "non-free-firmware — the firmware packages do not "
+                      "live in main")
+
+    def test_builder_tops_up_and_gates_the_firmware_on_every_rootfs_path(self):
+        # Cached/legacy rootfs acquisitions skip debootstrap: the
+        # ensure-packages loop must cover the firmware, and a fail-closed
+        # gate must refuse an unequipped image.
+        for pkg in self.FW_ALL + self.FW_AMD64:
+            self.assertIn(pkg, self.builder)
+        self.assertIn("$FW_LIST", self.builder,
+                      "the top-up loop must consume the firmware list")
+        self.assertIn("MISSING-BOOT-FIRMWARE", self.builder,
+                      "the firmware gate must report exactly what is absent")
+        self.assertIn('die "boot firmware absent', self.builder,
+                      "a rootfs without the boot firmware must fail the "
+                      "build, not ship")
+
+    def test_builder_checks_the_initrd_microcode_on_amd64(self):
+        # Early microcode rides the initrd as a leading uncompressed cpio;
+        # the builder's post-build check must attempt both layouts.
+        self.assertIn('if cpio -it < "$INITRD"', self.builder,
+                      "the microcode check must read the uncompressed lead-in")
+        self.assertIn("early CPU microcode present in the initrd",
+                      self.builder)
+
+    def test_workflows_carry_the_boot_firmware_and_components(self):
+        for wf, pkgs in ((self.amd64, self.FW_ALL + self.FW_AMD64),
+                         (self.arm64, self.FW_ALL)):
+            self.assertIn(self.COMPONENTS, wf,
+                          "the workflow debootstrap must enable the "
+                          "non-free components")
+            for pkg in pkgs:
+                self.assertIn(pkg, wf,
+                              f"workflow must name {pkg} (include + top-up)")
+
+    def test_rootfs_cache_keys_moved_to_v2_for_the_firmware_set(self):
+        # A package-set change MUST invalidate the cache: the key bump
+        # v1 -> v2 is what retires the firmware-less cached rootfs.
+        for wf in (self.amd64, self.arm64):
+            self.assertIn("bookworm-v2-", wf,
+                          "the rootfs cache key must bump to v2 so the "
+                          "firmware-less v1 cache is never reused")
+            self.assertNotIn("bookworm-v1", wf,
+                             "the stale v1 key must not survive the bump")
+
+
 class TestRootfsCacheContract(unittest.TestCase):
     """Both ISO workflows must cache their debootstrap rootfs — the
     bootstrap is a pure function of the include list + Debian suite,
@@ -982,7 +1073,7 @@ class TestRootfsCacheContract(unittest.TestCase):
         self.amd64 = read(LIVE_ISO_WF)
         self.arm64 = read(LIVE_ISO_ARM64_WF)
 
-    _KEY = r"nyrqis-rootfs-(amd64|arm64)-bookworm-v1-(?P<pkgs>.+)"
+    _KEY = r"nyrqis-rootfs-(amd64|arm64)-bookworm-v2-(?P<pkgs>.+)"
 
     def test_both_workflows_cache_the_rootfs(self):
         for name, wf in (("amd64", self.amd64), ("arm64", self.arm64)):
@@ -999,8 +1090,8 @@ class TestRootfsCacheContract(unittest.TestCase):
         # the key abbreviates it as live-boot (both packages share the
         # prefix, and the key's purpose is invalidation, not prose).
         for name, wf, marker in (
-            ("amd64", self.amd64, "nyrqis-rootfs-amd64-bookworm-v1"),
-            ("arm64", self.arm64, "nyrqis-rootfs-arm64-bookworm-v1"),
+            ("amd64", self.amd64, "nyrqis-rootfs-amd64-bookworm-v2"),
+            ("arm64", self.arm64, "nyrqis-rootfs-arm64-bookworm-v2"),
         ):
             m = re.search(r"--include=(\S+)", wf)
             self.assertIsNotNone(m, f"{name} workflow lost its include list")

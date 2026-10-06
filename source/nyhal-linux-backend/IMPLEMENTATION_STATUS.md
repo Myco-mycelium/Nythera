@@ -1,13 +1,36 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.29.40  
-**Date**: 2026-10-05  
+**Version**: 0.29.41  
+**Date**: 2026-10-06  
 **Repository**: github.com/Myco-mycelium/Nythera
 
 ## Overview
 
 This document tracks the implementation status of the Nyrqis Linux backend,
 providing the hardware abstraction layer for the Nyrqis OS.
+
+## Real-Hardware Boot Components + NyFS At-Rest GC (0.29.41)
+
+- **The ISO boots QEMU but not real hardware — closed.** The image
+  shipped zero non-free firmware: QEMU's virtio/bochs devices need
+  none (every smoke passed) while real AMD/Intel/NVIDIA GPUs,
+  Wi-Fi and Realtek NICs ask the kernel for files the image never
+  carried. The builder, rootless driver and both CI workflows now
+  debootstrap with `--components=main,contrib,non-free,
+  non-free-firmware` and include `firmware-linux-nonfree`,
+  `firmware-misc-nonfree`, `firmware-linux-free`, `firmware-linux`
+  (+ `amd64-microcode`/`intel-microcode` on amd64); the chroot
+  top-up covers every acquisition path and a fail-closed gate
+  refuses an unequipped rootfs; the amd64 build checks early
+  microcode rode the initrd; cache keys bumped v1→v2.
+- **NyFS at-rest GC wired.** `gc_blocks()` was implemented, audited
+  and pinned but had no production caller — CoW orphans persisted
+  forever. The idle watcher now GCs every compaction interval
+  (`auto_gc=True`), `unmount()`/`shutdown()` run a final pass after
+  their save, and the new `gc_grace_seconds` (default 3600) makes
+  age — not mere unreferenced-ness — the at-rest safety criterion.
+- 10 new pins (6 boot-firmware contract + 4 GC); boot-contract and
+  rootless-contract suites 135 green.
 
 ## NyFS Read-Path Fix + Unmount Durability (0.29.40)
 

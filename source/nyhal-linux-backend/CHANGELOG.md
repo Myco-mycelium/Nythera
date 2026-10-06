@@ -5,6 +5,45 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.41] - 2026-10-06
+
+### Fixed
+
+- **The live ISO now carries the components real hardware needs to
+  boot.** QEMU's virtio/bochs devices need no firmware, so every boot
+  smoke passed while a real AMD/Intel/NVIDIA GPU machine would
+  black-screen and Wi-Fi/Realtek NICs would never come up: the kernel
+  asked for firmware files the image never shipped. debootstrap
+  defaults to `main` only, so the builder (and the rootless driver and
+  both CI workflows) now pass `--components=main,contrib,non-free,
+  non-free-firmware` and include `firmware-linux-nonfree`,
+  `firmware-misc-nonfree`, `firmware-linux-free`, `firmware-linux`
+  (all `Architecture: all` — one set for both arches) plus
+  `amd64-microcode` + `intel-microcode` on amd64. The chroot top-up
+  runs on EVERY rootfs acquisition path, and a fail-closed gate
+  refuses an image whose rootfs lacks the firmware; the amd64 build
+  verifies early microcode rode the regenerated initrd. Rootfs cache
+  keys bumped v1 → v2 so the firmware-less cached rootfs is never
+  reused. ISO size ceiling 500 → 600 MB (expected envelope
+  ~365-380 MB).
+
+### Added
+
+- **NyFS at-rest garbage collection is wired and safe by default.**
+  `gc_blocks()` existed but nothing in the mount path called it, so
+  CoW orphans persisted at rest forever. The idle watcher now runs a
+  GC pass every compaction interval (`auto_gc=True`), and `unmount()`
+  / `shutdown()` run a final pass after their save. A new
+  `gc_grace_seconds` (default 3600) spares block files younger than
+  the grace period even when unreferenced — age, not mere absence
+  from the referenced set, is the at-rest safety criterion against a
+  concurrent `save()` that has written blocks it has not yet
+  committed. `0` restores immediate reclamation (used by the
+  pre-existing GC pins).
+- 6 contract pins (`TestBootFirmwareContract`) + 4 GC pins
+  (grace spares young orphans / reclaims aged ones, negative-grace
+  rejection, idle-watcher + unmount GC wiring).
+
 ## [0.29.40] - 2026-10-05
 
 ### Fixed

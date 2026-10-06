@@ -185,6 +185,7 @@ class NyFSFilesystem:
 
     def __init__(self, base_path: str, block_size: int = BLOCK_SIZE,
                  journal_compact_bytes: int = 64 * 1024 * 1024,
+                 gc_grace_seconds: float = 3600.0,
                  dek: Optional[bytes] = None,
                  ad: Optional[bytes] = None):
         """Initialize the NyFS filesystem.
@@ -199,6 +200,17 @@ class NyFSFilesystem:
                 blocks are materialized into ``state/blocks/`` and the
                 journal truncated (default 64 MiB; small values in tests
                 exercise compaction cheaply).
+            gc_grace_seconds: Minimum age an orphaned block file must
+                reach before ``gc_blocks()`` may reclaim it (default
+                3600). Orphans arise from crash-torn tails and CoW
+                rewrites; the grace period keeps a concurrent
+                ``save()``'s just-written blocks (written before its
+                metadata swap commits them) from being reclaimed by a
+                GC pass that races it — age, not presence, is the
+                safety criterion. ``0`` disables the grace period
+                (GC reclaims any unreferenced block immediately);
+                values are honored by ``gc_blocks`` and the idle GC
+                watcher.
             dek: The volume's 32-byte data-encryption key (ADR-0023).
                 When set, every block is AEAD-encrypted at rest
                 (checksum-then-encrypt: the SHA256 covers the
@@ -215,6 +227,10 @@ class NyFSFilesystem:
             raise ValueError(f"block_size must be positive, got {block_size}")
         self.block_size = block_size
         self.journal_compact_bytes = journal_compact_bytes
+        if gc_grace_seconds < 0:
+            raise ValueError(
+                f"gc_grace_seconds must be >= 0, got {gc_grace_seconds}")
+        self.gc_grace_seconds = gc_grace_seconds
         if dek is not None and len(dek) != 32:
             raise ValueError("dek must be 32 bytes")
         if dek is not None and not ad:
@@ -1537,6 +1553,19 @@ class NyFSFilesystem:
         referenced-set computation and the unlink loop — an unlocked
         pass would delete a block the tree already references. The
         other FUSE-reachable operations already take the lock.
+
+        Grace period (0.29.41): a block file younger than
+        ``gc_grace_seconds`` is NEVER reclaimed, even when unreferenced.
+        A concurrent ``save()`` writes new block files before the
+        metadata swap that references them; a GC pass that ran between
+        those steps unlocked would see such a file as an orphan. The
+        full-pass lock closes most of that window (the file lands
+        either entirely before or after the referenced-set walk), but
+        the grace period closes it completely and also covers crash
+        remnants from a torn tail still being re-appended by a
+        recovering writer. Age is measured on the file's mtime against
+        ``time.time()``; the referenced-set walk happens FIRST so a
+        same-instant reference always wins over the age cutoff.
         """
         with self.lock:
             blocks_dir = self._blocks_dir()
@@ -1547,11 +1576,19 @@ class NyFSFilesystem:
             }
             for snap in self.snapshots.values():
                 referenced |= {b.block_id for b in self._all_blocks(snap)}
+            cutoff = time.time() - self.gc_grace_seconds
             removed = 0
             for path in blocks_dir.glob("*.bin"):
-                if path.stem not in referenced:
-                    path.unlink()
-                    removed += 1
+                if path.stem in referenced:
+                    continue
+                if self.gc_grace_seconds > 0:
+                    try:
+                        if path.stat().st_mtime > cutoff:
+                            continue
+                    except OSError:
+                        continue  # vanished or unreadable: leave it
+                path.unlink()
+                removed += 1
             # Stale temp files from an interrupted save are never
             # referenced and never become visible; clean them up too.
             for path in blocks_dir.glob(".*.tmp"):
@@ -1852,9 +1889,11 @@ class NyFSMount:
         return self._fuse
 
     def _start_compaction_watcher(self, interval: float,
-                                  threshold: Optional[int]) -> None:
+                                  threshold: Optional[int],
+                                  auto_gc: bool = True) -> None:
         """Start a daemon thread that periodically compacts the journal
-        outside the fsync commit path (see ``maybe_compact``).
+        and reclaims orphaned blocks outside the fsync commit path (see
+        ``maybe_compact`` / ``gc_blocks``).
 
         The watcher uses a lower threshold than save()-time compaction
         (half of ``journal_compact_bytes`` by default) so the journal is
@@ -1875,6 +1914,8 @@ class NyFSMount:
                     self.filesystem.maybe_compact(threshold=threshold)
                 except Exception as e:
                     logger.warning("background journal compaction failed: %s", e)
+                if auto_gc:
+                    self._run_idle_gc()
 
         self._compact_thread = threading.Thread(target=_loop, daemon=True)
         self._compact_thread.start()
@@ -1897,10 +1938,25 @@ class NyFSMount:
                     "compaction watcher still finishing a pass after "
                     "unmount; it will exit at the next interval")
 
+    def _run_idle_gc(self) -> int:
+        """Run one orphaned-block reclamation pass (the mount-level hook
+        the idle watcher calls). Returns the number of blocks reclaimed;
+        failures are logged, never raised, so a GC hiccup cannot take
+        down the compaction loop."""
+        try:
+            removed = self.filesystem.gc_blocks()
+            if removed:
+                logger.info("idle GC reclaimed %d orphaned block(s)", removed)
+            return removed
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("idle block GC failed: %s", e)
+            return 0
+
     def mount(self, foreground: bool = True, blocking: bool = True,
               writeback_cache: bool = True, auto_compact: bool = True,
               compact_interval: float = 60.0,
               compact_interval_bytes: Optional[int] = None,
+              auto_gc: bool = True,
               handle_signals: bool = True,
               **fuse_kwargs):
         """Mount the filesystem.
@@ -1930,6 +1986,14 @@ class NyFSMount:
                 ``journal_compact_bytes`` so trimming runs well before
                 the save()-time threshold (see
                 ``_start_compaction_watcher``).
+            auto_gc: Reclaim orphaned blocks from the same idle watcher
+                (default True): every ``compact_interval`` seconds the
+                watcher also runs ``gc_blocks()``, so CoW orphans and
+                crash remnants are reclaimed during idle periods
+                instead of persisting at rest until an operator calls
+                ``gc_blocks()`` by hand. Reclamation is age-gated by
+                the filesystem's ``gc_grace_seconds`` so a block a
+                concurrent ``save()`` just wrote is never touched.
             handle_signals: In blocking mode, install SIGINT/SIGTERM
                 handlers that run the orderly shutdown contract
                 (DAEMON_LIFECYCLE.md §2): stop the watcher, commit
@@ -1954,7 +2018,8 @@ class NyFSMount:
             threshold = (compact_interval_bytes
                          if compact_interval_bytes is not None
                          else max(1, self.filesystem.journal_compact_bytes // 2))
-            self._start_compaction_watcher(compact_interval, threshold)
+            self._start_compaction_watcher(compact_interval, threshold,
+                                           auto_gc=auto_gc)
 
         def _run():
             logger.info("Mounting NyFS at %s (FUSE)", self.mount_point)
@@ -2031,6 +2096,9 @@ class NyFSMount:
                 self.filesystem.save()
         except Exception as e:
             logger.warning("shutdown: final save failed: %s", e)
+        # Same post-save reclamation as unmount(): committed state means
+        # unreferenced blocks are true orphans; best-effort, logged.
+        self._run_idle_gc()
         try:
             self.unmount()
         except Exception as e:
@@ -2072,6 +2140,12 @@ class NyFSMount:
                     self.filesystem.save()
             except Exception as e:
                 logger.warning("unmount: final save failed: %s", e)
+        # Post-save reclamation (0.29.41): with save committed (or the
+        # state already clean), unreferenced block files from this
+        # session's CoW writes are true orphans. The grace period still
+        # applies, so brand-new blocks stay untouched; run best-effort,
+        # never block the unmount.
+        self._run_idle_gc()
         if self._mount_error is not None:
             # The background mount never came up; nothing to unmount.
             return

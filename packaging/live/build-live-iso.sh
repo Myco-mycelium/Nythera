@@ -180,9 +180,28 @@ else
     # debootstrap's resolver cannot map virtual dependencies, so without
     # them named explicitly dpkg leaves zstandard unconfigured and the
     # build dies in second stage (verified against bookworm).
+    #
+    # BOOT_FW (2026-10-06, 0.29.41): the missing components that made the
+    # ISO boot QEMU but not real hardware. QEMU's virtio/bochs devices
+    # need NO firmware, so every boot smoke passed while a real AMD/
+    # Intel/NVIDIA GPU machine would black-screen and Wi-Fi/Realtek NICs
+    # would never come up: the kernel asks for firmware files the image
+    # never carried. firmware-linux-nonfree (meta) + firmware-misc-nonfree
+    # + firmware-linux-free + firmware-linux cover them; all are
+    # Architecture: all, so ONE set serves both arches. amd64 also pins
+    # amd64-microcode + intel-microcode (early CPU microcode rides the
+    # regenerated initrd below; arm64 CPU firmware lives in device
+    # trees/UEFI, there is no initrd microcode on that arch). All of
+    # these live in non-free-firmware / non-free, and debootstrap
+    # defaults to main ONLY — the explicit --components is load-bearing.
+    case "$ARCH" in
+        amd64) BOOT_FW="firmware-linux-nonfree,firmware-misc-nonfree,firmware-linux-free,firmware-linux,amd64-microcode,intel-microcode" ;;
+        arm64) BOOT_FW="firmware-linux-nonfree,firmware-misc-nonfree,firmware-linux-free,firmware-linux" ;;
+    esac
     debootstrap --variant=minbase --arch="$DEB_ARCH" \
         "${FOREIGN[@]}" \
-        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3,python3-sdl2,python3-pil,fonts-dejavu-core,zstd,xz-utils \
+        --components=main,contrib,non-free,non-free-firmware \
+        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3,python3-sdl2,python3-pil,fonts-dejavu-core,zstd,xz-utils,$BOOT_FW \
         "$SUITE" "$ROOTFS_SRC" "$MIRROR"
     if ((${#FOREIGN[@]})); then
         log "second-stage debootstrap under $QEMU_STATIC (emulated)"
@@ -375,10 +394,18 @@ else
     # step covers tarball/rootfs acquisitions and top-ups CI caches.
     # (Under --skip-chroot there is no package manager to ask; the
     # probe-parity gate below fails the build honestly instead.)
-    log "ensuring the demo probe's required packages are present"
-    chroot "$ROOTFS_SRC" sh -c '
+    log "ensuring boot firmware + the demo probe's required packages are present"
+    # BOOT_FW_LIST (space-separated, word-split by the guest sh) mirrors
+    # BOOT_FW (comma-separated, for debootstrap --include). Runs on EVERY
+    # acquisition path: a cached or legacy rootfs predating the firmware
+    # round is topped up here or the build dies — never ships half-equipped.
+    case "$ARCH" in
+        amd64) BOOT_FW_LIST="firmware-linux-nonfree firmware-misc-nonfree firmware-linux-free firmware-linux amd64-microcode intel-microcode" ;;
+        arm64) BOOT_FW_LIST="firmware-linux-nonfree firmware-misc-nonfree firmware-linux-free firmware-linux" ;;
+    esac
+    chroot "$ROOTFS_SRC" env FW_LIST="$BOOT_FW_LIST" sh -c '
         NEED=""
-        for p in python3 python3-zstandard python3-nacl python3-lz4 fuse3 python3-sdl2 python3-pil fonts-dejavu-core zstd xz-utils; do
+        for p in python3 python3-zstandard python3-nacl python3-lz4 fuse3 python3-sdl2 python3-pil fonts-dejavu-core zstd xz-utils $FW_LIST; do
             dpkg -s "$p" >/dev/null 2>&1 || NEED="$NEED $p"
         done
         if [ -n "$NEED" ]; then
@@ -391,10 +418,33 @@ else
                 -o APT::Sandbox::User=root $NEED
             echo "installed:$NEED"
         fi
-    ' || die "installing the demo probe's required packages failed
-  (python3/python3-zstandard/python3-nacl/python3-lz4/fuse3). The probe
-  prints MISSING lines for exactly these at boot — the image must not
-  ship without them."
+    ' || die "installing the demo probe's required packages or the boot firmware failed
+  (python3/python3-zstandard/python3-nacl/python3-lz4/fuse3 plus
+  firmware-linux-nonfree/-misc-nonfree/-free/-linux and the amd64
+  microcode packages). The probe prints MISSING lines for exactly these
+  at boot, and the firmware gate below refuses an unequipped image —
+  a pre-built rootfs tree predating 0.29.41 must add contrib,
+  non-free and non-free-firmware to its sources.list or be rebuilt."
+    # Real-hardware boot gate (fail-closed): the non-free firmware QEMU
+    # never exercises must be INSTALLED, not merely resolvable — "boots
+    # in QEMU, black-screens on real hardware" is the defect class this
+    # closes (AMD/Intel/NVIDIA GPUs, widespread Wi-Fi and Realtek NICs).
+    # amd64 additionally pins both CPU microcode packages.
+    chroot "$ROOTFS_SRC" env FW_LIST="$BOOT_FW_LIST" sh -c '
+        MISS=""
+        for p in $FW_LIST; do
+            dpkg -s "$p" >/dev/null 2>&1 || MISS="$MISS $p"
+        done
+        if [ -n "$MISS" ]; then
+            echo "MISSING-BOOT-FIRMWARE:$MISS" >&2
+            exit 1
+        fi
+    ' || die "boot firmware absent from the rootfs ($BOOT_FW_LIST):
+  the image boots QEMU (virtio/bochs devices need no firmware) but
+  would black-screen or lose NICs/GPUs on real machines. The rootfs
+  sources.list must carry contrib + non-free + non-free-firmware
+  (debootstrap --components writes them; pre-built trees predating
+  0.29.41 need the components added or a rebuild)."
     # Fail-closed on ANY configure surprise, on EVERY acquisition path:
     # dpkg --audit is empty iff every unpacked package configured. A
     # non-empty audit means the image would boot with broken/missing
@@ -747,6 +797,20 @@ if command -v cpio >/dev/null 2>&1; then
     if ! grep -q '^init$' <<<"$ITRD_HEAD" && [[ "$(wc -l <<<"$ITRD_HEAD")" -lt 3 ]]; then
         log "WARNING: cannot list the initramfs (first entries: $(echo "$ITRD_HEAD" | head -3 | tr '\n' ' ')) — concatenated-cpio layout or unexpected format; NOT failing the build"
     fi
+    # amd64: early CPU microcode rides the initrd as a leading UNCOMPRESSED
+    # cpio concatenated ahead of the gzip'd main archive (plain cpio lists
+    # it; gzip may refuse the mixed stream — hence the two attempts).
+    # Best-effort: warn, don't fail — layout details belong to
+    # initramfs-tools, and the microcode packages themselves are pinned
+    # by the firmware gate above.
+    if [[ "$ARCH" == amd64 ]]; then
+        if cpio -it < "$INITRD" 2>/dev/null | grep -q 'microcode' \
+           || gzip -dc "$INITRD" 2>/dev/null | cpio -it 2>/dev/null | grep -q 'microcode'; then
+            log "early CPU microcode present in the initrd"
+        else
+            log "WARNING: no early CPU microcode detected in the initrd — amd64 images are expected to ship intel-microcode + amd64-microcode hooks"
+        fi
+    fi
 fi
 cp "$KERNEL"  "$LIVE_DIR/vmlinuz"
 cp "$INITRD"  "$LIVE_DIR/initrd"
@@ -805,15 +869,17 @@ else
 fi
 
 # Size gate: the ISO must stay inside its expected footprint. The
-# observed envelope is ~354 MB (both arches; amd64 356M at most). This
+# observed envelope was ~354 MB (both arches) before 0.29.41 added the
+# real-hardware boot firmware (~10-15 MB of non-free blobs), landing
+# the expected envelope at ~365-380 MB. This
 # is not cosmetic: the reused-rootfs /opt-nesting bug shipped an 815 MB
 # image with a duplicated backend tree, and only a rebuild's manual
-# size comparison caught it. A ceiling of 500 MB passes every known
+# size comparison caught it. A ceiling of 600 MB passes every known
 # good build with huge headroom and fails any silent tree duplication,
 # stray artifact, or accidental large-file inclusion.
 ISO_MB=$(( $(stat -c %s "$OUTPUT") / 1024 / 1024 ))
-if [ "$ISO_MB" -gt 500 ]; then
-    die "ISO is ${ISO_MB} MB — over the 500 MB ceiling. Known-good builds\n      land at ~354 MB; an oversized image almost always means a\n      duplicated tree or stray artifact sneaked into the squashfs.\n      Inspect the rootfs before forcing this gate."
+if [ "$ISO_MB" -gt 600 ]; then
+    die "ISO is ${ISO_MB} MB — over the 600 MB ceiling. Known-good builds\n      land at ~365-380 MB (incl. boot firmware since 0.29.41); an\n      duplicated tree or stray artifact sneaked into the squashfs.\n      Inspect the rootfs before forcing this gate."
 fi
 log "ISO built: $OUTPUT (${ISO_MB} MB)"
 case "$ARCH" in

@@ -386,13 +386,26 @@ if [[ -n "$ACQUIRE_ROOTFS" ]]; then
     # build if anything is still absent.
     stage_watchdog & WATCHDOG_PID=$!
     set +e
+    # BOOT_FW (0.29.41): the real-hardware boot firmware. QEMU devices
+    # need none, so the boot smokes alone never caught the gap — a real
+    # AMD/Intel/NVIDIA GPU machine black-screens and Wi-Fi/Realtek NICs
+    # never come up without these. All Architecture: all (one set for
+    # both arches); amd64-microcode/intel-microcode are amd64-only.
+    # They live in non-free-firmware/non-free and debootstrap defaults
+    # to main ONLY, hence the explicit --components. The builder's
+    # ensure-packages + firmware gate top up / fail on any other path.
+    case "$DEB_ARCH" in
+        amd64) BOOT_FW="firmware-linux-nonfree,firmware-misc-nonfree,firmware-linux-free,firmware-linux,amd64-microcode,intel-microcode" ;;
+        *)     BOOT_FW="firmware-linux-nonfree,firmware-misc-nonfree,firmware-linux-free,firmware-linux" ;;
+    esac
     unshare -Urmpf --mount-proc env \
         LD_PRELOAD="/tmp/$SHIM_SO_NAME" \
         PATH="$SHIMBIN:$PATH" \
         debootstrap --variant=minbase --arch="$DEB_ARCH" \
             "${FOREIGN[@]}" \
             --cache-dir="$CACHE" \
-            --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
+            --components=main,contrib,non-free,non-free-firmware \
+            --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3,$BOOT_FW \
             "$SUITE" "$ACQUIRE_ROOTFS" "$MIRROR"
     RC=$?
     set -e

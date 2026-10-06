@@ -85,7 +85,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/nyrqis-rootfs-cache
-          key: nyrqis-rootfs-arm64-bookworm-v1-systemd-sysv-sudo-linux-image-arm64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3
+          key: nyrqis-rootfs-arm64-bookworm-v2-systemd-sysv-sudo-linux-image-arm64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3-firmware-linux-nonfree-firmware-misc-nonfree-firmware-linux-free-firmware-linux
 
       - name: Assemble the arm64 rootfs (foreign debootstrap, emulated, or restore from cache)
         run: |
@@ -95,7 +95,8 @@ jobs:
           else
             echo "rootfs cache MISS — running foreign debootstrap"
             sudo debootstrap --variant=minbase --arch=arm64 --foreign \
-              --include=systemd,systemd-sysv,sudo,linux-image-arm64,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
+              --include=systemd,systemd-sysv,sudo,linux-image-arm64,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3,firmware-linux-nonfree,firmware-misc-nonfree,firmware-linux-free,firmware-linux \
+              --components=main,contrib,non-free,non-free-firmware \
               bookworm /srv/nyrqis-rootfs-arm64 http://deb.debian.org/debian
             # Same include list as build-live-iso.sh (python3-cffi /
             # python3-ply are the REAL packages behind VIRTUAL deps
@@ -119,7 +120,8 @@ jobs:
           # top-up change. (build-live-iso.sh also ensures these itself
           # since 0.29.13 — belt-and-braces for the cross-built rootfs.)
           sudo chroot /srv/nyrqis-rootfs-arm64 apt-get install -y --no-install-recommends \
-            python3 python3-zstandard python3-nacl python3-lz4 fuse3 bash
+            python3 python3-zstandard python3-nacl python3-lz4 fuse3 bash \
+            firmware-linux-nonfree firmware-misc-nonfree firmware-linux-free firmware-linux
           sudo chroot /srv/nyrqis-rootfs-arm64 apt-get clean
 
       - name: Build the arm64 ISO

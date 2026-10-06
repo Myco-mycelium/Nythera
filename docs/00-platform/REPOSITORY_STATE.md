@@ -5,6 +5,31 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-06, 0.29.41: the ISO's missing real-hardware boot components
+shipped. Every boot smoke had been passing because QEMU's
+virtio/bochs devices need NO firmware — a real AMD/Intel/NVIDIA GPU
+machine would black-screen and Wi-Fi/Realtek NICs would never come
+up, because debootstrap defaults to main only and the image carried
+zero non-free firmware. The builder, rootless driver and both CI
+workflows now debootstrap with --components=main,contrib,non-free,
+non-free-firmware and include firmware-linux-nonfree,
+firmware-misc-nonfree, firmware-linux-free, firmware-linux (all
+Architecture: all, one set for both arches) plus amd64-microcode +
+intel-microcode on amd64 (early microcode rides the regenerated
+initrd); the chroot top-up runs on EVERY rootfs acquisition path and
+a fail-closed gate refuses an unequipped rootfs; cache keys bumped
+v1→v2 so the firmware-less cached rootfs is never reused. Same
+round: NyFS at-rest GC finally wired — gc_blocks() was implemented,
+§27-audited and pinned but had no production caller, so CoW
+orphans persisted at rest forever; the idle watcher now GCs every
+compaction interval (auto_gc=True), unmount()/shutdown() run a
+final pass after their save, and the new gc_grace_seconds (default
+3600) makes age — not mere unreferenced-ness — the at-rest safety
+criterion (0 restores the old immediate-reclaim semantics, which
+the pre-existing pins now state explicitly). 10 new pins (6
+TestBootFirmwareContract + 4 GC); boot+rootless contract suites 135
+green. Issues:write still 403 — the six-step drill pass remains the
+one owner decision.
 2026-10-05, 0.29.40: the §36 read anomaly was ROOT-CAUSED and FIXED
 (same-day). cProfile put ~98% of the ON-leg read time in
 _normalize_blocks' uniformity check — it ran on EVERY read/write and
