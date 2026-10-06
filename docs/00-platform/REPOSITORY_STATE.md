@@ -5,6 +5,24 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-06, 0.29.42 SHIPPED + verified end-to-end: tag v0.29.42
+(6ee77e0) built both arches green — the amd64 tag run exercised the
+new fail-closed both-vendor early-microcode gate and PASSED (after
+the conf.d attempt had correctly FAILED the earlier tag run on the
+same gate), the release assets were downloaded and sha256-matched
+against the GitHub API digests (amd64 418,891,776 B cb98eedc…8171,
+arm64 394,842,112 B 7b8fde4b…42b5c — +147 KB on amd64 from the
+packed AuthenticAMD blob), STRUCTURAL re-verification on the shipped
+asset confirms BOTH kernel/x86/microcode/{GenuineIntel,
+AuthenticAMD}.bin now ride the initrd's early cpio, and BOTH
+release smokes PASS (direct amd64 + menu arm64). One slip, disclosed:
+the smoke wrapper's log filenames for the 02942 run were
+sed-generated from the 02941 set and kept the old names (the dotted
+pattern missed the undotted digits), so the 02942 evidence appended
+to smoke-rel-02941.log after a wrapper divider — timestamps separate
+them (10:41–10:54Z vs 12:56–13:10Z) and both runs' verdicts are
+PROVEN PASS; properly named copies live in smoke-rel-02942.log and
+the chain done marker. Evidence: ~/nyrqis-work/{logs,release-v0.29.42}.
 2026-10-06, 0.29.42: the follow-up round to 0.29.41's release. A
 STRUCTURAL verification of the shipped v0.29.41 assets (byte-level,
 stand-in for a physical boot) confirmed the firmware payload on both
