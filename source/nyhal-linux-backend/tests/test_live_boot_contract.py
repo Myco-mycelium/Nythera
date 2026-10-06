@@ -477,11 +477,12 @@ class TestIsoSizeGate(unittest.TestCase):
             m, "the size gate must die (fail the build) over the ceiling")
         ceiling = int(m.group(1))
         # The envelope: known-good builds were ~354 MB before 0.29.41
-        # added the real-hardware boot firmware (expected ~365-380 MB).
+        # added the real-hardware boot firmware (measured on the shipped
+        # v0.29.41 assets: 418.7 MB amd64 / 394.8 MB arm64).
         # The ceiling must have headroom above that but stay
         # low enough to catch tree duplication (~2x = 700+ MB).
         self.assertGreaterEqual(ceiling, 450,
-                                "ceiling too tight — known-good builds are ~365+ MB")
+                                "ceiling too tight — known-good builds are ~395+ MB")
         self.assertLessEqual(ceiling, 600,
                              "ceiling too loose — duplication produces 700+ MB")
 

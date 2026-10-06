@@ -870,8 +870,9 @@ fi
 
 # Size gate: the ISO must stay inside its expected footprint. The
 # observed envelope was ~354 MB (both arches) before 0.29.41 added the
-# real-hardware boot firmware (~10-15 MB of non-free blobs), landing
-# the expected envelope at ~365-380 MB. This
+# real-hardware boot firmware — measured on the shipped v0.29.41
+# assets: 342.5 -> 418.7 MB amd64, 350.8 -> 394.8 MB arm64
+# (firmware-misc-nonfree's GPU/NIC blobs dominate). This
 # is not cosmetic: the reused-rootfs /opt-nesting bug shipped an 815 MB
 # image with a duplicated backend tree, and only a rebuild's manual
 # size comparison caught it. A ceiling of 600 MB passes every known
@@ -879,7 +880,7 @@ fi
 # stray artifact, or accidental large-file inclusion.
 ISO_MB=$(( $(stat -c %s "$OUTPUT") / 1024 / 1024 ))
 if [ "$ISO_MB" -gt 600 ]; then
-    die "ISO is ${ISO_MB} MB — over the 600 MB ceiling. Known-good builds\n      land at ~365-380 MB (incl. boot firmware since 0.29.41); an\n      duplicated tree or stray artifact sneaked into the squashfs.\n      Inspect the rootfs before forcing this gate."
+    die "ISO is ${ISO_MB} MB — over the 600 MB ceiling. Known-good builds\n      land at ~395-420 MB (incl. boot firmware since 0.29.41); an\n      duplicated tree or stray artifact sneaked into the squashfs.\n      Inspect the rootfs before forcing this gate."
 fi
 log "ISO built: $OUTPUT (${ISO_MB} MB)"
 case "$ARCH" in

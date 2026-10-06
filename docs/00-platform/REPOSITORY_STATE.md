@@ -6,30 +6,42 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
 2026-10-06, 0.29.41: the ISO's missing real-hardware boot components
-shipped. Every boot smoke had been passing because QEMU's
-virtio/bochs devices need NO firmware — a real AMD/Intel/NVIDIA GPU
-machine would black-screen and Wi-Fi/Realtek NICs would never come
-up, because debootstrap defaults to main only and the image carried
-zero non-free firmware. The builder, rootless driver and both CI
-workflows now debootstrap with --components=main,contrib,non-free,
-non-free-firmware and include firmware-linux-nonfree,
-firmware-misc-nonfree, firmware-linux-free, firmware-linux (all
-Architecture: all, one set for both arches) plus amd64-microcode +
-intel-microcode on amd64 (early microcode rides the regenerated
-initrd); the chroot top-up runs on EVERY rootfs acquisition path and
-a fail-closed gate refuses an unequipped rootfs; cache keys bumped
-v1→v2 so the firmware-less cached rootfs is never reused. Same
-round: NyFS at-rest GC finally wired — gc_blocks() was implemented,
-§27-audited and pinned but had no production caller, so CoW
-orphans persisted at rest forever; the idle watcher now GCs every
-compaction interval (auto_gc=True), unmount()/shutdown() run a
-final pass after their save, and the new gc_grace_seconds (default
-3600) makes age — not mere unreferenced-ness — the at-rest safety
-criterion (0 restores the old immediate-reclaim semantics, which
-the pre-existing pins now state explicitly). 10 new pins (6
-TestBootFirmwareContract + 4 GC); boot+rootless contract suites 135
-green. Issues:write still 403 — the six-step drill pass remains the
-one owner decision.
+shipped — and proven end-to-end on the tagged release. Every boot
+smoke had been passing because QEMU's virtio/bochs devices need NO
+firmware — a real AMD/Intel/NVIDIA GPU machine would black-screen
+and Wi-Fi/Realtek NICs would never come up, because debootstrap
+defaults to main only and the image carried zero non-free firmware.
+The builder, rootless driver and both CI workflows now debootstrap
+with --components=main,contrib,non-free,non-free-firmware and
+include firmware-linux-nonfree, firmware-misc-nonfree,
+firmware-linux-free, firmware-linux (all Architecture: all, one set
+for both arches) plus amd64-microcode + intel-microcode on amd64
+(early microcode rides the regenerated initrd); the chroot top-up
+runs on EVERY rootfs acquisition path and a fail-closed gate refuses
+an unequipped rootfs; ALL FIVE rootfs cache keys bumped v1→v2 (the
+rootless workflow's own nyrqis-rootless-rootfs-* keys were found the
+hard way in CI: the v1 hit restored a main-only rootfs whose stamp
+made acquisition a no-op and the new firmware gate refused it —
+fixed in 16ba0f8 with its own pin). Same round: NyFS at-rest GC
+finally wired — gc_blocks() was implemented, §27-audited and pinned
+but had no production caller, so CoW orphans persisted at rest
+forever; the idle watcher now GCs every compaction interval
+(auto_gc=True), unmount()/shutdown() run a final pass after their
+save, and the new gc_grace_seconds (default 3600) makes age — not
+mere unreferenced-ness — the at-rest safety criterion (0 restores
+the old immediate-reclaim semantics, which the pre-existing pins now
+state explicitly). 11 new pins (7 TestBootFirmwareContract + 4 GC);
+boot+rootless contract suites 136 green; 2,555 + 6,711 tests green.
+Size honesty: the firmware set added ~65 MB amd64 / ~44 MB arm64 (not
+the ~10-15 MB first estimated) — measured 418.7 MB amd64 / 394.8 MB
+arm64 on the shipped assets; ceiling 500→600 MB with the real
+numbers recorded. Verification: all five CI runs on the tag SHA
+green (tag-amd64 ~15 min via the push-populated v2 cache; tag-arm64
+~45 min on the emulated v2 miss), release assets downloaded and
+sha256-matched against the GitHub API digests, and BOTH release
+smokes PASS (direct amd64 + menu arm64). Drill: steps 1-3 re-proven
+(identity, repo 200, dispatch 204); Issues:write still 403 — the
+six-step drill pass remains the one owner decision.
 2026-10-05, 0.29.40: the §36 read anomaly was ROOT-CAUSED and FIXED
 (same-day). cProfile put ~98% of the ON-leg read time in
 _normalize_blocks' uniformity check — it ran on EVERY read/write and

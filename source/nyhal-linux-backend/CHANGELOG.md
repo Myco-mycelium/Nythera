@@ -24,8 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses an image whose rootfs lacks the firmware; the amd64 build
   verifies early microcode rode the regenerated initrd. Rootfs cache
   keys bumped v1 → v2 so the firmware-less cached rootfs is never
-  reused. ISO size ceiling 500 → 600 MB (expected envelope
-  ~365-380 MB).
+  reused. ISO size ceiling 500 → 600 MB (measured envelope on the
+  shipped assets: 418.7 MB amd64, 394.8 MB arm64 — the firmware set
+  added ~65/+44 MB, not the ~10-15 MB first estimated).
 
 ### Added
 
