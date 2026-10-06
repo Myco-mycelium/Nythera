@@ -106,7 +106,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/nyrqis-rootless
-          key: nyrqis-rootless-rootfs-amd64-bookworm-v1-systemd-sysv-sudo-linux-image-amd64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3
+          key: nyrqis-rootless-rootfs-amd64-bookworm-v2-systemd-sysv-sudo-linux-image-amd64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3-firmware-linux-nonfree-firmware-misc-nonfree-firmware-linux-free-firmware-linux-amd64-microcode-intel-microcode
 
       - name: Acquire the rootfs (rootless debootstrap, resumable)
         # A cache hit restores DIR.complete and this is a logged no-op;
@@ -243,7 +243,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/nyrqis-rootless
-          key: nyrqis-rootless-rootfs-arm64-bookworm-v1-systemd-sysv-sudo-linux-image-arm64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3
+          key: nyrqis-rootless-rootfs-arm64-bookworm-v2-systemd-sysv-sudo-linux-image-arm64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3-firmware-linux-nonfree-firmware-misc-nonfree-firmware-linux-free-firmware-linux
 
       - name: Acquire the arm64 rootfs (foreign, emulated second stage, rootless)
         # Stage 1 extracts with host binaries; stage 2 runs chrooted and

@@ -1060,6 +1060,35 @@ class TestBootFirmwareContract(unittest.TestCase):
             self.assertNotIn("bookworm-v1", wf,
                              "the stale v1 key must not survive the bump")
 
+    def test_rootless_pipeline_carries_the_boot_firmware(self):
+        # The rootless driver acquires its own rootfs and the workflow
+        # caches it under DIFFERENT keys (nyrqis-rootless-rootfs-*) —
+        # both must carry the firmware set so the v2 acquisitions run
+        # the updated driver and the firmware-less v1 cache is retired.
+        # (Found in CI: the v1 cache hit restored a main-only rootfs
+        # whose stamp made acquisition a no-op, and the builder's new
+        # firmware gate refused it — exactly the stale-cache defect the
+        # key bump exists to prevent.)
+        driver = os.path.join(
+            _REPO_ROOT, "packaging", "live", "build-live-iso-rootless.sh")
+        with open(driver, "r", encoding="utf-8") as fh:
+            drv = fh.read()
+        wf = read(LIVE_ISO_ROOTLESS_WF)
+        self.assertIn(self.COMPONENTS, drv,
+                      "the rootless driver's debootstrap must enable the "
+                      "non-free components")
+        for pkg in self.FW_ALL + self.FW_AMD64:
+            self.assertIn(pkg, drv,
+                          f"the rootless driver must include {pkg}")
+        self.assertIn("nyrqis-rootless-rootfs-amd64-bookworm-v2-", wf,
+                      "the rootless amd64 cache key must bump to v2")
+        self.assertIn("nyrqis-rootless-rootfs-arm64-bookworm-v2-", wf,
+                      "the rootless arm64 cache key must bump to v2")
+        for pkg in self.FW_ALL:
+            self.assertIn(pkg, wf,
+                          f"the rootless cache keys must carry {pkg} so a "
+                          "firmware-set change invalidates the cache")
+
 
 class TestRootfsCacheContract(unittest.TestCase):
     """Both ISO workflows must cache their debootstrap rootfs — the
