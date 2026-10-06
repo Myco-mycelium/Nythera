@@ -15,11 +15,18 @@ cause: the initramfs-tools microcode hooks' auto mode probes
 /proc/cpuinfo ON THE BUILD HOST, and CI runners are Intel; the Intel
 hook self-selects early under MODULES=most which is why its blob made
 it. Builder CPU must not determine image contents: the builder now
-pins both hooks to early mode via
-/etc/initramfs-tools/conf.d/nyrqis-microcode.conf written before
-mkinitramfs, and the post-build check DIES unless BOTH vendor blobs
-appear in the raw initrd bytes (cpio -it stops at the first archive
-trailer — the check matches raw bytes). Same round: §37 benchmark
+pins both hooks to early mode by writing
+/etc/default/amd64-microcode and /etc/default/intel-microcode —
+the exact files the hooks source — before mkinitramfs, and the
+post-build check DIES unless BOTH vendor blobs appear in the raw
+initrd bytes (cpio -it stops at the first archive
+trailer — the check matches raw bytes). Honesty datum: the FIRST
+attempt pinned the hooks via an initramfs conf.d fragment — the
+wrong mechanism (conf.d configures mkinitramfs, the hooks source
+/etc/default/<pkg>) — and the new fail-closed gate caught it in CI
+within minutes (tag-amd64 run 37458101332 FAILED with exactly the
+intended error, nothing shipped); the corrected /etc/default
+mechanism is what 0.29.42 ships. Same round: §37 benchmark
 (--gc-impact) quantified the 0.29.41 GC wiring — 64 CoW churn passes
 bloat the at-rest footprint 64.2×, one gc_blocks() pass reclaims
 100% of it in 5.6 ms. 0.29.42 tagged; the amd64 tag workflow re-runs

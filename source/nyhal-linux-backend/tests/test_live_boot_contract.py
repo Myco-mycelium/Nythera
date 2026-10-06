@@ -1053,20 +1053,28 @@ class TestBootFirmwareContract(unittest.TestCase):
         # Found verifying the shipped v0.29.41 asset (2026-10-06): the
         # microcode hooks' 'auto' mode probes /proc/cpuinfo ON THE BUILD
         # HOST, so an Intel CI runner shipped an image with GenuineIntel
-        # but NO AuthenticAMD early blob. The builder must pin BOTH
-        # hooks to 'early' mode via a conf.d fragment written BEFORE
-        # mkinitramfs, and a missing vendor blob must fail the build.
+        # but NO AuthenticAMD early blob. The hooks source their mode
+        # from /etc/default/<pkg> — NOT initramfs conf.d (that configures
+        # mkinitramfs itself; the first attempt used conf.d and the
+        # fail-closed gate caught it in CI, tag-amd64 run 37458101332).
+        # Both /etc/default files must be written BEFORE mkinitramfs,
+        # and a missing vendor blob must fail the build.
+        self.assertIn('cat > "$ROOTFS_SRC/etc/default/amd64-microcode"',
+                      self.builder,
+                      "the amd64-microcode hook's mode file must be written "
+                      "(the hook sources /etc/default/amd64-microcode)")
         self.assertIn("AMD64UCODE_INITRAMFS=early", self.builder,
                       "the amd64-microcode hook must be forced to early mode")
+        self.assertIn('cat > "$ROOTFS_SRC/etc/default/intel-microcode"',
+                      self.builder,
+                      "the intel-microcode hook's mode file must be written")
         self.assertIn("IUCODE_TOOL_INITRAMFS=early", self.builder,
                       "the intel-microcode hook must be forced to early mode")
-        self.assertIn("conf.d/nyrqis-microcode.conf", self.builder,
-                      "the override must ship as an initramfs conf.d/*.conf "
-                      "fragment (the .conf suffix is what mkinitramfs sources)")
         self.assertLess(
-            self.builder.index("nyrqis-microcode"),
+            self.builder.index("/etc/default/amd64-microcode"),
             self.builder.index("mkinitramfs -o"),
-            "the conf.d fragment must be written BEFORE mkinitramfs runs")
+            "the /etc/default mode files must be written BEFORE "
+            "mkinitramfs runs")
         self.assertIn('die "early CPU microcode absent', self.builder,
                       "a missing vendor blob must fail the build, not warn")
 

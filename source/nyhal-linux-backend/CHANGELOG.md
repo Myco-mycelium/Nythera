@@ -16,12 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `auto` mode probes `/proc/cpuinfo` ON THE BUILD HOST, and the CI
   runners are Intel — the AMD hook silently skipped (the Intel hook
   self-selects `early` under `MODULES=most`, which is why its blob
-  made it). The builder now pins both hooks to `early` mode via
-  `/etc/initramfs-tools/conf.d/nyrqis-microcode.conf` written before
-  `mkinitramfs`, and the post-build check was upgraded from a warning
-  to a **fail-closed gate** requiring BOTH vendor blobs in the raw
-  initrd bytes (`cpio -it` stops at the first archive trailer, so the
-  check matches raw bytes).
+  made it). The builder now pins both hooks to `early` mode by
+  writing `/etc/default/amd64-microcode` and
+  `/etc/default/intel-microcode` — the exact files the hooks source —
+  before `mkinitramfs`, and the post-build check was upgraded from a
+  warning to a **fail-closed gate** requiring BOTH vendor blobs in
+  the raw initrd bytes (`cpio -it` stops at the first archive
+  trailer, so the check matches raw bytes). Honesty note: the first
+  attempt used an initramfs `conf.d/` fragment (the wrong mechanism —
+  that configures mkinitramfs, not the hooks); the fail-closed gate
+  caught it in CI within minutes (tag-amd64 run 37458101332) before
+  anything shipped.
 
 ### Added
 

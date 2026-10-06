@@ -593,16 +593,20 @@ EOF
         # with late-load-only microcode — exactly the class of
         # build-machine-accident this builder exists to prevent.
         # 'early' mode skips the host probe and packs the FULL vendor
-        # blob for the target arch. The post-build check below then
-        # REQUIRES both blobs, fail-closed.
+        # blob for the target arch. The hooks source their mode from
+        # /etc/default/<pkg> (NOT initramfs conf.d, which configures
+        # mkinitramfs itself — the first attempt used conf.d and the
+        # fail-closed gate caught it in CI within minutes). The
+        # post-build check below then REQUIRES both blobs.
         if [[ "$ARCH" == amd64 ]]; then
-            mkdir -p "$ROOTFS_SRC/etc/initramfs-tools/conf.d"
-            # conf.d/*.conf — the .conf suffix is required (mkinitramfs
-            # sources conf.d/*.conf, not bare names).
-            cat > "$ROOTFS_SRC/etc/initramfs-tools/conf.d/nyrqis-microcode.conf" <<'EOF'
-# Nyrqis live (0.29.42): early microcode is packed for the TARGET
-# arch unconditionally — never probed from the build host's CPU.
+            cat > "$ROOTFS_SRC/etc/default/amd64-microcode" <<'EOF'
+# Nyrqis live (0.29.42): pack the full AMD blob for the TARGET arch
+# unconditionally — never probed from the build host's CPU.
 AMD64UCODE_INITRAMFS=early
+EOF
+            cat > "$ROOTFS_SRC/etc/default/intel-microcode" <<'EOF'
+# Nyrqis live (0.29.42): pack the full Intel blob for the TARGET arch
+# unconditionally — never probed from the build host's CPU.
 IUCODE_TOOL_INITRAMFS=early
 EOF
         fi
@@ -841,9 +845,9 @@ if command -v cpio >/dev/null 2>&1; then
   both vendor blobs must ride the early cpio so microcode applies
   before userspace on ANY amd64 machine, regardless of the build
   host's CPU vendor. The builder writes
-  /etc/initramfs-tools/conf.d/nyrqis-microcode.conf
-  (AMD64UCODE_INITRAMFS=early, IUCODE_TOOL_INITRAMFS=early) before
-  mkinitramfs; if this
+  /etc/default/amd64-microcode (AMD64UCODE_INITRAMFS=early) and
+  /etc/default/intel-microcode (IUCODE_TOOL_INITRAMFS=early) —
+  the exact files the hooks source — before mkinitramfs; if this
   fired, the microcode hooks did not run — check the mkinitramfs
   step's output for hook errors."
         fi
