@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.29.43] - 2026-10-07
 
+### Released
+
+- Tag `v0.29.43` pushed from `de60da2`; both arch assets ship
+  automatically from the tag trigger and are verified end-to-end (the
+  chain: both tag runs green → assets downloaded and sha256-matched
+  against the GitHub API digests → release smokes → release body
+  patched with the verdicts). See REPOSITORY_STATE for the verdict.
+
 ### Added
 
 - **The System Monitor is a first-class shell application.** An
