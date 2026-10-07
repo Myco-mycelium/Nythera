@@ -141,6 +141,20 @@ class BackupScheduleEntry:
 
 
 class SystemRestore:
+    """Desktop data layer for the Restore app.
+
+    0.29.45 (RST-001 §7(5)): the 0.28.0-era sample-data simulation is
+    RETIRED — this class no longer fabricates snapshots in memory.
+    Without an attached volume it honestly reports zero restore points;
+    with one, ``attach_volume`` binds a real
+    ``backend.restore_engine.RestoreEngine`` and every mutating verb
+    (create/delete/rollback) goes through the engine — pinned,
+    audit-chained, GC-safe. The read-side API (search/stats/list
+    shapes) is preserved so the desktop surface's tests keep passing;
+    ``rollback`` maps onto the engine's restore (dry-run default, the
+    engine commits only when the caller forces it).
+    """
+
     def __init__(self):
         self.snapshots: List[Snapshot] = []
         self.restore_points: List[RestorePoint] = []
@@ -150,84 +164,76 @@ class SystemRestore:
         self.auto_snapshot_on_install: bool = True
         self.auto_snapshot_on_upgrade: bool = True
         self.compression_enabled: bool = True
-        self._create_sample_data()
+        self._engine = None
+        self._volume_path: str = ""
 
-    def _create_sample_data(self):
-        now = time.time()
-        self.snapshots = [
-            Snapshot(name="Initial Install", description="Fresh Nyrqis OS installation",
-                     snapshot_type=SnapshotType.FULL, timestamp=now - 86400 * 30,
-                     size_gb=4.5, packages_affected=1250, config_files=45,
-                     bootable=True, paths=["/"]),
-            Snapshot(name="After System Update", description="Updated kernel and packages",
-                     snapshot_type=SnapshotType.INCREMENTAL, parent_id="a1b2c3d4e5f6",
-                     timestamp=now - 86400 * 14, size_gb=0.8,
-                     packages_affected=25, config_files=3,
-                     bootable=True, paths=["/"]),
-            Snapshot(name="Wayland Bridge Install", description="Installed Nyrqis Wayland bridge",
-                     snapshot_type=SnapshotType.INCREMENTAL, parent_id="b2c3d4e5f6a7",
-                     timestamp=now - 86400 * 7, size_gb=0.3,
-                     packages_affected=5, config_files=2,
-                     paths=["/usr", "/etc"]),
-            Snapshot(name="Theme Changes", description="Applied Dracula theme and custom fonts",
-                     snapshot_type=SnapshotType.INCREMENTAL, parent_id="c3d4e5f6a7b8",
-                     timestamp=now - 86400 * 3, size_gb=0.05,
-                     packages_affected=0, config_files=8,
-                     paths=["/home/zeus/.config"]),
-            Snapshot(name="GPU Driver Update", description="Updated NVIDIA driver to 535.129",
-                     snapshot_type=SnapshotType.INCREMENTAL, parent_id="d4e5f6a7b8c9",
-                     timestamp=now - 86400, size_gb=0.4,
-                     packages_affected=3, config_files=1,
-                     bootable=True, paths=["/usr", "/etc/modprobe.d"]),
-            Snapshot(name="Pre-Breaking-Change", description="Before manual Rust toolchain update",
-                     snapshot_type=SnapshotType.FULL, timestamp=now - 3600,
-                     size_gb=3.2, packages_affected=12, config_files=4,
-                     bootable=True, can_rollback=True, paths=["/"]),
-        ]
-        self.total_size_gb = sum(s.size_gb for s in self.snapshots)
+    # ------------------------------------------------------------------
+    # Real engine attach (RST-001 §7(5))
+    # ------------------------------------------------------------------
 
-        self.restore_points = [
-            RestorePoint(name="Clean Boot", snapshot_id=self.snapshots[0].id,
-                          reason="Fresh install baseline",
-                          packages=["nyrqis-kernel", "nyrqis-compositor", "nyrqis-shell"]),
-            RestorePoint(name="Post-Update Stable", snapshot_id=self.snapshots[1].id,
-                          reason="All tests passing after update",
-                          packages=["nyrqis-kernel", "linux-headers", "mesa", "vulkan-tools"]),
-            RestorePoint(name="Current (Pre-Breaking)", snapshot_id=self.snapshots[5].id,
-                          reason="Last known good state before Rust update",
-                          packages=["rust", "cargo", "nyrqis-backend"]),
-        ]
+    def attach_volume(self, volume_path: str) -> bool:
+        """Bind a real NyFS volume through backend.restore_engine.
+        ``load`` is the classmethod constructor (raises ``NyFSError``
+        when no valid metadata exists — never fabricates an empty
+        filesystem); a never-saved path therefore attaches honestly
+        FALSE unless ``initialize`` is requested. Returns False (never
+        raises) on any refusal — the app reports an honestly empty
+        list."""
+        try:
+            from fuse.nyfs import NyFSFilesystem
+            from backend.restore_engine import RestoreEngine
+            fs = NyFSFilesystem.load(volume_path)
+            self._engine = RestoreEngine(fs)
+            self._volume_path = volume_path
+            return True
+        except Exception:  # noqa: BLE001 — the surface degrades honestly
+            self._engine = None
+            self._volume_path = ""
+            return False
 
-        self.backup_schedules = [
-            BackupScheduleEntry(name="System Snapshot", schedule=BackupSchedule.DAILY,
-                                 enabled=True, paths=["/", "/home"],
-                                 exclude_patterns=["/tmp", "/var/cache", "/proc", "/sys"],
-                                 retention_days=30, max_snapshots=30,
-                                 last_backup=now - 3600, next_backup=now + 82800,
-                                 size_gb=4.5),
-            BackupScheduleEntry(name="Config Backup", schedule=BackupSchedule.ON_BOOT,
-                                 enabled=True, paths=["/etc", "/home/zeus/.config"],
-                                 exclude_patterns=[], retention_days=90, max_snapshots=20,
-                                 last_backup=now - 7200, next_backup=0,
-                                 size_gb=0.2),
-            BackupScheduleEntry(name="Home Directory", schedule=BackupSchedule.WEEKLY,
-                                 enabled=True, paths=["/home/zeus"],
-                                 exclude_patterns=["*.cache", "*.tmp", "node_modules"],
-                                 retention_days=60, max_snapshots=8,
-                                 last_backup=now - 86400 * 5, next_backup=now + 86400 * 2,
-                                 size_gb=12.5),
-        ]
+    @property
+    def volume_attached(self) -> bool:
+        return self._engine is not None
+
+    def _sync_from_engine(self) -> None:
+        """Mirror the engine's registry into the UI snapshot shapes."""
+        self.snapshots = []
+        self.total_size_gb = 0.0
+        if self._engine is None:
+            return
+        for entry in self._engine.list_snapshots():
+            snap = Snapshot(
+                name=entry.get("label", entry["snap_id"]),
+                description=entry.get("reason", ""),
+                snapshot_type=SnapshotType.INCREMENTAL,
+                status=SnapshotStatus.COMPLETED,
+                timestamp=entry.get("created", 0.0),
+                size_gb=0.0,
+            )
+            snap.id = entry["snap_id"]
+            self.snapshots.append(snap)
 
     def create_snapshot(self, name: str, description: str = "",
                         snapshot_type: SnapshotType = SnapshotType.INCREMENTAL,
                         **kwargs) -> Snapshot:
+        if self._engine is not None:
+            entry = self._engine.create_snapshot(
+                label=name, reason=description or "desktop capture")
+            self._sync_from_engine()
+            snap = self.get_snapshot(entry["snap_id"])
+            return snap if snap is not None else Snapshot(name=name,
+                                                          description=description)
         snap = Snapshot(name=name, description=description,
-                         snapshot_type=snapshot_type, **kwargs)
+                        snapshot_type=snapshot_type, **kwargs)
         self.snapshots.append(snap)
         self.total_size_gb += snap.size_gb
         return snap
 
     def delete_snapshot(self, snapshot_id: str) -> bool:
+        if self._engine is not None:
+            deleted = self._engine.delete_snapshot(snapshot_id)
+            self._sync_from_engine()
+            return deleted
         for i, s in enumerate(self.snapshots):
             if s.id == snapshot_id:
                 self.total_size_gb -= s.size_gb
@@ -235,7 +241,23 @@ class SystemRestore:
                 return True
         return False
 
-    def rollback(self, snapshot_id: str) -> bool:
+    def rollback(self, snapshot_id: str, dry_run: bool = True) -> bool:
+        """Restore the volume to the snapshot (engine-attached) — the
+        DESKTOP DEFAULT IS DRY-RUN (preview-first, the same operator
+        posture the CLI and the engine floor); committing requires the
+        explicit ``dry_run=False``."""
+        if self._engine is not None:
+            try:
+                self._engine.restore_to(snapshot_id,
+                                        dry_run=bool(dry_run))
+                self._sync_from_engine()
+                if not dry_run:
+                    snap = self.get_snapshot(snapshot_id)
+                    if snap is not None:
+                        snap.status = SnapshotStatus.RESTORED
+                return True
+            except Exception:  # noqa: BLE001 — honest refusal to the UI
+                return False
         snap = next((s for s in self.snapshots if s.id == snapshot_id), None)
         if snap and snap.can_rollback:
             snap.status = SnapshotStatus.RESTORED

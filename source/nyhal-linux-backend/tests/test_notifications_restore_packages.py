@@ -85,35 +85,68 @@ class TestNotificationCenter(unittest.TestCase):
 
 
 class TestSystemRestore(unittest.TestCase):
+    """Updated 0.29.45 (RST-001 §7(5)): the sample-data simulation is
+    RETIRED — SystemRestore starts honestly EMPTY and binds the real
+    backend.restore_engine when a volume is attached. These pins cover
+    both postures: the no-volume honesty and the engine-backed verbs
+    (a real NyFS volume, real pins, real audit chain)."""
+
     def setUp(self):
+        import tempfile
         from ui.system_restore import SystemRestore, SnapshotType, SnapshotStatus
-        self.sr = SystemRestore()
         self.ST = SnapshotType
         self.SS = SnapshotStatus
+        self.sr = SystemRestore()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.vol = tempfile.mkdtemp(dir=self._tmp.name)
+        from fuse.nyfs import NyFSFilesystem
+        NyFSFilesystem(self.vol).save()  # a real, persisted volume
+        self.assertTrue(self.sr.attach_volume(self.vol))
+        # Seed real content and one real restore point.
+        from fuse.nyfs import NyFSFilesystem  # noqa: F401 — engine binds its own
+        self.sr._engine.fs.create_file("/data.bin", 0o644)
+        self.sr._engine.fs.write("/data.bin", b"payload-" * 20000)
+        self.snap = self.sr.create_snapshot("Baseline", "seed point")
+        self.sr._engine.fs.write("/data.bin", b"changed-" * 20000)
 
-    def test_initial_state(self):
-        self.assertGreater(len(self.sr.snapshots), 0)
-        self.assertGreater(len(self.sr.backup_schedules), 0)
-        self.assertGreater(len(self.sr.restore_points), 0)
+    def test_initial_state_is_honest_without_simulation(self):
+        # The volume is attached: the one REAL capture is visible.
+        self.assertEqual(len(self.sr.snapshots), 1)
+        self.assertEqual(self.sr.volume_attached, True)
+        # A detached surface reports empty, never fabricated data.
+        bare = type(self.sr)()
+        self.assertEqual(len(bare.snapshots), 0)
+        self.assertEqual(bare.volume_attached, False)
 
     def test_create_snapshot(self):
-        snap = self.sr.create_snapshot("Test Snapshot", "Test description",
-                                        self.ST.FULL, size_gb=1.0)
+        snap = self.sr.create_snapshot("Test Snapshot", "Test description")
         self.assertEqual(snap.name, "Test Snapshot")
         self.assertIn(snap, self.sr.snapshots)
+        self.assertEqual(len(self.sr.snapshots), 2)
 
     def test_delete_snapshot(self):
-        snap_id = self.sr.snapshots[0].id
+        snap_id = self.snap.id
         result = self.sr.delete_snapshot(snap_id)
         self.assertTrue(result)
+        self.assertEqual(len(self.sr.snapshots), 0)
+        self.assertFalse(self.sr.delete_snapshot(snap_id))
 
-    def test_rollback(self):
-        result = self.sr.rollback(self.sr.snapshots[0].id)
+    def test_rollback_reanchors_for_real(self):
+        result = self.sr.rollback(self.snap.id, dry_run=False)
         self.assertTrue(result)
-        self.assertEqual(self.sr.snapshots[0].status, self.SS.RESTORED)
+        self.assertEqual(self.sr._engine.fs.read("/data.bin"),
+                         b"payload-" * 20000)
+        restored = self.sr.get_snapshot(self.snap.id)
+        self.assertEqual(restored.status, self.SS.RESTORED)
+
+    def test_rollback_dry_run_default_leaves_data(self):
+        self.assertTrue(self.sr.rollback(self.snap.id))
+        self.assertEqual(self.sr._engine.fs.read("/data.bin"),
+                         b"changed-" * 20000)
 
     def test_get_snapshot(self):
-        snap = self.sr.get_snapshot(self.sr.snapshots[0].id)
+        snap = self.sr.get_snapshot(self.snap.id)
         self.assertIsNotNone(snap)
 
     def test_get_rollback_snapshots(self):
@@ -121,8 +154,9 @@ class TestSystemRestore(unittest.TestCase):
         self.assertGreater(len(snapshots), 0)
 
     def test_get_bootable_snapshots(self):
-        snapshots = self.sr.get_bootable_snapshots()
-        self.assertGreater(len(snapshots), 0)
+        # Image-level bootability is an honest zero until the GRUB
+        # restore path captures bootable OS images (RST-001 §7 scope).
+        self.assertEqual(len(self.sr.get_bootable_snapshots()), 0)
 
     def test_search(self):
         results = self.sr.search("kernel")

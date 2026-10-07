@@ -287,10 +287,16 @@ class RestoreEngine:
             return result
 
         # Re-pin the CURRENT live set before the floor's reshape. The
-        # capture walk runs under its own in-lock section (the floor's
-        # snapshot/restore/delete primitives are each internally
-        # locked — a non-reentrant threading.Lock, so the engine never
-        # holds the lock across a floor call).
+        # replaced set must be DURABLE first (mirroring the capture's
+        # persist-first discipline): content written since the last
+        # save() exists only in memory, and a pin over it would refuse
+        # (or worse, outlive nothing). The capture walk runs under its
+        # own in-lock section (the floor's snapshot/restore/delete
+        # primitives are each internally locked — a non-reentrant
+        # threading.Lock, so the engine never holds the lock across a
+        # floor call).
+        if dry_run is False:
+            self.fs.save()
         refs = {}
         with self.fs.lock:
             for blk in self.fs._all_blocks(self.fs.inodes):
@@ -301,6 +307,16 @@ class RestoreEngine:
                     if blk.checksum and blk.checksum not in refs:
                         refs[blk.checksum] = blk.block_id
         replaced_dir = self.snap_dir / (snap_id + ".replaced")
+        # A prior restore to the same point left its replaced-set pin
+        # behind: re-pinning the CURRENT live set replaces it (the old
+        # replaced blocks were themselves restored content — reclaiming
+        # the stale pin dir is exactly the discard act, audited).
+        if replaced_dir.is_dir():
+            import shutil
+            shutil.rmtree(replaced_dir)
+            _audit_append(self._audit_manager, self._chain_id,
+                          "restore.engine.replaced.discarded",
+                          {"snap_id": snap_id, "reason": "re-restore"})
         try:
             self._pin_blocks(replaced_dir, refs)
         except OSError as exc:

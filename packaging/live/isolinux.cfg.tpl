@@ -38,3 +38,7 @@ LABEL nyrqis-ram
 LABEL nyrqis-serial
     KERNEL /live/vmlinuz
     APPEND initrd=/live/initrd boot=live console=ttyS0,115200
+
+LABEL nyrqis-restore
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd boot=live nyrqis.restore=1 quiet splash console=tty0 console=ttyS0,115200

@@ -261,6 +261,50 @@ ${G}
 BANNER
 
 # ---------------------------------------------------------------- daemon
+# Restore mode (RST-001 §7(4), 0.29.45): `nyrqis.restore=1` on the
+# kernel cmdline (the GRUB/isolinux "Nyrqis Restore" menu entries)
+# boots the same live system into the whole-volume restore environment
+# — daemon up, the restore CLI exercised on-disk, NO desktop session.
+# The environment stays at a shell with the engine available, so an
+# operator can act on an attached volume (the machine being restored
+# is a DIFFERENT disk than the live medium — the ISO itself is never
+# the restore target).
+RESTORE_MODE=0
+for word in $(cat /proc/cmdline 2>/dev/null); do
+    case "$word" in
+        nyrqis.restore=1) RESTORE_MODE=1 ;;
+    esac
+done
+
+if [[ "$RESTORE_MODE" = 1 ]]; then
+    section "Nyrqis Restore (whole-volume restore environment)"
+    echo "This LIVE MEDIUM is the toolkit, never the target: attach the"
+    echo "volume to restore as a path and drive the engine through the CLI."
+    if [[ -f "$BACKEND" ]]; then
+        if ! python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1; then
+            start_daemon
+            wait_for_daemon || true
+        fi
+        python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1 \
+            && ok "daemon serving on $SOCK — restore verbs available" \
+            || warn "daemon did not come up — restore verbs need it (log: $LOG)"
+        echo
+        echo "  Capture a point:    python3 $CTL restore-create --volume-path <mount>"
+        echo "  List points:        python3 $CTL restore-list   --volume-path <mount>"
+        echo "  Delete a point:     python3 $CTL restore-delete --volume-path <mount> --snap-id <id>"
+        echo
+        echo "  (A restore re-anchors the volume's tree to a captured set;"
+        echo "   pinned blocks are never GC-reclaimed; deletes age out via grace.)"
+        printf '%sRESTORE-ENV-READY%s\n' "$B" "$N"
+    else
+        missing "backend tree at $OPT — the image build failed to install it"
+    fi
+    case $- in
+        *i*) exec bash ;;
+        *)   exec bash --noprofile -i ;;
+    esac
+fi
+
 section "Backend daemon"
 if [[ ! -f "$BACKEND" ]]; then
     missing "backend tree at $OPT — the image build failed to install it"

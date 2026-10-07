@@ -86,6 +86,28 @@ class TestDemoSessionContract(unittest.TestCase):
     def setUp(self):
         self.script = read(DEMO)
 
+    def test_restore_mode_exits_to_non_profile_shell(self):
+        """The RST-001 restore environment (0.29.45): nyrqis.restore=1
+        on the kernel cmdline short-circuits the demo into the restore
+        banner (RESTORE-ENV-READY marker) and hands off to the same
+        non-profile shell discipline as the main path — no desktop
+        autostart, no login-shell loop, daemon up so the restore CLI
+        verbs work."""
+        self.assertIn("nyrqis.restore=1", self.script)
+        self.assertIn("RESTORE-ENV-READY", self.script)
+        # The restore block comes BEFORE the desktop section: a restore
+        # boot never attempts the desktop autostart.
+        self.assertLess(self.script.index("RESTORE_MODE=0"),
+                        self.script.index('section "Desktop session"'))
+        self.assertLess(self.script.index("RESTORE_MODE=0"),
+                        self.script.index("Backend daemon"))
+        # The restore handoff is the same non-profile discipline.
+        restore_block = self.script[
+            self.script.index("RESTORE_MODE=0"):
+            self.script.index('section "Backend daemon"')]
+        self.assertIn("exec bash --noprofile -i", restore_block)
+        self.assertNotRegex(restore_block, LOGIN_SHELL_EXEC)
+
     def test_no_login_shell_exec_anywhere(self):
         for i, line in enumerate(self.script.splitlines(), 1):
             self.assertIsNone(
@@ -216,6 +238,27 @@ class TestMenuSerialObservability(unittest.TestCase):
                 "console=ttyS0", body,
                 f"isolinux label {name!r} has no serial console — the "
                 f"menu-path smoke would be blind to this boot path")
+
+    def test_every_template_has_a_restore_entry(self):
+        """The RST-001 restore environment (§7(4), 0.29.45): every boot
+        template carries a `Nyrqis Restore` menu entry selecting the
+        restore mode via nyrqis.restore=1 — the same live kernel/initrd,
+        the daemon-driven restore environment instead of a desktop."""
+        for name, text in (("grub.cfg.tpl", self.grub),
+                           ("grub.cfg.arm64.tpl", read(GRUB_ARM64)),
+                           ("isolinux.cfg.tpl", self.isolinux)):
+            self.assertIn(
+                "nyrqis.restore=1", text,
+                f"{name}: no restore entry — the whole-volume restore "
+                f"environment is unreachable from the boot menu")
+        # The amd64 GRUB entry is named for the menu; isolinux keeps
+        # the nyrqis-restore label convention.
+        self.assertIn("Nyrqis Restore", self.grub)
+        self.assertIn("Nyrqis Restore", read(GRUB_ARM64))
+        m = re.search(r"LABEL (nyrqis-restore)\n(.*?)(?=\nLABEL|\Z)",
+                      self.isolinux, re.S)
+        self.assertIsNotNone(m, "isolinux restore label missing")
+        self.assertIn("nyrqis.restore=1", m.group(2))
 
     def test_material_shell_is_the_default_boot_entry(self):
         """The Material (Android-style) shell is the product face of the

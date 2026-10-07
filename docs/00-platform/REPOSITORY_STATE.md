@@ -5,6 +5,38 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-07 (fifth round), RST-001 §7 COMPLETED as 0.29.45 (owner
+instruction "proceed with all the suggested followups"): (1) the
+bootable restore environment — `Nyrqis Restore` entries
+(`nyrqis.restore=1`) in BOTH GRUB templates and the isolinux
+fallback; `nyrqis-demo` gained the restore-mode short-circuit BEFORE
+the daemon/desktop sections (daemon up, the restore banner names the
+CLI verbs, `RESTORE-ENV-READY` in the serial stream, the same
+non-profile shell handoff, NO desktop autostart — the live medium is
+the toolkit, never the target); 2 new boot-contract pins (105 total:
+the entry in every template + the restore-mode script contract).
+(2) The desktop data-layer swap — the 0.28.0 sample-data simulation
+RETIRED: `SystemRestore` starts honestly empty;
+`attach_volume(volume_path)` binds a real RestoreEngine over a
+persisted NyFS volume (the classmethod `load`, which refuses a
+never-saved path — attach returns False honestly); create/delete/
+rollback go through the engine; the read-side API shape is kept; the
+desktop default is DRY-RUN preview (the commit needs an explicit
+`dry_run=False`) — 13 surface pins rewritten to the two-posture
+contract. Engine hardening this round: the re-pin durability mirror
+(a restore saves BEFORE re-pinning the replaced set — undurable
+blocks would refuse) and audited stale replaced-pin replacement on
+re-restore. Debugging honesty, disclosed: the 2026-09-23
+duplicate-definition class STRUCK AGAIN — the first `create_snapshot`
+edit was silently SHADOWED by a later stale duplicate (the engine
+path never executed; the pins caught it); the sample-data block and
+the duplicate are removed and the module now has exactly one
+definition per verb. Verification: restore surface 13/13, engine
+8/8, boot contract 105/105, premises 60/60, cycles 0, mkdocs
+strict green; full sweep count below (run after all edits). The
+drill stays owner-blocked (no 5th probe on a generic proceed — 4
+identical 403s already recorded). Next: tag v0.29.45 and run the
+release-verify chain (same approved-smoke shape as 0.29.43).
 2026-10-07 (fourth round), Bundle G DECIDED and the restore engine
 LANDED as 0.29.44 (owner instruction "proceed"; the G1 ruling taken
 via ask_user — the recorded-session decision input, NOT a self-flip:

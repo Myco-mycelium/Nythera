@@ -5,6 +5,41 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.45] - 2026-10-07
+
+### Added
+
+- **RST-001 §7(4): the restore environment is bootable from the menu.**
+  A `Nyrqis Restore (whole-volume restore environment)` entry
+  (`nyrqis.restore=1`) in BOTH GRUB templates and the isolinux
+  fallback: the same live kernel/initrd boots into a daemon-backed
+  restore shell — the restore banner names the verbs, `RESTORE-ENV-READY`
+  marks readiness in the serial stream, and the handoff follows the
+  same non-profile shell discipline (no desktop autostart; the live
+  medium is the toolkit, never the target). 2 new boot-contract pins
+  (105 total in `test_live_boot_contract.py`).
+- **RST-001 §7(5): the desktop Restore app's data layer is real.**
+  The 0.28.0 sample-data simulation is RETIRED — `SystemRestore`
+  starts honestly empty and `attach_volume` binds a real
+  `RestoreEngine` over a persisted NyFS volume; create/delete/rollback
+  go through the engine (pinned, audit-chained, GC-safe), the read
+  API keeps its shape, and the desktop default is dry-run preview
+  (committing requires the explicit `dry_run=False`). The engine
+  gained the durability mirror for the re-pin (a restore re-pins the
+  replaced set only after `save()`) and audited stale replaced-pin
+  replacement on re-restore. 13 pins in
+  `test_notifications_restore_packages.py` updated to the two-posture
+  contract (honest-empty detached; engine-backed attached).
+
+### Fixed
+
+- **The 2026-09-23 duplicate-definition class struck again and is
+  structurally resolved this time:** the first `create_snapshot` edit
+  was silently SHADOWED by a later stale duplicate (the engine path
+  never executed — pins caught it). The sample-data block and the
+  duplicate are removed; the module now has exactly one definition of
+  every verb.
+
 ## [0.29.44] - 2026-10-07
 
 ### Added

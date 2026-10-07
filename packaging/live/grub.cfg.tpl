@@ -48,3 +48,8 @@ menuentry "Nyrqis Live (serial console — CI boot smoke)" {
     linux /live/vmlinuz boot=live console=ttyS0,115200
     initrd /live/initrd
 }
+
+menuentry "Nyrqis Restore (whole-volume restore environment)" {
+    linux /live/vmlinuz boot=live nyrqis.restore=1 quiet splash console=tty0 console=ttyS0,115200
+    initrd /live/initrd
+}
