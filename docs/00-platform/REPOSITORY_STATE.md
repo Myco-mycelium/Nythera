@@ -5,6 +5,30 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-07, followup-round disposition (owner instruction "proceed
+with all the suggested followups"): the three named threads from the
+0.29.42 round dispositioned with point-in-time evidence and zero
+manufactured motion. (1) The staged drill — verify_pat_grants.sh
+re-run: identity OK (Myco-mycelium), variables write OK (probe
+created+removed), actions write OK (pat-expiry-watch dispatched) —
+ALL GRANTS PRESENT; the decisive Issues:write probe (no-op PATCH
+state=open on the still-open issue #1) returned 403 "Resource not
+accessible by personal access token", so the six-step pass's steps
+4–6 REMAIN OWNER-BLOCKED and the drill was deliberately NOT
+dispatched (steps 1–3 already proven live 2026-10-05; dispatching
+now would burn a full CI build only to die at step 4 — the drill's
+own stop-cleanly design); the one owner decision is unchanged: add
+Issues read+write to the PAT. (2) The dailies band —
+check_scheduled_runs.sh exit 0, SCHEDULED RUNS: OK (live-iso
+completed/success 2026-10-05T10:12Z @ 4696b50, arm64 13:26Z @
+806ded0, scheduled-runs-watch 2026-10-06T12:14Z @ 6ee77e0,
+pat-expiry-watch 12:11Z). (3) Tip verification — tip 2767289 (the
+0.29.42 records commit, docs-only on the verified tag) carries
+36/36 check runs success on CI, so the shipped code state is still
+exactly the tag-verified one (2,555 + 6,711 green recorded at
+ba634f8/6ee77e0); no local sweep re-run — zero code delta since the
+tag. Tree clean at 2767289, in sync with origin/main at session
+open.
 2026-10-06, 0.29.42 SHIPPED + verified end-to-end: tag v0.29.42
 (6ee77e0) built both arches green — the amd64 tag run exercised the
 new fail-closed both-vendor early-microcode gate and PASSED (after
