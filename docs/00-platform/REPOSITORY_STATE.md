@@ -5,6 +5,61 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-07 (fourth round), Bundle G DECIDED and the restore engine
+LANDED as 0.29.44 (owner instruction "proceed"; the G1 ruling taken
+via ask_user — the recorded-session decision input, NOT a self-flip:
+the 2026-09-06 unsanctioned-self-flip hazard class is why the ruling
+was put to the owner explicitly): RST-001 Option A ACCEPTED as
+recommended, with the owner condition that the GC-pin contract lands
+in the same commit as the mechanism — honored. Landed: (1) the pin —
+`NyFS._pinned_block_ids` consulted on every `gc_blocks` unlink
+(pinned blocks NEVER reclaimed regardless of age; reference-pinning
+composes with the 0.29.41 grace — age guards a racing save(), the pin
+guards a restore point; backward-compatible: empty register =
+grace-only GC exactly as 0.29.41 shipped); (2) the engine —
+`backend/restore_engine.py` (`RestoreEngine`: persist-first capture,
+the floor's in-lock deepcopy, hard-link pins of the referenced set
+with journal-resident blocks materialized temp+rename, restore
+re-anchoring through `NyFS.restore_snapshot` after re-pinning the
+replaced set, `discard_replaced`, delete-unpins-into-grace,
+ADR-0018 audit on every verb); (3) the operator surface —
+`nyrqisctl restore-create/list/delete` over three control-service
+ops (`system_restore_snapshot/list/delete`), client-side
+composition, dry-run-default restore; (4) 8 contract pins
+(`tests/test_restore_engine.py`: instant capture, pin survives
+grace=0, restore re-anchor + replaced-set re-pin, delete → grace
+reclaim, fail-closed torn-journal capture, refusal paths, no-egress,
+audit lifecycle); (5) protocol updates: `upd001-audit-rollback-pin`
+50 → 51 (the restore handler comment references the rollback
+posture — fired on landing exactly as designed), AG_AGENDA v2.6.0
+G1, RST-001 v1.0.0 Accepted, spec index 1.53.0, roadmap 1.15.0
+(restore item's honest scope: §7's GRUB/boot-smoke increment rides
+the next ISO build, the desktop data-layer swap rides the next
+increment). Debugging honesty: three en-route defects caught by the
+engine's own pins and fixed at the cause — an invented
+`fs.restore_from_references` call replaced by composition over the
+REAL floor; a real deadlock (the engine held the non-reentrant
+fs.lock across floor calls) restructured into per-primitive locking;
+and the journal-residency discovery (journal-mode saves leave no
+block files until compaction) answered by materializing at pin
+time. Verification: engine pins 8/8, payload-surface 7/7, premises
+60/60; the full sweep ran after ALL edits (count below). In
+parallel: the 0.29.43 release arc — COMPLETE AND VERIFIED. Tag pushed
+(a199e23 after the changelog release commit), both tag runs green on
+CI (37595875554 amd64 / 37595875441 arm64), the verification chain
+ran with the owner's explicit approval of the QEMU boots and closed
+CHAIN_DONE 10:21:30Z: both assets downloaded and sha256-matched
+against the GitHub API digests (amd64 8ccbb753…7787, 418,895,872 B;
+arm64 13320d5c…f7cf, 394,842,112 B), BOTH release smokes PASS on the
+downloaded assets (direct amd64 + menu arm64 — properly-named
+smoke-rel-02943.log, the 02942 log-name slip not repeated), and the
+release body patched with the proven verdicts after the proof (the
+v0.29.33 lesson). One operational lesson: a first chain launch
+expired before its first poll (background lifetime), relaunched with
+setsid; and the in-session full-sweep runs collided with the arm64
+TCG smoke for the machine's 3 GB RAM (pytest SIGPIPEd at ~97% twice —
+rerun after the smoke, count below). Evidence:
+~/nyrqis-work/{logs,release-v0.29.43}.
 2026-10-07 (third round), the two actionable followups landed as
 0.29.43 (owner instruction "proceed with all the suggested followups",
 round three): (1) the System Monitor is now a FIRST-CLASS shell

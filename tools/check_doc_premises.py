@@ -737,6 +737,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="rst001-accepted-engine-landed",
+        pattern=r"RST-001",
+        description="Bundle G was DECIDED (G1, 2026-10-07 — owner direction via the recorded session, the E1/F1 same-day shape): RST-001 v1.0.0 is Accepted and the Option A engine landed as 0.29.44 — backend/restore_engine.py carries the RestoreEngine composing the shipped NyFS snapshot floor, the GC pin (NyFS._pinned_block_ids consulted on every gc_blocks unlink) landed in the same commit per the owner ruling, and the operator surface is nyrqisctl restore-create/list/delete over the system_restore_* control ops",
+        check="path_contains",
+        check_args={
+            "needle": "class RestoreEngine",
+            "files": ["source/nyhal-linux-backend/backend/restore_engine.py"],
+        },
+    ),
+    Claim(
         claim_id="upd001-design-note",
         pattern=r"UPD-001",
         description="The automatic-updates/rollback design note exists (UPD-001, docs/00-platform/UPDATE_ROLLBACK_SPEC.md, v0.2.1 Draft) — surface audit recorded and CORRECTED same-session on re-probe (the v0.2.0 pass ran on truncated search output and missed the wired deployment/snapshot rollback family and the wired delta GENERATION half via nyrqisctl_repo; corrected finding: the gap is the signed-package VERIFY/APPLY path — UpdateVerifier/validate_rollback/apply_delta_update library-complete and user-unreachable — plus the policy questions), three options (A compose-first operator-invoked recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C observational close), five open questions, and §7 pre-stages the Option A implementation plan (update_orchestrate module composing the shipped primitives, ordering pins — verify before restore point before apply, operator-invoked-only rollback behind validate_rollback, no-direct-egress assertion); staged as AG_AGENDA v2.3.3 Bundle F1",
@@ -749,13 +759,13 @@ CLAIMS: list[Claim] = [
     Claim(
         claim_id="upd001-audit-rollback-pin",
         pattern=r"rollback is ALREADY WIRED|rollback.*ALREADY WIRED",
-        description="UPD-001 §2.1 (v0.2.1) as-probed, counts updated 2026-09-27 when the owner accepted Option A and the wiring landed: container.py carries the rollback_to_snapshot/deployment-rollback implementation (110 'rollback' occurrences), ipc/control.py the five dispatch arms (50), nyrqisctl.py the five CLI verbs PLUS the new packages-rollback operator verb (79 — was 71 before the UPD-001 Option A surface landed) — pinned per-file so implementation drift fails the pin",
+        description="UPD-001 §2.1 (v0.2.1) as-probed, counts updated 2026-09-27 when the owner accepted Option A and the wiring landed: container.py carries the rollback_to_snapshot/deployment-rollback implementation (110 'rollback' occurrences), ipc/control.py the five dispatch arms (51 — was 50; 2026-10-07 the RST-001 restore family's handler comment references the rollback posture), nyrqisctl.py the five CLI verbs PLUS the new packages-rollback operator verb (79 — was 71 before the UPD-001 Option A surface landed) — pinned per-file so implementation drift fails the pin",
         check="regex_counts",
         check_args={
             "pattern": r"rollback",
             "expect": {
                 "source/nyhal-linux-backend/backend/container.py": 110,
-                "source/nyhal-linux-backend/ipc/control.py": 50,
+                "source/nyhal-linux-backend/ipc/control.py": 51,
                 "source/nyhal-linux-backend/nyrqisctl.py": 79,
             },
             "scan_globs": [],

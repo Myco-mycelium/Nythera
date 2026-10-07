@@ -2270,6 +2270,29 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "snapshot": getattr(args, 'snapshot', {}),
             "dry_run": getattr(args, 'dry_run', True),
         }
+    if command == "restore-create":
+        return {
+            "service": "control",
+            "op": "system_restore_snapshot",
+            "volume_path": args.volume_path,
+            "label": getattr(args, 'label', ""),
+            "gc_grace_seconds": getattr(args, 'gc_grace_seconds', 3600),
+        }
+    if command == "restore-list":
+        return {
+            "service": "control",
+            "op": "system_restore_list",
+            "volume_path": args.volume_path,
+            "gc_grace_seconds": getattr(args, 'gc_grace_seconds', 3600),
+        }
+    if command == "restore-delete":
+        return {
+            "service": "control",
+            "op": "system_restore_delete",
+            "volume_path": args.volume_path,
+            "snap_id": args.snap_id,
+            "gc_grace_seconds": getattr(args, 'gc_grace_seconds', 3600),
+        }
     if command == "optimize-placement":
         return {
             "service": "control",
@@ -8178,6 +8201,29 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"  Files to delete: {len(resp.get('files_to_delete', []))}",
         ]
         return "\n".join(lines)
+    if command == "restore-create":
+        if not resp.get("ok"):
+            return f"Restore point capture FAILED: {resp.get('error', '?')}"
+        return (
+            f"Restore point captured: {resp.get('snap_id', '?')} "
+            f"({resp.get('block_count', 0)} blocks pinned)"
+        )
+    if command == "restore-list":
+        lines = ["Whole-volume restore points:"]
+        snaps = resp.get("snapshots", [])
+        if not snaps:
+            lines.append("  (none)")
+        for s in snaps:
+            lines.append(
+                f"  {s.get('snap_id', '?')}  {s.get('label', '')}  "
+                f"{s.get('block_count', 0)} blocks")
+        return "\n".join(lines)
+    if command == "restore-delete":
+        if not resp.get("ok"):
+            return f"Restore-point delete FAILED: {resp.get('error', '?')}"
+        deleted = resp.get("deleted", False)
+        return ("Restore point deleted (pins released; blocks age out "
+                f"via GC grace)" if deleted else "No such restore point")
     if command == "optimize-placement":
         lines = [
             f"Placement optimization ({resp.get('strategy', '?')}):",
@@ -11704,6 +11750,27 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--dry-run", action="store_true", default=True)
     rs.add_argument("--no-dry-run", dest="dry_run", action="store_false")
     rs.set_defaults(command="rollback-snapshot")
+
+    # -- whole-system restore (RST-001, client-side composition) --
+    sr_create = sub.add_parser(
+        "restore-create", help="Capture a whole-volume restore point")
+    sr_create.add_argument("--volume-path", required=True)
+    sr_create.add_argument("--label", default="")
+    sr_create.add_argument("--gc-grace-seconds", type=float, default=3600)
+    sr_create.set_defaults(command="restore-create")
+
+    sr_list = sub.add_parser(
+        "restore-list", help="List whole-volume restore points")
+    sr_list.add_argument("--volume-path", required=True)
+    sr_list.add_argument("--gc-grace-seconds", type=float, default=3600)
+    sr_list.set_defaults(command="restore-list")
+
+    sr_delete = sub.add_parser(
+        "restore-delete", help="Unpin a whole-volume restore point")
+    sr_delete.add_argument("--volume-path", required=True)
+    sr_delete.add_argument("--snap-id", required=True)
+    sr_delete.add_argument("--gc-grace-seconds", type=float, default=3600)
+    sr_delete.set_defaults(command="restore-delete")
 
     # -- placement optimization commands --
     op_ = sub.add_parser("optimize-placement", help="Optimize container placement across nodes")

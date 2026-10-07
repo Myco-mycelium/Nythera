@@ -1,8 +1,8 @@
 ---
 title: Whole-System Restore Engine — Design Note
 document_id: RST-001
-version: 0.1.0
-status: Draft
+version: 1.0.0
+status: Accepted
 classification: Technical
 owners:
   - Nyrqis Architecture
@@ -15,6 +15,15 @@ depends_on: [NPS-011, ADR-0018, ADR-0019]
 
 # RST-001 — Whole-System Restore Engine (Design Note)
 
+> **ACCEPTED 2026-10-07 (owner direction via the recorded session, the
+> E1/F1 same-day shape — AG decision-log row G1):** Option A as
+> recommended. The ruling carries the owner condition that the GC-pin
+> contract lands pinned (restore points NEVER reclaimed) in the same
+> commit as the mechanism, and the §7 six-increment plan is the
+> implementation spec. Landed as 0.29.44 (the GRUB/boot-smoke increment
+> rides the next ISO build; the desktop data-layer swap rides the next
+> increment).
+>
 > Drafted first per the DBG-001/CRY-001/UPD-001 discipline: the roadmap's
 > "System restore points" item is PARTIAL (2026-10-07 re-probe) — the
 > deployment/update-scoped half is shipped and wired; the open half is a

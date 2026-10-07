@@ -183,6 +183,35 @@ class NyFSFilesystem:
     METADATA_FILE = "metadata.json"
     JOURNAL_FILE = "journal.bin"  # append-only commit journal
 
+    def _pinned_block_ids(self) -> set:
+        """Restore-point pin register (RST-001, Bundle G — 0.29.44): the
+        block ids a captured restore point holds on disk. Consulted by
+        ``gc_blocks`` on EVERY unlink decision; a pinned block is NEVER
+        reclaimed, regardless of age — age-based grace keeps a racing
+        ``save()`` safe, reference-pinning keeps a captured restore
+        point safe, and the two mechanics compose. "Instant" snapshot
+        capture (1) reads the CURRENT referenced set and (2) pins it by
+        hard-link under ``state/snapshots/<snap_id>/``, so the capture
+        costs one directory of links, not a block copy; ``delete_snapshot``
+        removes both. Backward-compatible: empty register → pin-free,
+        grace-only GC exactly as 0.29.41 shipped.
+        """
+        pins: set = set()
+        root = self.base_path / "state" / "snapshots"
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return pins
+        for entry in entries:
+            if entry.suffix == ".json":
+                continue
+            if entry.is_dir():
+                for link in entry.iterdir():
+                    pins.add(link.name)
+            else:
+                pins.add(entry.name)
+        return pins
+
     def __init__(self, base_path: str, block_size: int = BLOCK_SIZE,
                  journal_compact_bytes: int = 64 * 1024 * 1024,
                  gc_grace_seconds: float = 3600.0,
@@ -1576,6 +1605,11 @@ class NyFSFilesystem:
             }
             for snap in self.snapshots.values():
                 referenced |= {b.block_id for b in self._all_blocks(snap)}
+            # The restore-point pin register (RST-001): a pinned block
+            # is never reclaimed regardless of age — reference-pinning
+            # composes with grace (a capture-time race is closed by the
+            # grace; a restore-point block is closed by the pin).
+            referenced |= self._pinned_block_ids()
             cutoff = time.time() - self.gc_grace_seconds
             removed = 0
             for path in blocks_dir.glob("*.bin"):

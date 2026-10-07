@@ -5,6 +5,53 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.44] - 2026-10-07
+
+### Added
+
+- **The whole-system restore engine (RST-001, Bundle G — Option A
+  ACCEPTED by owner direction, the E1/F1 same-day shape).**
+  `backend/restore_engine.py`: `RestoreEngine` composing the shipped
+  NyFS snapshot floor — `create_snapshot` persists first (`save()`),
+  captures the floor's in-lock deepcopy, and hard-link-PINS the
+  referenced block files under `state/snapshots/<snap_id>/` (one
+  directory of links per restore point, no block copies); journal-
+  resident blocks are materialized to `state/blocks/` with temp+rename
+  (the exact act of journal compaction) so a pin is always a real file
+  link; `restore_to` (dry-run-default at the CLI, explicit here)
+  re-anchors through `NyFS.restore_snapshot` after re-pinning the
+  replaced live set (`<snap_id>.replaced/`, released by
+  `discard_replaced`); `delete_snapshot` unpins and the freed blocks
+  age out through the ordinary GC grace path. Every capture/restore/
+  discard/delete appends to the ADR-0018 chain.
+- **The GC pin (the owner ruling's load-bearing condition):**
+  `NyFS._pinned_block_ids` is consulted on every `gc_blocks` unlink
+  decision — a pinned block is NEVER reclaimed regardless of age.
+  Reference-pinning composes with the 0.29.41 age-based grace (age
+  keeps a racing save() safe; the pin keeps a restore point safe).
+  The existing GC pins are re-verified under the new mechanism by
+  `tests/test_restore_engine.py` (8 pins: instant capture, pin
+  survives grace=0, restore re-anchor + replaced-set re-pin, delete
+  unpins → grace reclaims, fail-closed capture on a torn journal,
+  refusal paths, the no-egress posture, the audit lifecycle).
+- **The operator surface:** `nyrqisctl restore-create/list/delete` —
+  client-side composition over three new control-service ops
+  (`system_restore_snapshot/list/delete`); the engine lives in the
+  daemon, the CLI stays a thin passthrough; no new trust surface, no
+  network egress.
+
+### Governance
+
+- AG_AGENDA v2.6.0: Bundle G DECIDED (G1 — Option A accepted via the
+  recorded session); RST-001 Draft → Accepted (v1.0.0); the
+  `upd001-audit-rollback-pin` updated 50 → 51 per its fail-on-change
+  protocol (the restore handlers' comment references the rollback
+  posture).
+- Honest scope note: RST-001 §7's GRUB/boot-smoke increment rides the
+  next ISO build; the desktop Restore app's data-layer swap rides the
+  next increment. The engine + operator surface + pins are this
+  release's landed scope.
+
 ## [0.29.43] - 2026-10-07
 
 ### Released

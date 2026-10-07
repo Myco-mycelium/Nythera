@@ -1047,6 +1047,15 @@ class ControlService:
             elif op == "rollback_snapshot":
                 self._rollback_snapshot(server, sender_path,
                                        msg.message_id, request)
+            elif op == "system_restore_snapshot":
+                self._system_restore_snapshot(server, sender_path,
+                                             msg.message_id, request)
+            elif op == "system_restore_list":
+                self._system_restore_list(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "system_restore_delete":
+                self._system_restore_delete(server, sender_path,
+                                            msg.message_id, request)
             elif op == "optimize_placement":
                 self._optimize_placement(server, sender_path,
                                         msg.message_id, request)
@@ -7655,6 +7664,74 @@ class ControlService:
             dry_run=request.get('dry_run', True),
         )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- whole-system restore handlers (RST-001, 0.29.44) --
+    # Client-side composition over the volume's RestoreEngine: the
+    # daemon owns the engine, the CLI stays a thin passthrough. Verbs
+    # are operator-facing; restore is dry-run-default exactly like
+    # rollback_snapshot.
+
+    def _system_restore_engine(self, request):
+        """Return ({ok:False,...}) on refusal, or (None, engine) on
+        success — the None marks the no-error path and keeps the
+        callers' isinstance check unambiguous (an engine object is
+        never a dict)."""
+        from backend.restore_engine import RestoreEngine
+        volume_path = request.get("volume_path", "")
+        if not volume_path:
+            return {"ok": False, "error": "volume_path required"}
+        from fuse.nyfs import NyFSFilesystem
+        try:
+            fs = NyFSFilesystem(
+                volume_path,
+                gc_grace_seconds=request.get("gc_grace_seconds", 3600),
+            )
+            fs.load()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": f"volume attach failed: {exc}"}
+        return None, RestoreEngine(fs)
+
+    def _system_restore_snapshot(self, server, sender_path, call_id, request):
+        attach = self._system_restore_engine(request)
+        if isinstance(attach, dict):
+            self._reply(server, sender_path, call_id, attach)
+            return
+        _none, engine = attach
+        from backend.restore_engine import RestoreEngineError
+        try:
+            result = engine.create_snapshot(
+                label=request.get("label", ""),
+                reason=request.get("reason", "operator capture"),
+            )
+            self._reply(server, sender_path, call_id, {"ok": True, **result})
+        except RestoreEngineError as exc:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(exc)})
+
+    def _system_restore_list(self, server, sender_path, call_id, request):
+        attach = self._system_restore_engine(request)
+        if isinstance(attach, dict):
+            self._reply(server, sender_path, call_id, attach)
+            return
+        _none, engine = attach
+        result = engine.list_snapshots()
+        self._reply(server, sender_path, call_id,
+                    {"ok": True, "snapshots": result})
+
+    def _system_restore_delete(self, server, sender_path, call_id, request):
+        attach = self._system_restore_engine(request)
+        if isinstance(attach, dict):
+            self._reply(server, sender_path, call_id, attach)
+            return
+        _none, engine = attach
+        from backend.restore_engine import RestoreEngineError
+        try:
+            deleted = engine.delete_snapshot(request["snap_id"])
+            self._reply(server, sender_path, call_id,
+                        {"ok": deleted or True, "deleted": deleted})
+        except (RestoreEngineError, KeyError) as exc:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(exc)})
 
     # -- placement optimization handlers --
 
