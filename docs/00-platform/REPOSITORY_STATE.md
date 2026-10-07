@@ -33,10 +33,21 @@ path never executed; the pins caught it); the sample-data block and
 the duplicate are removed and the module now has exactly one
 definition per verb. Verification: restore surface 13/13, engine
 8/8, boot contract 105/105, premises 60/60, cycles 0, mkdocs
-strict green; full sweep count below (run after all edits). The
-drill stays owner-blocked (no 5th probe on a generic proceed — 4
-identical 403s already recorded). Next: tag v0.29.45 and run the
-release-verify chain (same approved-smoke shape as 0.29.43).
+strict green; full sweep 9381 passed / 4 skipped / 0 failed (exit 0,
+sweep-02945.log). The drill stays owner-blocked (no 5th probe on a
+generic proceed — 4 identical 403s already recorded). The 0.29.45
+release arc — COMPLETE AND VERIFIED: tag pushed (fe4a91b), all 7
+workflow runs on the commit green (ci 33/33 jobs, docs, the three
+main-push live-iso variants, and the two tag runs 37620386368 /
+37620386392); the verification chain (setsid, the owner-approved
+QEMU-smoke shape) closed CHAIN_DONE 13:44:38Z: both assets downloaded
+and sha256-matched against the GitHub API digests (amd64
+b3a34240…9096, 418,938,880 B; arm64 ee71a6d4…f944, 394,883,072 B),
+BOTH release smokes PASS on the downloaded assets (direct amd64 +
+menu arm64 — smoke-rel-02945.log), and the release body patched with
+the proven verdicts after the proof (HTTP 200, release 405741006;
+the v0.29.33 lesson held). Evidence:
+~/nyrqis-work/{logs,release-v0.29.45}.
 2026-10-07 (fourth round), Bundle G DECIDED and the restore engine
 LANDED as 0.29.44 (owner instruction "proceed"; the G1 ruling taken
 via ask_user — the recorded-session decision input, NOT a self-flip:
