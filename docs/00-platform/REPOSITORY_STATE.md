@@ -5,6 +5,32 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-07 (second round), roadmap re-probe audit (owner instruction
+"proceed with all the suggested followups", round two): the drill and
+hardware threads re-verified UNCHANGED (Issues:write probe still 403
+point-in-time — zero manufactured probes; the real-hardware boot is a
+physical act on target machines, owner-side), and the actionable
+followup — the next roadmap items — resolved as the RE-PROBE AUDIT of
+007-PROJECT_ROADMAP's unchecked boxes, each verified against the tree
+(roadmap v1.12.0 → 1.13.0): (1) M1 "CI build for the documentation
+site" STRUCK [x] — docs.yml ships the cycles + premises + NFS-001
+import gates and mkdocs --strict, deploy job green on the tip; (2)
+"System restore points" → [~]: the deployment/snapshot/update-scoped
+half is REAL and wired (rollback_to_snapshot dry-run-default, five
+rollback IPC ops + five CLI verbs, the 0.29.27 UpdateOrchestrator
+restore points, 16 pins) — the open half is whole-system image-level
+restore, whose ui/system_restore.py surface is the 0.28.0 spec-suite
+simulation (sample data in memory, no snapshot engine — caught by the
+audit, NOT struck); (3) "Performance monitoring dashboard" → [~]:
+ui/system_monitor.py ingests REAL /proc data (per-core CPU, memory,
+disk I/O, network, processes, temps; three view modes) + the Pro
+variant, demo-wired and test-pinned — the open half is production
+shell app-grid registration; (4) Wayland client compatibility → [~]:
+the weston leg is CI-proven (required-gate job green), GTK4/Qt6/Sway
+remain; (5) performance budgets → [~] annotated: §20/§27/§29/§31–37
+measured, startup/gaming/AI-inference numbers remain. "Security audit
+by external reviewer" stays [ ] (genuinely external). Doc gates re-run
+locally on the edited docs (cycles, premises, nstudio, mkdocs strict).
 2026-10-07, followup-round disposition (owner instruction "proceed
 with all the suggested followups"): the three named threads from the
 0.29.42 round dispositioned with point-in-time evidence and zero
