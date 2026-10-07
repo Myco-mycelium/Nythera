@@ -5,6 +5,41 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.43] - 2026-10-07
+
+### Added
+
+- **The System Monitor is a first-class shell application.** An
+  `icon_monitor` DesktopIcon (glyph/label/target + activated event) and
+  its `behavior_launch_monitor` (Launch, exact parity with the terminal
+  icon) landed in the stock shell AND all three variants
+  (material/cupertino/pill — restyle-never-fork: identical structure).
+- **The shell's app grid is now runtime-fed from the registered app
+  list.** `nyrqis_session.populate_app_grid` injects
+  `ui.launcher.DEFAULT_APPS` — the single source of truth the Launcher
+  palette already serves — into the document's `launcher_grid` AppGrid
+  at session load, so the grid shows every registered application
+  (System Monitor included) in every variant. The stale hardcoded
+  8-app list (Weather/Clock — never-registered apps) was stripped from
+  the four shipped shell documents; the test fixture keeps it as the
+  pinned drift specimen, and the replace semantics are pinned so the
+  app grid can never again disagree with the Launcher palette.
+- **RST-001 v0.1.0** (`docs/00-platform/RESTORE_ENGINE_SPEC.md`): the
+  whole-system restore engine design note — the "System restore points"
+  roadmap item's open half audited (the desktop surface is the 0.28.0
+  spec-suite simulation; the gap is an engine and a boot path, not
+  cryptography or audit machinery), three options, four open questions
+  (the GC pin is load-bearing), §7 pre-stages the build plan; staged as
+  AG_AGENDA v2.5.0 Bundle G.
+
+### Fixed
+
+- The desktop-shell fixture-shape pins in `test_backend.py` (component
+  and behavior counts) updated for the monitor icon per the pin
+  protocol; a new pin locks the grid-population contract (empty shipped
+  doc → populated; stale fixture list → replaced; non-shell docs →
+  untouched).
+
 ## [0.29.42] - 2026-10-06
 
 ### Fixed

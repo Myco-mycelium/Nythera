@@ -5,6 +5,47 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-07 (third round), the two actionable followups landed as
+0.29.43 (owner instruction "proceed with all the suggested followups",
+round three): (1) the System Monitor is now a FIRST-CLASS shell
+application — `icon_monitor` DesktopIcon + `behavior_launch_monitor`
+(Launch, exact parity with the terminal icon) in the stock shell AND
+all three variants (identical structure, restyle-never-fork), and
+`nyrqis_session.populate_app_grid` runtime-feeds the shell's
+`launcher_grid` from `ui.launcher.DEFAULT_APPS` (single source of
+truth) — which REPLACED the stale hardcoded 8-app list (Weather/Clock,
+never registered) the shipped documents carried; the stale list was
+stripped from the four shipped docs and kept in the test fixture as
+the pinned drift specimen (replace semantics pinned so the grid can
+never again disagree with the palette). Honesty datum: the second
+round's roadmap annotation claimed the grid was EMPTY — that dump read
+the wrong JSON key (`props` vs `properties`); the grid actually
+carried the stale list, and the corrected finding made the fix BETTER
+(stale-data replacement pinned, not just population). Launch
+execution (click → window-open) remains the runtime floor's parity
+gap for ALL desktop icons, noted on the roadmap item. Pins: the
+desktop-shell fixture-shape counts updated (37→38 components, 11→12
+behaviors) per the pin protocol + the new grid-population pin;
+variant-parity 17/17, desktop-session 430/430, targeted canonical
+suite 3/3. (2) RST-001 v0.1.0 (Draft) — the whole-system restore
+engine design note per the DBG/CRY/UPD discipline: surface audit
+(deployment/snapshot + update scopes shipped and wired; the desktop
+surface a simulation), the load-bearing finding (the gap is an engine
+and a boot path, not cryptography or audit machinery), three options
+(A NyFS-native volume restore points + a live-ISO GRUB restore entry
+recommended), four open questions (the GC pin load-bearing), §7
+pre-stages the six-increment build plan; registered on mkdocs nav,
+spec index 1.52.0, AG_AGENDA v2.5.0 Bundle G (decision-ready — the
+first open bundle since D1), premise pin `rst001-design-note`; the
+roadmap's restore item and monitor item reconciled (monitor → [x],
+roadmap 1.14.0). Drill unchanged: the third Issues:write probe
+returned the identical 403 — no further probes this session; the
+real-hardware boot stays owner-side. 0.29.43 tagged in-tree
+(CHANGELOG + pyproject, drift OK); verification before push: full
+pytest sweep 9370 passed / 4 skipped / 0 failed (exit 0, 5m13s) and
+all four doc gates green — cycles 0 across 91 docs, premises 59/59
+(58 + the new rst001-design-note), nstudio 15/15, mkdocs --strict
+exit 0.
 2026-10-07 (second round), roadmap re-probe audit (owner instruction
 "proceed with all the suggested followups", round two): the drill and
 hardware threads re-verified UNCHANGED (Issues:write probe still 403

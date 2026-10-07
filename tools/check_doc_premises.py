@@ -727,6 +727,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="rst001-design-note",
+        pattern=r"RST-001",
+        description="The whole-system restore engine design note exists (RST-001, docs/00-platform/RESTORE_ENGINE_SPEC.md, v0.1.0 Draft, 2026-10-07) — surface audit tabled (deployment/snapshot scope shipped and wired; update scope shipped via UpdateOrchestrator; the desktop ui/system_restore.py surface a spec-suite simulation, no engine), the load-bearing finding recorded (the gap is an engine and a boot path, not cryptography or audit machinery), three options (A NyFS-native volume restore points + a live-ISO restore boot path recommended; B btrfs/LVM delegation; C observational close), four open questions (scope, boot-path shape, the GC pin, composition with pending updates), and §7 pre-stages the six-increment build plan; staged as AG_AGENDA v2.5.0 Bundle G",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: RST-001",
+            "files": ["docs/00-platform/RESTORE_ENGINE_SPEC.md"],
+        },
+    ),
+    Claim(
         claim_id="upd001-design-note",
         pattern=r"UPD-001",
         description="The automatic-updates/rollback design note exists (UPD-001, docs/00-platform/UPDATE_ROLLBACK_SPEC.md, v0.2.1 Draft) — surface audit recorded and CORRECTED same-session on re-probe (the v0.2.0 pass ran on truncated search output and missed the wired deployment/snapshot rollback family and the wired delta GENERATION half via nyrqisctl_repo; corrected finding: the gap is the signed-package VERIFY/APPLY path — UpdateVerifier/validate_rollback/apply_delta_update library-complete and user-unreachable — plus the policy questions), three options (A compose-first operator-invoked recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C observational close), five open questions, and §7 pre-stages the Option A implementation plan (update_orchestrate module composing the shipped primitives, ordering pins — verify before restore point before apply, operator-invoked-only rollback behind validate_rollback, no-direct-egress assertion); staged as AG_AGENDA v2.3.3 Bundle F1",

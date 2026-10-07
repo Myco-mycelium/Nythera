@@ -137,6 +137,15 @@
       }
     },
     {
+      "id": "behavior_launch_monitor",
+      "condition": null,
+      "action": {
+        "target": "icon_monitor",
+        "name": "Launch",
+        "arguments": {}
+      }
+    },
+    {
       "id": "behavior_dnd_on",
       "condition": {
         "expression": "state.doNotDisturb == true"
@@ -237,6 +246,14 @@
                 "properties": { "glyph": "Gear", "label": "Settings", "target": "settings" },
                 "layout": { "x": 24, "y": 248, "width": 96, "height": 96 },
                 "events": {},
+                "children": []
+              },
+              {
+                "id": "icon_monitor",
+                "type": "DesktopIcon",
+                "properties": { "glyph": "Monitor", "label": "Monitor", "target": "monitor" },
+                "layout": { "x": 24, "y": 360, "width": 96, "height": 96 },
+                "events": { "activated": "behavior_launch_monitor" },
                 "children": []
               },
               {

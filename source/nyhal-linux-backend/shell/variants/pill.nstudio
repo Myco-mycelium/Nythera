@@ -303,6 +303,15 @@
       }
     },
     {
+      "id": "behavior_launch_monitor",
+      "condition": null,
+      "action": {
+        "target": "icon_monitor",
+        "name": "Launch",
+        "arguments": {}
+      }
+    },
+    {
       "id": "behavior_dnd_on",
       "condition": {
         "expression": "state.doNotDisturb == true"
@@ -482,6 +491,23 @@
                   "height": 96
                 },
                 "events": {},
+                "children": []
+              },
+              {
+                "id": "icon_monitor",
+                "type": "DesktopIcon",
+                "properties": {
+                  "glyph": "Monitor",
+                  "label": "Monitor",
+                  "target": "monitor"
+                },
+                "layout": {
+                  "x": 24,
+                  "y": 360,
+                  "width": 96,
+                  "height": 96
+                },
+                "events": { "activated": "behavior_launch_monitor" },
                 "children": []
               },
               {
@@ -875,16 +901,6 @@
                 "id": "launcher_grid",
                 "type": "AppGrid",
                 "properties": {
-                  "apps": [
-                    "Calculator",
-                    "Notes",
-                    "Weather",
-                    "Clock",
-                    "Files",
-                    "Vault",
-                    "Settings",
-                    "Terminal"
-                  ],
                   "columns": 4,
                   "iconSize": 48
                 },

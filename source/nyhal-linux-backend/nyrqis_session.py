@@ -45,6 +45,29 @@ from ui.nstudio import load
 
 logger = logging.getLogger("nyrqis.session")
 
+
+def populate_app_grid(doc) -> int:
+    """Feed the shell document's ``launcher_grid`` from the registered apps.
+
+    Single source of truth: ``ui.launcher.DEFAULT_APPS`` — the same list
+    the Launcher palette (search, favorites, recents) already serves.
+    The shell document keeps the grid component empty (NFS-001: design
+    data in the document, runtime data at runtime); the session injects
+    the registered app names at load so the production app grid shows
+    every registered application — System Monitor included — in every
+    shell variant, without per-variant document edits.
+
+    Returns the number of apps injected (0 when the document carries no
+    ``launcher_grid`` component — a non-shell document is untouched).
+    """
+    component = doc.find_component("launcher_grid")
+    if component is None:
+        return 0
+    from ui.launcher import DEFAULT_APPS
+
+    component.properties["apps"] = [app.name for app in DEFAULT_APPS]
+    return len(DEFAULT_APPS)
+
 # ---------------------------------------------------------------------------
 # SDL2 key mapping
 # ---------------------------------------------------------------------------
@@ -112,6 +135,11 @@ def run_session(
     # Load the document
     logger.info("Loading design: %s", doc_path)
     doc = load(doc_path)
+
+    # Register the launcher's apps into the shell's app grid (System
+    # Monitor and peers) — see populate_app_grid for the contract.
+    injected = populate_app_grid(doc)
+    logger.info("App grid populated with %d registered app(s)", injected)
 
     # Create the session
     session = DesktopSession(doc)

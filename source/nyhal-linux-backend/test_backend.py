@@ -25683,8 +25683,8 @@ class TestNstudioImport(unittest.TestCase):
         fixture exercises the Shell/Data/Form/Media/Developer components
         and must pass the same gate as every other design."""
         doc = self._load("desktop.nstudio")
-        self.assertEqual(len(doc.component_ids()), 37)
-        self.assertEqual(len(doc.behaviors), 11)
+        self.assertEqual(len(doc.component_ids()), 38)
+        self.assertEqual(len(doc.behaviors), 12)
         self.assertEqual(len(doc.bindings), 6)
         self.assertEqual([s.id for s in doc.screens], ["desktop", "lock"])
         self.assertEqual(doc.screens[0].size, {"width": 1440, "height": 900})
@@ -25697,6 +25697,19 @@ class TestNstudioImport(unittest.TestCase):
         # A component-targeted action (DesktopIcon -> Launch).
         target, name, _args = doc.resolve_action("behavior_launch_terminal")
         self.assertEqual(target, "icon_terminal")
+        self.assertEqual(name, "Launch")
+        # The System Monitor is a first-class shell application: the
+        # desktop icon carries the glyph/label/target triple and its
+        # activated event resolves to the Launch behavior (0.29.43 —
+        # parity with the terminal icon).
+        monitor = doc.find_component("icon_monitor")
+        self.assertIsNotNone(monitor)
+        self.assertEqual(monitor.type, "DesktopIcon")
+        self.assertEqual(monitor.properties["label"], "Monitor")
+        self.assertEqual(monitor.properties["target"], "monitor")
+        self.assertEqual(monitor.events.get("activated"), "behavior_launch_monitor")
+        target, name, _args = doc.resolve_action("behavior_launch_monitor")
+        self.assertEqual(target, "icon_monitor")
         self.assertEqual(name, "Launch")
         # The conditional DND behavior resolves $state: substitution and
         # $localize: references (the message is a locale key).
@@ -25775,6 +25788,45 @@ class TestNstudioImport(unittest.TestCase):
         self.assertEqual(len(quiet["conditions"]), 2)
         # The AND group evaluates False by default (quiet hours off).
         self.assertIs(doc.resolve_condition("behavior_quiet_notify"), False)
+
+    def test_session_populates_app_grid_from_registered_apps(self):
+        """The production session feeds the shell's launcher_grid from
+        ui.launcher.DEFAULT_APPS (single source of truth) — the System
+        Monitor and peers become first-class app-grid entries in every
+        shell variant without per-variant document edits. The shipped
+        shell document carries an EMPTY grid; the 0.14.25-era fixture
+        carried a STALE hardcoded list (Weather/Clock — never-registered
+        apps) which populate_app_grid REPLACES, so the app grid can
+        never again disagree with the Launcher palette (0.29.43)."""
+        import nyrqis_session
+        from ui.launcher import DEFAULT_APPS
+
+        # The SHIPPED shell document starts empty...
+        shell = nstudio.load(os.path.join(
+            os.path.dirname(__file__), "shell", "defaults",
+            "desktop.nstudio"))
+        grid = shell.find_component("launcher_grid")
+        self.assertEqual(grid.type, "AppGrid")
+        self.assertNotIn("apps", grid.properties)
+        self.assertEqual(
+            nyrqis_session.populate_app_grid(shell), len(DEFAULT_APPS))
+        self.assertEqual(
+            grid.properties["apps"], [a.name for a in DEFAULT_APPS])
+        self.assertIn("System Monitor", grid.properties["apps"])
+        # ...and the fixture's stale hardcoded list is REPLACED, not
+        # merged: the grid can never disagree with the palette.
+        doc = self._load("desktop.nstudio")
+        stale = doc.find_component("launcher_grid").properties.get("apps", [])
+        self.assertIn("Weather", stale)  # the pre-fix drift, pinned
+        self.assertEqual(
+            nyrqis_session.populate_app_grid(doc), len(DEFAULT_APPS))
+        populated = doc.find_component("launcher_grid")
+        self.assertEqual(populated.properties["apps"],
+                         [app.name for app in DEFAULT_APPS])
+        self.assertNotIn("Weather", populated.properties["apps"])
+        # A document without the grid component is untouched (0).
+        other = self._load("vault-workspace.nstudio")
+        self.assertEqual(nyrqis_session.populate_app_grid(other), 0)
 
     def test_windows_shell_fixture_shape(self):
         """The window-system + power-UI shell screens (0.14.25 shell
