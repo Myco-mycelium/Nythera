@@ -1,8 +1,8 @@
 ---
 title: IPC Wire-Latency Gate — Design Note
 document_id: IPC-001
-version: 0.1.0
-status: Draft
+version: 0.1.1
+status: Accepted
 classification: Technical
 owners:
   - Nyrqis Architecture
@@ -14,6 +14,17 @@ depends_on: [NPS-003, NPS-017, ADR-0020, ADR-0021]
 ---
 
 # IPC-001 — IPC Wire-Latency Gate (Design Note)
+
+> **ACCEPTED 2026-10-08 (owner direction via the recorded session, the
+> E1/F1/G1 shape — AG decision-log row H1):** Option A as recommended,
+> with the measured condition that the first increment is **wire +
+> measure + fix the wait strategy**. §38 (measured the same day, before
+> wiring) shows the existing shared-memory transport at **p50
+> 187.86 µs** — missing the gate — because the ring's **100 µs
+> `sleep`-based polling**, not the syscall path, dominates. Wiring alone
+> would not close the gate; the ring wait must become a yield/spin (or
+> futex) wait in the same increment. §7 below is updated accordingly and
+> is the implementation spec.
 
 > Drafted per the DBG-001/CRY-001/UPD-001/RST-001 discipline: a novel gap
 > is audited against the tree, options are recorded, and the build plan is
@@ -52,7 +63,7 @@ what happens when a container pair cannot use it.
 |-------|-------------|--------|
 | Datagram transport | `ipc/transport.py` — `AF_UNIX SOCK_DGRAM`, receiver `SO_PASSCRED` + kernel-attached `SCM_CREDENTIALS` sender identity, framed by the wire codec (`ipc/transport_codec.py`) | **Shipped, wired** |
 | Compiled hot path | `rust/transport/src/lib.rs` (per-message sendto/recvmsg) behind the versioned FFI, Python floor otherwise, byte-identical contract (ADR-0020/ADR-0021) | **Shipped**, 626-line crate |
-| Shared-memory transport | `ipc/shm_transport.py` — POSIX `shm_open`/`mmap` single-producer/single-consumer ring buffer (`ShmTransport.create/send/recv/close`, `is_shm_available()`), magic `0x4E595251`, header-verified on attach, mode `0600`, docstring trust model **requires the creator to hold `CAP_IPC_SEND` / `CAP_IPC_RECEIVE`** | **Shipped and unit-tested — but UNWIRED** |
+| Shared-memory transport | `ipc/shm_transport.py` — POSIX `shm_open`/`mmap` single-producer/single-consumer ring buffer (`ShmTransport.create/send/recv/close`, `is_shm_available()`), magic `0x4E595251`, header-verified on attach, mode `0600`, docstring trust model **requires the creator to hold `CAP_IPC_SEND` / `CAP_IPC_RECEIVE`** | **Shipped and unit-tested — UNWIRED; measured 2026-10-08 (§38) at p50 187.86 µs, MISSING the gate on the ring's 100 µs polling quantum** |
 | SHM tests | `TestSharedMemoryTransport` (ring buffer, header, negotiate/mismatch, create/close, send/recv) in `test_backend.py` | **Present** |
 | SHM wiring | no production module imports `shm_transport` — references exist only in `README_IMPLEMENTATION.md` and the test file | **Gap** |
 | Measurement harness | `tests/benchmarks.py --ipc-transport` (§20), `--ipcd`/`--ipcd-dispatch`/`--ipcd-refresh`/`--ipcd-control` (the Rust serving-loop A/B, §21–§24) | **Shipped** |
@@ -141,15 +152,27 @@ and NPS-003's remaining `Draft` blocker narrows to the hardware-gated load
 variants; if it does not, the data decides between Option B and Option C —
 either way the gate stops being *unmeasured*.
 
+**Measured before wiring (§38, 2026-10-08):** the existing SHM transport
+lands at p50 187.86 µs — statistically indistinguishable from the §20
+datagram floor (188.79 µs) and equally short of the gate. The cause is
+NOT the transport mechanism but the ring's wait strategy: `RingBuffer`
+polls in `time.sleep(0.000_1)` (100 µs) steps, so an empty-ring reader
+waits up to one quantum per message. **This makes the wait-strategy fix
+part of the first increment, not a follow-up** — the acceptance ruling
+records exactly that condition.
+
 Option A is safe to accept before all §4 questions are answered **only if**
 the first increment pins the fallback contract (a transport never changes
 silently) in the same commit as the wiring.
 
 ## 7. Pre-staged build plan (converts to landed work on acceptance)
 
-1. **Wire** `ShmTransport` into `ipc/transport.py` as a selectable
-   endpoint path behind the existing codec and credential contract; keep
-   the datagram transport as default and fallback.
+1. **Wire + fix the wait**: wire `ShmTransport` into `ipc/transport.py`
+   as a selectable endpoint path behind the existing codec and credential
+   contract (datagram stays default and fallback), and replace the ring's
+   `time.sleep(0.000_1)` polling with a yield/spin (or futex) wait — §38
+   shows that 100 µs quantum, not the syscall path, is what misses the
+   gate.
 2. **Benchmark**: `tests/benchmarks.py --ipc-shm` → BENCHMARK_RESULTS
    **§38** — the §20 methodology (20,000 iterations, 64-byte payloads,
    200 warm-up calls) over the SHM path, run in the same session as the
@@ -164,7 +187,12 @@ silently) in the same commit as the wiring.
 
 ## Change log
 
-- 0.1.0 (2026-10-08): initial draft — surface audit (the datagram
+- 0.1.1 (2026-10-08): **ACCEPTED (Option A, AG Bundle H1)** and the §38
+  measurement recorded the same day — the existing shared-memory
+  transport measures p50 187.86 µs, missing the <100 µs gate; the ring's
+  100 µs sleep-based polling is the bottleneck (not the syscall path), so
+  the first increment now includes the wait-strategy fix. 0.1.0: initial
+  draft — surface audit (the datagram
   transport shipped and measured; the shared-memory transport shipped,
   unit-tested and **unwired**; NPS-003 §6.1's note stale), three options
   (A wire + benchmark the existing SHM transport, recommended; B optimize

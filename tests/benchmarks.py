@@ -74,6 +74,7 @@ Usage:
   python3 tests/benchmarks.py --all       # everything (default)
   python3 tests/benchmarks.py --ipc       # §1 IPC round-trip
   python3 tests/benchmarks.py --ipc-transport  # §20 over the real UDS transport
+  python3 tests/benchmarks.py --ipc-shm   # §38 over the shared-memory transport
   python3 tests/benchmarks.py --bucket    # §3 token-bucket defaults
   python3 tests/benchmarks.py --zstd      # §2 Zstd level sweep
   python3 tests/benchmarks.py --nyfs      # §4 NyFS vs native proxy
@@ -121,11 +122,13 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "source" / "nyhal-linux-backend"))
 
 from ipc.core import IPCManager, TokenBucket  # noqa: E402
+from ipc.shm_transport import ShmTransport, is_shm_available  # noqa: E402
 from ipc.transport import IPCDatagramServer  # noqa: E402
 from ipc.service import BackendStatusService  # noqa: E402
 from ipc import loop as ipc_loop  # noqa: E402
@@ -301,6 +304,110 @@ def benchmark_ipc_transport_roundtrip(n=IPC_ITERATIONS, payload_size=64):
         stop.set()
         server.close()
         shutil.rmtree(base, ignore_errors=True)
+    return result
+
+
+SHM_IPC_WARMUP = 200
+
+
+def benchmark_ipc_shm_roundtrip(n=IPC_ITERATIONS, payload_size=64):
+    """Round-trip latency over the SHARED-MEMORY transport (IPC-001 §7,
+    BENCHMARK_RESULTS §38).
+
+    The server creates a POSIX-shm channel (``ShmTransport.create``); the
+    client runs in a SEPARATE process, attaches by channel name, and
+    measures per-round-trip wall latency. Same shape as §20 (64-byte
+    payloads, ``IPC_ITERATIONS``, 200 warm-up calls) so the two transport
+    figures are directly comparable. The channel name carries a random
+    token so a same-namespace process cannot guess it — the identity
+    binding IPC-001 requires at channel-establishment.
+    """
+    if not is_shm_available():
+        return {"error": "POSIX shared memory unavailable on this host"}
+    channel = "bench-" + uuid.uuid4().hex
+    reply = b"r" * payload_size
+    server = ShmTransport(channel)
+    if not server.create():
+        return {"error": "shm server create() failed"}
+    stop = threading.Event()
+    served = {"count": 0}
+
+    def echo():
+        while not stop.is_set():
+            req = server.recv(timeout_s=0.5)
+            if req is None:
+                continue
+            if not server.send(reply, timeout_s=0.5):
+                return
+            served["count"] += 1
+
+    worker = threading.Thread(target=echo, daemon=True)
+    worker.start()
+
+    base = tempfile.mkdtemp(prefix="nyrqis-shm-bench-")
+    out_path = os.path.join(base, "client_results.json")
+    backend_dir = str(Path(__file__).resolve().parent.parent
+                      / "source" / "nyhal-linux-backend")
+    client_src = (
+        "import json, statistics, sys, time\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "(_backend, channel, out_path, n_s, payload_s, warm_s) = sys.argv[1:]\n"
+        "from ipc.shm_transport import ShmTransport\n"
+        "c = ShmTransport(channel)\n"
+        "if not c.attach():\n"
+        "    raise SystemExit('shm attach failed')\n"
+        "payload = b'x' * int(payload_s)\n"
+        "for _ in range(int(warm_s)):\n"
+        "    c.send(payload, timeout_s=5)\n"
+        "    if c.recv(timeout_s=5) is None:\n"
+        "        raise SystemExit('shm warmup recv timed out')\n"
+        "lats = []\n"
+        "for _ in range(int(n_s)):\n"
+        "    t0 = time.perf_counter_ns()\n"
+        "    c.send(payload, timeout_s=5)\n"
+        "    r = c.recv(timeout_s=5)\n"
+        "    if r is None:\n"
+        "        raise SystemExit('shm recv timed out')\n"
+        "    lats.append((time.perf_counter_ns() - t0) / 1000.0)\n"
+        "c.close()\n"
+        "lats.sort()\n"
+        "def pct(v, p):\n"
+        "    idx = int(len(v) * p)\n"
+        "    return v[min(idx, len(v) - 1)]\n"
+        "res = {'iterations': int(n_s), 'payload_bytes': int(payload_s),\n"
+        "       'p50_us': round(pct(lats, 0.50), 2),\n"
+        "       'p95_us': round(pct(lats, 0.95), 2),\n"
+        "       'p99_us': round(pct(lats, 0.99), 2),\n"
+        "       'mean_us': round(statistics.mean(lats), 2),\n"
+        "       'min_us': round(lats[0], 2), 'max_us': round(lats[-1], 2)}\n"
+        "with open(out_path, 'w') as fh:\n"
+        "    json.dump(res, fh)\n"
+    )
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", client_src, backend_dir, channel,
+             out_path, str(n), str(payload_size), str(SHM_IPC_WARMUP)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        try:
+            out, _ = proc.communicate(timeout=180)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return {"error": "shm client timed out after 180s"}
+        if proc.returncode != 0:
+            return {"error": f"shm client failed (rc={proc.returncode}): {out[-300:]}"}
+        try:
+            with open(out_path) as fh:
+                result = json.load(fh)
+        except (OSError, ValueError):
+            return {"error": f"shm client produced no valid result: {out[-300:]}"}
+    finally:
+        stop.set()
+        worker.join(timeout=1.0)
+        server.close()
+        shutil.rmtree(base, ignore_errors=True)
+    result["server_served"] = served["count"]
     return result
 
 
@@ -2380,6 +2487,7 @@ def main():
         description="Nyrqis Linux Backend consolidated benchmarks")
     parser.add_argument("--all", action="store_true", help="run everything (default)")
     parser.add_argument("--ipc", action="store_true", help="§1 IPC round-trip latency")
+    parser.add_argument("--ipc-shm", action="store_true", help="IPC-001 §38 shared-memory round-trip")
     parser.add_argument("--ipc-transport", action="store_true",
                         help="§20 IPC round-trip over the real UDS transport")
     parser.add_argument("--ipcd", action="store_true",
@@ -2457,7 +2565,7 @@ def main():
         print(json.dumps(_vault_mount_worker()))
         return
 
-    selected = (args.ipc or args.ipc_transport or args.ipcd or args.bucket
+    selected = (args.ipc or args.ipc_transport or args.ipc_shm or args.ipcd or args.bucket
                 or args.zstd or args.nyfs or args.nyfs_mount or args.nyfs_persist
                 or args.save_levers or args.snapshot_dedup or args.codec
                 or args.real_corpus or args.mixed_workload
@@ -2468,7 +2576,7 @@ def main():
                 or args.ledger_refresh or args.vault_stream or args.nui
                 or args.nyfs_mount_nocompress or args.gc_impact)
     if not selected or args.all:
-        args.ipc = args.ipc_transport = args.ipcd = True
+        args.ipc = args.ipc_transport = args.ipc_shm = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
         args.nyfs_mount = args.nyfs_persist = args.save_levers = True
         args.snapshot_dedup = args.codec = args.real_corpus = True
@@ -2493,6 +2601,9 @@ def main():
     if args.ipc_transport:
         _print_section("IPC round-trip over the real UDS transport (§20):",
                        benchmark_ipc_transport_roundtrip())
+    if args.ipc_shm:
+        _print_section("IPC round-trip over the shared-memory transport (§38):",
+                       benchmark_ipc_shm_roundtrip())
     if args.ipcd:
         _print_section("ADR-0021 A/B — floor vs Rust serving loop (§21):",
                        benchmark_ipcd_roundtrip())

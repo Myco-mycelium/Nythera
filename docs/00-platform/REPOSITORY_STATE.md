@@ -38,6 +38,34 @@ in the same round: the note is **staged as AG_AGENDA v2.7.0 Bundle H
 ruling has a decision record and acceptance converts to landed work
 without re-planning (the E1/F1/G1 shape); the agenda's "NO OPEN BUNDLES"
 state is superseded by the staging.
+2026-10-08 (eighth round), IPC-001 DECIDED and the §38 measurement landed
+(owner direction via the recorded session — the E1/F1/G1 shape, AG
+Bundle H1): Option A ACCEPTED, with the owner ruling's measured
+condition. Before wiring, the §38 benchmark was built and run
+(`tests/benchmarks.py --ipc-shm` — the §20 methodology: 20,000
+iterations, 64-byte payloads, 200 warm-up calls, over the POSIX-shm
+transport with the client in a SEPARATE process) and delivered the
+load-bearing datum: **p50 187.86 µs — statistically indistinguishable
+from the §20 datagram floor (188.79 µs), and equally short of the
+NPS-003 §6.1 <100 µs gate.** The cause is NOT the transport mechanism
+but the ring's wait strategy — `RingBuffer.read`/`write` poll in
+`time.sleep(0.000_1)` (100 µs) steps, so an empty-ring reader waits up
+to one quantum per message (min 103 µs ≈ one quantum + overhead).
+**Consequence, folded into the ruling: wiring the existing SHM
+transport is necessary but NOT sufficient — the first increment must
+also replace the ring's sleep-based polling with a yield/spin (or
+futex) wait.** Landed: the `--ipc-shm` benchmark + BENCHMARK_RESULTS
+§38; IPC-001 v0.1.1 ACCEPTED (the measured finding + the §7 step-1
+update to "wire + fix the wait"); AG_AGENDA v2.8.0 H1 decision-log row;
+NPS-003 §6.1 records the SHM measurement (v1.4.0); spec index v1.55.0;
+premise `benchmark-section-38`. The shared-memory transport is
+PID-namespace-local — it complements, never replaces, the datagram path
+(which stays default and fallback). The wiring + wait-strategy-fix
+increment is the pre-staged IPC-001 §7 plan (next). Verification: the
+benchmark ran clean (exit 0, 20,200 served) and the doc gates are green
+— cycles 0 across 92 docs, premises 62/62, nstudio 15/15, mkdocs
+--strict exit 0. No pytest-collected file changed (`benchmarks.py` is
+not matched by `python_files = test_*.py`), so the sweep is unaffected.
 2026-10-08 (sixth round), roadmap benchmark/milestone re-probe audit
 (docs-only; no code, spec-status, or version change): after 0.29.45
 there are NO open decision bundles, and the roadmap's remaining items

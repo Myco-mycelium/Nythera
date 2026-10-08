@@ -333,6 +333,13 @@ CLAIMS: list[Claim] = [
         check_args={"section": "34"},
     ),
     Claim(
+        claim_id="benchmark-section-38",
+        pattern=r"BENCHMARK_RESULTS(\.md)? §38|--ipc-shm",
+        description="IPC-001 close-out: the §38 shared-memory round-trip benchmark (p50 187.86 µs — misses the gate on the ring's 100 µs polling) is the evidence base",
+        check="section_exists",
+        check_args={"section": "38"},
+    ),
+    Claim(
         claim_id="repo-url-is-nythera",
         pattern=r"repo_url",
         description="mkdocs.yml repo_url still names Myco-mycelium/Nythera (rename pending)",

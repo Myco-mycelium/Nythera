@@ -108,7 +108,12 @@ NPC-002 §5.2.
 > 2026-08-28) exists but is not yet wired into the IPC path or
 > benchmarked. This document therefore remains `Draft`: the gate is now
 > judged on a MEASURED wire cost, not on pending measurement. Closing (or
-> re-scoping) that gate is the subject of `IPC-001`.
+> re-scoping) that gate is the subject of `IPC-001`. The shared-memory
+> transport was then benchmarked (`IPC-001` §38, 2026-10-08): **p50
+> 187.86 µs — also missing the gate**, because the ring's 100 µs
+> sleep-based polling (not the syscall path) dominates; `IPC-001`
+> (Accepted, AG Bundle H1) records the wiring + wait-strategy fix as the
+> next increment.
 
 6.2. Shared-memory bulk transfer (§3.1) **SHOULD** avoid unnecessary data
 copies between sender and receiver address spaces where the underlying
@@ -149,6 +154,7 @@ security specifications.
 | 1.0.0   | 2026-07-12 | Initial draft |
 | 1.1.0   | 2026-07-13 | Add shared-memory zeroing requirement to §3.1, closing threat model finding FIND-CONTAINER-003 (NPS-020) |
 | 1.2.0   | 2026-08-12 | §6.1: record first-pass IPC latency measurements (`tests/BENCHMARK_RESULTS.md`); document remains Draft — median meets the <100 µs target, tail exceeds, real transport pending |
+| 1.4.0   | 2026-10-08 | §6.1: the shared-memory transport measured (`IPC-001` §38, p50 187.86 µs — also misses the <100 µs gate; the ring's 100 µs sleep-based polling is the bottleneck); `IPC-001` Accepted (AG Bundle H1) with the wire + wait-strategy-fix increment pre-staged |
 | 1.3.0   | 2026-10-08 | §6.1: correct the stale benchmark note — the real transport has existed and been measured since 2026-08-14 (§20 p50 188.79 µs) and MISSES the <100 µs target at the median; the shared-memory transport ships (2026-08-28) but is unwired; the gate-closure options are staged in `IPC-001` |
 
 ---
