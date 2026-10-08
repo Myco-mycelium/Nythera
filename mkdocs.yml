@@ -49,6 +49,7 @@ nav:
       - Crash Reporting Design Note (CRY-001): 00-platform/CRASH_TELEMETRY_SPEC.md
       - Update/Rollback Design Note (UPD-001): 00-platform/UPDATE_ROLLBACK_SPEC.md
       - Restore Engine Design Note (RST-001): 00-platform/RESTORE_ENGINE_SPEC.md
+      - IPC Wire-Latency Design Note (IPC-001): 00-platform/IPC_TRANSPORT_SPEC.md
       - Next Session Plan: 00-platform/NEXT_SESSION_PLAN.md
   - Tutorials:
       - Index: tutorials/README.md

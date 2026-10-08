@@ -747,6 +747,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="ipc001-design-note",
+        pattern=r"IPC-001",
+        description="The IPC wire-latency gate design note exists (IPC-001, docs/00-platform/IPC_TRANSPORT_SPEC.md, v0.1.0 Draft, 2026-10-08) — surface audit recorded (the AF_UNIX SOCK_DGRAM transport is shipped and measured at §20 p50 188.79 µs, MISSING the NPS-003 §6.1 <100 µs gate at the median; ipc/shm_transport.py is shipped and unit-tested since 2026-08-28 but UNWIRED — no production ipc/ module imports it — and unbenchmarked; NPS-003 §6.1's inline note still claimed the transport 'does not exist yet'), the load-bearing finding (the gap is connection and measurement, not implementation), three options (A wire + benchmark the existing shared-memory transport recommended; B optimize the datagram path; C re-scope the gate), five open questions, and §7 pre-stages the build plan (--ipc-shm → BENCHMARK_RESULTS §38, the NPS-003 §6.1 correction, a fallback-never-silent pin)",
+        check="path_contains",
+        check_args={
+            "needle": "document_id: IPC-001",
+            "files": ["docs/00-platform/IPC_TRANSPORT_SPEC.md"],
+        },
+    ),
+    Claim(
         claim_id="upd001-design-note",
         pattern=r"UPD-001",
         description="The automatic-updates/rollback design note exists (UPD-001, docs/00-platform/UPDATE_ROLLBACK_SPEC.md, v0.2.1 Draft) — surface audit recorded and CORRECTED same-session on re-probe (the v0.2.0 pass ran on truncated search output and missed the wired deployment/snapshot rollback family and the wired delta GENERATION half via nyrqisctl_repo; corrected finding: the gap is the signed-package VERIFY/APPLY path — UpdateVerifier/validate_rollback/apply_delta_update library-complete and user-unreachable — plus the policy questions), three options (A compose-first operator-invoked recommended; B A + opt-in automaticity via the NPS-019/NPS-020 pass; C observational close), five open questions, and §7 pre-stages the Option A implementation plan (update_orchestrate module composing the shipped primitives, ordering pins — verify before restore point before apply, operator-invoked-only rollback behind validate_rollback, no-direct-egress assertion); staged as AG_AGENDA v2.3.3 Bundle F1",

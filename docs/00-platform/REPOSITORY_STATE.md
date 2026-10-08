@@ -5,6 +5,34 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-08 (seventh round), IPC-001 staged — the M3 wire-latency gate
+gets its decision input (docs-only; no code change): with the roadmap
+reconciled and the sweep green, the one open item that unblocks real
+engineering is the NPS-003 §6.1 <100 µs wire-latency gate, which needs
+a decision before code (the DBG-001/CRY-001/UPD-001/RST-001
+design-note-first discipline). Authored `docs/00-platform/IPC_TRANSPORT_SPEC.md`
+(**IPC-001 v0.1.0, Draft**) on a TREE-VERIFIED surface audit: the
+Unix-domain datagram transport is shipped and measured (§20 p50
+188.79 µs — **MISSES the gate at the median**; §21 Rust-v2 322.6 µs),
+and `ipc/shm_transport.py` (POSIX shm single-producer/single-consumer
+ring; shipped and unit-tested 2026-08-28) exists but is **UNWIRED** (no
+production `ipc/` module imports it) and **unbenchmarked**
+(`tests/benchmarks.py`'s own note still calls it deferred).
+Load-bearing finding: the gap is **connection and measurement, not
+implementation.** Three options (A wire the existing SHM transport
+behind the same codec/capability contract and benchmark it —
+recommended; B optimize the datagram path; C re-scope the gate), five
+open questions (which transport the gate is judged on, selection
+policy, capability reuse, gate scope, the hardware-gated load
+variants), §7 pre-staged build plan (`--ipc-shm` → BENCHMARK_RESULTS
+§38, the NPS-003 §6.1 correction, a fallback-never-silent pin). Also
+corrected the genuinely stale record: NPS-003 §6.1's inline note claimed
+the transport "does not exist yet" — false since 2026-08-14 — now
+corrected (v1.3.0) with the measured verdict; the roadmap item is
+annotated to point at IPC-001. Registered: mkdocs nav, spec index
+v1.53.0 → v1.54.0, premise pin `ipc001-design-note` (premises 60 → 61).
+Gates: cycles 0 across 92 docs, premises 61/61, nstudio 15/15, mkdocs
+--strict exit 0. No code, no version, no spec-status change.
 2026-10-08 (sixth round), roadmap benchmark/milestone re-probe audit
 (docs-only; no code, spec-status, or version change): after 0.29.45
 there are NO open decision bundles, and the roadmap's remaining items
