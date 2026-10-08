@@ -1,0 +1,62 @@
+[package]
+name = "nykernel"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis kernel bring-up (NPS-001 / NPS-017 / ADR-0006 / ADR-0012 / ADR-0020) -- Phase 1: boot to a running kernel"
+
+[lib]
+name = "nykernel"
+crate-type = ["staticlib"]
+
+# Kept deliberately minimal and each justified individually, matching
+# the project's existing convention (source/nyhal-linux-backend/'s
+# Rust crates likewise keep external deps to a short, audited list):
+#
+#   x86_64  -- the de facto standard, actively maintained crate for
+#              x86_64 OS development: typed wrappers over GDT/IDT/TSS,
+#              port I/O, control registers, and paging structures.
+#              Used here instead of hand-rolling raw `asm!` for every
+#              descriptor table, which would be strictly more code and
+#              strictly easier to get subtly wrong (e.g. a malformed
+#              GDT entry that works by accident on one QEMU version).
+[dependencies]
+# Pinned (not "0.14") to =0.14.13. The `x86_64` crate's `Step` impls
+# track rustc's `core::iter::Step::steps_between` signature, which has
+# changed twice: 0.14.10 used the old `Option<usize>` form (compatible
+# with the apt rustc 1.75.0 originally documented in
+# IMPLEMENTATION_STATUS.md), and 0.14.11+ moved to the `(usize,
+# Option<usize>)` form that current stable rustc now expects (see
+# E0053 in that document's build log). 0.14.13 is the newest 0.14.x, so
+# it is the smallest bump that builds on a modern toolchain while
+# staying within the API surface this kernel was written against.
+x86_64 = "=0.14.13"
+# spin -- a no_std spinlock/Mutex. Needed because core/alloc alone
+# provide no synchronization primitive, and this kernel is single-core
+# for Phase 1 but still needs *some* interior-mutability discipline
+# around shared hardware (the serial port, later the IDT/GDT) so the
+# borrow rules are enforced instead of relying on "nothing touches
+# this concurrently yet, trust me."
+spin = "0.9"
+# linked_list_allocator -- a small, well-audited no_std global
+# allocator backing `alloc::*` (Vec, Box, ...) once the kernel heap
+# region is mapped (memory/heap.rs). Not hand-rolled: a free-list
+# allocator has enough subtle correctness edges (fragmentation,
+# coalescing, alignment) that pulling in a widely-used, focused crate
+# is the better tradeoff than adding kernel-specific allocator bugs on
+# top of everything else Phase 2 already introduces.
+linked_list_allocator = "0.10"
+
+[features]
+# Only for tools/qemu_boot_test.sh -- see src/qemu_exit.rs.
+qemu_test = []
+
+[profile.dev]
+panic = "abort"
+# Debug info costs nothing at boot time and is the only way to get a
+# symbolized backtrace out of a triple fault via QEMU's -d int log.
+debug = true
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true

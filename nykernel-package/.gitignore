@@ -1,0 +1,11 @@
+# Generated userprogram test executables. `build.sh` assembles and links
+# these from the `.s` sources sitting next to them, and the kernel embeds
+# them via `include_bytes!`, so they are build outputs, not sources. The
+# `.s` files themselves, the linker scripts, and real fixtures (e.g.
+# `userprog/classes.dex`) ARE tracked.
+source/nykernel/userprog/*.elf
+source/nykernel/userprog/*.exe
+
+# Rust build output (also matched by the repo-root `target/` rule; kept
+# here so the kernel tree is self-describing if ever split out).
+source/nykernel/target/
