@@ -28,6 +28,7 @@ use alloc::vec::Vec;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+pub mod acpi;
 pub mod boot_phase;
 pub mod experimental;
 pub mod gdt;
@@ -79,6 +80,82 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         total_usable,
         total_usable * 4 / 1024
     );
+
+    // ---- ACPI: validate the RSDP, then reclaim reclaimable memory ----
+    // Firmware marks the pages holding ACPI tables as `AcpiReclaimable`:
+    // usable, but only once the OS has read what it needs. We reach the
+    // tables via the RSDP the loader handed off, validate them, and
+    // only then let the frame allocator at those regions -- so the
+    // default posture is "refuse", not "assume free".
+    let acpi_info = acpi::init(multiboot.find_acpi_rsdp());
+    if acpi_info.is_some() {
+        let mut sample_frame: Option<u64> = None;
+        multiboot.for_each_memory_region(|region| {
+            if sample_frame.is_none()
+                && region.region_type == multiboot::MemoryRegionType::AcpiReclaimable
+                && region.length >= 4096
+            {
+                sample_frame = Some(region.base_addr / 4096);
+            }
+        });
+        match sample_frame {
+            Some(frame_no) => {
+                let before = frame_allocator.frame_is_usable(frame_no);
+                let regions = frame_allocator.reclaim_acpi();
+                let after = frame_allocator.frame_is_usable(frame_no);
+                serial_println!(
+                    "  acpi reclaim: representative frame {:#x} usable before={} (expected false), {} reclaimable region(s) released, usable after={} (expected true) -- {}",
+                    frame_no * 4096,
+                    before,
+                    regions,
+                    after,
+                    if !before && after { "OK" } else { "FAILED" }
+                );
+                assert!(
+                    !before && after,
+                    "ACPI-reclaimable memory was not correctly released for reuse"
+                );
+            }
+            // Some firmware (every QEMU machine type this kernel has
+            // been booted on) reports no `AcpiReclaimable` region at
+            // all, so a real release can't be exercised here. Prove the
+            // allocator's release contract with a clearly-labelled
+            // synthetic control instead: take a currently-unusable
+            // reserved range, show it flips from refused to usable when
+            // released, then put it back so nothing real is handed out.
+            None => {
+                let mut reserved: Option<(u64, u64)> = None;
+                multiboot.for_each_memory_region(|region| {
+                    if reserved.is_none()
+                        && region.region_type == multiboot::MemoryRegionType::Reserved
+                        && region.length >= 4096
+                    {
+                        reserved = Some((region.base_addr, region.length));
+                    }
+                });
+                let (base, length) = reserved.expect("no reserved region to use as a reclaim control");
+                let frame_no = base / 4096;
+                let before = frame_allocator.frame_is_usable(frame_no);
+                frame_allocator.add_reclaimable_range(base, length);
+                let after = frame_allocator.frame_is_usable(frame_no);
+                frame_allocator.remove_reclaimable_range(base);
+                let restored = frame_allocator.frame_is_usable(frame_no);
+                serial_println!(
+                    "  acpi reclaim: platform reports no AcpiReclaimable region; synthetic control on reserved {:#x}..{:#x}: usable before={} (expected false), after release={} (expected true), after restoring={} (expected false) -- {}",
+                    base,
+                    base + length,
+                    before,
+                    after,
+                    restored,
+                    if !before && after && !restored { "OK" } else { "FAILED" }
+                );
+                assert!(
+                    !before && after && !restored,
+                    "ACPI-reclaimable release behaviour is wrong (synthetic control)"
+                );
+            }
+        }
+    }
 
     let mut mapper = unsafe { memory::paging::init() };
     unsafe { memory::paging::enable_nx() };

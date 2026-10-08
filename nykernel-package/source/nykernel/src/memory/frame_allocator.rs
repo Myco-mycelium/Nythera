@@ -24,6 +24,11 @@
 
 use alloc::vec::Vec;
 use crate::multiboot::{MemoryRegionType, MultibootInfo};
+
+/// How many ACPI-reclaimable ranges we track. Fixed-size and
+/// allocation-free on purpose: the reclaim path runs during early boot,
+/// before the kernel heap exists, so it must not depend on `Vec`.
+const MAX_ACPI_RANGES: usize = 16;
 use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
 
@@ -52,6 +57,13 @@ pub struct BumpFrameAllocator {
     /// simplicity keeps this auditable the same way the rest of this
     /// kernel's memory-management code has been.
     free_list: Vec<PhysFrame<Size4KiB>>,
+    /// ACPI-reclaimable physical ranges that have been released for
+    /// reuse by `crate::acpi` (after its tables were read). Empty until
+    /// `reclaim_acpi` is called, so the default posture is "refuse",
+    /// not "assume free" -- see `crate::acpi`'s module doc for why
+    /// reclaiming before the tables are read would be wrong.
+    acpi_reclaimable: [(u64, u64); MAX_ACPI_RANGES],
+    acpi_reclaimable_count: usize,
 }
 
 impl BumpFrameAllocator {
@@ -66,6 +78,8 @@ impl BumpFrameAllocator {
             frames_allocated: 0,
             frames_freed: 0,
             free_list: Vec::new(),
+            acpi_reclaimable: [(0, 0); MAX_ACPI_RANGES],
+            acpi_reclaimable_count: 0,
         }
     }
 
@@ -102,11 +116,76 @@ impl BumpFrameAllocator {
         total
     }
 
+    /// Releases every `AcpiReclaimable` region the memory map reports
+    /// for reuse, returning how many were added. Must only be called
+    /// once `crate::acpi` has validated the RSDP and read the tables --
+    /// the spec permits reusing this memory only after the OS is done
+    /// with it. Idempotent-safe in practice (re-adding a region is
+    /// harmless, it's already usable), but intended to be called once.
+    pub fn reclaim_acpi(&mut self) -> usize {
+        // `self.multiboot` is `Copy`, so iterating it through a local
+        // avoids holding a borrow of `self` while mutating the reclaim
+        // list inside the closure.
+        let multiboot = self.multiboot;
+        let mut count = 0usize;
+        multiboot.for_each_memory_region(|region| {
+            if region.region_type == MemoryRegionType::AcpiReclaimable {
+                self.add_reclaimable_range(region.base_addr, region.length);
+                count += 1;
+            }
+        });
+        count
+    }
+
+    /// Public form of the internal usability check, used by
+    /// `kernel_main`'s reclaim self-test to observe the before/after
+    /// state directly rather than inferring it.
+    pub fn frame_is_usable(&self, frame_number: u64) -> bool {
+        self.is_frame_usable(frame_number)
+    }
+
+    /// Releases one physical range for reuse. Used by [`reclaim_acpi`]
+    /// and by the reclaim self-test's synthetic control (some firmware
+    /// -- including every QEMU machine type this kernel has been booted
+    /// on -- reports no `AcpiReclaimable` region at all, so the release
+    /// behaviour needs a deterministic check that doesn't depend on the
+    /// firmware happening to provide one).
+    ///
+    /// [`reclaim_acpi`]: Self::reclaim_acpi
+    pub fn add_reclaimable_range(&mut self, base: u64, length: u64) {
+        if self.acpi_reclaimable_count < MAX_ACPI_RANGES {
+            self.acpi_reclaimable[self.acpi_reclaimable_count] = (base, length);
+            self.acpi_reclaimable_count += 1;
+        }
+    }
+
+    /// Removes a previously-added range (by base address) from the
+    /// released set, so a synthetic control leaves no lasting state.
+    /// Order is not preserved (swap-remove) -- the list is a set.
+    pub fn remove_reclaimable_range(&mut self, base: u64) {
+        let mut i = 0;
+        while i < self.acpi_reclaimable_count {
+            if self.acpi_reclaimable[i].0 == base {
+                let last = self.acpi_reclaimable_count - 1;
+                self.acpi_reclaimable[i] = self.acpi_reclaimable[last];
+                self.acpi_reclaimable_count = last;
+                return;
+            }
+            i += 1;
+        }
+    }
+
     fn is_frame_usable(&self, frame_number: u64) -> bool {
         if frame_number >= self.kernel_start_frame && frame_number < self.kernel_end_frame {
             return false; // overlaps the running kernel image
         }
         let frame_addr = frame_number * 4096;
+        if self.acpi_reclaimable[..self.acpi_reclaimable_count]
+            .iter()
+            .any(|&(base, len)| frame_addr >= base && frame_addr < base + len)
+        {
+            return true; // an ACPI-reclaimable range released by `crate::acpi`
+        }
         let mut usable = false;
         self.multiboot.for_each_memory_region(|region| {
             if usable || region.region_type != MemoryRegionType::Available {

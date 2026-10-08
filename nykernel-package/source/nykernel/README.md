@@ -77,6 +77,7 @@ and `qemu-system-x86_64`. On Ubuntu the last three are `apt` packages;
 | Address-space teardown + frame reclamation | `src/experimental/address_space.rs`, `teardown_demo.rs` | 🔶 pre-normative |
 | TLB invalidation (`invlpg`) on unmap | `src/memory/paging.rs`, `tlb_demo.rs` | ✅ NPS-001-grounded |
 | Guard pages for stack-overflow detection | `src/memory/guard_demo.rs` | ✅ NPS-001-grounded |
+| ACPI RSDP validation + reclaimable-memory release | `src/acpi.rs`, `src/memory/frame_allocator.rs` | ✅ NPS-001-grounded |
 | Minimal PE32+ (Windows) loader | `src/experimental/pe.rs`, `pe_demo.rs` | 🔷 first real Phase 5 capability |
 | Minimal DEX (Android) parser + checksum/SHA-1 verify | `src/experimental/dex.rs`, `crypto.rs`, `dex_demo.rs` | 🔷 first real Phase 6 capability |
 
@@ -105,6 +106,7 @@ linker.ld             Load-address layout, kernel image symbols
 src/
   lib.rs              kernel_main -- the boot sequence, in order
   gdt.rs, idt.rs       GDT/TSS, IDT, CPU exception handlers
+  acpi.rs              RSDP validation, RSDT/XSDT enumeration (reclaim support)
   pic.rs               8259 PIC remap, timer interrupt
   rtc.rs               CMOS/RTC periodic interrupt (IRQ8)
   multiboot.rs         Multiboot2 info-structure parsing

@@ -282,6 +282,8 @@ nyrqis kernel: phase 1 bring-up
   idt: loaded (divide-error, invalid-opcode, gpf, page-fault, double-fault)
   double-fault ist stack: index 0
   multiboot: memory map parsed, 32639 usable 4KiB frames (127 MiB)
+  acpi: RSDP v0 validated (RSDT root table), 4 tables enumerated and checksum-verified
+  acpi reclaim: platform reports no AcpiReclaimable region; synthetic control on reserved 0xf0000..0x100000: usable before=false (expected false), after release=true (expected true), after restoring=false (expected false) -- OK
   paging: dynamic mapper live (CR3 read back, OffsetPageTable constructed), NX enabled (EFER.NXE)
   heap: mapped 256 pages (1024 KiB) at 0x10000000000, global allocator live
   heap self-test: Vec<u32> of 100 elements allocated and summed correctly (5050)
@@ -508,11 +510,21 @@ closed, both NPS-001-grounded (not gated on NPS-002/003):
   task might still be resumed into"). Deliberately *not* the
   just-trapped task: control is running on that task's kernel stack,
   so freeing its stack here would free the memory being executed on.
+- **ACPI-reclaimable memory reuse** (`src/acpi.rs` +
+  `memory::frame_allocator`): RSDP checksum validation, RSDT/XSDT table
+  enumeration with per-table checksum verification, and an allocator
+  that refuses `AcpiReclaimable` regions until `reclaim_acpi` releases
+  them. No QEMU machine type reports such a region, so the release
+  contract is proven by an explicitly-labelled synthetic control
+  (refused -> usable -> refused again); the RSDP/table path is real
+  every-boot evidence.
 
 Verified transcript lines (from `tools/qemu_boot_test.sh`, passing):
 
 ```
   rtc: periodic interrupt armed at 1024 Hz, IRQ8 + cascade IRQ2 unmasked
+  acpi: RSDP v0 validated (RSDT root table), 4 tables enumerated and checksum-verified
+  acpi reclaim: platform reports no AcpiReclaimable region; synthetic control on reserved 0xf0000..0x100000: usable before=false (expected false), after release=true (expected true), after restoring=false (expected false) -- OK
   rtc self-test: 4 additional RTC periodic interrupts observed and handled after a snapshot (1086 total; IRQ8, via the slave-PIC cascade)
   experimental ring3-scheduler teardown: task F's address space (pml4 0x297000, active for its own 7 trap-based yields) destroyed after suspension -- 10 frames reclaimed (305 -> 295 in use) -- OK
   memory guard-demo: stack mapped at 0x80000000000..0x80000004000 (4 pages); bottom present OK, top present OK, guard page 0x7fffffff000 absent OK, page above 0x80000004000 absent OK
@@ -546,7 +558,20 @@ FAIL: unexpected QEMU exit status 35
   already get implicit guard behavior (the page below each user stack
   is simply unmapped in the process's private address space), but that
   is a side effect, not a built guard
-- ACPI-reclaimable memory reuse
+- ACPI-reclaimable memory reuse: once listed here as an open gap, now
+  **closed** (2026-10-09). `src/acpi.rs` validates the RSDP the loader
+  handed off and enumerates the RSDT/XSDT tables (checksum-verified),
+  and the frame allocator only accepts `AcpiReclaimable` regions once
+  `reclaim_acpi` has been called -- default posture is "refuse", not
+  "assume free". **Honest limitation of the evidence:** every QEMU
+  machine type this kernel has booted on reports *no* `AcpiReclaimable`
+  region, so the real release path is unexercised here; the allocator's
+  release contract is instead proven every boot by a clearly-labelled
+  synthetic control on a reserved range (refused -> usable on release ->
+  refused again when restored). The RSDP validation and table
+  enumeration are real, every-boot evidence. Nothing in this kernel
+  *interprets* ACPI tables yet (no MADT/APIC, no FADT, no AML): if a
+  later subsystem needs one, it must copy the table before the reclaim.
 - Any actual scheduling policy beyond the pre-normative cooperative
   proof of concept: capability-scoped task isolation, fairness,
   preemption tied to the timer tick (currently cooperative-only, never
@@ -667,8 +692,6 @@ kernel, and documented as such rather than half-attempted:**
 **Tractable and *not* governance-gated -- genuine next candidates,
 just not done in this increment:**
 
-- ACPI-reclaimable memory reuse (needs RSDP/ACPI table access before
-  the reclaimable regions can be safely handed to the frame allocator).
 - Wiring guard pages under every live kernel stack (mechanism proven;
   see above) and the cooperative scheduler's task stacks.
 - More IRQ lines (keyboard, ATA/IDE) *with real handlers* -- the rule

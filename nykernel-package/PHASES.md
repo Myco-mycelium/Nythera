@@ -136,15 +136,17 @@ outside any table Phase 1's static setup built.)
 
 **Explicitly out of scope for Phase 2** (deferred, not forgotten): a
 true higher-half address space layout (heap placement is a manually
-chosen high address, not a systematic kernel/user split) and
-ACPI-reclaimable memory reuse.
+chosen high address, not a systematic kernel/user split).
 
-*(Two items once listed here as deferred are now done: frame
+*(Three items once listed here as deferred are now done: frame
 deallocation -- the frame allocator gained a real free-list, see the
-teardown increment below -- and guard pages for stack-overflow
-detection -- `memory::guard_demo`, see the 2026-10-09 increment in
-`IMPLEMENTATION_STATUS.md`. The guard-page mechanism is proven; wiring
-it under every live kernel stack is the remaining work.)*
+teardown increment below; guard pages for stack-overflow detection --
+`memory::guard_demo`; and ACPI-reclaimable memory reuse -- `src/acpi.rs`
+validates the RSDP, enumerates the tables, and the allocator only
+accepts `AcpiReclaimable` regions after `reclaim_acpi`. See the
+2026-10-09 increment in `IMPLEMENTATION_STATUS.md`. The guard-page
+mechanism is proven; wiring it under every live kernel stack is the
+remaining work, and this kernel does not yet *interpret* ACPI tables.)*
 
 ## Phase 3 -- Scheduling / processes 🚧, prep done, blocked on NPS-002 remaining Draft
 

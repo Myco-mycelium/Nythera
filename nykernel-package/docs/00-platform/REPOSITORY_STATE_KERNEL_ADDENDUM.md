@@ -44,6 +44,10 @@ inspection), most with an accompanying negative-control test:
 - PIC remap + real hardware timer interrupts, plus a second real IRQ
   line: the CMOS/RTC periodic interrupt (IRQ8, exercising the
   slave-PIC cascade path)
+- ACPI RSDP validation and RSDT/XSDT table enumeration, with the frame
+  allocator refusing `AcpiReclaimable` regions until `reclaim_acpi`
+  releases them (no QEMU machine type reports such a region, so the
+  release contract is proven by a labelled synthetic control)
 - Guard pages for stack-overflow detection (verified every boot with a
   real overflow write that must fault, and a negative control)
 - NX (no-execute) enforcement -- verified with a positive control
@@ -86,7 +90,7 @@ they actually happened.
 dynamic linking (symbol-resolved relocations), preemptive (as opposed
 to cooperative) ring-3 task scheduling, guard pages wired under every
 live kernel stack (the mechanism is proven; it guards a dedicated
-probe stack today), ACPI-reclaimable memory reuse, and -- by far the
+probe stack today), and -- by far the
 largest remaining gap -- real application compatibility on top of the
 loaders (a Win32 API/import layer, a DEX/ART bytecode runtime, the
 actual API surfaces). Scheduling/IO policy beyond the pre-normative
