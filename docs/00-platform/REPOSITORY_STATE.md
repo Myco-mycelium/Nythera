@@ -39,7 +39,15 @@ document was already at 1.16.0 — the missing 1.13.0–1.16.0 rows are
 backfilled. No ADR/NPS status was changed: the audit cites front-matter
 that was ALREADY `Accepted` — the roadmap was catching up to it. Doc
 gates re-run on the edited tree: cycles 0 across 91 docs, premises
-60/60, nstudio 15/15, mkdocs --strict exit 0.
+60/60, nstudio 15/15, mkdocs --strict exit 0. The M11 gap list / M13 / M14 sections were
+re-probed in the same pass and needed no correction: NPS-025/026,
+API-001, ABI-001 and PERF-001 all remain `Draft` exactly as the
+roadmap annotates, and the rest are real-hardware (AMD/NVIDIA/RISC-V/
+ARM64/GTK4-Qt6-Sway) or owner-account (external audit, marketplace
+publish) blocked — no manufactured strikes. Full backend pytest sweep
+on the tip: **9381 passed / 4 skipped / 0 failed** (exit 0,
+`sweep-20261008.log`; identical to the 0.29.45 release baseline, as
+expected for a docs-only change).
 2026-10-07 (fifth round), RST-001 §7 COMPLETED as 0.29.45 (owner
 instruction "proceed with all the suggested followups"): (1) the
 bootable restore environment — `Nyrqis Restore` entries
