@@ -1,26 +1,32 @@
-//! Guard-page stack-overflow detection.
+//! Guard-page stack-overflow detection -- the enforcement proof.
 //!
-//! Closes the "Guard pages for stack-overflow detection" gap named in
-//! IMPLEMENTATION_STATUS.md. A guard page is the standard mechanism: a
-//! stack is mapped as a run of pages, and the page immediately below
-//! its lowest usable address is deliberately left **unmapped**. A
-//! downward-growing stack that overflows its allotted pages then runs
-//! straight into an unmapped page and takes a deterministic page fault
-//! instead of silently scribbling over whatever happens to sit below
-//! it -- which is exactly the kind of memory corruption that is nearly
-//! impossible to diagnose after the fact.
+//! A guard page is the standard mechanism: a stack is mapped as a run
+//! of pages, and the page immediately below its lowest usable address
+//! is deliberately left **unmapped**. A downward-growing stack that
+//! overflows its allotted pages then runs straight into an unmapped
+//! page and takes a deterministic page fault instead of silently
+//! scribbling over whatever happens to sit below it -- exactly the
+//! kind of memory corruption that is nearly impossible to diagnose
+//! after the fact.
 //!
-//! This is generic paging machinery (NPS-001 territory), so it lives
-//! under `memory` rather than `experimental`.
+//! The *mechanism* and the region live in
+//! [`crate::memory::kernel_stack`], which is also what every live
+//! ring-3 task's RSP0 stack is now allocated from (see
+//! `experimental::address_space`). This module is the other half: the
+//! terminal probe that proves the guard page genuinely *faults*, using
+//! the exact same allocator the live stacks use, so the proof covers
+//! the real mechanism and not a look-alike.
 //!
 //! # Two kinds of proof, and why the second one has to be terminal
 //!
-//! 1. **Structural, every boot.** [`build`] maps a guarded stack and
-//!    [`verify`] checks the page-table state directly via
-//!    [`crate::memory::paging::translate`]: every stack page present,
-//!    the guard page absent, and the page just above the stack (also
+//! 1. **Structural, every boot.** [`build`] allocates a guarded stack
+//!    from the shared region and [`verify`] checks the page-table
+//!    state directly via [`crate::memory::paging::translate`]: every
+//!    stack page present, the guard page absent, and the page just
+//!    above the stack (the next slot's guard, also permanently
 //!    unmapped) absent -- so the guard cannot pass by coincidence.
-//!    This runs on every boot as the first half of [`run_and_prove`].
+//!    (`experimental::ring3_scheduler` repeats this check for the live
+//!    task stacks themselves.)
 //!
 //! 2. **Enforcement, every boot, but terminal.** The only way to prove
 //!    a guard page *actually fault*s is to actually overflow into it.
@@ -37,27 +43,25 @@
 //!    nothing. It is a genuine positive control, not a restatement of
 //!    "the mapping call returned Ok".
 //!
-//! Honest scope: this proves the guard-page *mechanism* is correctly
-//! built and enforced, using a dedicated probe stack. It does not yet
-//! wire guarded stacks under every live kernel stack -- see
-//! IMPLEMENTATION_STATUS.md for what remains.
+//! Honest scope: this proves the guard-page mechanism is correctly
+//! built and enforced, and that the live ring-3 stacks share the same
+//! region (checked structurally every boot). It does not force an
+//! *actual* overflow of a live task's stack -- that would end the boot
+//! mid-demo -- so the live stacks are verified structurally rather than
+//! by deliberately overflowing them.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use x86_64::structures::paging::{OffsetPageTable, PageTableFlags};
-use x86_64::VirtAddr;
 
 use crate::memory::frame_allocator::BumpFrameAllocator;
+use crate::memory::kernel_stack::{self, GuardedStack};
 use crate::memory::paging;
 use crate::serial_println;
+use x86_64::structures::paging::OffsetPageTable;
+use x86_64::VirtAddr;
 
-/// A virtual address well outside every other region this kernel uses
-/// (heap 0x100_0000_0000, user code 0x200_0000_0000, ring-3 0x400_0000_0000,
-/// PIE 0x600_0000_0000, the TLB demo's 0x7000_0000_000), so the probe
-/// stack cannot collide with anything real.
-const STACK_VADDR: u64 = 0x_8000_0000_000;
-/// Usable stack pages. The guard page sits immediately below
-/// `STACK_VADDR` (at `STACK_VADDR - 4096`) and is never mapped.
-const STACK_PAGES: u64 = 4;
+/// Usable pages in the probe stack. The guard page sits immediately
+/// below it and is never mapped.
+const PROBE_PAGES: u64 = 4;
 
 /// Set once the probe is armed and the page-fault handler should treat
 /// an incoming fault as the expected guard-page proof rather than a
@@ -74,47 +78,18 @@ pub fn is_armed() -> bool {
     PROBE_ARMED.load(Ordering::SeqCst)
 }
 
-/// The descriptor of a built guarded stack -- returned by [`build`] so
-/// callers (today, only the demo) can obtain a usable stack top.
-pub struct GuardedStack {
-    /// Lowest *mapped* address of the stack (a page boundary).
-    pub base: VirtAddr,
-    /// The unmapped guard page directly below [`base`].
-    pub guard: VirtAddr,
-    /// One past the highest mapped byte -- the correct initial stack
-    /// pointer for a downward-growing stack.
-    pub top: VirtAddr,
-    pub pages: u64,
-}
-
-/// Maps `pages` fresh 4KiB pages starting at `va`, leaving the page
-/// immediately below `va` unmapped as a guard. Returns `None` if any
-/// page could not be mapped (out of frames, or already mapped) -- a
-/// partial stack would be a misleading thing to hand back, so this is
-/// all-or-nothing.
-pub fn build(
-    mapper: &mut OffsetPageTable<'static>,
-    frame_allocator: &mut BumpFrameAllocator,
-    va: VirtAddr,
-    pages: u64,
-) -> Option<GuardedStack> {
-    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-    if paging::map_range(mapper, frame_allocator, va, pages, flags) != pages {
-        return None;
-    }
-    Some(GuardedStack {
-        base: va,
-        guard: va - 4096u64,
-        top: va + pages * 4096,
-        pages,
-    })
+/// Allocates a guarded probe stack from the shared region -- the same
+/// allocator `experimental::address_space` uses for every live task's
+/// kernel stack. Returns `None` if the mapping failed.
+fn build(mapper: &mut OffsetPageTable<'static>, frame_allocator: &mut BumpFrameAllocator) -> Option<GuardedStack> {
+    kernel_stack::allocate(mapper, frame_allocator, PROBE_PAGES)
 }
 
 /// Checks the page-table state of a built guarded stack directly (not
-/// by inferring from behavior): every stack page present, the guard
-/// page absent, and the page above the stack absent. Returns `true`
-/// iff all of that holds.
-pub fn verify(mapper: &OffsetPageTable<'static>, stack: &GuardedStack) -> bool {
+/// by inferring from behavior), printing each observation. Returns
+/// `true` iff every stack page is present and both the guard page and
+/// the page above the stack are absent.
+fn verify(mapper: &OffsetPageTable<'static>, stack: &GuardedStack) -> bool {
     let bottom_present = paging::translate(mapper, stack.base).is_some();
     let top_present = paging::translate(mapper, stack.base + (stack.pages - 1) * 4096).is_some();
     let guard_absent = paging::translate(mapper, stack.guard).is_none();
@@ -145,12 +120,12 @@ pub fn verify(mapper: &OffsetPageTable<'static>, stack: &GuardedStack) -> bool {
     bottom_present && top_present && guard_absent && above_absent
 }
 
-/// Full proof: build + structurally verify a guarded stack, then arm
-/// the terminal overflow probe and write to the guard page. On a
-/// correct implementation the write faults, `idt::page_fault_handler`
-/// routes to [`fatal_page_fault`], and this never returns. If the
-/// write *succeeds* (the guard is broken), this reports failure and
-/// exits -- so the test cannot silently pass.
+/// Full proof: allocate + structurally verify a guarded stack from the
+/// shared region, then arm the terminal overflow probe and write to the
+/// guard page. On a correct implementation the write faults,
+/// `idt::page_fault_handler` routes to [`fatal_page_fault`], and this
+/// never returns. If the write *succeeds* (the guard is broken), this
+/// reports failure and exits -- so the test cannot silently pass.
 ///
 /// Must be the last action of the boot: whether it faults (success) or
 /// continues (failure), it diverges.
@@ -158,11 +133,10 @@ pub fn run_and_prove(
     mapper: &mut OffsetPageTable<'static>,
     frame_allocator: &mut BumpFrameAllocator,
 ) -> ! {
-    let stack = build(mapper, frame_allocator, VirtAddr::new(STACK_VADDR), STACK_PAGES)
-        .unwrap_or_else(|| {
-            serial_println!("  memory guard-demo: FAILED to map the guarded probe stack");
-            fail_exit("guarded probe stack could not be mapped")
-        });
+    let stack = build(mapper, frame_allocator).unwrap_or_else(|| {
+        serial_println!("  memory guard-demo: FAILED to allocate the guarded probe stack");
+        fail_exit("guarded probe stack could not be allocated")
+    });
 
     if !verify(mapper, &stack) {
         fail_exit("guarded stack was built but its page-table state is wrong");
@@ -188,7 +162,7 @@ pub fn run_and_prove(
 
 /// Called by `idt::page_fault_handler` when [`is_armed`] is true. If
 /// the fault is at the armed guard address with a write error code,
-/// this is the expected, successful proof -- report it and exited the
+/// this is the expected, successful proof -- report it and exit the
 /// machine cleanly. Anything else while armed is a genuine failure
 /// that must not be mistaken for success.
 pub fn fatal_page_fault(accessed: VirtAddr, error_code: x86_64::structures::idt::PageFaultErrorCode) -> ! {

@@ -50,6 +50,7 @@ use x86_64::{PrivilegeLevel, VirtAddr};
 use crate::experimental::address_space::AddressSpace;
 use crate::experimental::{elf, usermode};
 use crate::memory::frame_allocator::BumpFrameAllocator;
+use crate::memory::kernel_stack;
 use crate::memory::paging;
 use crate::serial_println;
 
@@ -201,6 +202,40 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     TASKS.push(task_f);
     TASKS.push(task_g);
     CURRENT = 0;
+
+    // Structural proof that the guard-page mechanism is now wired under
+    // the stacks these tasks actually trap onto, not only under the
+    // dedicated terminal probe. Every stack here was allocated from
+    // `memory::kernel_stack`'s shared region, so any task's mapper can
+    // see all three (the region lives under the shared PML4 index).
+    {
+        let descriptors = [
+            *TASKS[0].address_space.kernel_stack(),
+            *TASKS[1].address_space.kernel_stack(),
+            *TASKS[2].address_space.kernel_stack(),
+        ];
+        let mapper = TASKS[2].address_space.mapper();
+        let names = [b'E', b'F', b'G'];
+        let mut all_ok = true;
+        for (i, stack) in descriptors.iter().enumerate() {
+            let ok = kernel_stack::verify(&mapper, stack);
+            all_ok &= ok;
+            serial_println!(
+                "  experimental ring3-scheduler: task {} kernel RSP0 stack {:#x}..{:#x} ({} pages) has guard page {:#x} unmapped -- {}",
+                names[i] as char,
+                stack.base.as_u64(),
+                stack.top.as_u64(),
+                stack.pages,
+                stack.guard.as_u64(),
+                if ok { "OK" } else { "FAILED" }
+            );
+        }
+        serial_println!(
+            "  experimental ring3-scheduler self-test: all {} live task kernel stacks carry a genuinely unmapped guard page directly below them -- {}",
+            descriptors.len(),
+            if all_ok { "OK" } else { "FAILED" }
+        );
+    }
 
     TASKS[0].address_space.activate();
     usermode::enter_with_stack(e_entry.unwrap(), e_rsp.unwrap())

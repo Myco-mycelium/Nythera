@@ -145,8 +145,11 @@ teardown increment below; guard pages for stack-overflow detection --
 validates the RSDP, enumerates the tables, and the allocator only
 accepts `AcpiReclaimable` regions after `reclaim_acpi`. See the
 2026-10-09 increment in `IMPLEMENTATION_STATUS.md`. The guard-page
-mechanism is proven; wiring it under every live kernel stack is the
-remaining work, and this kernel does not yet *interpret* ACPI tables.)*
+mechanism is proven and now guards every live ring-3 RSP0 stack
+(`memory::kernel_stack` + `experimental::address_space`, verified
+structurally every boot); wiring it under the cooperative scheduler's
+ring-0 task stacks is the remaining piece, and this kernel does not
+yet *interpret* ACPI tables.)*
 
 ## Phase 3 -- Scheduling / processes 🚧, prep done, blocked on NPS-002 remaining Draft
 

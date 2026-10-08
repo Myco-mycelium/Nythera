@@ -31,13 +31,15 @@
 //! explicit physical-memory access strategy (a physmap window); that's
 //! real future work, not something this proof of concept solves.
 
-use alloc::vec::Vec;
 use x86_64::registers::control::{Cr3, Cr3Flags};
-use x86_64::structures::paging::{FrameDeallocator, OffsetPageTable, PageTable, PageTableFlags, PhysFrame};
+use x86_64::structures::paging::{
+    FrameDeallocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::gdt;
 use crate::memory::frame_allocator::BumpFrameAllocator;
+use crate::memory::kernel_stack::{self, GuardedStack};
 
 /// Which top-level (PML4) entries are shared across every address
 /// space this kernel creates. Index 0 covers virtual addresses
@@ -50,22 +52,21 @@ use crate::memory::frame_allocator::BumpFrameAllocator;
 /// regardless of which process trapped in.
 const SHARED_PML4_INDICES: [usize; 2] = [0, 2];
 
-/// Private ring-0 stack size per address space, used as its RSP0 (the
-/// stack the CPU switches to on a ring-3->ring-0 trap while this space
-/// is active). Same size as the other fixed-purpose stacks in this
-/// kernel (double-fault IST, boot.s's early stack) -- generous for
-/// trap handling, not meant to host deep call chains.
-const KERNEL_STACK_SIZE: usize = 4096 * 5;
-
 pub struct AddressSpace {
     pml4_frame: PhysFrame,
-    /// This address space's own private RSP0 stack -- see the module
-    /// doc's note on why sharing one stack across processes is wrong
-    /// once resume-after-suspend matters. Kept alive for as long as
-    /// the `AddressSpace` is (typically forever, via `mem::forget`,
-    /// same as everything else in this proof of concept with no
-    /// teardown story yet).
-    kernel_stack: Vec<u8>,
+    /// This address space's own private RSP0 stack -- the stack the CPU
+    /// switches to on a ring-3->ring-0 trap while this space is active.
+    /// Kept alive for as long as the `AddressSpace` is (typically
+    /// forever, via `mem::forget`, same as everything else in this
+    /// proof of concept with no teardown story yet).
+    ///
+    /// Unlike the heap `Vec<u8>` this used to be, the stack now comes
+    /// from `memory::kernel_stack`'s shared region and carries a real
+    /// guard page directly below it, so a kernel stack overflow faults
+    /// deterministically instead of silently corrupting the heap. See
+    /// that module for why the region has to be shared (the context
+    /// switch changes `CR3` before `RSP`).
+    kernel_stack: GuardedStack,
 }
 
 #[derive(Debug)]
@@ -81,18 +82,25 @@ impl AddressSpace {
         use x86_64::structures::paging::FrameAllocator;
         let pml4_frame = frame_allocator.allocate_frame().ok_or(AddressSpaceError)?;
 
+        let pml4_virt = VirtAddr::new(pml4_frame.start_address().as_u64());
         let (current_pml4_frame, _) = Cr3::read();
         let current_pml4: &PageTable =
             unsafe { &*(current_pml4_frame.start_address().as_u64() as *const PageTable) };
-        let new_pml4: &mut PageTable =
-            unsafe { &mut *(pml4_frame.start_address().as_u64() as *mut PageTable) };
+        let new_pml4: &mut PageTable = unsafe { &mut *pml4_virt.as_mut_ptr() };
 
         new_pml4.zero();
         for &i in SHARED_PML4_INDICES.iter() {
             new_pml4[i] = current_pml4[i].clone();
         }
 
-        let kernel_stack = alloc::vec![0u8; KERNEL_STACK_SIZE];
+        // Allocate this space's RSP0 stack from the shared guarded
+        // region. Mapping through *this* space's PML4 is correct even
+        // though it is not active: the region lives under the shared
+        // index-2 subtree, so the entries written here are the ones
+        // every space (including the kernel's own) resolves through.
+        let mut mapper = unsafe { OffsetPageTable::new(&mut *pml4_virt.as_mut_ptr(), VirtAddr::new(0)) };
+        let kernel_stack = kernel_stack::allocate(&mut mapper, frame_allocator, kernel_stack::DEFAULT_STACK_PAGES)
+            .ok_or(AddressSpaceError)?;
 
         Ok(AddressSpace { pml4_frame, kernel_stack })
     }
@@ -112,9 +120,7 @@ impl AddressSpace {
     /// for a hand-constructed one.
     pub unsafe fn activate(&self) {
         Cr3::write(self.pml4_frame, Cr3Flags::empty());
-        let stack_start = VirtAddr::from_ptr(self.kernel_stack.as_ptr());
-        let stack_top = stack_start + self.kernel_stack.len() as u64;
-        gdt::set_rsp0(stack_top);
+        gdt::set_rsp0(self.kernel_stack.top);
     }
 
     /// Builds an `OffsetPageTable` for mapping into *this* address
@@ -134,7 +140,14 @@ impl AddressSpace {
     /// not-yet-run task's initial saved-trap-context blob, which must
     /// live on that task's own kernel stack, not the caller's.
     pub fn kernel_stack_top(&self) -> u64 {
-        VirtAddr::from_ptr(self.kernel_stack.as_ptr()).as_u64() + self.kernel_stack.len() as u64
+        self.kernel_stack.top.as_u64()
+    }
+
+    /// This space's guarded RSP0 stack descriptor -- used by
+    /// `experimental::ring3_scheduler` to verify, structurally, that
+    /// the live stacks really do carry a guard page.
+    pub fn kernel_stack(&self) -> &GuardedStack {
+        &self.kernel_stack
     }
 
     /// Frees every frame this address space exclusively owns: its own
@@ -147,12 +160,14 @@ impl AddressSpace {
     /// would corrupt every other live process (including the kernel
     /// itself) the moment this one exits.
     ///
-    /// `self.kernel_stack` (a `Vec<u8>`) is not handled specially here
-    /// -- it's freed automatically when this function returns and
-    /// `self` is dropped, through the kernel heap's own allocator
-    /// (`linked_list_allocator`), which already supports real
-    /// deallocation. Only *physical frames* needed this new machinery;
-    /// heap memory always could free correctly.
+    /// `self.kernel_stack` (the guarded RSP0 stack) *is* reclaimed here
+    /// too, even though it lives in `memory::kernel_stack`'s shared
+    /// region: that region hands out a fresh slot per allocation and
+    /// never reuses one, so this slot is owned exclusively by this
+    /// space. Clearing its page-table entries through the currently
+    /// active (shared) tables and freeing their data frames therefore
+    /// cannot affect any other space -- only the shared PDPT/PD/PT
+    /// frames that hold those entries outlive every space.
     ///
     /// Must NOT be called while this space is the currently active one
     /// (its own page tables, including the ones about to be freed,
@@ -167,6 +182,25 @@ impl AddressSpace {
     /// nothing enforces it either; this is a real, documented sharp
     /// edge, not a hidden one).
     pub unsafe fn destroy(self, frame_allocator: &mut BumpFrameAllocator) {
+        // Reclaim the guarded kernel stack first. Its slot is ours
+        // alone, but its page-table entries live in the *shared*
+        // index-2 subtree, so they must be cleared through whichever
+        // space is currently active (which shares that subtree).
+        {
+            let (active_pml4, _) = Cr3::read();
+            let active: &'static mut PageTable =
+                &mut *(active_pml4.start_address().as_u64() as *mut PageTable);
+            let mut mapper = OffsetPageTable::new(active, VirtAddr::new(0));
+            for i in 0..self.kernel_stack.pages {
+                let page: Page<Size4KiB> =
+                    Page::containing_address(self.kernel_stack.base + i * 4096);
+                if let Ok((frame, flush)) = mapper.unmap(page) {
+                    flush.flush();
+                    frame_allocator.deallocate_frame(frame);
+                }
+            }
+        }
+
         let pml4_virt = VirtAddr::new(self.pml4_frame.start_address().as_u64());
         let pml4: &mut PageTable = &mut *pml4_virt.as_mut_ptr();
 
@@ -182,8 +216,10 @@ impl AddressSpace {
             }
         }
 
+        // Freed last so it is the first frame the next allocation pops
+        // off the free list; `experimental::teardown_demo` relies on
+        // exactly that to prove genuine frame reuse.
         frame_allocator.deallocate_frame(self.pml4_frame);
-        // `self.kernel_stack` drops normally here, via the kernel heap.
     }
 }
 

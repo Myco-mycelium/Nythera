@@ -49,7 +49,10 @@ inspection), most with an accompanying negative-control test:
   releases them (no QEMU machine type reports such a region, so the
   release contract is proven by a labelled synthetic control)
 - Guard pages for stack-overflow detection (verified every boot with a
-  real overflow write that must fault, and a negative control)
+  real overflow write that must fault, and a negative control), now
+  also backing every live ring-3 task's RSP0 kernel stack via a shared
+  guarded-stack region (`memory::kernel_stack`), verified structurally
+  every boot
 - NX (no-execute) enforcement -- verified with a positive control
   (a deliberate execution attempt from a non-executable page, correctly
   faulted)
@@ -69,8 +72,8 @@ inspection), most with an accompanying negative-control test:
   unambiguous frame-reuse proof (a torn-down space's exact freed PML4
   frame reused by the next space built, compared by physical address);
   and now exercised on a space that was ever *active* for a ring-3 trap
-  (task F in `ring3_scheduler`, destroyed after suspension, 10 frames
-  reclaimed)
+  (task F in `ring3_scheduler`, destroyed after suspension, 15 frames
+  reclaimed -- including its now frame-allocator-backed guarded stack)
 - TLB invalidation (`invlpg`) on unmap, proven by a map/unmap/remap
   self-test that reads back the new backing frame
 - A minimal PE32+ (Windows) loader, including base-relocation
@@ -88,9 +91,10 @@ they actually happened.
 
 **Explicitly NOT done, stated plainly rather than implied:** real
 dynamic linking (symbol-resolved relocations), preemptive (as opposed
-to cooperative) ring-3 task scheduling, guard pages wired under every
-live kernel stack (the mechanism is proven; it guards a dedicated
-probe stack today), and -- by far the
+to cooperative) ring-3 task scheduling, guard pages under the
+cooperative scheduler's ring-0 task stacks (the mechanism is proven and
+now guards every live ring-3 RSP0 stack; the ring-0 stacks are the last
+piece), and -- by far the
 largest remaining gap -- real application compatibility on top of the
 loaders (a Win32 API/import layer, a DEX/ART bytecode runtime, the
 actual API surfaces). Scheduling/IO policy beyond the pre-normative
