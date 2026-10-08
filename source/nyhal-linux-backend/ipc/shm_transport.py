@@ -76,6 +76,12 @@ _SHM_VERSION = 1
 _HEADER_SIZE = 64  # cache-line aligned
 _DEFAULT_CAPACITY = 1024 * 1024  # 1 MiB ring buffer
 _OPEN_TIMEOUT_S = 5.0
+# Busy-spin window before yielding. The pre-IPC-001 implementation slept in
+# fixed 100 us steps, which quantized every empty-ring wait to that step and
+# dominated the round-trip latency (IPC-001 §38: p50 187.86 us, missing the
+# NPS-003 §6.1 <100 us gate). Spinning briefly catches an active peer within
+# microseconds; only a genuinely idle ring reaches the yield loop.
+_SPIN_WINDOW_NS = 50_000  # 50 us
 
 # Header format: magic(4) + version(4) + head(8) + tail(8) + capacity(8) + reserved(32)
 _HEADER_FMT = "<IIQQQ32s"
@@ -224,6 +230,29 @@ class RingBuffer:
             pos = (pos + chunk) & self._mask
             off += chunk
 
+    def _wait_ready(self, ready, timeout_s: float) -> bool:
+        """Wait until ``ready()`` returns true or ``timeout_s`` elapses.
+
+        A short busy-spin first (the CALL/REPLY case, where the peer goes
+        active within microseconds), then ``os.sched_yield()`` to hand the
+        CPU to the peer while remaining responsive — deliberately NOT a
+        fixed sleep step, which quantified every wait (IPC-001 §38).
+        Idle waits still consume CPU; that cost is measured in
+        BENCHMARK_RESULTS §38b, and a futex/eventfd wait is the follow-on
+        if idle CPU ever matters more than latency.
+        """
+        deadline = time.monotonic() + timeout_s
+        spin_end = time.perf_counter_ns() + _SPIN_WINDOW_NS
+        while time.perf_counter_ns() < spin_end:
+            if ready():
+                return True
+        while True:
+            if ready():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            os.sched_yield()
+
     def write(self, data: bytes, timeout_s: float = _OPEN_TIMEOUT_S) -> bool:
         """Write a message into the ring buffer.
 
@@ -235,16 +264,11 @@ class RingBuffer:
         # Align to 8 bytes
         entry_size = (entry_size + 7) & ~7
 
-        deadline = time.monotonic() + timeout_s
-        while True:
-            avail = self._available_write()
-            if avail >= entry_size:
-                break
-            if time.monotonic() >= deadline:
-                logger.warning("shm ring: write timeout (need %d, have %d)",
-                               entry_size, avail)
-                return False
-            time.sleep(0.000_1)  # 100 us backoff
+        if not self._wait_ready(
+                lambda: self._available_write() >= entry_size, timeout_s):
+            logger.warning("shm ring: write timeout (need %d, have %d)",
+                           entry_size, self._available_write())
+            return False
 
         head = self._read_head()
         entry = struct.pack("<I", msg_len) + data
@@ -260,14 +284,8 @@ class RingBuffer:
 
         Returns the payload bytes, or None on timeout / empty.
         """
-        deadline = time.monotonic() + timeout_s
-        while True:
-            avail = self._available_read()
-            if avail >= 4:
-                break
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(0.000_1)
+        if not self._wait_ready(lambda: self._available_read() >= 4, timeout_s):
+            return None
 
         tail = self._read_tail()
 

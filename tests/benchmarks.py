@@ -75,6 +75,7 @@ Usage:
   python3 tests/benchmarks.py --ipc       # §1 IPC round-trip
   python3 tests/benchmarks.py --ipc-transport  # §20 over the real UDS transport
   python3 tests/benchmarks.py --ipc-shm   # §38 over the shared-memory transport
+  python3 tests/benchmarks.py --ipc-shm-cpu  # §38b idle CPU cost of the shm wait
   python3 tests/benchmarks.py --bucket    # §3 token-bucket defaults
   python3 tests/benchmarks.py --zstd      # §2 Zstd level sweep
   python3 tests/benchmarks.py --nyfs      # §4 NyFS vs native proxy
@@ -409,6 +410,34 @@ def benchmark_ipc_shm_roundtrip(n=IPC_ITERATIONS, payload_size=64):
         shutil.rmtree(base, ignore_errors=True)
     result["server_served"] = served["count"]
     return result
+
+
+def benchmark_ipc_shm_idle_cpu(wait_s=0.5):
+    """CPU cost of the shared-memory wait strategy while the ring is idle
+    (IPC-001 §7, BENCHMARK_RESULTS §38b).
+
+    A reader that finds the ring empty and waits ``wait_s`` seconds is
+    timed for wall-clock vs process CPU, giving the busy fraction the
+    yield-based wait costs when genuinely idle. This is the documented
+    tradeoff for §38's sub-100 us latency; a futex/eventfd wait is the
+    follow-on if idle CPU matters more than latency.
+    """
+    if not is_shm_available():
+        return {"error": "POSIX shared memory unavailable on this host"}
+    channel = "cpu-" + uuid.uuid4().hex
+    t = ShmTransport(channel)
+    if not t.create():
+        return {"error": "shm create() failed"}
+    try:
+        c0 = time.process_time()
+        w0 = time.monotonic()
+        t.recv(timeout_s=wait_s)  # empty ring: waits the full window
+        wall = time.monotonic() - w0
+        cpu = time.process_time() - c0
+    finally:
+        t.close()
+    return {"wait_s": round(wall, 3), "cpu_s": round(cpu, 4),
+            "busy_fraction": round(cpu / wall, 3) if wall else None}
 
 
 IPCD_IPC_WARMUP = 200
@@ -2488,6 +2517,7 @@ def main():
     parser.add_argument("--all", action="store_true", help="run everything (default)")
     parser.add_argument("--ipc", action="store_true", help="§1 IPC round-trip latency")
     parser.add_argument("--ipc-shm", action="store_true", help="IPC-001 §38 shared-memory round-trip")
+    parser.add_argument("--ipc-shm-cpu", action="store_true", help="IPC-001 §38b shm idle-wait CPU cost")
     parser.add_argument("--ipc-transport", action="store_true",
                         help="§20 IPC round-trip over the real UDS transport")
     parser.add_argument("--ipcd", action="store_true",
@@ -2565,7 +2595,8 @@ def main():
         print(json.dumps(_vault_mount_worker()))
         return
 
-    selected = (args.ipc or args.ipc_transport or args.ipc_shm or args.ipcd or args.bucket
+    selected = (args.ipc or args.ipc_transport or args.ipc_shm or args.ipc_shm_cpu
+                or args.ipcd or args.bucket
                 or args.zstd or args.nyfs or args.nyfs_mount or args.nyfs_persist
                 or args.save_levers or args.snapshot_dedup or args.codec
                 or args.real_corpus or args.mixed_workload
@@ -2576,7 +2607,7 @@ def main():
                 or args.ledger_refresh or args.vault_stream or args.nui
                 or args.nyfs_mount_nocompress or args.gc_impact)
     if not selected or args.all:
-        args.ipc = args.ipc_transport = args.ipc_shm = args.ipcd = True
+        args.ipc = args.ipc_transport = args.ipc_shm = args.ipc_shm_cpu = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
         args.nyfs_mount = args.nyfs_persist = args.save_levers = True
         args.snapshot_dedup = args.codec = args.real_corpus = True
@@ -2604,6 +2635,9 @@ def main():
     if args.ipc_shm:
         _print_section("IPC round-trip over the shared-memory transport (§38):",
                        benchmark_ipc_shm_roundtrip())
+    if args.ipc_shm_cpu:
+        _print_section("Shared-memory idle-wait CPU cost (§38b):",
+                       benchmark_ipc_shm_idle_cpu())
     if args.ipcd:
         _print_section("ADR-0021 A/B — floor vs Rust serving loop (§21):",
                        benchmark_ipcd_roundtrip())

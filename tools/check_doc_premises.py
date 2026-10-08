@@ -340,6 +340,26 @@ CLAIMS: list[Claim] = [
         check_args={"section": "38"},
     ),
     Claim(
+        claim_id="ipc001-shm-wait-fix",
+        pattern=r"_wait_ready",
+        description="IPC-001 §7 as-built: the ring wait fix landed — RingBuffer read/write wait via _wait_ready (50 µs spin then os.sched_yield), replacing the 100 µs time.sleep that quantified the round trip (§38 p50 187.86 -> 20.26 µs, closing the NPS-003 §6.1 <100 µs gate on the SHM path)",
+        check="path_contains",
+        check_args={
+            "needle": "def _wait_ready",
+            "files": ["source/nyhal-linux-backend/ipc/shm_transport.py"],
+        },
+    ),
+    Claim(
+        claim_id="ipc001-shm-channel-landed",
+        pattern=r"ipc/shm_channel\.py",
+        description="IPC-001 §7 as-built: the selectable shared-memory channel landed (source/nyhal-linux-backend/ipc/shm_channel.py) — TransportSelection/select_transport (explicit, fail-closed, never silent) and ShmChannel carrying the datagram path's codec-identical to_wire() bytes with an unguessable-token rule; pinned by tests/test_ipc_shm_channel.py (10 tests)",
+        check="path_contains",
+        check_args={
+            "needle": "class ShmChannel",
+            "files": ["source/nyhal-linux-backend/ipc/shm_channel.py"],
+        },
+    ),
+    Claim(
         claim_id="repo-url-is-nythera",
         pattern=r"repo_url",
         description="mkdocs.yml repo_url still names Myco-mycelium/Nythera (rename pending)",
