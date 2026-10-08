@@ -45,6 +45,8 @@ __all__ = [
     "select_transport",
     "new_channel_token",
     "ShmChannel",
+    "offer_channel",
+    "accept_channel",
     "MIN_CHANNEL_TOKEN_LEN",
 ]
 
@@ -170,3 +172,53 @@ class ShmChannel:
     @property
     def available(self) -> bool:
         return self._transport.available
+
+
+# --- negotiation over the authenticated datagram path --------------------
+
+def offer_channel(
+    server,
+    sender_path: str,
+    call_id: str,
+    peer_id: str,
+    *,
+    channel_id: Optional[str] = None,
+) -> "ShmChannel":
+    """Server side of the handshake: create a channel and reply its token.
+
+    The token travels over the EXISTING datagram path — the only channel
+    that carries kernel-attached credentials — so the client that receives
+    it is the authenticated peer. ``server`` is an ``IPCDatagramServer``
+    (or anything with the same ``reply`` method).
+    """
+    token = channel_id or new_channel_token()
+    channel = ShmChannel.create(token, peer_id)
+    if not server.reply(sender_path, call_id, token.encode()):
+        channel.close()
+        raise ShmChannelError("failed to deliver the shm channel token")
+    return channel
+
+
+def accept_channel(
+    client,
+    server_path: str,
+    peer_id: str,
+    *,
+    op: bytes = b"shm-open",
+    timeout_s: float = 5.0,
+) -> "ShmChannel":
+    """Client side of the handshake: CALL for a token, then attach.
+
+    ``client`` is an ``IPCClient`` (or anything with a compatible
+    ``call``). Raises ``ShmChannelError`` if no valid token comes back —
+    the caller must then fall back to datagram (never silently: it gets
+    the exception).
+    """
+    reply = client.call(server_path, op, timeout_s=timeout_s)
+    if reply is None:
+        raise ShmChannelError("no reply to the shm channel request")
+    try:
+        token = reply.payload.decode("ascii")
+    except (AttributeError, UnicodeDecodeError) as exc:
+        raise ShmChannelError(f"malformed shm channel token: {exc}") from exc
+    return ShmChannel.attach(token, peer_id)

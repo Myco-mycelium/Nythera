@@ -5,6 +5,23 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-08 (tenth round), IPC-001 §7 continued — the SHM channel
+negotiation mechanism landed (code + pins): `ipc/shm_channel.py` gains
+`offer_channel` (server creates the channel and replies its token over
+the EXISTING authenticated datagram path — the only one that carries
+kernel credentials) and `accept_channel` (client CALLs for a token, then
+attaches; no valid token raises, so the caller falls back explicitly —
+never silent). Pinned by `tests/test_ipc_shm_channel.py` (12 tests now:
+the in-process negotiation round trip over the real datagram path plus
+the no-token-refusal path). The wait strategy was also tuned this round:
+the shipped **spin→sleep** wait keeps the §6.1 gate MET (p50 20.41 µs /
+p99 52.58 µs) and cuts idle CPU ~12× (§38b 0.083 vs 1.00 for pure
+yield). Honest remaining scope, recorded in IPC-001 §8: the daemon's
+per-client LIFECYCLE wiring (when to offer, channel limits, cleanup on
+client exit, serving-loop fallback policy) — the mechanism now exists.
+Verification: channel pins 12/12; targeted SHM transport 12/12; full
+sweep 9391 passed / 4 skipped / 0 failed (`sweep-ipc001-adaptive.log`);
+doc gates green.
 2026-10-08 (ninth round), IPC-001 §7 AS-BUILT — the H1 Option A
 increment landed (code + measurement + pins): (1) the **wait fix** —
 `RingBuffer.read`/`write` now wait via a new `_wait_ready` (a 50 µs

@@ -14,7 +14,9 @@ from ipc.shm_channel import (
     MIN_CHANNEL_TOKEN_LEN,
     ShmChannel,
     ShmChannelError,
+    accept_channel,
     new_channel_token,
+    offer_channel,
     select_transport,
 )
 from ipc.shm_transport import is_shm_available
@@ -94,6 +96,69 @@ def test_message_over_shm_is_the_same_wire_bytes():
         assert server.send_message(msg) is True
     finally:
         server.close()
+
+
+@requires_shm
+def test_channel_is_negotiated_over_the_authenticated_datagram_path():
+    """The token must travel over the datagram path (the only one carrying
+    kernel credentials); the client then attaches and talks over SHM."""
+    import os
+    import tempfile
+    import threading
+    from ipc.core import IPCManager, TokenBucket
+    from ipc.transport import IPCClient, IPCDatagramServer
+
+    base = tempfile.mkdtemp(prefix="nyrqis-shm-nego-")
+    svc_path = os.path.join(base, "svc.sock")
+    cli_path = os.path.join(base, "cli.sock")
+
+    mgr = IPCManager()
+    svc = mgr.create_endpoint("svc", "ep-svc")
+    svc.rate_limit = TokenBucket(
+        bucket_size=1_000_000, tokens_per_second=1_000_000.0)
+    server = IPCDatagramServer(mgr, "ep-svc", svc_path)
+    server.bind()
+    server.pid_registry = {os.getpid(): "cli"}  # the in-process client is us
+    offered = []
+    stop = threading.Event()
+
+    def handler(msg, sender, sender_path):
+        offered.append(
+            offer_channel(server, sender_path, msg.message_id, "cli"))
+
+    server.on_call = handler
+    threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+
+    client = IPCClient("cli", cli_path).bind()
+    try:
+        channel = accept_channel(client, svc_path, "svc")
+        try:
+            assert channel.available
+            msg = IPCMessage(
+                message_type=IPCMessageType.SEND,
+                sender_id="cli", payload=b"over-shm")
+            assert channel.send_message(msg) is True
+            got = offered[0].recv_message(timeout_s=5.0)
+            assert got is not None
+            assert got.payload == b"over-shm"
+        finally:
+            channel.close()
+            for c in offered:
+                c.close()
+    finally:
+        client.close()
+        stop.set()
+        server.close()
+
+
+@requires_shm
+def test_accept_channel_refuses_when_no_token_comes_back():
+    class _NoReplyClient:
+        def call(self, *a, **k):
+            return None
+
+    with pytest.raises(ShmChannelError):
+        accept_channel(_NoReplyClient(), "/nonexistent", "svc", timeout_s=0.01)
 
 
 @requires_shm

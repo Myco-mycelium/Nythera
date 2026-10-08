@@ -360,6 +360,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="ipc001-shm-negotiation-landed",
+        pattern=r"offer_channel|accept_channel",
+        description="IPC-001 §7: the SHM channel negotiation mechanism landed (ipc/shm_channel.py offer_channel/accept_channel) — the channel token is delivered over the authenticated datagram path (the only one carrying kernel credentials), then the client attaches; pinned by tests/test_ipc_shm_channel.py (in-process negotiation + no-token refusal)",
+        check="path_contains",
+        check_args={
+            "needle": "def offer_channel",
+            "files": ["source/nyhal-linux-backend/ipc/shm_channel.py"],
+        },
+    ),
+    Claim(
         claim_id="repo-url-is-nythera",
         pattern=r"repo_url",
         description="mkdocs.yml repo_url still names Myco-mycelium/Nythera (rename pending)",

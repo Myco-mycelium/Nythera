@@ -205,15 +205,20 @@ Landed under the H1 ruling:
   unguessable-token requirement (`MIN_CHANNEL_TOKEN_LEN`). Pinned by
   `tests/test_ipc_shm_channel.py` (10 tests: the selection policy
   including both fallbacks, the token rules, and the codec-identical
-  cross-instance CALL/REPLY round trip).
+  cross-instance CALL/REPLY round trip) and the **negotiation helpers**
+  (`offer_channel` / `accept_channel`): the token is delivered over the
+  EXISTING authenticated datagram path (the only channel carrying kernel
+  credentials), then the client attaches — pinned by the in-process
+  negotiation test and the no-token-refusal test (12 tests total).
 - **The measurement** (`tests/benchmarks.py --ipc-shm` / `--ipc-shm-cpu`):
   BENCHMARK_RESULTS §38 (latency) and §38b (idle CPU busy fraction 1.0 —
   the documented tradeoff).
 
-**Remaining (honest scope):** the daemon does not yet *establish* a
-channel per authenticated client (server `create` + advertise the token
-over the authenticated datagram path; client `attach`); a futex/eventfd
-wait is the follow-on if §38b's idle CPU cost ever outweighs latency.
+**Remaining (honest scope):** the daemon's *lifecycle* wiring is not yet
+in place — when to offer a channel per authenticated client, channel
+limits, cleanup on client exit, and the serving-loop fallback policy —
+the mechanism (`offer_channel`/`accept_channel`) does exist; a
+futex/eventfd wait is the follow-on for the tail/idle-CPU tradeoff.
 
 ## Change log
 
