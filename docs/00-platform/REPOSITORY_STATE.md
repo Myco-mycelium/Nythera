@@ -32,7 +32,12 @@ corrected (v1.3.0) with the measured verdict; the roadmap item is
 annotated to point at IPC-001. Registered: mkdocs nav, spec index
 v1.53.0 → v1.54.0, premise pin `ipc001-design-note` (premises 60 → 61).
 Gates: cycles 0 across 92 docs, premises 61/61, nstudio 15/15, mkdocs
---strict exit 0. No code, no version, no spec-status change.
+--strict exit 0. No code, no version, no spec-status change. Follow-up
+in the same round: the note is **staged as AG_AGENDA v2.7.0 Bundle H
+(H1, decision-ready)** — the first open bundle since G closed — so the
+ruling has a decision record and acceptance converts to landed work
+without re-planning (the E1/F1/G1 shape); the agenda's "NO OPEN BUNDLES"
+state is superseded by the staging.
 2026-10-08 (sixth round), roadmap benchmark/milestone re-probe audit
 (docs-only; no code, spec-status, or version change): after 0.29.45
 there are NO open decision bundles, and the roadmap's remaining items
