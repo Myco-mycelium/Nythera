@@ -838,12 +838,16 @@ address-space teardown did not fully reclaim its frames, or the reclaimed frame 
 `Vec<u8>` kernel-stack allocation directly -- that already worked via
 the heap allocator's own real `dealloc`, so it needed no new machinery,
 but is worth naming so "teardown" isn't overclaimed as covering more
-than physical frames. No demo yet exercises teardown of a space that
-was ever the *active* one for a ring-3 trap (the documented sharp edge
-in `destroy`'s own safety comment). TLB invalidation on unmap -- once
-named open here -- is now implemented: `memory::paging::unmap_page`
-emits `invlpg` via the mapper's flush, proven by `memory::tlb_demo`
-(map -> unmap -> remap the same VA, reading back the new frame).
+than physical frames. TLB invalidation on unmap -- once named open
+here -- is now implemented: `memory::paging::unmap_page` emits `invlpg`
+via the mapper's flush, proven by `memory::tlb_demo` (map -> unmap ->
+remap the same VA, reading back the new frame). And teardown of a space
+that was ever the *active* one for a ring-3 trap -- the documented
+sharp edge in `destroy`'s own safety comment -- is also now closed:
+`ring3_scheduler`'s finale destroys task F's address space after F has
+yielded from ring 3 seven times and is suspended for good, verifying
+10 frames come back (`pml4 0x297000 ... 10 frames reclaimed (305 ->
+295 in use) -- OK`).
 
 ---
 

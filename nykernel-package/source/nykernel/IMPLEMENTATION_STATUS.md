@@ -319,6 +319,7 @@ nyrqis kernel: phase 1+2+3-prep complete, boot phase = 7 (Ready)
   experimental ring3-scheduler self-test: task F counter=7 (expected 7) -- OK
   experimental ring3-scheduler self-test: task G counter=7 (expected 7) -- OK
   experimental ring3-scheduler self-test: 21 real trap-based yields processed, all 3 tasks' full register + address-space state correctly suspended and resumed -- OK
+  experimental ring3-scheduler teardown: task F's address space (pml4 0x297000, active for its own 7 trap-based yields) destroyed after suspension -- 10 frames reclaimed (305 -> 295 in use) -- OK
   experimental pie-demo: ET_DYN loaded at base 0x60000000000, entry 0x60000001000 (bias correctly applied by the loader, not baked into the file)
   experimental pie-demo self-test: relocated pointer dereferenced to 0xfeedface12345678 (expected 0xfeedface12345678) -- OK, relocation correctly applied
   experimental pe-demo: PE32+ loaded at its own ImageBase (no relocation), entry 0x140001000
@@ -498,12 +499,22 @@ closed, both NPS-001-grounded (not gated on NPS-002/003):
   confirms the expected `CAUSED_BY_WRITE` fault. If the write doesn't
   fault, `run_and_prove` reports failure instead, so it can't pass by
   the mechanism doing nothing.
+- **Address-space teardown of an ever-active ring-3 space**
+  (`ring3_scheduler`'s finale): after task F has been the active space
+  for its own seven `int 0x81` yields and is suspended for good, its
+  `AddressSpace` is destroyed and the frame allocator's in-use count
+  is checked before/after. This closes the sharp edge `destroy`'s own
+  safety comment named ("must not be called on a space some suspended
+  task might still be resumed into"). Deliberately *not* the
+  just-trapped task: control is running on that task's kernel stack,
+  so freeing its stack here would free the memory being executed on.
 
 Verified transcript lines (from `tools/qemu_boot_test.sh`, passing):
 
 ```
   rtc: periodic interrupt armed at 1024 Hz, IRQ8 + cascade IRQ2 unmasked
   rtc self-test: 4 additional RTC periodic interrupts observed and handled after a snapshot (1086 total; IRQ8, via the slave-PIC cascade)
+  experimental ring3-scheduler teardown: task F's address space (pml4 0x297000, active for its own 7 trap-based yields) destroyed after suspension -- 10 frames reclaimed (305 -> 295 in use) -- OK
   memory guard-demo: stack mapped at 0x80000000000..0x80000004000 (4 pages); bottom present OK, top present OK, guard page 0x7fffffff000 absent OK, page above 0x80000004000 absent OK
   memory guard-demo self-test: guarded stack correctly built (4 usable pages, page below genuinely unmapped, page above genuinely unmapped) -- OK
   memory guard-demo: arming terminal overflow probe -- writing one qword at the guard page 0x7fffffff000 (expect a PROTECTION_VIOLATION page fault)
@@ -567,21 +578,27 @@ FAIL: unexpected QEMU exit status 35
   relocating" step is also not implemented; a relocatable segment this
   loader maps writable stays writable
 - Address-space teardown for a space that was ever the *active* one
-  for a ring-3 trap -- `experimental::address_space::AddressSpace::destroy`
-  exists and is verified (see above), but every demo still using
-  `mem::forget` (`isolated_tasks`, `isolation_demo`, `ring3_scheduler`,
-  `pie_demo`) does so deliberately -- destroying a ring-3 task's
-  address space mid-lifecycle isn't exercised anywhere yet, and
-  `destroy`'s own safety comment names this as a real, documented
-  sharp edge. (TLB invalidation on unmap -- once listed here as an
-  open gap -- is now implemented: `memory::paging::unmap_page` emits
-  `invlpg` via the mapper's flush, proven by `memory::tlb_demo`; see
-  the gap-closure section below.)
+  for a ring-3 trap: once listed here as an open sharp edge (the
+  documented caveat in `AddressSpace::destroy`'s own safety comment),
+  now **closed** (2026-10-09). `ring3_scheduler`'s finale destroys task
+  F's address space *after* F was the active space for its own seven
+  `int 0x81` yields and has been suspended for good -- the exact
+  precondition `destroy` demands -- and verifies the frames genuinely
+  came back (10 reclaimed). The remaining demos (`isolated_tasks`,
+  `isolation_demo`, `pie_demo`, and E/G in `ring3_scheduler`) still
+  `mem::forget` on purpose; only the ever-active case needed proving,
+  and it now is. (TLB invalidation on unmap -- once listed here as an
+  open gap -- is also now implemented: `memory::paging::unmap_page`
+  emits `invlpg` via the mapper's flush, proven by `memory::tlb_demo`.)
 - Real Windows application compatibility -- `experimental::pe` loads a
   PE32+ binary's own code and data with correct section permissions,
-  nothing more. No import resolution (DLL calls do nothing), no base
-  relocation processing (rejected outright, not mishandled -- most
-  real-world Windows binaries use ASLR and would be rejected), no
+  nothing more. No import resolution (DLL calls do nothing); base
+  relocation processing *is* implemented for the relocation types a
+  self-contained PE32+ uses (`IMAGE_REL_BASED_DIR64`/`HIGHLOW`),
+  proven by `pe_reloc_demo` loading a relocatable PE at a
+  loader-chosen address -- an unsupported relocation type is rejected
+  rather than mishandled, but most real-world Windows binaries
+  additionally need imports, so they still won't run. No
   Win32 API surface, no resources, no exception tables
 - Real Android application compatibility -- `experimental::dex` parses
   a DEX file's container format and validates its structure (including,
@@ -656,9 +673,10 @@ just not done in this increment:**
   see above) and the cooperative scheduler's task stacks.
 - More IRQ lines (keyboard, ATA/IDE) *with real handlers* -- the rule
   from `pic.rs` stands: unmask nothing that has no handler.
-- Address-space teardown for a space that was ever the active one for
-  a ring-3 trap (the documented sharp edge in
-  `AddressSpace::destroy`'s safety comment).
+
+*(Address-space teardown for an ever-active ring-3 space, once listed
+here, is now done -- see the closed bullet in "What does NOT exist
+yet" above and the 2026-10-09 increment.)*
 
 ## Toolchain notes (read before touching the build)
 

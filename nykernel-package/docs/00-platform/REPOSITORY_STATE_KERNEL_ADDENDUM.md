@@ -63,7 +63,10 @@ inspection), most with an accompanying negative-control test:
 - Real address-space teardown: a free-list-backed physical frame
   allocator plus full page-table-tree walking, verified by an
   unambiguous frame-reuse proof (a torn-down space's exact freed PML4
-  frame reused by the next space built, compared by physical address)
+  frame reused by the next space built, compared by physical address);
+  and now exercised on a space that was ever *active* for a ring-3 trap
+  (task F in `ring3_scheduler`, destroyed after suspension, 10 frames
+  reclaimed)
 - TLB invalidation (`invlpg`) on unmap, proven by a map/unmap/remap
   self-test that reads back the new backing frame
 - A minimal PE32+ (Windows) loader, including base-relocation
@@ -81,8 +84,7 @@ they actually happened.
 
 **Explicitly NOT done, stated plainly rather than implied:** real
 dynamic linking (symbol-resolved relocations), preemptive (as opposed
-to cooperative) ring-3 task scheduling, teardown of an address space
-that was ever active for a ring-3 trap, guard pages wired under every
+to cooperative) ring-3 task scheduling, guard pages wired under every
 live kernel stack (the mechanism is proven; it guards a dedicated
 probe stack today), ACPI-reclaimable memory reuse, and -- by far the
 largest remaining gap -- real application compatibility on top of the

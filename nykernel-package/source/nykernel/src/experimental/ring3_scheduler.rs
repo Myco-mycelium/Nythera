@@ -264,6 +264,38 @@ unsafe fn finale() -> ! {
         serial_println!("  experimental ring3-scheduler self-test: FAILED");
     }
 
+    // ---- Address-space teardown of a task that was ever active for a
+    // ring-3 trap (the documented sharp edge in AddressSpace::destroy).
+    //
+    // Every other demo mem::forgets its spaces, so `destroy` had never
+    // been exercised on a space that a ring-3 task actually ran in and
+    // trapped out of. Task F did exactly that (yields 2, 5, ..., 20),
+    // and is now suspended and will never be resumed -- the exact
+    // precondition `destroy`'s safety comment demands. We deliberately
+    // destroy F and not the task that just trapped: control is running
+    // on the just-trapped task's kernel stack, so freeing *that* task's
+    // stack here would free the memory we're standing on. F's stack is
+    // a different allocation, so this is safe.
+    let reclaimed_frames;
+    {
+        let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+        let before = fa.frames_in_use();
+        let f_task = TASKS.remove(1); // task F (the middle of E, F, G)
+        let f_pml4 = crate::experimental::address_space::pml4_phys_addr(&f_task.address_space);
+        f_task.address_space.destroy(fa);
+        let after = fa.frames_in_use();
+        reclaimed_frames = before.saturating_sub(after);
+        serial_println!(
+            "  experimental ring3-scheduler teardown: task F's address space (pml4 {:#x}, active for its own {} trap-based yields) destroyed after suspension -- {} frames reclaimed ({} -> {} in use) -- {}",
+            f_pml4.as_u64(),
+            EXPECTED_PER_TASK,
+            reclaimed_frames,
+            before,
+            after,
+            if reclaimed_frames > 0 { "OK" } else { "FAILED, nothing reclaimed" }
+        );
+    }
+
     // Chains into pie_demo regardless of this demo's own result --
     // consistent with this kernel's convention of reporting a failure
     // and continuing to gather as much diagnostic information as

@@ -141,14 +141,13 @@ sections throughout.
 Read `IMPLEMENTATION_STATUS.md`'s "What does NOT exist yet" section in
 full before assuming this kernel does something it doesn't. Headlines:
 real dynamic linking (symbol-resolved relocations), preemptive ring-3
-scheduling (still cooperative-only), teardown of an address space that
-was ever active for a ring-3 trap, guard pages wired under every live
+scheduling (still cooperative-only), guard pages wired under every live
 kernel stack (the mechanism exists and is proven; it guards a dedicated
 probe stack today, not the per-task kernel stacks), and -- the largest
 gap by far --
 everything an actual Windows or Android compatibility layer needs on
-top of these kernel-level prerequisites: base-relocation/import
-handling for real Windows binaries, a DEX/ART-equivalent runtime that
+top of these kernel-level prerequisites: import handling for real
+Windows binaries, a DEX/ART-equivalent runtime that
 actually executes bytecode, the actual API surfaces. See `PHASES.md`
 (repo root) Phase 5/6 for that scope, stated precisely.
 
