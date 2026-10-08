@@ -1,13 +1,13 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.16.0
+version: 1.17.0
 status: Draft
 classification: Informative
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-10-07
+updated: 2026-10-08
 ai_assisted: true
 review_cycle: Quarterly
 depends_on: [NTM-000, NPC-003]
@@ -56,49 +56,49 @@ and [`docs/reference/security/README.md`](../reference/security/README.md).
 - [x] NPS-001 Kernel Architecture and Boot (Draft)
 - [x] NPS-002 Process and Thread Model (Draft)
 - [x] NPS-003 Inter-Process Communication and Capability Passing (Draft)
-- [ ] Architecture Group review to move ADR-0006 and NPS-001..003 to Accepted
-- [ ] Scheduler algorithm decision (NPS-001 §7 open question)
-- [~] IPC round-trip latency benchmark — first-pass data collected 2026-08-12 (in-process only; real transport pending, NPS-003 §6.1 remains Draft)
+- [~] Architecture Group review to move ADR-0006 and NPS-001..003 to Accepted — **re-probe 2026-10-08: partly complete, correctly.** ADR-0006 and NPS-001 were accepted by M9; NPS-002 and NPS-003 were deliberately kept `Draft` there, each self-blocking on benchmark data in its own normative text (NPS-002 §9, NPS-003 §6.1) — so the remaining promotions are benchmark-gated, not review-gated
+- [x] Scheduler algorithm decision (NPS-001 §7 open question) — **struck 2026-10-08 re-probe: resolved by ADR-0013 (EEVDF-derived scheduler with a real-time priority class, now `Accepted`); its tuning parameters remain benchmark-gated (BENCHMARK_RESULTS §33)**
+- [~] IPC round-trip latency benchmark — **re-probe 2026-10-08 corrected: the real transport IS measured.** In-process first pass 2026-08-12 (§1, p50 92 µs); the real Unix-domain datagram transport measured 2026-08-14 (§20 — Python floor p50 188.79 µs; the v1 Rust FFI A/B at 426–446 µs, the regression the v2 serving loop addressed, §21 p50 322.6 µs / 307–357 µs over 4 runs). **Verdict: the NPS-003 §6.1 <100 µs target is NOT met over the wire**, so the item stays open on the MEASURED gate, not on pending measurement; NPS-003 remains `Draft` for that reason. The plan's two-container-load / two-hardware-class variants remain, both requiring real hardware
 
 ### M4 — Storage
 - [x] Finalize ADR-0002 (filesystem) into NPS specifications (NPS-004, Draft)
 - [x] Compression codec selection (ADR-0007 — Zstd default, LZ4 fast-path override)
 - [x] NPS-005 Transparent Compression Policy (Draft)
 - [x] NPS-006 Game/Application Image Format (.nygi) and Overlay (Draft, implements ADR-0003)
-- [ ] Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed
-- [ ] Architecture Group review to move ADR-0002/0003/0007 and NPS-004..006 to Accepted
+- [x] Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed — **struck 2026-10-08 re-probe: the §2 close-out landed 2026-09-10 as BENCHMARK_RESULTS §31** (real-asset level sweep — ratio flat ≈1.07 on already-compressed data, level ≥7 buys ≤2% for 60× compute; the real LZ4 fast path; concurrent scaling), and ADR-0007 is now `Accepted`
+- [~] Architecture Group review to move ADR-0002/0003/0007 and NPS-004..006 to Accepted — **re-probe 2026-10-08: ADR-0002/0003 (M9), ADR-0007 (after the §31 close-out), NPS-004 and NPS-006 are `Accepted`; NPS-005 is the one document in this set still `Draft`** despite its ADR-0007 dependency now being Accepted — the remaining promotion is a status review
 
 ### M5 — Runtime
 - [x] Windows compatibility subsystem NPS (NPS-007, Draft, implements ADR-0005)
 - [x] Android runtime approach decision (ADR-0008 — AOSP-based container runtime)
 - [x] Android runtime subsystem NPS (NPS-008, Draft, implements ADR-0008)
 - [x] Adaptive UI shell NPS (NPS-009, Draft — desktop/gaming/phone/tablet/handheld/server modes)
-- [ ] Resolve shared ARM instruction-translation approach (NPS-007 §7 / NPS-008 §7)
-- [ ] Architecture Group review to move ADR-0005/0008 and NPS-007..009 to Accepted
+- [x] Resolve shared ARM instruction-translation approach (NPS-007 §7 / NPS-008 §7) — **struck 2026-10-08 re-probe: resolved by ADR-0015 (a shared dynamic binary translation approach for ARM/x86, authored in M10); the ADR itself remains `Proposed` pending Architecture Group review**
+- [x] Architecture Group review to move ADR-0005/0008 and NPS-007..009 to Accepted — **struck 2026-10-08 re-probe: all five documents are `Accepted`** (ADR-0005, ADR-0008, NPS-007, NPS-008, NPS-009)
 
 ### M6 — Security
 - [x] Container runtime NPS (NPS-010, Draft — lifecycle, capability assignment, revocation, resource limits)
 - [x] IPC rate-limiting mechanism decision (ADR-0009 — per-container token buckets)
 - [x] Capability registry populated (NPS-011, Draft — 14 capabilities registered, closing the gap NPC-001 §9.3 has referenced since Milestone 1)
-- [~] Benchmark default IPC token-bucket parameters — first-pass data collected 2026-08-12 (defaults shown to throttle this workload shape; sweep + Architecture Group review still pending)
-- [ ] Expand Android permission mapping (NPS-011 §6) incrementally
-- [ ] Architecture Group review to move ADR-0009 and NPS-010/011 to Accepted
+- [x] Benchmark default IPC token-bucket parameters — **struck 2026-10-08 re-probe: the sweep + adversarial interference landed 2026-09-10 (BENCHMARK_RESULTS §32, `tests/benchmark_bucket.py`)** — steady state ≈ refill rate at every burst capacity, the shipped default (500/s) ≈ 4.5% of path capacity, and a shared bucket starves a 250 Hz legitimate client under flood (per-sender fairness identified as the missing mechanism); ADR-0009 is now `Accepted`, so the review this item awaited has happened
+- [~] Expand Android permission mapping (NPS-011 §6) incrementally — **re-probe 2026-10-08: 8 capabilities added in M10** (`CAP-CONTACTS`, `CAP-CALENDAR`, `CAP-TELEPHONY`, `CAP-SMS`, `CAP-SENSORS`, `CAP-MEDIA-LIBRARY`, `CAP-NEAR-FIELD`, `CAP-BIOMETRIC`); "incrementally" makes the item ongoing by design rather than discrete, so it is struck-to-partial, not closed
+- [x] Architecture Group review to move ADR-0009 and NPS-010/011 to Accepted — **struck 2026-10-08 re-probe: all three are `Accepted`** (ADR-0009, NPS-010, NPS-011)
 
 ### M7 — Gaming Subsystem
 - [x] Native graphics API foundation decision (ADR-0010 — Vulkan)
 - [x] Controller and input subsystem NPS (NPS-012, Draft — native controllers, Steam Input, VR deferred)
 - [x] GPU feature support NPS (NPS-013, Draft — HDR, VRR, ray tracing, upscaling)
 - [x] Emulator hub NPS (NPS-014, Draft — user-supplied ROM/BIOS only, no bundled content)
-- [ ] Scope VR integration and define its capability class (NPS-012 §5.1)
-- [ ] Evaluate vendor-neutral upscaling integration point (NPS-013 §9)
-- [ ] Architecture Group review to move ADR-0010 and NPS-012..014 to Accepted
+- [x] Scope VR integration and define its capability class (NPS-012 §5.1) — **struck 2026-10-08 re-probe: resolved by M9** ("Resolve VR scoping ambiguity (NPS-012 §5.1, NPS-009 §7): explicitly deferred to a future milestone rather than left as an open question indefinitely")
+- [~] Evaluate vendor-neutral upscaling integration point (NPS-013 §9) — **re-probe 2026-10-08: partly resolved.** NPS-013 §7.3 established the integration priority (FSR 2/3.1.5 first — open-source, native Vulkan; XeSS-SR second); §9 records the only remaining open question as *the exact API surface* of the vendor-neutral integration point, which stays open
+- [x] Architecture Group review to move ADR-0010 and NPS-012..014 to Accepted — **struck 2026-10-08 re-probe: all four are `Accepted`** (ADR-0010, NPS-012, NPS-013, NPS-014)
 
 ### M8 — AI Subsystem
 - [x] AI assistant containerization decision (ADR-0011 — ordinary capability-scoped container, no implicit elevated access)
 - [x] Local AI assistant boundary NPS (NPS-015, Draft — functional scope, suggest-vs-act boundary, offline operation, disableability)
 - [x] Optional cloud sync NPS (NPS-016, Draft — opt-in per data class, offline-first, conflict handling)
 - [x] New capability registry entries: `CAP-AI-DIAGNOSTICS-READ`, `CAP-AI-SUGGEST-ACTION`, `CAP-CLOUD-SYNC`
-- [ ] Architecture Group review to move ADR-0011 and NPS-015/016 to Accepted
+- [x] Architecture Group review to move ADR-0011 and NPS-015/016 to Accepted — **struck 2026-10-08 re-probe: all three are `Accepted`** (ADR-0011, NPS-015, NPS-016)
 
 ### Cross-Cutting — NyHAL Pluggable Kernel Backend
 Added after the original M1–M8 scope was fully drafted, in response to a
@@ -125,7 +125,7 @@ honestly be resolved and naming what couldn't, per NPC-001 §5's rule that
 - [x] Keep ADR-0007, ADR-0009, ADR-0013 at `Proposed` — each explicitly benchmark/tuning-blocked in its own text, not a review oversight
 - [x] Keep NPS-002, NPS-003 at `Draft` — each self-blocks on benchmark data in its own normative text (§9, §6.1 respectively)
 - [x] Keep NPS-005, NPS-010 at `Draft` — each transitively blocked on an ADR (0007, 0009) that isn't Accepted yet, with an explicit status note added explaining why
-- [~] Re-review ADR-0007, ADR-0009, ADR-0013, NPS-002, NPS-003, NPS-005, NPS-010 once their respective benchmarks land — first-pass data landed for ADR-0009 / NPS-003 (2026-08-12); ADR-0007, ADR-0013, NPS-002, NPS-005 still unmeasured; Architecture Group review pending
+- [~] Re-review ADR-0007, ADR-0009, ADR-0013, NPS-002, NPS-003, NPS-005, NPS-010 once their respective benchmarks land — **re-probe 2026-10-08 corrected: 4 of the 7 are now `Accepted`** (ADR-0007 after the §31 close-out, ADR-0009 after §32, ADR-0013 after §33, NPS-010), so their re-review has happened; **NPS-002, NPS-003 and NPS-005 remain `Draft`** (benchmark/self-blocked) — the only still-open half
 
 ### M10 — Backlog Closure Pass
 A follow-up pass working through Milestone 9's remaining `Next Actions`
@@ -142,7 +142,7 @@ benchmarking or real contributors.
 - [x] `requirements-docs.txt`: pin `mkdocs-material` to the 9.x line given the Material team's own public warning about breaking, production-unready changes in MkDocs 2.0
 - [ ] Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` — requires actual contributors, intentionally not fabricated
 - [x] Begin Linux Backend implementation work (NPS-017 §6) — see the Cross-Cutting NyHAL section above; first spike done, §4.2–§4.5 remain unstarted
-- [~] Run the four benchmarks defined in `tests/BENCHMARK_PLAN.md` — first pass run 2026-08-12: IPC latency, token-bucket defaults, and the NyFS ops-layer proxy measured (`tests/BENCHMARK_RESULTS.md`); Zstd levels and EEVDF tuning closed out 2026-09-10 (§31–33); **hash-chain overhead measured 2026-09-18 (§34 — negligible confirmed, plus an unhashed-`details` tamper-scope finding recorded in ADR-0018) and container resource limits measured the same day (§35 — quota-throttle tail behavior, PID-default adequacy, SUSPENDED freeze accounting)**; **live FUSE-mount comparison complete 2026-10-05 (§36 — compression ON/OFF A/B: writes 5.9×/20.6× slower with zstd-3, ON-leg read-path anomaly ~180× flagged for profiling; four-benchmark pass now fully measured)**
+- [x] Run the four benchmarks defined in `tests/BENCHMARK_PLAN.md` — first pass run 2026-08-12: IPC latency, token-bucket defaults, and the NyFS ops-layer proxy measured (`tests/BENCHMARK_RESULTS.md`); Zstd levels and EEVDF tuning closed out 2026-09-10 (§31–33); **hash-chain overhead measured 2026-09-18 (§34 — negligible confirmed, plus an unhashed-`details` tamper-scope finding recorded in ADR-0018) and container resource limits measured the same day (§35 — quota-throttle tail behavior, PID-default adequacy, SUSPENDED freeze accounting)**; **live FUSE-mount comparison complete 2026-10-05 (§36 — compression ON/OFF A/B: writes 5.9×/20.6× slower with zstd-3, ON-leg read-path anomaly ~180× flagged for profiling; four-benchmark pass now fully measured)**. **Struck 2026-10-08 re-probe: all four plan benchmarks are run and recorded; no gate is declared met on the data — the gate decisions are the separate Architecture Group items above**
 
 ### M11 — Response to External Repository Review
 An external review of the repository (2026-07-13) rated it 8.6/10 and
@@ -168,7 +168,7 @@ on next" ordering. Items 2 and 4–7 were started as `Draft` documents in
 the 2026-08-12 backlog pass; items 8–11 landed by 2026-09-06 (struck
 2026-09-23 after the on-disk verification, per the 2026-09-20 next-actions
 audit's item-19 finding):**
-1. [~] Security architecture and threat model (`docs/reference/security/`) — **in progress as Milestone 12**, phased; see below
+1. [x] Security architecture and threat model (`docs/reference/security/`) — **struck 2026-10-08 re-probe: Milestone 12 is complete** — all seven phases (1a, 1b, 2–7) landed as NPS-018..024 and NPS-027, their findings folded back into the governing specs; see below
 2. [~] Object Registry — **Draft**: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md) (Workspace, Window, Application, Package, Capability, Game, Mod, Controller, GPU, Notification, AI Conversation, Device, Service; Identity — resolved 2026-09-23 by [`NPS-029`](../reference/nps/NPS-029-identity-and-user-data-separation.md), whose User/Session types join the catalogue in NPS-025 v1.1.0) with fields, lifecycle, permissions, serialization, relationships
 3. [ ] Capability Registry — ongoing by design (NPS-011 §5), not a discrete milestone item; already at 25 entries
 4. [~] Public API specification — **Draft**: [`API-001`](../reference/api/API-001-public-api.md) (NyHAL, NyCore, Runtime, Package, Filesystem, Window, AI, Gaming, Plugin areas; exact signatures deferred to implementation)
@@ -218,6 +218,11 @@ starting from scratch. Full phase table and links:
 | 1.10.0  | 2026-08-12 | Record first-pass benchmark data (tests/BENCHMARK_RESULTS.md): IPC latency (NPS-003 §6.1), token-bucket defaults (ADR-0009), NyFS ops-layer proxy (ADR-0016) — data collected, gates not declared met |
 | 1.11.0  | 2026-08-12 | M12 Phase 7 complete (Package Trust Model, NPS-027) — threat model milestone finished; Zstd level-sweep first-pass data recorded (tests/BENCHMARK_RESULTS.md §2) |
 | 1.12.0  | 2026-09-23 | M11 gap checklist reconciled against the 2026-09-20 next-actions audit: items 8/9/11 struck (NPC-010, BUILD-001, TUT-003 landed 2026-09-06), item 10 marked [~] (methodology + §35 data shipped, budget numbers await real hardware); NEW open finding — two divergent build-architecture documents (`BUILD-001` Draft vs `BUILD-ARCH` Accepted, both claiming gap 9), canonical-ID choice recorded for the Architecture Group |
+| 1.13.0  | 2026-10-07 | Roadmap re-probe: strike the M1 docs-CI box; split the restore and performance-monitor boxes honestly (shipped half struck, open half named) |
+| 1.14.0  | 2026-10-07 | Performance-monitor item struck [x] (0.29.43 — first-class shell app); restore item re-annotated with RST-001 Bundle G drafted/staged |
+| 1.15.0  | 2026-10-07 | Restore item re-annotated: RST-001 v1.0.0 Accepted (Bundle G, G1) and the engine landed as 0.29.44 |
+| 1.16.0  | 2026-10-07 | Restore item struck [x]: RST-001 §7 completed as 0.29.45 (bootable restore environment + real desktop data layer) |
+| 1.17.0  | 2026-10-08 | Benchmark/milestone re-probe audit: reconciled the M3–M9 and M11 boxes against the tree (ADR/NPS front-matter statuses + BENCHMARK_RESULTS) — 10 struck [x] (scheduler ADR-0013; Zstd §31; ARM ADR-0015; the M5/M6/M7/M8 Architecture-Group review items; VR deferral; token-bucket §32; the four-benchmark pass; the threat-model milestone) and 6 corrected to [~] (M3 review — NPS-002/003 benchmark-gated; IPC real transport measured, §6.1 gate NOT met; M4 — NPS-005 the only un-promoted document; Android mapping incremental; upscaling §9 API surface; M9 re-review — NPS-002/003/005 remain Draft); the missing 1.13.0–1.16.0 revision rows backfilled |
 
 ### M13 — Display Server Integration
 

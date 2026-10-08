@@ -5,6 +5,41 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-08 (sixth round), roadmap benchmark/milestone re-probe audit
+(docs-only; no code, spec-status, or version change): after 0.29.45
+there are NO open decision bundles, and the roadmap's remaining items
+are either Architecture-Group review records, the AG's own promotion
+decisions, or real-hardware work — so this round verified the OPEN
+boxes against the tree instead, and found a cluster of stale
+bookkeeping: later milestones (M9/M10) and the benchmark close-outs had
+COMPLETED work the M3–M9 boxes still showed unchecked, and three
+benchmark annotations had gone stale. Reconciled
+(`007-PROJECT_ROADMAP.md` v1.16.0 → v1.17.0): **10 boxes struck [x]** —
+the scheduler decision (ADR-0013 `Accepted`), the Zstd-level benchmark
+before ADR-0007 left `Proposed` (BENCHMARK_RESULTS §31), the shared ARM
+translation (ADR-0015), the M5/M6/M7/M8 Architecture-Group review items
+(ADR-0005/0008/0009/0010/0011 + NPS-007..016 all now `Accepted`), VR
+scoping (resolved by M9 as an explicit deferral), the token-bucket
+benchmark (§32; ADR-0009 now `Accepted`), the four-benchmark pass
+(fully measured §1/§20, §2/§31, §3/§32, §4/§36), and the threat-model
+milestone (M12 complete, all seven phases); **6 corrected to [~]** —
+the M3 review (NPS-002/003 deliberately `Draft`, benchmark-gated), the
+IPC latency item (**the real transport WAS measured 2026-08-14, §20;
+the NPS-003 §6.1 <100 µs target is NOT met over the wire, so the item
+is open on a MEASURED gate, not pending measurement**), the M4 review
+(NPS-005 the one document left `Draft`), the Android permission mapping
+(8 caps added in M10; "incrementally" = ongoing by design), the
+upscaling integration point (NPS-013 §9 leaves only the exact API
+surface open), and the M9 re-review (4 of 7 now `Accepted`;
+NPS-002/003/005 remain `Draft`). Also fixed: `tests/BENCHMARK_RESULTS.md`'s
+living "Status vs BENCHMARK_PLAN" §1 row (stale "in-process only; real
+transport pending") plus a dated-record correction note, and the
+roadmap's revision table, which had stopped at 1.12.0 while the
+document was already at 1.16.0 — the missing 1.13.0–1.16.0 rows are
+backfilled. No ADR/NPS status was changed: the audit cites front-matter
+that was ALREADY `Accepted` — the roadmap was catching up to it. Doc
+gates re-run on the edited tree: cycles 0 across 91 docs, premises
+60/60, nstudio 15/15, mkdocs --strict exit 0.
 2026-10-07 (fifth round), RST-001 §7 COMPLETED as 0.29.45 (owner
 instruction "proceed with all the suggested followups"): (1) the
 bootable restore environment — `Nyrqis Restore` entries
