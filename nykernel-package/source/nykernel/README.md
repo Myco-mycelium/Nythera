@@ -77,7 +77,7 @@ and `qemu-system-x86_64`. On Ubuntu the last three are `apt` packages;
 | Address-space teardown + frame reclamation | `src/experimental/address_space.rs`, `teardown_demo.rs` | 🔶 pre-normative |
 | TLB invalidation (`invlpg`) on unmap | `src/memory/paging.rs`, `tlb_demo.rs` | ✅ NPS-001-grounded |
 | Guard pages for stack-overflow detection (probe) | `src/memory/guard_demo.rs` | ✅ NPS-001-grounded |
-| Guarded kernel stacks under live ring-3 tasks | `src/memory/kernel_stack.rs`, `src/experimental/address_space.rs` | ✅ NPS-001-grounded |
+| Guarded kernel stacks under every live task | `src/memory/kernel_stack.rs`, `experimental/address_space.rs`, `experimental/scheduler.rs` | ✅ NPS-001-grounded |
 | ACPI RSDP validation + reclaimable-memory release | `src/acpi.rs`, `src/memory/frame_allocator.rs` | ✅ NPS-001-grounded |
 | Minimal PE32+ (Windows) loader | `src/experimental/pe.rs`, `pe_demo.rs` | 🔷 first real Phase 5 capability |
 | Minimal DEX (Android) parser + checksum/SHA-1 verify | `src/experimental/dex.rs`, `crypto.rs`, `dex_demo.rs` | 🔷 first real Phase 6 capability |
@@ -117,7 +117,7 @@ src/
     heap.rs             Kernel heap (#[global_allocator])
     tlb_demo.rs         TLB-invalidation-on-unmap self-test
     guard_demo.rs       Guard-page stack-overflow detection + proof
-    kernel_stack.rs     Shared guarded kernel stacks (live ring-3 RSP0)
+    kernel_stack.rs     Shared guarded kernel stacks (all live task stacks)
   experimental/         Everything NOT NPS-001/017-grounded -- see its
                          own mod.rs banner before assuming any of it is
                          spec-conformant
@@ -145,10 +145,7 @@ sections throughout.
 Read `IMPLEMENTATION_STATUS.md`'s "What does NOT exist yet" section in
 full before assuming this kernel does something it doesn't. Headlines:
 real dynamic linking (symbol-resolved relocations), preemptive ring-3
-scheduling (still cooperative-only), guard pages under the cooperative
-scheduler's ring-0 task stacks (the mechanism is proven and now guards
-every live ring-3 RSP0 stack; the ring-0 scheduler stacks are the last
-piece), and -- the largest gap by far --
+scheduling (still cooperative-only), and -- the largest gap by far --
 everything an actual Windows or Android compatibility layer needs on
 top of these kernel-level prerequisites: import handling for real
 Windows binaries, a DEX/ART-equivalent runtime that

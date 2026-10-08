@@ -268,8 +268,8 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     // index, corrupted saved register state, wrong stack layout) shows
     // up as a wrong count or a hang/fault, not a silent false pass.
     experimental::scheduler::init();
-    experimental::scheduler::spawn(experimental_task_a);
-    experimental::scheduler::spawn(experimental_task_b);
+    experimental::scheduler::spawn(experimental_task_a, &mut mapper, &mut frame_allocator);
+    experimental::scheduler::spawn(experimental_task_b, &mut mapper, &mut frame_allocator);
     serial_println!(
         "  experimental scheduler: {} tasks registered (pre-normative, not NPS-002 conformant)",
         experimental::scheduler::task_count()
@@ -310,6 +310,13 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     // demo below performs.
     let isolated_ok = experimental::isolated_tasks::run(&mut frame_allocator);
     assert!(isolated_ok, "isolated-task CR3 switching under repeated scheduling produced a corruption");
+
+    // Structural proof that the ring-0 scheduler's task stacks are now
+    // guarded too -- the same shared `memory::kernel_stack` region the
+    // ring-3 RSP0 stacks use. Covers tasks A, B, C, and D; task 0 (this
+    // code) runs on the kernel's own boot stack and has no such stack.
+    let guarded_ok = experimental::scheduler::verify_guarded_stacks(&mapper);
+    assert!(guarded_ok, "a scheduler task's kernel stack is missing its guard page");
 
     // ---- experimental: DEX (Android) format parsing proof ----
     // NOT NPS-002/NPS-003 conformance -- see crate::experimental's doc

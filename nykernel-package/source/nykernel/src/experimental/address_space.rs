@@ -261,3 +261,20 @@ unsafe fn free_table_tree(frame: PhysFrame, level: u8, frame_allocator: &mut Bum
 pub fn pml4_phys_addr(space: &AddressSpace) -> PhysAddr {
     space.pml4_frame.start_address()
 }
+
+/// Builds an `OffsetPageTable` for whichever address space is currently
+/// active (read straight from `CR3`). Used by callers that need to map
+/// into `memory::kernel_stack`'s shared region but don't own a
+/// particular `AddressSpace` -- `experimental::scheduler`'s `spawn` is
+/// the first such caller.
+///
+/// # Safety
+/// The currently active space must be one whose shared entries are the
+/// kernel's own (as everything built by [`AddressSpace::new_sharing_kernel`]
+/// is); otherwise mapping through it could land somewhere unintended.
+pub unsafe fn active_mapper() -> OffsetPageTable<'static> {
+    let (pml4_frame, _) = Cr3::read();
+    let table: &'static mut PageTable =
+        &mut *(pml4_frame.start_address().as_u64() as *mut PageTable);
+    OffsetPageTable::new(table, VirtAddr::new(0))
+}

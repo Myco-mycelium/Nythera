@@ -29,16 +29,25 @@
 use alloc::vec::Vec;
 use core::arch::naked_asm;
 use x86_64::registers::control::Cr3;
+use x86_64::structures::paging::OffsetPageTable;
 
-const TASK_STACK_SIZE: usize = 16 * 1024; // 16KiB per task -- generous for a print-and-yield loop
+use crate::memory::frame_allocator::BumpFrameAllocator;
+use crate::memory::kernel_stack::{self, GuardedStack};
+use crate::serial_println;
+
+/// Usable pages per task stack (4 pages = 16 KiB, unchanged from the
+/// previous heap allocation), with a guard page directly below them.
+const TASK_STACK_PAGES: u64 = 4;
 
 struct TaskControlBlock {
     #[allow(dead_code)] // kept for future diagnostics (task listing, etc.)
     id: usize,
-    /// Owns the task's stack memory -- must outlive the task, and this
-    /// is what makes that automatic: as long as the TCB lives in
-    /// `TASKS`, the stack it's running on stays allocated.
-    _stack: Vec<u8>,
+    /// The task's guarded kernel stack, from `memory::kernel_stack`.
+    /// `None` only for task 0 (whatever called `init()`), which keeps
+    /// running on its own existing kernel stack -- `init()` allocates
+    /// nothing. The shared region never reuses a slot, so a spawned
+    /// task's stack stays valid for the TCB's whole lifetime.
+    stack: Option<GuardedStack>,
     /// The task's saved stack pointer while it isn't running. Written
     /// by `switch_to` every time this task is switched *away* from;
     /// read by `switch_to` every time it's switched *to*.
@@ -68,19 +77,22 @@ pub fn current_cr3() -> u64 {
 
 /// MUST be called exactly once, before any [`spawn`] or [`yield_task`]
 /// call, and only after the kernel heap is live (`memory::heap::init`)
-/// -- task stacks are heap-allocated.
+/// -- the scheduler's own bookkeeping (`TASKS`) still uses
+/// `alloc::vec::Vec`. Task *stacks*, by contrast, come from
+/// `memory::kernel_stack`'s shared guarded region (see [`spawn`]), so a
+/// stack overflow faults instead of corrupting the heap.
 pub fn init() {
     unsafe {
         // Task 0 is whatever called init() -- its real stack pointer
         // gets captured the first time it actually yields away, via
         // switch_to's `mov [rdi], rsp`; there's nothing to precompute
-        // here, which is why `_stack` is empty and `saved_rsp` starts
-        // at a placeholder 0 that's never read before it's written.
-        // Its CR3 *is* known up front, though: whatever's active right
-        // now, at boot.
+        // here, which is why `stack` is None and `saved_rsp` starts at
+        // a placeholder 0 that's never read before it's written. Its
+        // CR3 *is* known up front, though: whatever's active right now,
+        // at boot.
         TASKS.push(TaskControlBlock {
             id: 0,
-            _stack: Vec::new(),
+            stack: None,
             saved_rsp: 0,
             cr3: current_cr3(),
         });
@@ -95,8 +107,15 @@ pub fn init() {
 /// task shares whichever address space is currently active at spawn
 /// time -- for a task with its own private address space, use
 /// [`spawn_with_cr3`] instead.
-pub fn spawn(entry: extern "C" fn() -> !) -> usize {
-    spawn_with_cr3(entry, current_cr3())
+///
+/// `mapper`/`frame_allocator` are used to allocate the task's guarded
+/// kernel stack from `memory::kernel_stack`.
+pub fn spawn(
+    entry: extern "C" fn() -> !,
+    mapper: &mut OffsetPageTable<'static>,
+    frame_allocator: &mut BumpFrameAllocator,
+) -> usize {
+    spawn_with_cr3(entry, current_cr3(), mapper, frame_allocator)
 }
 
 /// As [`spawn`], but the task records `cr3` (a PML4 physical address,
@@ -106,10 +125,23 @@ pub fn spawn(entry: extern "C" fn() -> !) -> usize {
 /// integrated into ordinary cooperative task switching rather than the
 /// separate, hand-orchestrated sequence `experimental::isolation_demo`
 /// uses.
-pub fn spawn_with_cr3(entry: extern "C" fn() -> !, cr3: u64) -> usize {
-    let mut stack = alloc::vec![0u8; TASK_STACK_SIZE];
-    let stack_top = unsafe { stack.as_mut_ptr().add(TASK_STACK_SIZE) } as u64;
-    let aligned_top = stack_top & !0xF; // 16-byte align, for hygiene
+///
+/// `mapper`/`frame_allocator` allocate the task's guarded kernel stack
+/// from `memory::kernel_stack` (see [`spawn`]).
+pub fn spawn_with_cr3(
+    entry: extern "C" fn() -> !,
+    cr3: u64,
+    mapper: &mut OffsetPageTable<'static>,
+    frame_allocator: &mut BumpFrameAllocator,
+) -> usize {
+    // Allocate the task's guarded kernel stack from the shared region.
+    // Any space's mapper works here -- the region lives under the shared
+    // PML4 index, so the mapping is visible under every address space.
+    let stack = kernel_stack::allocate(mapper, frame_allocator, TASK_STACK_PAGES)
+        .expect("failed to allocate a guarded task stack for a scheduler task");
+    // `stack.top` is already page-aligned; mask defensively for hygiene
+    // (the frame layout below assumes a 16-byte-aligned rsp).
+    let aligned_top = stack.top.as_u64() & !0xF;
 
     // From LOW address (== the rsp switch_to will restore) to HIGH:
     // [r15, r14, r13, r12, rbp, rbx, entry]. switch_to's restore path
@@ -131,12 +163,45 @@ pub fn spawn_with_cr3(entry: extern "C" fn() -> !, cr3: u64) -> usize {
         let id = TASKS.len();
         TASKS.push(TaskControlBlock {
             id,
-            _stack: stack,
+            stack: Some(stack),
             saved_rsp: frame_base as u64,
             cr3,
         });
         id
     }
+}
+
+/// Structural self-test: for every spawned task (all but task 0), check
+/// via the page tables that its kernel stack has every page mapped and a
+/// genuinely unmapped guard page directly below it. Prints one line per
+/// task plus a summary, and returns whether every check held. Callable
+/// with any space's mapper -- the guarded-stack region is shared.
+pub fn verify_guarded_stacks(mapper: &OffsetPageTable<'static>) -> bool {
+    let mut checked = 0usize;
+    let mut all_ok = true;
+    unsafe {
+        for tcb in TASKS.iter() {
+            let Some(stack) = tcb.stack else { continue };
+            let ok = kernel_stack::verify(mapper, &stack);
+            all_ok &= ok;
+            checked += 1;
+            serial_println!(
+                "  experimental scheduler: task {} kernel stack {:#x}..{:#x} ({} pages) has guard page {:#x} unmapped -- {}",
+                tcb.id,
+                stack.base.as_u64(),
+                stack.top.as_u64(),
+                stack.pages,
+                stack.guard.as_u64(),
+                if ok { "OK" } else { "FAILED" }
+            );
+        }
+    }
+    serial_println!(
+        "  experimental scheduler self-test: all {} task kernel stacks carry a genuinely unmapped guard page directly below them -- {}",
+        checked,
+        if all_ok { "OK" } else { "FAILED" }
+    );
+    all_ok
 }
 
 pub fn task_count() -> usize {

@@ -50,7 +50,8 @@ inspection), most with an accompanying negative-control test:
   release contract is proven by a labelled synthetic control)
 - Guard pages for stack-overflow detection (verified every boot with a
   real overflow write that must fault, and a negative control), now
-  also backing every live ring-3 task's RSP0 kernel stack via a shared
+  also backing every live kernel stack -- the ring-3 tasks' RSP0 stacks
+  and the cooperative scheduler's ring-0 task stacks -- via a shared
   guarded-stack region (`memory::kernel_stack`), verified structurally
   every boot
 - NX (no-execute) enforcement -- verified with a positive control
@@ -91,10 +92,7 @@ they actually happened.
 
 **Explicitly NOT done, stated plainly rather than implied:** real
 dynamic linking (symbol-resolved relocations), preemptive (as opposed
-to cooperative) ring-3 task scheduling, guard pages under the
-cooperative scheduler's ring-0 task stacks (the mechanism is proven and
-now guards every live ring-3 RSP0 stack; the ring-0 stacks are the last
-piece), and -- by far the
+to cooperative) ring-3 task scheduling, and -- by far the
 largest remaining gap -- real application compatibility on top of the
 loaders (a Win32 API/import layer, a DEX/ART bytecode runtime, the
 actual API surfaces). Scheduling/IO policy beyond the pre-normative

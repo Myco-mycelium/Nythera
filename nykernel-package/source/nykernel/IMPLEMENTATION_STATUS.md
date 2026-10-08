@@ -11,9 +11,11 @@ in-kernel, with both positive and permanent negative checks. On the
 NPS-001-grounded side, three more documented gaps are now closed: the
 RTC periodic interrupt on IRQ8 (`src/rtc.rs`), guard pages for
 stack-overflow detection (`memory::guard_demo`, verified with a real
-fault every boot), and guard pages wired under the *live* ring-3 task
-kernel stacks (`memory::kernel_stack` + `experimental::address_space`),
-verified structurally every boot.**
+fault every boot), and guard pages wired under the *live* kernel stacks
+-- both the ring-3 tasks' RSP0 stacks (`experimental::address_space`)
+and the cooperative scheduler's ring-0 task stacks
+(`experimental::scheduler`), all from `memory::kernel_stack` -- verified
+structurally every boot.**
 
 For a short, scannable summary of everything below, see `README.md`
 (this directory) -- this file is the detailed, evidence-heavy log
@@ -83,9 +85,12 @@ log, not a description of what's planned.
   actually writes into the guard page and the page-fault handler
   confirms the expected `CAUSED_BY_WRITE` fault and exits cleanly); if
   the write did *not* fault, the demo reports failure rather than
-  silently passing. The same mechanism now backs every live ring-3
-  task's RSP0 stack (`memory::kernel_stack`), verified structurally
-  every boot by `experimental::ring3_scheduler`
+  silently passing. The same mechanism now backs every live kernel
+  stack -- each ring-3 task's RSP0 stack (verified structurally every
+  boot by `experimental::ring3_scheduler`) and each cooperative-
+  scheduler (ring-0) task stack (verified by
+  `experimental::scheduler::verify_guarded_stacks`), all from
+  `memory::kernel_stack`
 - A cooperative, round-robin, stack-switching scheduler proof of
   concept (`src/experimental/scheduler.rs`) -- a hand-written
   `#[naked]` context switch (save/restore SysV callee-saved registers
@@ -607,24 +612,54 @@ Honest scope: the live ring-3 RSP0 stacks are verified **structurally**
 (page-table state), not by deliberately overflowing a live task -- that
 would end the boot mid-demo. The terminal *enforcement* proof still
 uses a dedicated probe stack, but now allocated through the same
-`kernel_stack` allocator. The cooperative scheduler's ring-0 task
-stacks remain heap `Vec<u8>` allocations (see "What does NOT exist
-yet").
+`kernel_stack` allocator.
+
+## Gap-closure increment (2026-10-09): guard pages under the ring-0 scheduler task stacks
+
+The cooperative scheduler's `spawn`/`spawn_with_cr3` used a heap
+`Vec<u8>` for each task stack -- the last live kernel stacks without a
+guard. They now allocate from the same shared `memory::kernel_stack`
+region:
+
+- `spawn`/`spawn_with_cr3` take a `mapper` + `frame_allocator` (any
+  space's mapper works -- the region is shared), and
+  `TaskControlBlock` holds an `Option<GuardedStack>` (`None` only for
+  task 0, which runs on the kernel's own boot stack).
+- `experimental::address_space::active_mapper` exposes a mapper for
+  whichever space is active, for the one call site
+  (`experimental::isolated_tasks`) that spawns tasks without owning a
+  specific `AddressSpace`.
+- `lib.rs` calls `experimental::scheduler::verify_guarded_stacks` after
+  tasks A-D are spawned, checking each stack structurally via the page
+  tables.
+
+Verified transcript lines (from `tools/qemu_boot_test.sh`, passing):
+
+```
+  experimental scheduler: task 1 kernel stack 0x14000001000..0x14000005000 (4 pages) has guard page 0x14000000000 unmapped -- OK
+  experimental scheduler: task 2 kernel stack 0x14000006000..0x1400000a000 (4 pages) has guard page 0x14000005000 unmapped -- OK
+  experimental scheduler: task 3 kernel stack 0x14000017000..0x1400001b000 (4 pages) has guard page 0x14000016000 unmapped -- OK
+  experimental scheduler: task 4 kernel stack 0x1400001c000..0x14000020000 (4 pages) has guard page 0x1400001b000 unmapped -- OK
+  experimental scheduler self-test: all 4 task kernel stacks carry a genuinely unmapped guard page directly below them -- OK
+```
+
+This adds one more instance of the pre-existing "shared reference to
+mutable static" warning (`TASKS.iter()` in `verify_guarded_stacks`),
+same category the file already emits and deliberately leaves visible.
 
 ## What does NOT exist yet (do not assume otherwise)
 
 - A true higher-half address space layout -- the heap's virtual
   address is a manually chosen high address, not a systematic
   kernel/user address-space split (Phase 2 documented simplification)
-- Guard-page coverage for the *cooperative scheduler's* (ring-0) task
-  stacks -- the per-task `AddressSpace` RSP0 stacks are now genuinely
-  guarded (2026-10-09: `memory::kernel_stack` + `experimental::address_space`,
-  verified structurally every boot by `experimental::ring3_scheduler`),
-  but `experimental::scheduler`'s own task stacks are still plain heap
-  `Vec<u8>` allocations. (The ring-3 *user* stacks also get implicit
-  guard behavior -- the page below each user stack is simply unmapped
-  in the process's private address space -- but that is a side effect,
-  not a built guard.)
+- Guard-page coverage for every live kernel stack -- once listed here
+  as an open gap, now **closed** (2026-10-09). Both the ring-3 tasks'
+  RSP0 stacks and the cooperative scheduler's ring-0 task stacks come
+  from `memory::kernel_stack`'s shared guarded region, and both are
+  verified structurally every boot. (The ring-3 *user* stacks also get
+  implicit guard behavior -- the page below each user stack is simply
+  unmapped in the process's private address space -- but that is a side
+  effect, not a built guard.)
 - ACPI-reclaimable memory reuse: once listed here as an open gap, now
   **closed** (2026-10-09). `src/acpi.rs` validates the RSDP the loader
   handed off and enumerates the RSDT/XSDT tables (checksum-verified),
@@ -759,10 +794,6 @@ kernel, and documented as such rather than half-attempted:**
 **Tractable and *not* governance-gated -- genuine next candidates,
 just not done in this increment:**
 
-- Wiring guard pages under the cooperative scheduler's (ring-0) task
-  stacks -- the mechanism is proven and the live ring-3 RSP0 stacks are
-  now guarded (see the 2026-10-09 live-stack increment above); the
-  ring-0 task stacks are the remaining piece.
 - More IRQ lines (keyboard, ATA/IDE) *with real handlers* -- the rule
   from `pic.rs` stands: unmask nothing that has no handler.
 

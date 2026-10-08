@@ -64,8 +64,12 @@ pub fn run(frame_allocator: &mut BumpFrameAllocator) -> bool {
     // active again before the round-robin resumes.
     restore_cr3(original_cr3);
 
-    scheduler::spawn_with_cr3(task_c_entry, cr3_c);
-    scheduler::spawn_with_cr3(task_d_entry, cr3_d);
+    // Allocate C's and D's guarded kernel stacks through the currently
+    // active (restored, shared) address space -- the region is shared,
+    // so this is visible under C's and D's own private spaces too.
+    let mut spawn_mapper = unsafe { address_space::active_mapper() };
+    scheduler::spawn_with_cr3(task_c_entry, cr3_c, &mut spawn_mapper, frame_allocator);
+    scheduler::spawn_with_cr3(task_d_entry, cr3_d, &mut spawn_mapper, frame_allocator);
     serial_println!(
         "  experimental isolated-tasks: {} total tasks in round-robin (main, A, B, C[own cr3 {:#x}], D[own cr3 {:#x}])",
         scheduler::task_count(), cr3_c, cr3_d
