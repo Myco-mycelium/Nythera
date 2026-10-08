@@ -5,6 +5,19 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-08 (eleventh round), IPC-001 §8 — the SHM channel LIFECYCLE
+landed (code + pins): `ShmChannelRegistry` (one channel per authenticated
+peer, bounded `max_channels` = 32, an explicit `FALLBACK_SENTINEL`
+decline past the limit, `release(peer_id)` on exit and `close_all()` at
+shutdown) and `with_shm_channel_offers(inner_on_call, server)` — the
+opt-in daemon seam that intercepts `SHM_OPEN_OP` and passes every other
+message through unchanged. The daemon enables it in one line; turning it
+on in the shipped daemon is left as an explicit rollout decision (a
+silent default transport change is exactly what the never-silent
+contract forbids). Pinned by `tests/test_ipc_shm_channel.py` (17 tests).
+Honest remaining, per IPC-001 §8: turning the seam on in the shipped
+daemon, and the futex/eventfd wait that would remove the tail/idle-CPU
+tradeoff. Verification: channel pins 17/17; doc gates green; sweep below.
 2026-10-08 (tenth round), IPC-001 §7 continued — the SHM channel
 negotiation mechanism landed (code + pins): `ipc/shm_channel.py` gains
 `offer_channel` (server creates the channel and replies its token over

@@ -370,6 +370,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="ipc001-shm-lifecycle-landed",
+        pattern=r"ShmChannelRegistry|with_shm_channel_offers",
+        description="IPC-001 §8: the SHM channel lifecycle landed (ipc/shm_channel.py ShmChannelRegistry + with_shm_channel_offers) — one channel per authenticated peer, a bounded max_channels, an explicit FALLBACK_SENTINEL decline past the limit, release/close_all; the wrapper is the opt-in daemon seam that intercepts SHM_OPEN_OP and passes everything else through; pinned by tests/test_ipc_shm_channel.py",
+        check="path_contains",
+        check_args={
+            "needle": "class ShmChannelRegistry",
+            "files": ["source/nyhal-linux-backend/ipc/shm_channel.py"],
+        },
+    ),
+    Claim(
         claim_id="repo-url-is-nythera",
         pattern=r"repo_url",
         description="mkdocs.yml repo_url still names Myco-mycelium/Nythera (rename pending)",

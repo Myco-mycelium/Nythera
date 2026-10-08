@@ -11,18 +11,38 @@ import pytest
 
 from ipc.core import IPCMessage, IPCMessageType
 from ipc.shm_channel import (
+    FALLBACK_SENTINEL,
     MIN_CHANNEL_TOKEN_LEN,
+    SHM_OPEN_OP,
     ShmChannel,
     ShmChannelError,
+    ShmChannelRegistry,
     accept_channel,
     new_channel_token,
     offer_channel,
     select_transport,
+    with_shm_channel_offers,
 )
 from ipc.shm_transport import is_shm_available
 
 requires_shm = pytest.mark.skipif(
     not is_shm_available(), reason="POSIX shared memory unavailable")
+
+
+class _FakeServer:
+    """Minimal IPCDatagramServer stand-in: records replies."""
+
+    def __init__(self):
+        self.replies = []
+
+    def reply(self, sender_path, call_id, payload):
+        self.replies.append((sender_path, call_id, payload))
+        return True
+
+
+def _open_msg(call_id="c1"):
+    from types import SimpleNamespace
+    return SimpleNamespace(payload=SHM_OPEN_OP, message_id=call_id)
 
 
 # --- selection policy (never silent) -------------------------------------
@@ -159,6 +179,74 @@ def test_accept_channel_refuses_when_no_token_comes_back():
 
     with pytest.raises(ShmChannelError):
         accept_channel(_NoReplyClient(), "/nonexistent", "svc", timeout_s=0.01)
+
+
+@requires_shm
+def test_registry_reuses_one_channel_per_peer():
+    server = _FakeServer()
+    reg = ShmChannelRegistry(server)
+    first = reg.handle_open(_open_msg("c1"), "peer-a", "/p/a")
+    again = reg.handle_open(_open_msg("c2"), "peer-a", "/p/a")
+    assert first is not None and first is again
+    assert len(reg) == 1
+    assert server.replies[0][2] == server.replies[1][2]  # same token re-advertised
+    reg.close_all()
+
+
+@requires_shm
+def test_registry_declines_observably_beyond_the_limit():
+    server = _FakeServer()
+    reg = ShmChannelRegistry(server, max_channels=1)
+    assert reg.handle_open(_open_msg("c1"), "peer-a", "/p/a") is not None
+    declined = reg.handle_open(_open_msg("c2"), "peer-b", "/p/b")
+    assert declined is None
+    assert server.replies[-1][2] == FALLBACK_SENTINEL  # explicit, never silent
+    reg.close_all()
+
+
+@requires_shm
+def test_registry_release_and_close_all():
+    server = _FakeServer()
+    reg = ShmChannelRegistry(server)
+    reg.handle_open(_open_msg(), "peer-a", "/p/a")
+    assert len(reg) == 1
+    assert reg.release("peer-a") is True
+    assert reg.release("peer-a") is False
+    assert len(reg) == 0
+    reg.handle_open(_open_msg(), "peer-b", "/p/b")
+    reg.close_all()
+    assert len(reg) == 0
+
+
+@requires_shm
+def test_wrapper_intercepts_opens_and_passes_through_everything_else():
+    from types import SimpleNamespace
+    server = _FakeServer()
+    seen = []
+
+    def inner(msg, sender, sender_path):
+        seen.append(msg.payload)
+        return "inner"
+
+    handler = with_shm_channel_offers(inner, server)
+    handler(_open_msg(), "peer-a", "/p/a")               # intercepted
+    assert seen == []
+    handler(SimpleNamespace(payload=b"status", message_id="c2"),
+            "peer-a", "/p/a")                          # passthrough
+    assert seen == [b"status"]
+    handler.registry.close_all()
+
+
+def test_accept_channel_raises_on_the_fallback_sentinel():
+    from types import SimpleNamespace
+
+    class _Client:
+        def call(self, *a, **k):
+            return SimpleNamespace(payload=FALLBACK_SENTINEL)
+
+    with pytest.raises(ShmChannelError) as exc:
+        accept_channel(_Client(), "/x", "svc")
+    assert "declined" in str(exc.value)
 
 
 @requires_shm

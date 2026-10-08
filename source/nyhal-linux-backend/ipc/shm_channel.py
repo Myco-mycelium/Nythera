@@ -32,9 +32,10 @@ References:
 
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Dict, Optional
 
 from ipc.core import IPCMessage
 from ipc.shm_transport import ShmTransport, is_shm_available
@@ -47,12 +48,21 @@ __all__ = [
     "ShmChannel",
     "offer_channel",
     "accept_channel",
+    "ShmChannelRegistry",
+    "with_shm_channel_offers",
+    "SHM_OPEN_OP",
+    "FALLBACK_SENTINEL",
     "MIN_CHANNEL_TOKEN_LEN",
 ]
 
 # Channel ids must be unguessable tokens, not short names: the segment name
 # is the only access control below the kernel's 0600.
 MIN_CHANNEL_TOKEN_LEN = 16
+
+# The wire op a client CALLs to request a channel, and the reply a server
+# sends when it will NOT offer one (so the client falls back explicitly).
+SHM_OPEN_OP = b"shm-open"
+FALLBACK_SENTINEL = b"datagram"
 
 
 class ShmChannelError(RuntimeError):
@@ -126,9 +136,11 @@ class ShmChannel:
     to the datagram transport.
     """
 
-    def __init__(self, transport: ShmTransport, peer_id: str):
+    def __init__(self, transport: ShmTransport, peer_id: str,
+                 channel_id: Optional[str] = None):
         self._transport = transport
         self.peer_id = peer_id
+        self.channel_id = channel_id
 
     @staticmethod
     def _require_token(channel_id: str) -> None:
@@ -144,7 +156,7 @@ class ShmChannel:
         transport = ShmTransport(channel_id)
         if not transport.create():
             raise ShmChannelError(f"failed to create shm channel {channel_id!r}")
-        return cls(transport, peer_id)
+        return cls(transport, peer_id, channel_id)
 
     @classmethod
     def attach(cls, channel_id: str, peer_id: str) -> "ShmChannel":
@@ -153,7 +165,7 @@ class ShmChannel:
         transport = ShmTransport(channel_id)
         if not transport.attach():
             raise ShmChannelError(f"failed to attach to shm channel {channel_id!r}")
-        return cls(transport, peer_id)
+        return cls(transport, peer_id, channel_id)
 
     def send_message(self, msg: IPCMessage) -> bool:
         """Send an ``IPCMessage`` (codec-identical to the datagram path)."""
@@ -204,21 +216,118 @@ def accept_channel(
     server_path: str,
     peer_id: str,
     *,
-    op: bytes = b"shm-open",
+    op: bytes = SHM_OPEN_OP,
     timeout_s: float = 5.0,
 ) -> "ShmChannel":
     """Client side of the handshake: CALL for a token, then attach.
 
     ``client`` is an ``IPCClient`` (or anything with a compatible
-    ``call``). Raises ``ShmChannelError`` if no valid token comes back —
-    the caller must then fall back to datagram (never silently: it gets
-    the exception).
+    ``call``). Raises ``ShmChannelError`` if no valid token comes back
+    (including the server's explicit ``FALLBACK_SENTINEL`` decline) — the
+    caller must then fall back to datagram, never silently.
     """
     reply = client.call(server_path, op, timeout_s=timeout_s)
     if reply is None:
         raise ShmChannelError("no reply to the shm channel request")
+    payload = getattr(reply, "payload", None)
+    if payload == FALLBACK_SENTINEL:
+        raise ShmChannelError(
+            "server declined shared memory; use the datagram transport")
     try:
-        token = reply.payload.decode("ascii")
+        token = payload.decode("ascii")
     except (AttributeError, UnicodeDecodeError) as exc:
         raise ShmChannelError(f"malformed shm channel token: {exc}") from exc
     return ShmChannel.attach(token, peer_id)
+
+
+# --- server-side lifecycle -------------------------------------------------
+
+class ShmChannelRegistry:
+    """Per-authenticated-peer SHM channels, with a bounded lifecycle.
+
+    Policy (IPC-001 §8):
+    - one channel per authenticated peer (a repeat request re-advertises
+      the existing channel's token);
+    - at most ``max_channels`` live channels — beyond that, requests get
+      the explicit ``FALLBACK_SENTINEL`` (the client uses datagram), never
+      a silent drop;
+    - ``release(peer_id)`` when a peer exits, ``close_all()`` at shutdown.
+    """
+
+    def __init__(self, server, *, max_channels: int = 32):
+        self._server = server
+        self._max_channels = max_channels
+        self._channels: Dict[str, ShmChannel] = {}
+        self._lock = threading.Lock()
+
+    def handle_open(self, msg, sender: str, sender_path: str) -> Optional[ShmChannel]:
+        """Serve an ``SHM_OPEN_OP`` call: offer a channel or decline.
+
+        Returns the channel (new or reused) or None when declining. The
+        reply is always sent, so the client's choice is never silent.
+        """
+        with self._lock:
+            existing = self._channels.get(sender)
+            if existing is not None:
+                self._server.reply(sender_path, msg.message_id,
+                                   str(existing.channel_id).encode())
+                return existing
+            if len(self._channels) >= self._max_channels:
+                self._server.reply(sender_path, msg.message_id, FALLBACK_SENTINEL)
+                return None
+            if select_transport("shm", peer_authenticated=True).kind != "shm":
+                self._server.reply(sender_path, msg.message_id, FALLBACK_SENTINEL)
+                return None
+            token = new_channel_token()
+            channel = ShmChannel.create(token, sender)
+            if not self._server.reply(sender_path, msg.message_id, token.encode()):
+                channel.close()
+                return None
+            self._channels[sender] = channel
+            return channel
+
+    def release(self, peer_id: str) -> bool:
+        """Drop a peer's channel (call when the peer exits)."""
+        with self._lock:
+            channel = self._channels.pop(peer_id, None)
+        if channel is not None:
+            channel.close()
+            return True
+        return False
+
+    def close_all(self) -> None:
+        with self._lock:
+            channels, self._channels = list(self._channels.values()), {}
+        for channel in channels:
+            channel.close()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._channels)
+
+    @property
+    def peer_ids(self):
+        with self._lock:
+            return list(self._channels.keys())
+
+
+def with_shm_channel_offers(inner_on_call: Callable, server, *,
+                            max_channels: int = 32) -> Callable:
+    """Wrap a server's ``on_call`` so SHM channel offers are served.
+
+    The daemon opts in by setting ``server.on_call =
+    with_shm_channel_offers(existing_handler, server)``; ``SHM_OPEN_OP``
+    messages are handled here and every other message passes through to
+    ``inner_on_call`` unchanged. The returned handler exposes
+    ``.registry`` for lifecycle control (``release``/``close_all``).
+    """
+    registry = ShmChannelRegistry(server, max_channels=max_channels)
+
+    def handler(msg, sender, sender_path):
+        if getattr(msg, "payload", None) == SHM_OPEN_OP:
+            registry.handle_open(msg, sender, sender_path)
+            return
+        return inner_on_call(msg, sender, sender_path)
+
+    handler.registry = registry
+    return handler

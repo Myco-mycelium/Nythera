@@ -214,11 +214,18 @@ Landed under the H1 ruling:
   BENCHMARK_RESULTS §38 (latency) and §38b (idle CPU busy fraction 1.0 —
   the documented tradeoff).
 
-**Remaining (honest scope):** the daemon's *lifecycle* wiring is not yet
-in place — when to offer a channel per authenticated client, channel
-limits, cleanup on client exit, and the serving-loop fallback policy —
-the mechanism (`offer_channel`/`accept_channel`) does exist; a
-futex/eventfd wait is the follow-on for the tail/idle-CPU tradeoff.
+**The lifecycle landed:** `ShmChannelRegistry` — one channel per
+authenticated peer, a bounded `max_channels`, an explicit
+`FALLBACK_SENTINEL` decline past the limit (the client uses datagram,
+never a silent drop), `release(peer_id)` when a peer exits and
+`close_all()` at shutdown — and `with_shm_channel_offers(inner_on_call,
+server)`, the opt-in seam: the daemon enables SHM offers with one line
+and every other message passes through unchanged.
+
+**Remaining (honest scope):** turning that seam ON in the shipped daemon
+is an explicit rollout decision, not a silent default change (the
+never-silent contract); and a futex/eventfd wait would remove the
+tail/idle-CPU tradeoff.
 
 ## Change log
 
