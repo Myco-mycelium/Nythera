@@ -2008,26 +2008,39 @@ channel (randomly-tokened name); the client runs in a SEPARATE process,
 attaches by channel name, and times each send+recv round trip.
 
 The first run measured the transport **as it shipped** — and MISSED the
-gate, for a reason that was not the transport mechanism but the ring's
-`time.sleep(0.000_1)` polling (a 100 µs quantum per empty-ring wait).
-Replacing that with a bounded busy-spin (50 µs) followed by
-`os.sched_yield()` produced the post-fix numbers:
+gate, not because of the transport mechanism but because the ring polled
+in `time.sleep(0.000_1)` steps. Two fixed-wait-free strategies were then
+measured; the second is the shipped default:
 
-| Metric | §20 datagram (Python floor) | §38 SHM, pre-fix | §38 SHM, post-fix |
-|--------|----------------------------:|-----------------:|------------------:|
-| p50 | 188.79 µs | 187.86 µs | **20.26 µs** |
-| p95 | 295.23 µs | 349.20 µs | 33.52 µs |
-| p99 | 373.51 µs | 389.41 µs | 41.11 µs |
-| mean | 199.31 µs | 205.72 µs | 22.70 µs |
-| min | 139.39 µs | 103.22 µs | 19.16 µs |
-| max | 2,460.88 µs | 2,823.66 µs | **94.24 µs** |
+| Metric | §20 datagram | SHM as shipped | SHM wait: pure yield | SHM wait: spin→sleep (shipped) |
+|--------|-------------:|---------------:|---------------------:|-------------------------------:|
+| p50 | 188.79 µs | 187.86 µs | 20.26 µs | **20.41 µs** |
+| p95 | 295.23 µs | 349.20 µs | 33.52 µs | 32.99 µs |
+| p99 | 373.51 µs | 389.41 µs | 41.11 µs | 52.58 µs |
+| mean | 199.31 µs | 205.72 µs | 22.70 µs | 24.54 µs |
+| min | 139.39 µs | 103.22 µs | 19.16 µs | 19.36 µs |
+| max | 2,460.88 µs | 2,823.66 µs | 94.24 µs | 748.04 µs |
 
-**Result — the NPS-003 §6.1 `<100 µs` gate is now MET on the shared-memory
-path** (p50 20.26 µs; even the max, 94.24 µs, is under the target). The
+**Result — the NPS-003 §6.1 `<100 µs` gate is MET on the shared-memory
+path at the median and the tail percentiles** (p50 20.41 µs, p95 32.99 µs,
+p99 52.58 µs), judged the way §20 itself was judged — by the median, not
+the outlier max (whose own 2,460.88 µs is far above the target). The
 pre-fix p50 (187.86 µs) was indistinguishable from the datagram floor
-(188.79 µs) precisely BECAUSE the 100 µs sleep quantum, not the syscall
-path, dominated; removing it exposed the zero-copy transport's real cost.
-Honest scope: this is the same-namespace, single-host path; SHM is
+(188.79 µs) precisely BECAUSE the fixed sleep quantum, not the syscall
+path, dominated.
+
+The two strategies trade tail against idle CPU:
+- **pure yield** (`os.sched_yield`) gives the tightest tail (max 94.24 µs)
+  but burns CPU whenever the ring is idle (§38b busy fraction 1.00);
+- **spin→sleep** (50 µs busy-spin, then `time.sleep(0.000_1)`) is the
+  shipped default: it meets the gate at p50/p99 and cuts idle CPU ~12×,
+  at the cost of an occasional ~0.6 ms tail outlier (the host's real
+  sleep granularity — a requested 100 µs sleep actually takes ~0.5–0.6 ms),
+  comparable to §20's own 2.5 ms max.
+
+A futex/eventfd wait (block in the kernel, wake on publish) is the
+mechanism that would give both, and is the identified follow-on. Honest
+scope: this is the same-namespace, single-host path; SHM is
 PID-namespace-local, so the datagram path remains the cross-namespace
 fallback and the §6.1 hardware-gated load variants (two containers, two
 hardware classes) remain.
@@ -2036,27 +2049,24 @@ hardware classes) remain.
 
 `python3 tests/benchmarks.py --ipc-shm-cpu` — a reader that finds the ring
 empty waits 0.5 s; wall time vs process CPU gives the busy fraction of the
-spin-then-yield wait.
+wait.
 
-| Metric | Value |
-|--------|-------|
-| wait | 0.500 s |
-| CPU consumed | 0.4998 s |
-| busy fraction | **1.00** |
+| Wait strategy | CPU consumed (0.5 s wait) | busy fraction |
+|---------------|--------------------------:|--------------:|
+| pure yield (`os.sched_yield`) | 0.4998 s | **1.00** |
+| spin→sleep (shipped) | 0.0417 s | **0.083** |
 
-**Honest finding — the yield-based wait is a busy-wait: an idle reader
-consumes ~100% of a core.** This is the deliberate tradeoff for §38's
-sub-100 µs latency (a fixed sleep cannot be both responsive and cheap). It
-is acceptable for actively-serving IPC endpoints but NOT for idle ones; a
-futex/eventfd wait (block in the kernel, wake on publish) is the
-identified follow-on if idle CPU ever outweighs latency. The cost is
-recorded here, not hidden.
+**Honest finding.** Pure yield is a busy-wait — an idle reader owns a
+core. The shipped spin→sleep strategy cuts that ~12×: it spins only
+briefly at entry (catching an active peer inside the window) and sleeps
+otherwise. This is the deliberate latency/CPU tradeoff for §38; a
+futex/eventfd wait would remove it entirely. Recorded, not hidden.
 
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
 |--------------|--------|
-| §1 IPC round-trip latency | In-process first pass collected (§1, p50 92 µs); **the real-transport measurement landed 2026-08-14 (§20 — Python floor p50 188.79 µs; Rust-v2 transport §21 p50 322.6 µs / 307–357 µs) — the NPS-003 §6.1 <100 µs target is NOT met over the wire** *(status corrected 2026-10-08 re-probe: the earlier "real transport pending" cell was stale)*; the plan's two-container-load / two-hardware-class variants remain (real hardware). **§38 (2026-10-08): after the IPC-001 §7 wait-strategy fix the shared-memory transport measures p50 20.26 µs / max 94.24 µs — the §6.1 `<100 µs` gate is now MET on the same-namespace SHM path (the pre-fix 187.86 µs was the 100 µs sleep quantum, not the syscall path; §38b records the ~100% idle-CPU cost of the yield wait)** |
+| §1 IPC round-trip latency | In-process first pass collected (§1, p50 92 µs); **the real-transport measurement landed 2026-08-14 (§20 — Python floor p50 188.79 µs; Rust-v2 transport §21 p50 322.6 µs / 307–357 µs) — the NPS-003 §6.1 <100 µs target is NOT met over the wire** *(status corrected 2026-10-08 re-probe: the earlier "real transport pending" cell was stale)*; the plan's two-container-load / two-hardware-class variants remain (real hardware). **§38 (2026-10-08): after the IPC-001 §7 wait-strategy fix the shared-memory transport measures p50 20.41 µs / p99 52.58 µs — the §6.1 `<100 µs` gate is MET on the same-namespace SHM path at the median and tail (the pre-fix 187.86 µs was the fixed sleep quantum, not the syscall path); the shipped spin→sleep wait cuts idle CPU to 8% (§38b) at the cost of an occasional ~0.6 ms tail outlier, and the pure-yield alternative has max 94.24 µs but 100% idle CPU** |
 | §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratios measured 2026-08-12: 6.42 : 1 synthetic (§7) vs 1.29 : 1 real /usr/share sample (§12)**; **§2 close-out data collected 2026-09-10 (§31)** — real-asset sweep (ratio flat ~1.07 at every level on already-compressed data; ≥7 buys ≤2% for 60× compute), real LZ4 fast path (2.7× zstd-1 at equal ratio on real data; the zlib approximation is retired), concurrent scaling (2.2× at 8 threads — GIL partially released); the level-choice data is now complete; no gate declared met |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); **sweep + adversarial interference collected 2026-09-10 (§32)** — steady state ≈ refill rate (burst only shapes spike absorption), shipped default 500/s ≈ 4.5% of path capacity, shared bucket starves a 250 Hz legitimate client under flood (per-sender fairness identified as the missing mechanism); no gate declared met |
 | §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus, save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8–9) — block size helps ~40–60% (1 MiB, at small-write amplification cost); batched fsync is noise; **journal commit (one fsync per transaction) is decisive: ~60–70× faster** (0.20 s vs 11–15 s, §9) and ~61× on a small-file corpus (§12). **Mixed workload measured** (§13): ~3.7–4× lower per-commit latency in a repeated write/read/commit loop (131 vs 504 ms); write throughput unchanged by commit mode (~1.9 MB/s, CoW-compress-bound). **Compaction cost measured** (§14): the deferred materialize pass runs at ~27 ms/block — exactly an interleaved save of referenced blocks (11.2 s per 417-block / 2.5 MB journal); `NyFSMount(auto_compact=True)` moves it off the transaction path. **Journal × block size measured** (§15): under journal commit, save time is flat across 64 KiB → 1 MiB blocks (0.18–0.25 s — one fsync regardless of block count) while the ratio still improves 6.38 → 6.50 — the §8 block-size lever is an interleaved-mode lever only. **Cross-snapshot dedup measured** (§10): CoW sharing makes a 20%-churn snapshot cost ~2% of an independent copy (~49×). **Compression ON/OFF A/B close-out collected 2026-10-05 (§36)** — identity-codec OFF leg via `--nyfs-mount-nocompress`; first pass flagged a ~180× ON-leg read anomaly (per-read uniformity check decompressed/hashed every block of the inode — fixed in 0.29.40); post-fix rerun lands at 0.89–0.91× ON:OFF reads, the 16 MiB wedge resolved, and the at-rest probe went live via `unmount(save=True)`. **At-rest GC impact measured 2026-10-06 (§37)** — 64.2× CoW bloat reclaimed 100% by a 5.6 ms `gc_blocks()` pass (the 0.29.41 wiring). No gate declared met |

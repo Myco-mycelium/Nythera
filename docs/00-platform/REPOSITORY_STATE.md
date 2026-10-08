@@ -7,18 +7,22 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 ## Last Updated
 2026-10-08 (ninth round), IPC-001 §7 AS-BUILT — the H1 Option A
 increment landed (code + measurement + pins): (1) the **wait fix** —
-`RingBuffer.read`/`write` now wait via a new `_wait_ready` (50 µs
-busy-spin then `os.sched_yield`) instead of `time.sleep(0.000_1)`;
+`RingBuffer.read`/`write` now wait via a new `_wait_ready` (a 50 µs
+busy-spin then a bounded sleep) instead of the fixed `time.sleep(0.000_1)`
+that quantized every wait;
 (2) the **benchmark** — `tests/benchmarks.py --ipc-shm` / `--ipc-shm-cpu`;
 (3) the **selectable channel** — `ipc/shm_channel.py`
 (`TransportSelection`/`select_transport`: explicit, fail-closed, NEVER
 silent; `ShmChannel` carrying the datagram path's codec-identical
 `IPCMessage.to_wire()` bytes; unguessable-token rule), pinned by
-`tests/test_ipc_shm_channel.py` (10 tests). Result: §38 p50 187.86 µs →
-**20.26 µs** (p99 41.11, max 94.24) — **the NPS-003 §6.1 `<100 µs` gate
-is now MET on the same-namespace shared-memory path**; §38b records the
-honest cost — the yield wait is a **busy-wait (idle busy fraction
-1.00)**, so a futex/eventfd wait is the follow-on. Records updated:
+`tests/test_ipc_shm_channel.py` (10 tests). Two wait strategies were measured; the
+**spin→sleep** variant ships. Result: §38 p50 187.86 µs → **20.41 µs**
+(p99 52.58) — **the NPS-003 §6.1 `<100 µs` gate is now MET on the
+same-namespace shared-memory path** at the median/tail; the pure-yield
+alternative has the tighter max (94.24 µs) but burns 100% idle CPU,
+while the shipped spin→sleep wait cuts idle CPU ~12× (§38b: busy
+fraction 0.083 vs 1.00) at the cost of an occasional ~0.6 ms tail
+outlier. A futex/eventfd wait is the follow-on. Records updated:
 IPC-001 v0.2.0 as-built, AG_AGENDA v2.9.0 (H1 as-built), NPS-003 §6.1
 (v1.5.0), spec index v1.56.0, roadmap, BENCHMARK_RESULTS §38/§38b,
 premise pins `ipc001-shm-wait-fix` / `ipc001-shm-channel-landed`.

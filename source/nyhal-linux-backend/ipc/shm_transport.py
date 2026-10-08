@@ -82,6 +82,11 @@ _OPEN_TIMEOUT_S = 5.0
 # NPS-003 §6.1 <100 us gate). Spinning briefly catches an active peer within
 # microseconds; only a genuinely idle ring reaches the yield loop.
 _SPIN_WINDOW_NS = 50_000  # 50 us
+# After the spin window, sleep in bounded steps instead of spinning forever.
+# This trades a little idle-latency (which does not matter for an idle ring)
+# for a large cut in CPU: an active peer is caught inside the 50 us spin and
+# never reaches this step (IPC-001 §38/§38b).
+_IDLE_SLEEP_S = 0.000_1  # 100 us
 
 # Header format: magic(4) + version(4) + head(8) + tail(8) + capacity(8) + reserved(32)
 _HEADER_FMT = "<IIQQQ32s"
@@ -251,7 +256,7 @@ class RingBuffer:
                 return True
             if time.monotonic() >= deadline:
                 return False
-            os.sched_yield()
+            time.sleep(_IDLE_SLEEP_S)
 
     def write(self, data: bytes, timeout_s: float = _OPEN_TIMEOUT_S) -> bool:
         """Write a message into the ring buffer.

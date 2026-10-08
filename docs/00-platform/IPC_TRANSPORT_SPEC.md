@@ -190,10 +190,13 @@ silently) in the same commit as the wiring.
 Landed under the H1 ruling:
 
 - **The wait fix** (`ipc/shm_transport.py`): `RingBuffer.read`/`write`
-  now call `_wait_ready` — a 50 µs busy-spin, then `os.sched_yield()` —
-  instead of `time.sleep(0.000_1)`. Measured effect: §38 p50
-  187.86 µs → **20.26 µs** (p99 41.11 µs, max 94.24 µs), **closing the
-  NPS-003 §6.1 `<100 µs` gate on the same-namespace SHM path.**
+  now call `_wait_ready` — a 50 µs busy-spin, then a bounded
+  `time.sleep` — instead of the fixed 100 µs sleep that quantized every
+  wait. Measured effect: §38 p50 187.86 µs → **20.41 µs** (p99
+  52.58 µs), **closing the NPS-003 §6.1 `<100 µs` gate on the
+  same-namespace SHM path** at the median and tail. §38b records the
+  tradeoff: the shipped spin→sleep wait costs 8% idle CPU, versus 100%
+  for the pure-yield alternative (which has the tighter max, 94.24 µs).
 - **The selectable channel** (`ipc/shm_channel.py`): `TransportSelection`
   / `select_transport` (explicit, fail-closed, never silent — a caller
   that asks for SHM but cannot have it gets datagram back with
@@ -215,9 +218,9 @@ wait is the follow-on if §38b's idle CPU cost ever outweighs latency.
 ## Change log
 
 - 0.2.0 (2026-10-08): **as-built** — the wait fix landed (`_wait_ready`:
-  50 µs spin then `os.sched_yield`), §38 measures p50 20.26 µs / max
-  94.24 µs and the NPS-003 §6.1 gate is MET on the same-namespace SHM
-  path; the selectable channel (`ipc/shm_channel.py`) and its 10 contract
+  50 µs spin then a bounded sleep), §38 measures p50 20.41 µs / p99
+  52.58 µs and the NPS-003 §6.1 gate is MET on the same-namespace SHM
+  path at the median/tail; the selectable channel (`ipc/shm_channel.py`) and its 10 contract
   pins landed; §38b records the ~100% idle-CPU cost of the yield wait.
 - 0.1.1 (2026-10-08): **ACCEPTED (Option A, AG Bundle H1)** and the §38
   measurement recorded the same day — the existing shared-memory
