@@ -223,6 +223,14 @@ cooperative, round-robin, stack-switching scheduler:
   first proof-of-concept for "does the switch itself work" doesn't
   need to take on at the same time
 
+  (That rationale still stands for *this* ring-0 scheduler, which
+  remains cooperative by choice. The ring-3 round-robin later took on
+  exactly that second class of bug under its own pre-normative proof --
+  timer-driven preemption of ring-3 tasks via a raw timer entry, two
+  non-yielding tasks round-robined purely by IRQ0 -- see the ring-3
+  scheduling entry further down and `IMPLEMENTATION_STATUS.md`'s
+  2026-10-09 preemption increment.)
+
 **Real correctness proof, verified by a clean from-scratch QEMU boot:**
 two tasks each increment their own counter and print once per
 activation, then yield; `kernel_main` (itself registered as task 0)
@@ -243,8 +251,10 @@ PASS: kernel reached BootPhase::Ready and exited cleanly
 ```
 
 **Still not started, and still genuinely NPS-002-gated:** any actual
-scheduling *policy* -- capability-scoped task isolation, fairness,
-preemption tied to the timer tick instead of just counting it, and
+scheduling *policy* -- capability-scoped task isolation, fairness, and
+any rules governing when preemption applies (the timer-driven
+preemption *mechanism* for ring-3 tasks landed later as its own
+pre-normative proof -- see below -- but nothing governs it), and
 anything resembling what NPS-002 will eventually require once it's no
 longer Draft. This proof-of-concept should be treated as throwaway
 reference material once that happens, not upgraded in place and
@@ -571,7 +581,7 @@ pass, confirming the fix didn't disturb anything it wasn't meant to.
 integration point:** ring-3 execution driven *through* the cooperative
 scheduler (rather than isolation_demo's hand-orchestration) needs a
 full general-purpose-register save/restore on every trap -- the
-`extern "x86-interrupt"` handlers used everywhere else in this kernel
+`extern "x86-interrupt"` handlers used nearly everywhere else in this kernel
 don't expose GPRs, only the architectural interrupt frame, which is
 enough for reporting results but not enough to suspend and later
 resume a ring-3 task's complete execution state. That needs a
@@ -651,13 +661,18 @@ out the exact memory layout on paper (documented in the module's own
 doc comment) before writing a single line of asm, rather than writing
 first and debugging the layout into correctness afterward.
 
-**What's genuinely still missing, honestly enumerated:** address-space
-teardown when a task "exits" (none of these tasks ever do -- they spin
-forever after their last yield in this demo's bounded run), more than
-two tasks in the ring-3 round-robin, preemptive (timer-driven) rather
-than only cooperative ring-3 yielding, and of course everything Phase
+**What's genuinely still missing, honestly enumerated (and where each
+item stands now):** address-space teardown when a task "exits" --
+closed later (`ring3_scheduler`'s finale destroys task F's ever-active
+space and reclaims its frames); more than two tasks in the ring-3
+round-robin -- closed in the same later session (E, F, G; 21 yields);
+preemptive (timer-driven) rather than only cooperative ring-3
+yielding -- closed 2026-10-09 (two non-yielding tasks H and I
+round-robined purely by IRQ0; see `IMPLEMENTATION_STATUS.md`'s
+preemption increment); and of course everything Phase
 5/6 proper still needs on top of this -- a PE/DEX loader, relocations,
-dynamic linking, and the actual Windows/Android API surface. This
+dynamic linking, and the actual Windows/Android API surface -- still
+open, and by far the largest. This
 closes the specific "ring-3 + scheduler integration" gap identified at
 the end of the previous session; it does not shrink the much larger
 gap between kernel prerequisites and an actual compatibility layer.

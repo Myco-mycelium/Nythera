@@ -14,7 +14,7 @@ use crate::gdt::DOUBLE_FAULT_IST_INDEX;
 use crate::pic;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use x86_64::PrivilegeLevel;
+use x86_64::{PrivilegeLevel, VirtAddr};
 use spin::Once;
 
 static IDT: Once<InterruptDescriptorTable> = Once::new();
@@ -77,7 +77,25 @@ pub fn init() {
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
         }
         let timer_vector = (pic::PIC1_OFFSET + pic::IRQ_TIMER) as usize;
-        idt[timer_vector].set_handler_fn(timer_interrupt_handler);
+        // The timer (IRQ0, vector 0x20) is this kernel's one interrupt
+        // handler that is NOT `extern "x86-interrupt"`: preempting a
+        // ring-3 task mid-instruction means saving and later restoring
+        // every general-purpose register around the switch, which the
+        // x86-interrupt ABI's architectural frame (RIP/CS/RFLAGS/RSP/SS)
+        // alone cannot do. `experimental::ring3_scheduler::timer_entry`
+        // is a raw `#[naked]` handler that counts the tick and EOIs
+        // exactly as the old handler did, and resumes the interrupted
+        // context byte-for-byte unchanged in every case except a
+        // genuine timer preemption of ring-3 task code (its dedicated
+        // proof phase, `PREEMPT_ARMED`). Installed via `set_handler_addr`
+        // because the handler's ABI is deliberately not the
+        // x86-interrupt convention -- same reasoning as `install`'s
+        // `int 0x81` gate below.
+        unsafe {
+            idt[timer_vector].set_handler_addr(VirtAddr::new(
+                crate::experimental::ring3_scheduler::timer_entry as *const () as u64,
+            ));
+        }
 
         // The RTC's periodic interrupt (IRQ8, slave PIC) -- the
         // kernel's second real hardware IRQ line, proven by
@@ -202,9 +220,15 @@ extern "x86-interrupt" fn page_fault_handler(
     crate::hlt_loop();
 }
 
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+/// Counts one IRQ0 tick. Called by
+/// `experimental::ring3_scheduler::timer_entry` on *every* timer
+/// interrupt -- ring 0, ring 3, preempted or not -- so
+/// [`timer_ticks`] keeps exactly the meaning it had when an
+/// `extern "x86-interrupt"` handler did this inline (the EOI that
+/// used to accompany it now lives in that entry, immediately after
+/// this call, on every path).
+pub(crate) fn count_timer_tick() {
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
-    pic::end_of_interrupt(pic::IRQ_TIMER);
 }
 
 /// IRQ8 (RTC periodic). `crate::rtc::handle` reads the RTC's register C

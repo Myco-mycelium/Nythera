@@ -15,7 +15,10 @@ periodic interrupt (IRQ8, `src/rtc.rs`), the PS/2 keyboard (IRQ1,
 injection), and the ATA/ATAPI IDE channels (IRQ14/IRQ15, `src/ata.rs`)
 -- plus guard pages for stack-overflow detection (`memory::guard_demo`)
 wired under *every* live kernel stack (ring-3 RSP0 and ring-0 scheduler
-task stacks, all from `memory::kernel_stack`), verified every boot.**
+task stacks, all from `memory::kernel_stack`), verified every boot,
+and timer-driven (preemptive) ring-3 task switching -- previously
+cooperative-only -- proven by two ring-3 tasks that never trap being
+round-robined purely by the timer interrupt (IRQ0).**
 
 For a short, scannable summary of everything below, see `README.md`
 (this directory) -- this file is the detailed, evidence-heavy log
@@ -196,7 +199,7 @@ log, not a description of what's planned.
   -- the last flagged Phase 5/6 kernel-level gap, now closed. A full
   general-purpose-register save/restore trap handler at its own
   dedicated vector (`0x81`), since the `extern "x86-interrupt"`
-  handlers used everywhere else in this kernel don't expose GPRs --
+  handlers used nearly everywhere else in this kernel don't expose GPRs --
   only enough to report results, not enough to suspend and later
   resume a task's complete state. Two real ring-3 tasks, each with
   their own address space, genuinely suspended and resumed across 20
@@ -707,6 +710,72 @@ visible in the transcript's adaptive behavior.)
 (No new compiler-warning categories: `keyboard.rs` and `ata.rs` use
 `AtomicU64` statics rather than `static mut`, so they add none.)
 
+## Gap-closure increment (2026-10-09): timer-driven (preemptive) ring-3 task switching
+
+The last open *mechanism* gap -- "ring-3 switching is cooperative-only:
+a ring-3 task must itself `int 0x81` to yield, nothing forces it to" --
+is now closed, explicitly pre-normatively (this is still NPS-002
+`Draft` territory: the mechanism was built, not any policy).
+
+**Design.** The timer's IDT entry (vector 0x20) was an
+`extern "x86-interrupt"` handler -- an ABI that exposes only the
+architectural frame (RIP/CS/RFLAGS/RSP/SS), enough to count a tick,
+not enough to preempt a task, which needs every GPR saved and later
+restored. It is now a raw `#[naked]` handler
+(`ring3_scheduler::timer_entry`) that pushes the *same 15 registers in
+the same order* as the existing `int 0x81` yield trap, so an interrupt
+taken from ring 3 produces the byte-identical 20-slot saved blob the
+resume path already understands, and it resumes the interrupted
+context unchanged in every non-preempted case:
+
+- **ring 0** (all kernel code, all phases): tick + EOI + resume --
+  exactly what the old handler did;
+- **ring 3 outside the proof phase**: same -- a tick lands on the
+  running task and resumes it, so the E/F/G cooperative round-robin
+  and every later ring-3 demo behave exactly as before;
+- **ring 3 with preemption armed**: the same
+  save/next/activate/return round-robin step as
+  `ring3_yield_dispatch`, only with the clock as the reschedule point.
+
+A SysV 16-byte stack-alignment pad (0 or 8 bytes, branch-free) sits
+strictly *below* the saved blob so the documented layout never
+changes.
+
+**The proof (why a PASS cannot be a false pass).** `finale` builds two
+FRESH ring-3 tasks (H, I) from `userprog/prog_spin.s` -- an infinite
+loop with **no `int` instruction anywhere in it** -- arms preemption,
+and enters H. Since H never yields, task I can only ever run if IRQ0
+force-switches the CPU off H; and since neither task ever terminates,
+the boot can only complete if the switch count reaches its target and
+`preempt_finale` chains onward. If preemption were broken the hogs
+would spin forever and `tools/qemu_boot_test.sh` would time out
+(FAIL); if the counts were wrong, `preempt_finale`'s `assert!` would
+panic (FAIL). On top of that, the self-test pins exact,
+timing-independent numbers: strict round-robin over two tasks means
+each is forcibly preempted exactly `PREEMPT_TARGET / 2` times, and the
+cooperative-yield counter must be unchanged across the whole phase.
+
+Verified transcript lines (from `tools/qemu_boot_test.sh`, 5/5
+consecutive passing boots):
+
+```
+  experimental ring3-scheduler: timer preemption armed -- entering task H, whose program never traps; IRQ0 is the only reschedule point from here (target 6 switches)
+  experimental ring3-scheduler preemption self-test: task H counter=26052309 (>0 required -- its program contains no trap instruction, so only a timer switch could ever let it run) -- OK
+  experimental ring3-scheduler preemption self-test: task I counter=36609835 (>0 required -- its program contains no trap instruction, so only a timer switch could ever let it run) -- OK
+  experimental ring3-scheduler preemption self-test: task H force-switched off the CPU 3 times, task I 3 times (6 timer-driven switches, target 6; 0 cooperative yields during the phase) -- OK
+  experimental ring3-scheduler preemption self-test: two non-yielding ring-3 tasks round-robined purely by IRQ0 -- timer-driven preemption, not cooperative-only -- OK
+```
+
+The cooperative E/F/G phase above it is unchanged (21 voluntary
+yields, exact 7/7/7 counts); the new H/I kernel RSP0 stacks carry
+verified guard pages like every other live stack; and the whole demo
+chain still runs to completion (pie/PE/isolation/guard-demo, exit 0).
+Warning accounting: no new categories -- and one pre-existing
+`static mut` reference warning was *removed* along the way by writing
+a frame-allocator access through a raw pointer, so the build now emits
+33 lib warnings where it used to emit 34. An honest refactoring side
+effect, not a suppression: no `#[allow]` was added anywhere.
+
 ## What does NOT exist yet (do not assume otherwise)
 
 - A true higher-half address space layout -- the heap's virtual
@@ -734,16 +803,18 @@ visible in the transcript's adaptive behavior.)
   enumeration are real, every-boot evidence. Nothing in this kernel
   *interprets* ACPI tables yet (no MADT/APIC, no FADT, no AML): if a
   later subsystem needs one, it must copy the table before the reclaim.
-- Any actual scheduling policy beyond the pre-normative cooperative
-  proof of concept: capability-scoped task isolation, fairness,
-  preemption tied to the timer tick (currently cooperative-only, never
-  triggered from the interrupt handler). Specifically NPS-002-gated
+- Any actual scheduling policy beyond the pre-normative proofs:
+  capability-scoped task isolation, fairness, and any *policy* deciding
+  when or whether preemption applies. (The timer-driven preemption
+  *mechanism* for ring-3 tasks is now built and proven -- see the
+  2026-10-09 increment above -- but nothing governs it: no priorities,
+  no budgets, no fairness rules.) Specifically NPS-002-gated
   (Draft, benchmark-blocked); see `src/experimental/mod.rs` and
   PHASES.md Phase 3 for the precise split between what's done
   (the switch mechanism) and what isn't (any real policy)
-- Interrupt handling beyond the timer (IRQ0) and the RTC (IRQ8) --
-  both are now unmasked with real handlers (see above), but every
-  other IRQ line (keyboard, IDE/ATA storage, ...) is still masked;
+- Interrupt handling beyond the four lines now proven (timer IRQ0,
+  RTC IRQ8, keyboard IRQ1, ATA IRQ14/15 -- all unmasked with real
+  handlers, see above): every *other* IRQ line is still masked, and
   unmasking a line with no handler wired up is worse than not
   supporting it. Reading the RTC's actual wall-clock *time* (as opposed
   to its periodic tick) is also not implemented -- that needs the CMOS
@@ -771,8 +842,8 @@ visible in the transcript's adaptive behavior.)
   F's address space *after* F was the active space for its own seven
   `int 0x81` yields and has been suspended for good -- the exact
   precondition `destroy` demands -- and verifies the frames genuinely
-  came back (10 reclaimed). The remaining demos (`isolated_tasks`,
-  `isolation_demo`, `pie_demo`, and E/G in `ring3_scheduler`) still
+  came back (15 frames reclaimed). The remaining demos (`isolated_tasks`,
+  `isolation_demo`, `pie_demo`, and E/G/H/I in `ring3_scheduler`) still
   `mem::forget` on purpose; only the ever-active case needed proving,
   and it now is. (TLB invalidation on unmap -- once listed here as an
   open gap -- is also now implemented: `memory::paging::unmap_page`
@@ -794,9 +865,15 @@ visible in the transcript's adaptive behavior.)
   AOT compilation (no ART/Dalvik semantics of any kind), and no APK
   (ZIP) container unwrapping -- this parser handles a standalone `.dex`
   file, not one extracted from a real `.apk`
-- Preemptive (timer-driven) ring-3 task switching -- the round-robin
-  now handles three tasks (E, F, G), but is still cooperative-only: a
-  ring-3 task must itself `int 0x81` to yield, nothing forces it to
+- Preemptive (timer-driven) ring-3 task switching -- once listed here
+  as an open gap ("the round-robin now handles three tasks (E, F, G),
+  but is still cooperative-only: a ring-3 task must itself `int 0x81`
+  to yield, nothing forces it to"), now **closed** (2026-10-09). The
+  E/F/G round-robin deliberately stays cooperative (its exact-count
+  assertions need complete yield cycles); the preemption proof is its
+  own phase -- two non-yielding tasks (H, I) round-robined purely by
+  IRQ0. See the increment above. What deliberately does *not* exist is
+  any preemption *policy* (that stays NPS-002-gated, below)
 - A per-container root filesystem, `pivot_root`, or any storage
   integration
 - GPU command submission path (NPS-001 §3's one kernel-space
@@ -810,16 +887,19 @@ visible in the transcript's adaptive behavior.)
 
 The request that drove the recent increments was to process every
 documented limitation. Some are genuinely fixable and were fixed (TLB
-on unmap, DEX integrity, three ring-3 tasks, guard pages, the RTC IRQ).
+on unmap, DEX integrity, three ring-3 tasks, guard pages, the RTC IRQ,
+the keyboard/ATA IRQ lines, timer-driven ring-3 preemption).
 The rest fall into clear categories, and pretending otherwise would be
 the opposite of this repo's honest-scope posture. Stated explicitly:
 
 **Blocked by governance (must stay pre-normative):**
 
-- *Scheduling policy* (capability-scoped isolation, fairness,
-  timer-driven preemption) -- NPS-002 is `Draft`, benchmark-blocked at
+- *Scheduling policy* (capability-scoped isolation, fairness, rules
+  governing preemption) -- NPS-002 is `Draft`, benchmark-blocked at
   §9. Implementing it as if binding would violate NPC-001 §5. The
-  switch *mechanism* is done; the policy is not, by design.
+  switch *mechanism* is done -- including timer-driven preemption of
+  ring-3 tasks, added 2026-10-09 as explicitly pre-normative proof --
+  the policy is not, by design.
 - *IPC policy* (capability-scoped transfer validation, kernel arbiter,
   blocking receive) -- NPS-003 is `Draft`, transport-pending at §6.1.
   Same reasoning; the mailbox mechanism is done, the policy is not.
@@ -853,10 +933,11 @@ kernel, and documented as such rather than half-attempted:**
 
 **Tractable and *not* governance-gated:**
 
-- No open items remain in this category. The last one -- more IRQ
-  lines with real handlers -- is now done for the keyboard (IRQ1,
-  `src/keyboard.rs`) and the ATA/ATAPI IDE channels (IRQ14/15,
-  `src/ata.rs`); see the 2026-10-09 increment above. The rule from
+- No open items remain in this category. The last two are now done:
+  more IRQ lines with real handlers (keyboard IRQ1, `src/keyboard.rs`;
+  ATA/ATAPI IDE channels IRQ14/15, `src/ata.rs`) and the last open
+  *mechanism* candidate, timer-driven ring-3 preemption (both
+  2026-10-09 increments above). The rule from
   `pic.rs` still stands for any future line: unmask nothing that has
   no handler.
 

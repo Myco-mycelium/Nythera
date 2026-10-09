@@ -18,6 +18,13 @@
 //! doesn't need to take on at the same time as "does the switch itself
 //! work at all."
 //!
+//! Still true of *this* ring-0 scheduler, which stays cooperative by
+//! choice rather than because preemption is impossible: the ring-3
+//! round-robin in `crate::experimental::ring3_scheduler` later took
+//! on exactly that second class of bug under its own pre-normative
+//! proof (a raw `#[naked]` timer entry that force-switches non-yielding
+//! ring-3 tasks on IRQ0), verified every boot.
+//!
 //! Extended to also switch `CR3` as part of every task switch (see
 //! [`spawn_with_cr3`]) -- a task can now have its own private address
 //! space (built via `experimental::address_space`), integrated into

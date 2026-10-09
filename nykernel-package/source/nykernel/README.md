@@ -16,7 +16,8 @@ small hand-written assembly boot stub, that boots to a running,
 interrupt-driven, memory-managed state (Phases 1-2, grounded in the
 already-`Accepted` NPS-001/NPS-017), then demonstrates -- as explicitly
 labeled, pre-normative proofs of concept, not NPS-002/NPS-003
-conformance -- cooperative multitasking, inter-task IPC, real ring-3
+conformance -- cooperative multitasking, timer-driven (preemptive)
+ring-3 task switching, inter-task IPC, real ring-3
 (user-mode) execution with genuine ELF loading (both fixed-address and
 position-independent), per-process address-space isolation integrated
 into the scheduler, and real memory reclamation. On top of those
@@ -76,6 +77,7 @@ and `qemu-system-x86_64`. On Ubuntu the last three are `apt` packages;
 | Per-process address-space isolation | `src/experimental/address_space.rs`, `isolation_demo.rs` | 🔶 pre-normative |
 | Address-space switching integrated into the scheduler | `src/experimental/isolated_tasks.rs` | 🔶 pre-normative |
 | Real ring-3 task scheduling, 3 tasks (full-GPR trap handler) | `src/experimental/ring3_scheduler.rs` | 🔶 pre-normative |
+| Timer-driven (preemptive) ring-3 switching of non-yielding tasks | `src/experimental/ring3_scheduler.rs`, `userprog/prog_spin.s` | 🔶 pre-normative (NPS-002 Draft) |
 | Address-space teardown + frame reclamation | `src/experimental/address_space.rs`, `teardown_demo.rs` | 🔶 pre-normative |
 | TLB invalidation (`invlpg`) on unmap | `src/memory/paging.rs`, `tlb_demo.rs` | ✅ NPS-001-grounded |
 | Guard pages for stack-overflow detection (probe) | `src/memory/guard_demo.rs` | ✅ NPS-001-grounded |
@@ -148,8 +150,8 @@ sections throughout.
 
 Read `IMPLEMENTATION_STATUS.md`'s "What does NOT exist yet" section in
 full before assuming this kernel does something it doesn't. Headlines:
-real dynamic linking (symbol-resolved relocations), preemptive ring-3
-scheduling (still cooperative-only), and -- the largest gap by far --
+real dynamic linking (symbol-resolved relocations), and -- the largest
+gap by far --
 everything an actual Windows or Android compatibility layer needs on
 top of these kernel-level prerequisites: import handling for real
 Windows binaries, a DEX/ART-equivalent runtime that

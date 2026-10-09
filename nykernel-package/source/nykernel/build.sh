@@ -48,6 +48,8 @@ as --64 userprog/prog_b.s -o userprog/prog_b.o
 ld -n -T userprog/linker.ld -o userprog/userprog_b.elf userprog/prog_b.o
 as --64 userprog/prog_yield.s -o userprog/prog_yield.o
 ld -n -T userprog/linker_yield.ld -o userprog/userprog_yield.elf userprog/prog_yield.o
+as --64 userprog/prog_spin.s -o userprog/prog_spin.o
+ld -n -T userprog/linker_yield.ld -o userprog/userprog_spin.elf userprog/prog_spin.o
 as --64 userprog/prog_pie.s -o userprog/prog_pie.o
 ld -pie --no-dynamic-linker -o userprog/userprog_pie.elf userprog/prog_pie.o
 as --64 userprog/prog_pe.s -o userprog/prog_pe.o

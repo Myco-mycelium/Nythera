@@ -69,7 +69,8 @@ inspection), most with an accompanying negative-control test:
   scheduler (50 real CR3 switches per task verified) and into real
   ring-3 task scheduling (a hand-written full-general-purpose-register
   trap handler, now three ring-3 tasks and 21 real trap-based yields
-  verified)
+  verified, plus timer-driven preemption proven on two ring-3 tasks
+  that never yield -- IRQ0 round-robins them on its own)
 - Real address-space teardown: a free-list-backed physical frame
   allocator plus full page-table-tree walking, verified by an
   unambiguous frame-reuse proof (a torn-down space's exact freed PML4
@@ -93,8 +94,7 @@ louder or earlier than the anticipated failure mode) -- documented as
 they actually happened.
 
 **Explicitly NOT done, stated plainly rather than implied:** real
-dynamic linking (symbol-resolved relocations), preemptive (as opposed
-to cooperative) ring-3 task scheduling, and -- by far the
+dynamic linking (symbol-resolved relocations), and -- by far the
 largest remaining gap -- real application compatibility on top of the
 loaders (a Win32 API/import layer, a DEX/ART bytecode runtime, the
 actual API surfaces). Scheduling/IO policy beyond the pre-normative

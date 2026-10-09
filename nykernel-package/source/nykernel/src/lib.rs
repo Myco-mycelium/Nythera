@@ -420,13 +420,14 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     // comment. The integration point flagged at the end of both
     // isolation_demo (ring-3 execution, hand-orchestrated) and
     // isolated_tasks (scheduler-integrated address spaces, ring-0
-    // only): two real ring-3 tasks, suspended and resumed via a
-    // hand-written full-GPR-save trap handler, driven through 20 real
-    // yield traps. Chains into isolation_demo below with the same
-    // frame allocator once its own self-test completes -- this is
-    // kernel_main's last direct action; the rest of the demo chain
-    // (ring3_scheduler's finale -> isolation_demo's own finale)
-    // handles final reporting and halt/exit from here.
+    // only): real ring-3 tasks suspended and resumed via a
+    // hand-written full-GPR-save trap handler -- three tasks through
+    // 21 cooperative yield traps, then (the finale's second phase)
+    // two non-yielding tasks round-robined purely by the timer, IRQ0
+    // preemption. This is kernel_main's last direct action; the rest
+    // of the demo chain (ring3_scheduler's finale and preemption
+    // phase -> pie/PE/isolation demos -> guard_demo's exit) handles
+    // final reporting and halt/exit from here.
     unsafe { experimental::ring3_scheduler::start(frame_allocator) }
     // unreachable: start() is `-> !`.
 }
