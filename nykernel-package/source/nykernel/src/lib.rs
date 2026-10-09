@@ -29,10 +29,12 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 pub mod acpi;
+pub mod ata;
 pub mod boot_phase;
 pub mod experimental;
 pub mod gdt;
 pub mod idt;
+pub mod keyboard;
 pub mod memory;
 pub mod multiboot;
 pub mod pic;
@@ -212,6 +214,15 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     pic::unmask(rtc::IRQ_RTC);
     serial_println!("  rtc: periodic interrupt armed at 1024 Hz, IRQ8 + cascade IRQ2 unmasked");
 
+    // Third real hardware IRQ line: the PS/2 keyboard controller
+    // (IRQ1, master PIC). Its vector-0x21 handler was already installed
+    // by `idt::init`; `keyboard::init` enables the controller's IRQ1 and
+    // `pic::unmask` opens the line. No cascade is involved (IRQ1 is on
+    // the master PIC directly).
+    unsafe { keyboard::init() };
+    pic::unmask(keyboard::IRQ_KEYBOARD);
+    serial_println!("  keyboard: 8042 keyboard interrupt (IRQ1, master PIC) enabled and unmasked");
+
     x86_64::instructions::interrupts::enable(); // first `sti` anywhere in this kernel
     serial_println!("  interrupts: enabled (sti)");
 
@@ -252,6 +263,69 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         rtc::ticks() - rtc_before,
         rtc::ticks()
     );
+
+    // Third real IRQ line, same evidence standard as the timer and RTC:
+    // drive the 8042 to inject a known scancode into its own output
+    // buffer (command 0xD2), which raises IRQ1 exactly as a real
+    // keystroke would, then wait for the handler to read it back. No
+    // human input and no QEMU monitor scripting, so this genuinely
+    // proves the keyboard line works in an automated run. The wait is
+    // bounded: a controller that never raises the interrupt is a
+    // reportable failure, not an infinite hang.
+    const KEYBOARD_TEST_SCANCODE: u8 = 0x1E; // 'a' make code
+    let keyboard_before = keyboard::scancodes_received();
+    unsafe { keyboard::inject(KEYBOARD_TEST_SCANCODE) };
+    let mut spins = 0u32;
+    while keyboard::scancodes_received() == keyboard_before && spins < 50_000_000 {
+        core::hint::spin_loop();
+        spins += 1;
+    }
+    let keyboard_received = keyboard::scancodes_received() - keyboard_before;
+    let keyboard_last = keyboard::last_scancode();
+    let keyboard_ok = keyboard_received >= 1 && keyboard_last == KEYBOARD_TEST_SCANCODE;
+    serial_println!(
+        "  keyboard self-test: injected scancode {:#x} via the 8042 output-buffer command (0xD2), {} interrupt(s) handled, handler read back {:#x} -- {}",
+        KEYBOARD_TEST_SCANCODE,
+        keyboard_received,
+        keyboard_last,
+        if keyboard_ok { "OK" } else { "FAILED" }
+    );
+    assert!(
+        keyboard_ok,
+        "keyboard IRQ1 self-test failed: injected scancode was not received by the handler"
+    );
+
+    // Fourth/fifth real IRQ lines: the IDE channels (IRQ14 primary,
+    // IRQ15 secondary, both slave PIC -- the cascade line IRQ2 is
+    // already unmasked above). Device-dependent by nature, so this
+    // probes first and only proves a line when a device is actually
+    // present; with none it reports that honestly and leaves the lines
+    // masked rather than pretending. The wait is bounded, so a device
+    // that never answers is a reportable failure, not a hang.
+    match ata::detect() {
+        Some(channel) => {
+            unsafe { ata::enable_interrupts(channel) };
+            pic::unmask(ata::irq_for(channel));
+            let (ata_command, ata_status, ata_interrupts, ata_ok) =
+                unsafe { ata::identify(channel) };
+            serial_println!(
+                "  ata self-test: {} channel master detected, IDENTIFY ({:#x}) completed with status {:#x} after {} interrupt(s) on IRQ{} -- {}",
+                if channel == 0 { "primary" } else { "secondary" },
+                ata_command,
+                ata_status,
+                ata_interrupts,
+                ata::irq_for(channel),
+                if ata_ok { "OK, data-ready" } else { "FAILED (error or no data)" }
+            );
+            assert!(
+                ata_ok && ata_interrupts >= 1,
+                "ATA IRQ self-test failed: IDENTIFY did not complete cleanly"
+            );
+        }
+        None => {
+            serial_println!("  ata: no IDE device on either channel -- IRQ14/IRQ15 handlers installed but left masked (nothing to prove)");
+        }
+    }
 
     advance(BootPhase::Ready);
     serial_println!("nyrqis kernel: phase 1+2+3-prep complete, boot phase = {} (Ready)", boot_phase::current());

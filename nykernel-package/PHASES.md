@@ -177,15 +177,17 @@ matters, because it means this work didn't need to wait:
   counted -- a wrong vector mapping, missing EOI, or misrouted handler
   would hang here, not silently "pass"
 
-**A second IRQ line was added later (2026-10-09):** the CMOS/RTC
+**More IRQ lines were added later (2026-10-09):** first the CMOS/RTC
 periodic interrupt on IRQ8 (`src/rtc.rs`), exercising the slave-PIC
 cascade path (IRQ8 reaches the CPU via IRQ2, both PICs unmasked, both
-EOI'd). Still NPS-001 territory, not NPS-002-gated. `pic.rs` gained a
-real `unmask(irq)`; the self-test waits for a measured *delta* of
-interrupts after a snapshot, so a count accumulated before the test
-can't be mistaken for success. (The keyboard is deliberately *not* the
-second line -- an input-driven IRQ can't be proven by an automated
-boot test.)
+EOI'd); then the PS/2 keyboard (IRQ1, `src/keyboard.rs`) and the
+ATA/ATAPI IDE channels (IRQ14/15, `src/ata.rs`). All still NPS-001
+territory, not NPS-002-gated. `pic.rs` gained a real `unmask(irq)`. The
+RTC self-test waits for a measured *delta* of interrupts after a
+snapshot; the keyboard is proven input-free by having the guest inject
+its own scancode through the 8042 controller (`0xD2`); the IDE
+self-test probes for a device first and reports honestly when none is
+present.
 
 **Verified boot transcript** (`tools/qemu_boot_test.sh`, passing, clean
 from-scratch build):

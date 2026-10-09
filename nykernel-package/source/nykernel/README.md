@@ -64,7 +64,9 @@ and `qemu-system-x86_64`. On Ubuntu the last three are `apt` packages;
 | Multiboot2 boot, long mode, GDT/IDT, exception handling | `boot/boot.s`, `src/gdt.rs`, `src/idt.rs` | ✅ NPS-001-grounded |
 | Physical frame allocation + dynamic paging + kernel heap | `src/memory/` | ✅ NPS-001-grounded |
 | PIC remap + real hardware timer interrupts | `src/pic.rs` | ✅ NPS-001-grounded |
-| RTC periodic interrupt (second IRQ line, slave-PIC cascade) | `src/rtc.rs` | ✅ NPS-001-grounded |
+| RTC periodic interrupt (IRQ8, slave-PIC cascade) | `src/rtc.rs` | ✅ NPS-001-grounded |
+| PS/2 keyboard interrupt (IRQ1, input-free injection test) | `src/keyboard.rs` | ✅ NPS-001-grounded |
+| ATA/ATAPI IDE interrupts (IRQ14/15, conditional on a device) | `src/ata.rs` | ✅ NPS-001-grounded |
 | NX (no-execute) enforcement, W^X | `src/memory/paging.rs`, `src/experimental/elf.rs` | ✅ verified with a positive control |
 | Cooperative kernel-mode task scheduling | `src/experimental/scheduler.rs` | 🔶 pre-normative (NPS-002 Draft) |
 | Inter-task IPC (mailboxes) | `src/experimental/ipc.rs` | 🔶 pre-normative (NPS-003 Draft) |
@@ -108,8 +110,10 @@ src/
   lib.rs              kernel_main -- the boot sequence, in order
   gdt.rs, idt.rs       GDT/TSS, IDT, CPU exception handlers
   acpi.rs              RSDP validation, RSDT/XSDT enumeration (reclaim support)
+  ata.rs               ATA/ATAPI IDE channel interrupts (IRQ14/15)
   pic.rs               8259 PIC remap, timer interrupt
   rtc.rs               CMOS/RTC periodic interrupt (IRQ8)
+  keyboard.rs          PS/2 keyboard interrupt (IRQ1) + injection self-test
   multiboot.rs         Multiboot2 info-structure parsing
   memory/
     frame_allocator.rs Physical frames -- allocate + free-list deallocate

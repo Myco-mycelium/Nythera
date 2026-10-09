@@ -8,11 +8,13 @@
 //! worse than not supporting it at all." This module is a second line
 //! that *does* have a real handler, so it can be unmasked honestly.
 //!
-//! Why the RTC and not the keyboard: an IRQ that only fires on human
-//! input cannot be proven to work by an automated boot test. The RTC's
-//! *periodic* interrupt fires on its own at a programmable rate, from
-//! emulated hardware QEMU actually implements, so a self-test can
-//! observe real interrupts the same way the PIT self-test does.
+//! Why the RTC for this particular line: it is the simplest IRQ that
+//! needs no input at all to test -- its *periodic* interrupt fires on
+//! its own at a programmable rate, so a self-test observes real
+//! interrupts exactly the way the PIT self-test does. (The keyboard
+//! line, which looks untestable because it is input-driven, is added
+//! later anyway and proven input-free by having the guest inject its
+//! own scancode through the 8042 controller -- see `crate::keyboard`.)
 //!
 //! IRQ8 lives on the slave 8259 (IRQ8-15, vectors 0x28-0x2F after
 //! `pic::init`'s remap), so this also exercises the cascade path that

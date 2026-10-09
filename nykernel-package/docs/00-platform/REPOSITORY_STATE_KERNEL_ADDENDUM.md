@@ -41,9 +41,11 @@ inspection), most with an accompanying negative-control test:
   NPS-001 §5's order-validation requirement
 - Physical frame allocation, dynamic page-table mapping, a working
   kernel heap
-- PIC remap + real hardware timer interrupts, plus a second real IRQ
-  line: the CMOS/RTC periodic interrupt (IRQ8, exercising the
-  slave-PIC cascade path)
+- PIC remap + real hardware timer interrupts, plus more real IRQ
+  lines with real handlers: the CMOS/RTC periodic interrupt (IRQ8,
+  slave-PIC cascade), the PS/2 keyboard (IRQ1, proven input-free by
+  guest-driven scancode injection), and the ATA/ATAPI IDE channels
+  (IRQ14/15, conditional on an attached device)
 - ACPI RSDP validation and RSDT/XSDT table enumeration, with the frame
   allocator refusing `AcpiReclaimable` regions until `reclaim_acpi`
   releases them (no QEMU machine type reports such a region, so the

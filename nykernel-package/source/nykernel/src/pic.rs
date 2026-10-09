@@ -167,6 +167,19 @@ pub fn end_of_interrupt(irq: u8) {
 /// masked. Note that an IRQ on the slave PIC (8-15) additionally needs
 /// the cascade line (IRQ2) unmasked on the master for its signal to
 /// reach the CPU at all -- see `crate::rtc::IRQ_CASCADE`.
+///
+/// Interrupts are disabled around the `PICS` lock. `PICS` is also
+/// locked from IRQ handlers (`end_of_interrupt`), and a handler runs
+/// with interrupts already off (an `x86-interrupt` gate clears `IF`),
+/// so this is only a hazard on the other side: if `unmask` were called
+/// with `IF=1` and a timer/RTC interrupt arrived while it held the
+/// lock, the handler would spin forever on a lock the interrupted code
+/// can't release until the handler returns -- a genuine deadlock. Every
+/// `unmask` before the ATA work happened before `sti`, so this was a
+/// latent sharp edge until a post-`sti` caller exposed it; wrapping the
+/// lock in `without_interrupts` closes it at the cause.
 pub fn unmask(irq: u8) {
-    PICS.lock().set_mask(irq, false);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        PICS.lock().set_mask(irq, false);
+    });
 }

@@ -8,14 +8,14 @@ increments landed: a minimal PE32+ (Windows) loader, proven by
 executing a real PE binary's own code in ring 3,and a minimal DEX (Android) format parser, proven against a real DEX
 file whose Adler-32 checksum and SHA-1 signature are now verified
 in-kernel, with both positive and permanent negative checks. On the
-NPS-001-grounded side, three more documented gaps are now closed: the
-RTC periodic interrupt on IRQ8 (`src/rtc.rs`), guard pages for
-stack-overflow detection (`memory::guard_demo`, verified with a real
-fault every boot), and guard pages wired under the *live* kernel stacks
--- both the ring-3 tasks' RSP0 stacks (`experimental::address_space`)
-and the cooperative scheduler's ring-0 task stacks
-(`experimental::scheduler`), all from `memory::kernel_stack` -- verified
-structurally every boot.**
+NPS-001-grounded side, several more documented gaps are now closed: a
+growing set of real hardware IRQ lines with real handlers -- the RTC
+periodic interrupt (IRQ8, `src/rtc.rs`), the PS/2 keyboard (IRQ1,
+`src/keyboard.rs`, proven input-free by guest-driven scancode
+injection), and the ATA/ATAPI IDE channels (IRQ14/IRQ15, `src/ata.rs`)
+-- plus guard pages for stack-overflow detection (`memory::guard_demo`)
+wired under *every* live kernel stack (ring-3 RSP0 and ring-0 scheduler
+task stacks, all from `memory::kernel_stack`), verified every boot.**
 
 For a short, scannable summary of everything below, see `README.md`
 (this directory) -- this file is the detailed, evidence-heavy log
@@ -67,15 +67,27 @@ log, not a description of what's planned.
   kernel, verified by counting 20 actual timer interrupts before
   proceeding (not just "the enable instruction didn't fault")
 - A second real hardware IRQ line: the CMOS/RTC (MC146818) periodic
-  interrupt on IRQ8 (`src/rtc.rs`). Deliberately the RTC and not the
-  keyboard, since a line that only fires on human input can't be
-  proven by an automated boot test; the RTC's programmable periodic
-  interrupt fires on its own. This also exercises the slave-PIC
+  interrupt on IRQ8 (`src/rtc.rs`). Chosen for this line because the
+  RTC's programmable periodic interrupt fires on its own -- no input
+  or injection needed to test it (the keyboard came later and is
+  proven input-free by injection -- see below). This also exercises
+  the slave-PIC
   cascade path the timer never did (IRQ8 arrives via IRQ2 on the
   master, both PICs must be unmasked, the handler must EOI both and
   read the RTC's register C to deassert the line) -- verified by
   observing real additional interrupts after a snapshot, not just a
   cumulative count that could predate the test
+- Two more real hardware IRQ lines with real handlers: the PS/2
+  keyboard (IRQ1, master PIC, `src/keyboard.rs`) and the ATA/ATAPI IDE
+  channels (IRQ14 primary / IRQ15 secondary, slave PIC, `src/ata.rs`).
+  The keyboard is proven *input-free* despite being an input device:
+  the guest drives the 8042 controller to write a known scancode
+  straight into its output buffer (command `0xD2`), which raises IRQ1
+  exactly as a keystroke would -- no human and no QEMU monitor
+  scripting. The IDE line is proven by issuing a real `IDENTIFY
+  (PACKET) DEVICE` and observing the completion interrupt; it is
+  explicitly conditional -- a machine with no IDE device reports that
+  honestly and leaves the lines masked rather than pretending
 - Guard-page stack-overflow detection (`memory::guard_demo`) -- a
   stack region mapped as usable pages with the page immediately below
   left deliberately unmapped, so an overflow faults deterministically
@@ -498,9 +510,10 @@ closed, both NPS-001-grounded (not gated on NPS-002/003):
   its module doc's "unmasking a line with no handler is worse than
   not supporting it"). The self-test measures a *delta* (waits for N
   more ticks after a snapshot), so a stale count from before the test
-  can't masquerade as success. Choosing the RTC over the keyboard is
-  deliberate: an input-driven line can't be proven by an automated
-  boot test.
+  can't masquerade as success. The RTC was chosen for this line because
+  it needs no input to test at all (the keyboard came later and is
+  proven input-free by 8042 output-buffer injection -- see the
+  keyboard/ATA increment below).
 - **Guard pages for stack-overflow detection** (`memory::guard_demo`):
   a `GuardedStack` primitive (`build`) that maps N usable pages and
   leaves the page immediately below unmapped, plus an every-boot
@@ -647,6 +660,53 @@ This adds one more instance of the pre-existing "shared reference to
 mutable static" warning (`TASKS.iter()` in `verify_guarded_stacks`),
 same category the file already emits and deliberately leaves visible.
 
+## Gap-closure increment (2026-10-09): keyboard (IRQ1) and ATA/IDE (IRQ14/15) handlers
+
+The disposition's last tractable item -- "more IRQ lines with real
+handlers" -- is now closed for two more lines, each proven every boot:
+
+- **`src/keyboard.rs`** -- the PS/2 (i8042) keyboard on IRQ1. The
+  apparent blocker ("an input IRQ can't be tested automatically") is
+  resolved without any external input: the controller's own "Write
+  Keyboard Output Buffer" command (`0xD2`) makes the *guest* place a
+  known scancode in the output buffer, raising IRQ1 exactly as a real
+  keystroke would. The self-test injects `0x1e` and confirms the
+  handler read it back.
+- **`src/ata.rs`** -- the ATA/ATAPI IDE channels on IRQ14 (primary) and
+  IRQ15 (secondary). It probes for a device, enables interrupts, and
+  issues a real `IDENTIFY (PACKET) DEVICE`, adapting the command
+  (`0xEC` vs `0xA1`) to whatever the drive actually completes and
+  reporting the completion status. Because it depends on an attached
+  device, it is conditional: with no device it reports that and leaves
+  the lines masked.
+
+Verified transcript lines (from `tools/qemu_boot_test.sh`, passing):
+
+```
+  keyboard: 8042 keyboard interrupt (IRQ1, master PIC) enabled and unmasked
+  keyboard self-test: injected scancode 0x1e via the 8042 output-buffer command (0xD2), 1 interrupt(s) handled, handler read back 0x1e -- OK
+  ata self-test: secondary channel master detected, IDENTIFY (0xa1) completed with status 0x58 after 2 interrupt(s) on IRQ15 -- OK, data-ready
+```
+
+**A real, latent deadlock found and fixed while adding the ATA line.**
+The IDE channel is unmasked *after* `sti`, and that exposed a genuine
+bug in `pic::unmask`: it locks the `PICS` spin mutex, which IRQ
+handlers also lock (`end_of_interrupt`). Called with interrupts
+enabled, a timer/RTC interrupt arriving while `unmask` held that lock
+would leave the handler spinning forever on a lock the interrupted
+code could never release -- a classic same-CPU spinlock deadlock.
+Every earlier `unmask` call happened before `sti`, so the bug was
+latent until a post-`sti` caller appeared. It showed up as an
+*intermittent* boot hang (roughly one run in four) right at the ATA
+unmask, and was fixed at the cause by disabling interrupts around the
+lock in `pic::unmask` (`without_interrupts`); five consecutive boots
+pass after the fix. (The intermediate `identify` retry -- `0xEC` abort
+on the ATAPI drive, then `0xA1` succeeding with `DRDY|DRQ` -- is also
+visible in the transcript's adaptive behavior.)
+
+(No new compiler-warning categories: `keyboard.rs` and `ata.rs` use
+`AtomicU64` statics rather than `static mut`, so they add none.)
+
 ## What does NOT exist yet (do not assume otherwise)
 
 - A true higher-half address space layout -- the heap's virtual
@@ -791,11 +851,14 @@ kernel, and documented as such rather than half-attempted:**
   work; the current identity-map simplification is documented in
   `memory::paging` and `experimental::address_space`.
 
-**Tractable and *not* governance-gated -- genuine next candidates,
-just not done in this increment:**
+**Tractable and *not* governance-gated:**
 
-- More IRQ lines (keyboard, ATA/IDE) *with real handlers* -- the rule
-  from `pic.rs` stands: unmask nothing that has no handler.
+- No open items remain in this category. The last one -- more IRQ
+  lines with real handlers -- is now done for the keyboard (IRQ1,
+  `src/keyboard.rs`) and the ATA/ATAPI IDE channels (IRQ14/15,
+  `src/ata.rs`); see the 2026-10-09 increment above. The rule from
+  `pic.rs` still stands for any future line: unmask nothing that has
+  no handler.
 
 *(Address-space teardown for an ever-active ring-3 space, once listed
 here, is now done -- see the closed bullet in "What does NOT exist

@@ -85,6 +85,24 @@ pub fn init() {
         let rtc_vector = (pic::PIC2_OFFSET + (crate::rtc::IRQ_RTC - 8)) as usize;
         idt[rtc_vector].set_handler_fn(rtc_interrupt_handler);
 
+        // The PS/2 keyboard (IRQ1, master PIC) -- a real input IRQ line
+        // with a real handler, proven input-free by `crate::keyboard`'s
+        // 8042 output-buffer injection self-test. Vector 0x21.
+        let keyboard_vector = (pic::PIC1_OFFSET + crate::keyboard::IRQ_KEYBOARD) as usize;
+        idt[keyboard_vector].set_handler_fn(keyboard_interrupt_handler);
+
+        // The ATA/ATAPI IDE channels (IRQ14 primary, IRQ15 secondary,
+        // both on the slave PIC so their vectors follow PIC2_OFFSET).
+        // Real handlers are installed here before `crate::ata` ever
+        // unmasks a line; it unmasks only the channel that actually has
+        // a device.
+        let ata_primary_vector =
+            (pic::PIC2_OFFSET + (crate::ata::IRQ_ATA_PRIMARY - 8)) as usize;
+        idt[ata_primary_vector].set_handler_fn(ata_primary_interrupt_handler);
+        let ata_secondary_vector =
+            (pic::PIC2_OFFSET + (crate::ata::IRQ_ATA_SECONDARY - 8)) as usize;
+        idt[ata_secondary_vector].set_handler_fn(ata_secondary_interrupt_handler);
+
         // Ring 3 code must be explicitly permitted to `int 0x80` -- an
         // IDT gate's default DPL is 0, so a ring-3 `int` to a gate
         // that's still DPL 0 is itself a GPF (the CPU checks the
@@ -196,6 +214,30 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 extern "x86-interrupt" fn rtc_interrupt_handler(_stack_frame: InterruptStackFrame) {
     crate::rtc::handle();
     pic::end_of_interrupt(crate::rtc::IRQ_RTC);
+}
+
+/// IRQ1 (PS/2 keyboard). `crate::keyboard::handle` reads the scancode
+/// out of the controller's output buffer (which deasserts its IRQ
+/// line) and counts it; IRQ1 is a master-PIC line, so a single EOI is
+/// all that's needed.
+extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    crate::keyboard::handle();
+    pic::end_of_interrupt(crate::keyboard::IRQ_KEYBOARD);
+}
+
+/// IRQ14 (primary IDE channel). `crate::ata::handle` acknowledges the
+/// device (reading its status register deasserts the line), drains any
+/// pending IDENTIFY data, and counts the interrupt; IRQ14/15 are on the
+/// slave PIC, so `end_of_interrupt` EOIs both PICs.
+extern "x86-interrupt" fn ata_primary_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    crate::ata::handle(0);
+    pic::end_of_interrupt(crate::ata::IRQ_ATA_PRIMARY);
+}
+
+/// IRQ15 (secondary IDE channel).
+extern "x86-interrupt" fn ata_secondary_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    crate::ata::handle(1);
+    pic::end_of_interrupt(crate::ata::IRQ_ATA_SECONDARY);
 }
 
 /// The kernel side of `crate::experimental::usermode`'s ring-3 proof
