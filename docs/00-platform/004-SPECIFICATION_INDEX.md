@@ -1,13 +1,13 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.56.0
+version: 1.59.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-10-08
+updated: 2026-10-11
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -51,7 +51,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted |
 | ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted |
 | ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning data collected, review pending |
-| ADR-0014 | Adopt UEFI Secure Boot with user-enrollable keys | Proposed |
+| ADR-0014 | Adopt UEFI Secure Boot with user-enrollable keys | **Accepted** |
 | ADR-0015 | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed |
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** |
@@ -67,8 +67,8 @@ index.
 | ID | Title | Subsystem | Status |
 |----|-------|-----------|--------|
 | NPS-001 | Kernel Architecture and Boot (NyKernel Backend) | core-architecture | Accepted |
-| NPS-002 | Process and Thread Model | core-architecture | Draft — benchmark-blocked (§9) |
-| NPS-003 | Inter-Process Communication and Capability Passing | core-architecture | Draft — first-pass data collected; transport pending (§6.1) |
+| NPS-002 | Process and Thread Model | core-architecture | Accepted (2026-10-11 — AG decision log I1: the §9 numbers reclassified as a benchmark/tuning follow-up on the accepted ADR-0013 design) |
+| NPS-003 | Inter-Process Communication and Capability Passing | core-architecture | Accepted (2026-10-11 — AG decision log I2: the §6.1 `<100 µs` wire gate MET, p50 20.41 µs / p99 52.58 µs; the hardware-gated load variants reclassified as a tuning follow-up) |
 | NPS-004 | NyFS Filesystem Core | storage | Accepted |
 | NPS-005 | Transparent Compression Policy | storage | Draft — blocked on ADR-0007 |
 | NPS-006 | Nyrqis Game/Application Image Format (.nygi) and Overlay | storage | Accepted |
@@ -105,9 +105,10 @@ index.
 | AG-BRIEF-ADR0019 | AG Brief — ADR-0019 auto_compact Tuning Review (issue #1, Bundle D) | platform | Superseded |
 | AG-BRIEF-DBG-PHASEB | AG Brief — Container Debug Attach (DBG-001 Phase B) | platform | Proposed |
 
-Following the Milestone 9 Architecture Group review and the 2026-09-19/21
-AG sessions, 15 of 28 NPS documents and 22 of 27 ADRs are `Accepted`
-(1 rejected — ADR-0017; 4 ADRs held at `Proposed`). The
+Following the Milestone 9 Architecture Group review, the 2026-09-19/21 AG
+sessions, and the 2026-10-11 kernel-unblock sitting (decision log rows
+I1–I3), 18 of 28 NPS documents and 24 of 27 ADRs are `Accepted`
+(1 rejected — ADR-0017; 3 ADRs held at `Proposed`). The
 remainder are held at `Draft`/`Proposed` for a specific, named reason (a
 pending benchmark or a dependency on another document that is itself
 benchmark-blocked) rather than incompleteness — see each document's Open
@@ -193,6 +194,7 @@ change process.
 | 1.35.0  | 2026-09-23 | D5/D6/D7 landed across the tree: NPS-028 v1.0.0 (Accepted + amendments), BUILD-ARCH v2.0.0 (canonical, merged, refreshed), TUT-003 depends_on + sdk citations re-pointed to BUILD-ARCH, DBG-001 v0.4.0 (Phase B decided, work items listed), AG_AGENDA v2.0.0 (all three standing items decided), the duality premise pin replaced by build-architecture-unified |
 | 1.36.0  | 2026-09-23 | D7 preconditions landed: NPS-021 v1.1.0 (§4.8 debug-attach surface analysis — the PID-namespace fence, the construction-time seccomp gate, the authorization fence; §5.5 FIND-CAPABILITY-006 with five MUST requirements) and NPS-011 v1.4.0 (`CAP-DEBUG-ATTACH`: High tier, denied by default, class-conditional per new §4.4, operator-only ops); AG_AGENDA v2.1.0 (D7 record updated); DBG-001 work-items list updated |
 | 1.37.0  | 2026-09-23 | D7 design review (DBG-001 v0.5.0 §4.1: all five §5.5 MUSTs mapped to verified enforcement sites, one open choice recorded and resolved same day) + the D7 manifest-class plumbing LANDED: `ContainerConfig.debug_class`, evaluation-time rejection in `create()` per NPS-011 §4.4, the class-conditional grant guard centralized in `CapabilityManager`, the construction-time seccomp gate (`build_policy`/`build_allowlist_policy` keyword-only `debug_class`), class-through-policy-file launcher parity, state-surface visibility (state dict, daemon-state manifest, checkpoint round-trip, creation event), IPC create passthrough — pinned by `tests/test_debug_manifest_class.py` (16 tests); DBG-001 v0.6.0 |
+| 1.59.0  | 2026-10-11 | **The kernel governance-unblock sitting (I1–I3, owner direction via the recorded session, the E1/F1/G1 shape):** NPS-002 **Accepted** (v1.1.0 — the §9 benchmark Draft gate reclassified as a tuning follow-up on the accepted ADR-0013 design); NPS-003 **Accepted** (v1.6.0 — the §6.1 `<100 µs` wire gate MET via IPC-001 §38, p50 20.41 µs / p99 52.58 µs; the hardware-gated load variants reclassified as a tuning follow-up per the ADR-0019/CRY-001 precedent); and the spec-cell summary updated to "18 of 28 NPS, 24 of 27 ADRs Accepted; 3 ADRs held" |
 | 1.58.0  | 2026-10-08 | **IPC-001 §8 — the SHM channel lifecycle landed:** `ShmChannelRegistry` (one channel per authenticated peer, bounded `max_channels`, explicit `FALLBACK_SENTINEL` decline past the limit, `release`/`close_all`) + `with_shm_channel_offers(inner_on_call, server)` — the opt-in daemon seam that intercepts `SHM_OPEN_OP` and passes every other message through. Pinned by `tests/test_ipc_shm_channel.py` (17 tests). Honest remaining: turning the seam on in the shipped daemon (a rollout decision) + a futex/eventfd wait |
 | 1.57.0  | 2026-10-08 | **IPC-001 §7 continued — the SHM channel negotiation mechanism landed:** `offer_channel`/`accept_channel` deliver the channel token over the EXISTING authenticated datagram path (the only one carrying kernel credentials), then the client attaches — pinned by the in-process negotiation test + the no-token-refusal test (channel pins now 12). Also shipped: the bounded spin→sleep wait bounds idle CPU ~12× (§38b: 0.083 vs 1.00 for pure yield) while the §6.1 gate stays MET (p50 20.41 µs / p99 52.58 µs). Honest remaining: the daemon's per-client lifecycle wiring |
 | 1.56.0  | 2026-10-08 | **IPC-001 v0.2.0 AS-BUILT — the H1 Option A increment landed:** the ring wait fix (`ipc/shm_transport.py` `_wait_ready`: a 50 µs spin then a bounded sleep, replacing the fixed 100 µs `time.sleep` that quantized every wait) moved §38 from p50 187.86 µs to **p50 20.41 µs (p99 52.58 µs) — the NPS-003 §6.1 `<100 µs` gate is now MET on the same-namespace shared-memory path** at the median/tail; the selectable channel `ipc/shm_channel.py` (`select_transport` — explicit, fail-closed, never silent; `ShmChannel` carrying the datagram path's codec-identical `to_wire()` bytes; unguessable-token rule) landed with 10 contract pins (`tests/test_ipc_shm_channel.py`); BENCHMARK_RESULTS §38b records the shipped spin→sleep wait's 8% idle CPU (and the pure-yield alternative's 100%, with the tighter max 94.24 µs; futex/eventfd the follow-on). Honest scope: the daemon does not yet establish a channel per authenticated client; SHM is PID-namespace-local |

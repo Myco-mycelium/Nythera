@@ -26,14 +26,14 @@ yet -- noted here so it's not lost by the time Phase 9 starts.
 | 0 | Documentation gate | ✅ Done | NPC-001 §3.1/§6 |
 | 1 | Boot to a running kernel | ✅ Done & verified | NPS-001 (Accepted), NPS-017 (Accepted) |
 | 2 | Memory management | ✅ Done & verified | NPS-001 (Accepted) |
-| 3 | Scheduling / processes | ✅ Pre-normative proof done & verified | NPS-002 (**Draft** — pre-normative only) |
-| 4 | Kernel IPC | ✅ Pre-normative proof done & verified | NPS-003 (**Draft** — pre-normative only) |
+| 3 | Scheduling / processes | ✅ Pre-normative proof done & verified; ✅ First policy increment landed 2026-10-11 (enforcing NPS-002 §5 lifecycle) — conformance track open | NPS-002 (**Accepted** 2026-10-11, AG row I1) |
+| 4 | Kernel IPC | ✅ Pre-normative proof done & verified; ✅ First policy increment landed 2026-10-11 (NPS-003 §5.4 arbiter + §4.3 revocation) — conformance track open | NPS-003 (**Accepted** 2026-10-11, AG row I2) |
 | 5 | Windows compatibility | 🚧 Prerequisites done; first real capability (PE32+ loader) landed | NPS-007 (Accepted; scope confirmation needed — see below) |
 | 6 | Android compatibility | 🚧 First real capability (DEX format parser) landed | NPS-008 (Accepted) |
 | 7 | GPU / graphics kernel path | ⬜ Not started | NPS-001 §3, NPS-013 (Accepted) |
 | 8 | Storage integration | ⬜ Not started | NPS-004 (Accepted), NyVault (source/nyhal-linux-backend precedent) |
 | 9 | Gaming subsystem / multi-device | ⬜ Not started | NPS-006, NPS-012, NPS-014 (Accepted) |
-| 10 | Secure Boot / UEFI | ⬜ Not started | ADR-0014 (**Proposed**, not yet Accepted) |
+| 10 | Secure Boot / UEFI | ⬜ Not started | ADR-0014 (**Accepted** 2026-10-11, AG row I3 — unblocks this phase) |
 
 ---
 
@@ -150,13 +150,24 @@ RSP0 stacks and the cooperative scheduler's ring-0 task stacks, both
 from `memory::kernel_stack`, verified structurally every boot); this
 kernel does not yet *interpret* ACPI tables.)*
 
-## Phase 3 -- Scheduling / processes 🚧, prep done, blocked on NPS-002 remaining Draft
+## Phase 3 -- Scheduling / processes 🚧, prep + first policy increment done, unblocked 2026-10-11
 
-NPS-002 (Process and Thread Model) is `Draft`, benchmark-blocked at
-§9 per NPC-004. Per NPC-001 §5, Draft specs aren't binding. This
-phase's *scheduling-policy* code, when it starts, must be built and
-labeled as an **explicit pre-normative technology proof** -- not
-represented as NPS-002 conformance until that spec is Accepted.
+**2026-10-11: NPS-002 was ACCEPTED (AG decision-log row I1, owner
+direction via the recorded session).** The §9 benchmark Draft gate was
+reclassified as a benchmark/tuning follow-up on the already-Accepted
+ADR-0013 design (per the ADR-0019/CRY-001 precedent); the blocking
+condition this section's original text described no longer exists.
+The first conformance increment against the accepted text landed the
+same day (see the lifecycle paragraph below); the rest of the
+conformance track (container-to-process mapping, capability subsets at
+creation) remains open and implementable. The historical pre-normative
+treatment below is retained for the record.
+
+NPS-002 (Process and Thread Model) *was* `Draft`, benchmark-blocked at
+§9 per NPC-004 -- until 2026-10-11. Per NPC-001 §5, Draft specs aren't
+binding, which is why the phase's *scheduling-mechanism* work was built
+and labeled as an **explicit pre-normative technology proof** -- not
+represented as NPS-002 conformance while that spec was Draft.
 
 **Prerequisite infrastructure is done and verified**, and is
 deliberately *not* NPS-002-gated: PIC remapping and hardware timer
@@ -260,10 +271,45 @@ longer Draft. This proof-of-concept should be treated as throwaway
 reference material once that happens, not upgraded in place and
 relabeled -- see the banner in `src/experimental/mod.rs`.
 
-## Phase 4 -- Kernel IPC ✅ Pre-normative proof done & verified, blocked from real conformance on NPS-003 remaining Draft
+*(The 2026-10-10 text above is retained for the record. Its
+"NPS-002-gated" posture is overtaken by events: 2026-10-11 the spec was
+Accepted, and the first conformance increment landed the same day --
+see the lifecycle paragraph below.)*
 
-Same treatment as Phase 3: NPS-003 is `Draft`, transport-pending at
-§6.1. This is the kernel-native counterpart to the IPC layer already
+**Built and verified 2026-10-11, the first NPS-002 conformance
+increment: an enforcing §5 process-lifecycle state machine**
+(`experimental::scheduler`). `TaskControlBlock` carries a
+`LifecycleState` (Created/Ready/Running/Blocked/Terminating/Terminated,
+the exact ledger of NPS-002 §5's states), every dispatch and yield
+animates through a single enforcing `set_state`, an illegal edge
+(refused transitions are counted and printable), and an every-boot
+edge-table self-test verifies the full acceptance/ refusal behavior
+for all 36 pairs of the 6-state graph (9 legal accepts, 27 illegal
+refusals, the rejection counter ticked exactly once per refusal).
+The negative path reaches into the numbered spec's own terms: the
+four representative crashes that would occur without enforcement
+(no self-edges, no backward transitions, no TERMINATED-as-source,
+CREATED → anything-but-READY) all match the Illegal-Transition
+requirements. The A/B/isolated demos' clean 6/6 + 50-switch round
+trips are the positive half: their counters can't reach their
+asserted values unless every real dispatch/yield animated legally.
+Verified line:
+
+```
+  experimental scheduler lifecycle self-test: 36/36 from-to pairs verified (9 legal accepts, 27 illegal refusals, counter ticked exactly once per refusal) -- OK
+PASS: kernel reached BootPhase::Ready and exited cleanly
+```
+
+Still open on this phase's conformance track (implementable, not
+blocked): container-to-process mapping (NPS-002 §4.1/§4.3, the
+capability-subset gate at process creation), and the real-time
+guarantee NUMBERS (§9, already reclassified as a benchmark/tuning
+follow-up on ADR-0013's accepted design).
+
+## Phase 4 -- Kernel IPC ✅ Pre-normative proof done & verified, unblocked 2026-10-11 (NPS-003 Accepted), first policy increment landed same day
+
+Same treatment as Phase 3: NPS-003 *was* `Draft`, transport-pending at
+§6.1, and was **Accepted 2026-10-11** (AG decision-log row I2). This is the kernel-native counterpart to the IPC layer already
 built and tested in `source/nyhal-linux-backend/ipc/` (Unix datagram
 sockets, `SCM_CREDENTIALS` auth) -- that implementation is a userspace
 NyHAL backend's version of the same contract (NPS-017), not a
@@ -300,6 +346,40 @@ validity (§5.4), and the real transport latency benchmark (§6.1) that's
 currently blocking NPS-003 from leaving Draft in the first place. This
 proof-of-concept's `send`/`try_receive` have none of that -- they're
 the mechanical delivery primitive, not the policy layer.
+
+**Built and verified 2026-10-11, the first NPS-003 conformance
+increment: kernel-as-arbiter (§5.4) + endpoint revocation (§4.3)**
+(`experimental::ipc`, `send` now first verifies the `sender` field
+against the actually-running scheduler task (via
+`scheduler::current_task`) BEFORE touching queue state -- a forged
+identity is refused with a typed `IpcError::NotRunningTask` without
+leaking a single bit about the endpoint's queue depth (identity first,
+queue state second, so forgery can't error-probe backpressure).
+`revoke_sender(dest, sender)` implements §4.3's forward-looking
+revocation register: all future sends from a revoked sender fail
+closed with `IpcError::Revoked`, while messages queued BEFORE the
+revocation stay receivable (the "all future operations" wording). The
+kernel is the only mutator of the revoked register (§5.4's arbiter
+status, honored structurally). All proven by an every-boot self-test
+against a SCRATCH mailbox (demo state untouched): honest send from the
+running task queues normally (positive control); a forged sender is
+refused with exactly `NotRunningTask`; after revocation, a formerly
+valid send is refused with exactly `Revoked`; the before-revocation
+message is still receivable; re-revocation is an idempotent no-op
+returning false. Verified lines:
+
+```
+  experimental ipc arbiter self-test: forged sender (claims 1, running 0) refused with NotRunningTask -- OK
+  experimental ipc revocation self-test: send after revocation refused with Revoked -- OK
+  experimental ipc revocation self-test: message queued before revocation still receivable after it -- OK
+  experimental ipc self-test: arbiter + revocation contract checks -- OK
+PASS: kernel reached BootPhase::Ready and exited cleanly
+```
+
+Still open on this phase's conformance track (implementable, not
+blocked): the §5.1 capability-transfer message field (real capability
+objects, not the sender-identity check this increment lands), blocking
+receive, and shared-memory regions per §3.1.
 
 ## Phase 5 -- Windows compatibility 🚧, first real capability landed (minimal PE32+ loader); ring-3 + minimal ELF loader + address-space isolation + scheduler integration + real ring-3 task scheduling + NX enforcement + PIE/relocation support + address-space teardown prerequisites done & verified
 
@@ -1066,10 +1146,18 @@ implementation, not a redesign.
 consoles, tablets, phones) become real targets rather than aspirational
 README language.
 
-## Phase 10 -- Secure Boot / UEFI ⬜, blocked on ADR-0014 remaining Proposed
+## Phase 10 -- Secure Boot / UEFI ⬜, unblocked 2026-10-11 (ADR-0014 Accepted, AG row I3)
 
-ADR-0014 (UEFI Secure Boot with user-enrollable keys) is still
-`Proposed`, pending Architecture Group review per NPC-004. Phase 1's
-BIOS/GRUB2/Multiboot2 boot path is intentionally decoupled from this --
-it neither assumes nor blocks UEFI Secure Boot landing later. This
+ADR-0014 (UEFI Secure Boot with user-enrollable keys) was **Accepted
+2026-10-11** (AG decision-log row I3, owner direction via the recorded
+session) -- as proposed, no text amendments. It had never been named a
+benchmark or dependency blocker (REPOSITORY_STATE's own record called it
+"not benchmark-blocked"); it was simply awaiting Group review. The two
+Consequences work items this ADR names (updating NPS-001 §5 Stage 2's
+boot-path text to the shim-equivalent + Nyrqis-key + optional-user-MOK
+verification chain, and the key-management tooling) are now
+properly-scoped follow-ups riding this phase's implementation
+increments, per the ADR's own accepted status text. Phase 1's
+BIOS/GRUB2/Multiboot2 boot path remains intentionally decoupled from
+this -- it neither assumes nor blocks UEFI Secure Boot landing later. This
 phase starts only once ADR-0014 is Accepted.

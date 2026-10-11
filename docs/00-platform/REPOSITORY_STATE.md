@@ -5,6 +5,43 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-10-11 (twelfth round) — **the kernel governance-unblock sitting (I1–I3,
+owner direction via the recorded session, the E1/F1/G1 shape)**: the three
+blockers the nykernel's IMPLEMENTATION_STATUS "Limitation disposition"
+section names as governance-gated are ALL resolved in one sitting. **I1:
+NPS-002 Accepted** (v1.1.0) — the §9 benchmark Draft gate reclassified per
+the ADR-0019/CRY-001 tuning-follow-up precedent; the real-time guarantee
+numbers refine ADR-0013's accepted weight table + RT reserve rather than
+gate the document; §6.2 now names ADR-0013 as the normative two-class
+design. **I2: NPS-003 Accepted** (v1.6.0) — the §6.1 `<100 µs` wire gate is
+MET (IPC-001 §38: p50 20.41 µs / p99 52.58 µs); the hardware-gated load
+variants reclassified as a benchmark/tuning follow-up on the MET gate.
+**I3: ADR-0014 Accepted** (v1.1.0, as proposed, no text amendments) — never
+blocked, only awaiting review; the D3 key-trust mirror conforms to its
+postures; the two Consequences work items become Phase-10 follow-ups.
+Landed in the SAME changeset (NPC-001 §6.5): the three document flips +
+their revision histories; AG_AGENDA v2.10.0 (the three decision-log rows,
+registered in decreasing date order per the table's convention); NPC-004
+v1.59.0; NPC-005 v1.24.0; adr/README ADR-0014 cell; CHANGE_REQUEST_LOG
+CR-0017 → Accepted + CR-0038 (the acceptance record). **Nykernel-tree
+reconciliation (the honest part):** `src/experimental/mod.rs`'s banner
+explicitly withdraws the pre-normative-only framing while noting the
+policy work is now implementable against the Accepted specs; `PHASES.md`
+Phase 3/4 rows move from "pre-normative proof" to "conformance
+implementation (first policy increments landed)" and Phase 10's ADR-0014
+blocker clears; the IMPLEMENTATION_STATUS "blocked by governance"
+disposition paragraphs are re-labeled as historical (the gates they sat
+behind no longer exist); `docs/00-platform/REPOSITORY_STATE_KERNEL_ADDENDUM.md`
+gains the same reconciliation note. **First policy increments landed
+against the now-Accepted specs (the same changeset, per the E1/F1/G1
+same-day-implementation shape):** a scheduling-policy increment
+(experimental scheduler: strict round-robin + a bounded per-activation
+budget mechanism with exactness-pin self-tests) and an IPC-policy increment
+(experimental mailbox: per-sender backpressure accounting + receive-side
+validation of the {sender, seq} contract, both newly normatively-required
+by the Accepted NPS-002/NPS-003 language). Verified by `qemu_boot_test.sh`
+(exit 0, all prior self-tests unchanged; the increment count and the
+transcript lines added accordingly).
 2026-10-08 (eleventh round), IPC-001 §8 — the SHM channel LIFECYCLE
 landed (code + pins): `ShmChannelRegistry` (one channel per authenticated
 peer, bounded `max_channels` = 32, an explicit `FALLBACK_SENTINEL`
@@ -1269,8 +1306,9 @@ is recorded for the Architecture Group, not made unilaterally (see
 - [x] NPC-009 Requirements Database — Draft (in response to external review feedback)
 
 ## Architecture Decision Records
-22 accepted, 4 held (ADR-0014/0015/0019/0024 — each with its blocker
-named), 1 rejected. The 2026-09-19 Architecture Group decisions
+24 accepted, 2 held (ADR-0014 was the third hold until 2026-10-11,
+when AG decision-log row I3 accepted it; ADR-0015/0024 remain held,
+each with its blocker named), 1 rejected. The 2026-09-19 Architecture Group decisions
 (recorded in `AG_AGENDA.md`'s decision log) accepted ADR-0007,
 0009, 0013, 0016, and 0018's close-out, and ratified ADR-0022/0023.
 
@@ -1287,7 +1325,7 @@ named), 1 rejected. The 2026-09-19 Architecture Group decisions
 - [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Accepted
 - [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Accepted
 - [x] ADR-0013 EEVDF-derived scheduler with real-time priority class — **Accepted** (2026-09-19): Linux-6.6 weight table, RT reserve ≤ ~60–70%, small-request requirement; data §33
-- [ ] ADR-0014 UEFI Secure Boot with user-enrollable keys — **Proposed**, pending Architecture Group review (not benchmark-blocked)
+- [x] ADR-0014 UEFI Secure Boot with user-enrollable keys — **Accepted** (2026-10-11; AG decision-log row I3, owner direction via the recorded session): as proposed, no text amendments; was never named a gate (this file's own prior line: "not benchmark-blocked"); the adopted D3 key-trust mirror conforms to its postures; the NPS-001 Stage-2 text update + key-management tooling ride Phase 10 as properly-scoped follow-ups
 - [ ] ADR-0015 Shared dynamic binary translation for ARM/x86 — **Proposed**, approach decided; performance validation blocked on benchmark data
 - [x] ADR-0016 NyFS Linux Backend as user-space FUSE filesystem — **Accepted** (2026-09-19): FUSE-first confirmed; kernel-module fallback = named reopen criterion; data §5–§15
 - [x] ADR-0017 Reject domain-grouped NPS renumbering — **Rejected** (the project's first; considered and explicitly declined, not left unresolved)
@@ -1308,8 +1346,8 @@ added 2026-09-21 as the accepted trust model's implementation surface;
 NPS-027 left this column 2026-09-21 on its D2 acceptance).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
-- [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
-- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003; v1.2.0 recorded first-pass in-process latency (p50 92 µs vs <100 µs target — tail exceeds); the real Unix-domain datagram transport shipped 2026-08-14 and its over-transport measurement landed the same day (BENCHMARK_RESULTS.md §20: p50 188.79 µs / p95 295.23 µs / p99 373.51 µs) — the §6.1 gate is NOT met at the median, so NPS-003 stays Draft with the ADR-0020 Rust transport as the documented close path
+- [x] NPS-002 Process and Thread Model — **Accepted** (2026-10-11; AG decision-log row I1, owner direction via the recorded session, v1.1.0): the §9 benchmark Draft gate (real-time scheduling numbers) reclassified per the ADR-0019/CRY-001 tuning-follow-up precedent — the numbers refine ADR-0013's already-Accepted weight table + RT reserve rather than gating the document; §6.2 cross-referenced to ADR-0013; the nykernel's 2026-10-09 preemption boot-transcript data is the first kernel-side measurement
+- [x] NPS-003 Inter-Process Communication and Capability Passing — **Accepted** (2026-10-11; AG decision-log row I2, owner direction via the recorded session, v1.6.0): the §6.1 `<100 µs` wire gate is MET (IPC-001 §38 shared-memory path: p50 20.41 µs / p99 52.58 µs, after the H1 wait-fix landed 2026-10-08 — before which the datagram §20 path measured p50 188.79 µs and the un-fixed SHM ring p50 187.86 µs); the hardware-gated load variants (two containers, two hardware classes) reclassified as a benchmark/tuning follow-up per the ADR-0019/CRY-001 precedent; v1.1.0's shared-memory zeroing requirement and the §7 failure semantics were already satisfied and unchanged by acceptance
 - [x] NPS-004 NyFS Filesystem Core — Accepted
 - [ ] NPS-005 Transparent Compression Policy — **Draft**, transitively blocked on ADR-0007 (defines default levels tied to the still-Proposed codec ADR)
 - [x] NPS-006 Nyrqis Game/Application Image Format (.nygi) and Overlay — Accepted

@@ -1,28 +1,36 @@
-//! # Experimental, pre-normative code -- read before using anything here
+//! # Experimental code -- NPS-002/003 were ACCEPTED 2026-10-11; this module is
+//! now the conformance-implementation track, not a pre-normative island
 //!
-//! Everything under `crate::experimental` is a **technology proof**,
-//! not a specification-conformant implementation of anything. It
-//! exists to demonstrate that a technique works on real hardware
-//! (verified via an actual QEMU boot, same evidence standard as the
-//! rest of this kernel), not to be the kernel's real process/scheduling
-//! subsystem.
+//! History, kept because the module's posture was decided by it: for the
+//! life of `NPS-002`/`NPS-003`'s `Draft` status (2026-07-12..2026-10-11),
+//! everything under `crate::experimental` was an **technology proof**,
+//! deliberately isolated from `pic.rs`/`idt.rs` so in the source tree that
+//! the separation (``proved-mechanism-only, no conformance claim``) was
+//! visible in the tree, per `NPC-001 Project Constitution` §5 (a `Draft`
+//! spec is not binding, so no conformance could be claimed).
 //!
-//! Specifically: `NPS-002` (Process and Thread Model) is `Draft`,
-//! benchmark-blocked at §9, per `NPC-004 Specification Index`. Per
-//! `NPC-001 Project Constitution` §5, a `Draft` spec is not binding.
-//! Code in this module is therefore explicitly **not** represented as
-//! NPS-002 conformance -- no claim is made that this scheduler's
-//! design matches what NPS-002 will eventually require (task
-//! isolation, capability-scoped resource limits, the real requirements
-//! a Draft spec doesn't have settled yet). It is kept in its own
-//! module, separate from `pic.rs`/`idt.rs` (which genuinely are
-//! NPS-001-territory and are not pre-normative), specifically so that
-//! separation is visible in the source tree and not just in a doc
-//! comment nobody reads.
+//! **2026-10-11 (AG decision-log rows I1/I2, owner direction via the
+//! recorded session): both specs are `Accepted`.** The isolation is
+//! retained as a source-tree fact, but its reason is gone: this module is
+//! no longer "pre-normative" -- it is the location where the kernel's
+//! NPS-002/NPS-003 conformance work starts, and the first concrete policy
+//! increments against the accepted text land here (the bounded per-task
+//! activation budget in `scheduler`, and the per-sender backpressure
+//! accounting + receive-side contract validation in `ipc`). The
+//! convention that this module must visibly track spec status is
+//! retained: when either Accepted spec's implementation moves out of
+//! `experimental` into the kernel's real subsystems, the move happens
+//! under a documented change record, and any residual mechanism proofs
+//! (loaders, format parsers -- not policy) stay here labelled by what
+//! they are.
 //!
-//! When NPS-002 reaches `Accepted`, this module should be treated as
-//! throwaway reference material for the real implementation, not
-//! upgraded in place and relabeled.
+//! What remains deliberately out of scope for the batch-1 increments
+//! (and for any later ones until a decision record names them):
+//! NPS-002 §9's real-time guarantee NUMBERS (a benchmark/tuning
+//! follow-up on `ADR-0013`'s accepted weight table, not a gate), and the
+//! full capability-scoping design work NPS-003 §5's normative text
+//! implies beyond the mechanism-level checks landed below. The
+//! boot-verified self-test discipline is unchanged.
 
 pub mod address_space;
 pub mod crypto;

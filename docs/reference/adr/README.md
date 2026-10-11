@@ -20,7 +20,7 @@ directory; this index tracks status only.
 | [ADR-0011](ADR-0011-ai-assistant-containerization.md) | AI assistant runs as an ordinary capability-scoped container | Accepted |
 | [ADR-0012](ADR-0012-nyhal-pluggable-kernel-backend.md) | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted |
 | [ADR-0013](ADR-0013-scheduler-algorithm.md) | Adopt an EEVDF-derived scheduler with a real-time priority class | Accepted |
-| [ADR-0014](ADR-0014-secure-boot-key-management.md) | Adopt UEFI Secure Boot with user-enrollable keys | Proposed |
+| [ADR-0014](ADR-0014-secure-boot-key-management.md) | Adopt UEFI Secure Boot with user-enrollable keys | **Accepted** (2026-10-11) |
 | [ADR-0015](ADR-0015-shared-arm-translation.md) | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed |
 | [ADR-0016](ADR-0016-nyfs-linux-backend-fuse.md) | NyFS Linux Backend implemented as a user-space FUSE filesystem | Accepted |
 | [ADR-0017](ADR-0017-reject-nps-renumbering.md) | Reject domain-grouped NPS renumbering | **Rejected** |

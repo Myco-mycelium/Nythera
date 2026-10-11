@@ -97,11 +97,18 @@ they actually happened.
 dynamic linking (symbol-resolved relocations), and -- by far the
 largest remaining gap -- real application compatibility on top of the
 loaders (a Win32 API/import layer, a DEX/ART bytecode runtime, the
-actual API surfaces). Scheduling/IO policy beyond the pre-normative
-mechanisms stays blocked on NPS-002/NPS-003 remaining `Draft`, and
-UEFI/Secure Boot on ADR-0014 remaining `Proposed`. See `PHASES.md`
-(repo root) for the full phase-by-phase breakdown and `PHASES.md`
-Phase 5's explicit Windows/Android scope statement.
+actual API surfaces).~~ The governance blockers named here previously
+(NPS-002/NPS-003 remaining `Draft`, ADR-0014 remaining `Proposed`) no
+longer exist: all three were **Accepted 2026-10-11** (AG decision-log
+rows I1/I2/I3, owner direction via the recorded session -- see
+`AG_AGENDA.md`), and the first NPS-002/NPS-003 conformance increments
+(the enforcing §5 lifecycle in `experimental::scheduler`; the §5.4
+arbiter identity check + §4.3 revocation register in
+`experimental::ipc`) landed the same day, boot-verified. The
+remaining open items above stay open on their own merits (real
+subsystem scope), not on governance. See `PHASES.md` (repo root) for
+the full phase-by-phase breakdown and `PHASES.md` Phase 5's explicit
+Windows/Android scope statement.
 
 **Outstanding action item, unresolved across this entire session, not
 silently dropped:** whether `NPS-007`'s current Accepted text already
@@ -126,7 +133,9 @@ merging.)*
 **Specs/ADRs relied on (all Accepted, none newly proposed):** NPS-001,
 NPS-017, ADR-0006, ADR-0012, ADR-0020.
 **Specs explicitly NOT treated as binding (both remain Draft):**
-NPS-002, NPS-003 -- see `src/experimental/mod.rs`'s banner.
+~~NPS-002, NPS-003~~ -- **superseded 2026-10-11:** both are Accepted
+(AG rows I1/I2); `src/experimental/mod.rs`'s banner records the
+posture change and the first conformance increments.
 **Manifest-alignment check:** not performed by a human Architecture
 Group (none currently exists for this project) -- see
 `engineering/RFC-0001-nykernel-bringup-plan.md` for the AI-session

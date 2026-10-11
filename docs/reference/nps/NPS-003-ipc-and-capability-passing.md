@@ -1,14 +1,14 @@
 ---
 title: Inter-Process Communication and Capability Passing
 document_id: NPS-003
-version: 1.2.0
-status: Draft
+version: 1.6.0
+status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-08-12
+updated: 2026-10-11
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0006, NPS-001, NPS-002]
@@ -22,6 +22,13 @@ This document is **normative**. RFC 2119 terms apply as in NPC-001. Because
 most kernel-space functionality (NPS-001 §3) is reached only through IPC in
 a hybrid microkernel design (ADR-0006), this specification is
 performance-sensitive and security-critical.
+
+**Accepted 2026-10-11** (AG decision-log row I2, owner direction via the
+recorded session): the §6.1 `<100 µs` wire gate is MET (IPC-001 §38:
+p50 20.41 µs / p99 52.58 µs on the same-namespace shared-memory path);
+the residual hardware-gated load variants are reclassified as a
+benchmark/tuning follow-up per the ADR-0019/CRY-001 precedent — see
+§6.1 for the full disposition.
 
 ## 2. Scope
 
@@ -95,7 +102,8 @@ round-trip latency **MUST** be treated as a first-class performance metric
 and **MUST** be benchmarked before this document exits Draft status, per
 NPC-002 §5.2.
 
-> **Benchmark note (2026-08-12; CORRECTED 2026-10-08):** the first-pass
+> **Benchmark note (2026-08-12; CORRECTED 2026-10-08; ACCEPTANCE-DISPOSITION
+> 2026-10-11):** the first-pass
 > measurement of `call` (in-process `IPCManager`, 64-byte payloads, 20,000
 > iterations, warmup 200) is recorded in `tests/BENCHMARK_RESULTS.md`:
 > **p50 92 µs, p95 157 µs, p99 213 µs, mean 104 µs** — the in-process
@@ -103,23 +111,25 @@ NPC-002 §5.2.
 > pending **has since been built and measured**: the Unix-domain datagram
 > path (`ipc/transport.py`, `tests/benchmarks.py --ipc-transport`) records
 > **p50 188.79 µs** (§20, 2026-08-14; the Rust serving-loop A/B at
-> §21–§24), so **the <100 µs target is NOT met over the wire at the
-> median**. A shared-memory transport (`ipc/shm_transport.py`, landed
-> 2026-08-28) exists but is not yet wired into the IPC path or
-> benchmarked. This document therefore remains `Draft`: the gate is now
-> judged on a MEASURED wire cost, not on pending measurement. Closing (or
-> re-scoping) that gate is the subject of `IPC-001`. The shared-memory
-> transport was then benchmarked (`IPC-001` §38, 2026-10-08): **p50
-> 187.86 µs — also missing the gate**, because the ring's 100 µs
-> sleep-based polling (not the syscall path) dominates; `IPC-001`
-> (Accepted, AG Bundle H1) records the wiring + wait-strategy fix. With
-> that fix landed (2026-10-08), the shared-memory path measures **p50
-> 20.41 µs / p99 52.58 µs — the `<100 µs` target is now MET for
-> same-namespace endpoint pairs** at the median and tail, so §6.1's
-> remaining blocker is only the plan's hardware-gated load variants (two
-> containers, two hardware classes). The datagram path (cross-namespace)
-> stays above the target and remains the documented fallback; `IPC-001`
-> §38b records the shipped wait's latency/CPU tradeoff.
+> §21–§24). The shared-memory transport was then benchmarked (`IPC-001`
+> §38, 2026-10-08: p50 187.86 µs — the ring's 100 µs sleep-based polling
+> dominated), and the `IPC-001` wait-strategy fix (H1, landed 2026-10-08)
+> moved the shared-memory path to **p50 20.41 µs / p99 52.58 µs — the
+> `<100 µs` target is MET for same-namespace endpoint pairs** at the
+> median and tail. The datagram path (cross-namespace) stays above the
+> target and remains the documented fallback; `IPC-001` §38b records the
+> shipped wait's latency/CPU tradeoff.
+>
+> **Acceptance disposition (AG decision record I2, 2026-10-11):** the one
+> residual — the §6.1 wire gate's hardware-gated load variants (two
+> containers, two hardware classes) — is a **benchmark/tuning follow-up on
+> the MET gate**, NOT an acceptance blocker, per the ADR-0019/CRY-001
+> precedent ("resource profile recorded as a tuning follow-up, NOT an
+> acceptance blocker"). The gate is judged measured, not projected; the
+> variants refine the record, they do not re-open §6.1. With that,
+> §6.1's gate-then-Draft-old-condition ("benchmarked before this document
+> exits Draft status") is discharged by the measurements above, and this
+> document is Accepted.
 
 6.2. Shared-memory bulk transfer (§3.1) **SHOULD** avoid unnecessary data
 copies between sender and receiver address spaces where the underlying
@@ -160,6 +170,7 @@ security specifications.
 | 1.0.0   | 2026-07-12 | Initial draft |
 | 1.1.0   | 2026-07-13 | Add shared-memory zeroing requirement to §3.1, closing threat model finding FIND-CONTAINER-003 (NPS-020) |
 | 1.2.0   | 2026-08-12 | §6.1: record first-pass IPC latency measurements (`tests/BENCHMARK_RESULTS.md`); document remains Draft — median meets the <100 µs target, tail exceeds, real transport pending |
+| 1.6.0   | 2026-10-11 | **Accepted** (AG decision-log row I2, owner direction via the recorded session): the §6.1 `<100 µs` wire gate is MET (IPC-001 §38: p50 20.41 µs / p99 52.58 µs, same-namespace SHM path); the hardware-gated load variants reclassified as a benchmark/tuning follow-up per the ADR-0019/CRY-001 tuning-follow-up precedent — they refine the record, not re-open the gate; §1 records the acceptance |
 | 1.5.0   | 2026-10-08 | §6.1: after the `IPC-001` §7 wait-strategy fix the shared-memory path MET the `<100 µs` target (p50 20.41 µs / p99 52.58 µs) for same-namespace pairs; the gate's remaining blocker is the hardware-gated load variants; the selectable channel landed (`ipc/shm_channel.py`) |
 | 1.4.0   | 2026-10-08 | §6.1: the shared-memory transport measured (`IPC-001` §38, p50 187.86 µs — also misses the <100 µs gate; the ring's 100 µs sleep-based polling is the bottleneck); `IPC-001` Accepted (AG Bundle H1) with the wire + wait-strategy-fix increment pre-staged |
 | 1.3.0   | 2026-10-08 | §6.1: correct the stale benchmark note — the real transport has existed and been measured since 2026-08-14 (§20 p50 188.79 µs) and MISSES the <100 µs target at the median; the shared-memory transport ships (2026-08-28) but is unwired; the gate-closure options are staged in `IPC-001` |

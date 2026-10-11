@@ -1,14 +1,14 @@
 ---
 title: Process and Thread Model
 document_id: NPS-002
-version: 1.0.0
-status: Draft
+version: 1.1.0
+status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-10-11
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, NPS-001]
@@ -22,6 +22,12 @@ This document is **normative**. RFC 2119 terms apply as in NPC-001. It
 defines how processes, threads, and containers relate to one another in
 Nyrqis, and how this maps onto the containerized execution model of
 ADR-0004.
+
+**Accepted 2026-10-11** (AG decision-log row I1, owner direction via the
+recorded session): the §9 benchmark Draft gate is reclassified as a
+benchmark/tuning follow-up on the already-Accepted §6.2 two-class
+design (per the ADR-0019/CRY-001 precedent — see §9 for the full
+disposition).
 
 ## 2. Scope
 
@@ -94,7 +100,11 @@ concrete need is demonstrated.
 6.2. The scheduler (NPS-001 §3) **MUST** support at minimum: a default
 time-sharing class for general applications, and a real-time-priority class
 for latency-sensitive workloads (audio, input, and gaming frame pacing),
-consistent with NTM-000's gaming-as-first-class-capability goal.
+consistent with NTM-000's gaming-as-first-class-capability goal. The
+concrete scheduling design is normatively set by ADR-0013 (Accepted
+2026-09-19): an EEVDF-derived scheduler with a real-time priority class
+(Linux-6.6 weight table, RT reserve ≤ ~60–70%), which §6.2's requirement
+is satisfied by.
 
 6.3. Thread creation and destruction **MUST NOT** require kernel-space
 filesystem or driver access, per the user-space isolation defined in
@@ -132,16 +142,26 @@ per NTM-000 "Transparency."
 
 ## 9. Open Questions *(Informative)*
 
-- Exact real-time scheduling guarantees for gaming workloads (§6.2) require
-  benchmark-backed numbers before this section can move past Draft, per
-  NPC-002 §5.2.
+- ~~Exact real-time scheduling guarantees for gaming workloads (§6.2)~~
+  **DISPOSITION (AG decision record I1, 2026-10-11, superseding the
+  2026-07-12 text):** the tuned guarantee NUMBERS (weighted fair-share
+  slices, RT budget bounds, admission arithmetic) are a
+  **benchmark/tuning follow-up on the accepted design**, not an
+  acceptance gate for this document. Per the ADR-0019 and CRY-001
+  precedents ("the profile is recorded as a tuning follow-up, NOT an
+  acceptance blocker"), the numbers refine — and never gate — ADR-0013's
+  already-Accepted weight table + RT reserve. First measured data:
+  the nykernel's 2026-10-09 preemption boot-transcript data (see
+  `nykernel-package/source/nykernel/IMPLEMENTATION_STATUS.md`).
 - Process migration/suspend-to-disk semantics for the "Gaming Mode"
-  suspend/resume feature described in NTM-000 are deferred to a future NPS.
+  suspend/resume feature described in NTM-000 are deferred to a future NPS
+  (self-deferred by this document's original text, unchanged).
 
 ## Revision History
 
 | Version | Date       | Change       |
 |---------|------------|---------------|
+| 1.1.0   | 2026-10-11 | **Accepted** (AG decision-log row I1, owner direction via the recorded session): the §9 Draft gate reclassified per the ADR-0019/CRY-001 tuning-follow-up precedent — the real-time guarantee numbers refine ADR-0013's accepted weight table + RT reserve rather than gating this document; §6.2 cross-referenced to ADR-0013 as the normative scheduler design; §1 records the acceptance; §9's second question unchanged (already self-deferred) |
 | 1.0.0   | 2026-07-12 | Initial draft |
 
 ---

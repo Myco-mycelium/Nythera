@@ -778,6 +778,53 @@ effect, not a suppression: no `#[allow]` was added anywhere.
 
 ## What does NOT exist yet (do not assume otherwise)
 
+**2026-10-11 gap-closure increment: the first NPS-002/NPS-003
+conformance increments** (the governance unblock: AG decision-log rows
+I1/I2 landed the specs, the same session's code landed the first
+conformance policy):
+
+- **Enforcing NPS-002 §5 process lifecycle** (`experimental::scheduler`):
+  `LifecycleState` (the exact §5 state set), one enforcing `set_state`
+  through which every dispatch/yield animates, illegal transitions
+  refused-and-counted, and an every-boot edge-table self-test checking
+  all 36 from→to pairs (9 legal accepts, 27 illegal refusals, the
+  rejection counter ticked exactly once per refusal). The positive half
+  is the A/B/isolated demos' existing counters reaching their asserted
+  values through the enforced path. Note an honest bug this increment's
+  own boot test caught: the dispatcher originally selected Ready-only,
+  and task 0 -- born Created because it predates the lifecycle --
+  could never be re-selected after yielding, hanging the boot in an
+  A/B loop; fixed by giving task 0 the state the CPU is factually in
+  at init (Running), which restored the exact round-robin the existing
+  self-tests assert.
+- **NPS-003 §5.4 kernel-as-arbiter + §4.3 revocation**
+  (`experimental::ipc`): `send` first validates the claimed `sender`
+  against the actually-running task (`scheduler::current_task`),
+  refusing a forgery with `NotRunningTask` BEFORE any queue state is
+  read (so forgery can't error-probe backpressure), `revoke_sender`
+  maintains the forward-looking §4.3 revocation register with typed
+  `Revoked` errors and queued-past-revocation receivability, and an
+  every-boot self-test pins the whole contract against a scratch
+  mailbox (honest send OK; forged refused; post-revocation refused;
+  queued-before-revocation receivable; re-revocation an idempotent
+  no-op).
+
+Verified transcript lines (from `tools/qemu_boot_test.sh`, passing):
+
+```
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Created matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Running matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: 36/36 from-to pairs verified (9 legal accepts, 27 illegal refusals, counter ticked exactly once per refusal) -- OK
+  experimental ipc arbiter self-test: honest send from the running task -- OK (queued)
+  experimental ipc arbiter self-test: forged sender (claims 1, running 0) refused with NotRunningTask -- OK
+  experimental ipc revocation self-test: send after revocation refused with Revoked -- OK
+  experimental ipc revocation self-test: message queued before revocation still receivable after it -- OK
+  experimental ipc self-test: arbiter + revocation contract checks -- OK
+PASS: kernel reached BootPhase::Ready and exited cleanly
+```
+
+The pre-existing list continues unchanged:
+
 - A true higher-half address space layout -- the heap's virtual
   address is a manually chosen high address, not a systematic
   kernel/user address-space split (Phase 2 documented simplification)
@@ -808,10 +855,16 @@ effect, not a suppression: no `#[allow]` was added anywhere.
   when or whether preemption applies. (The timer-driven preemption
   *mechanism* for ring-3 tasks is now built and proven -- see the
   2026-10-09 increment above -- but nothing governs it: no priorities,
-  no budgets, no fairness rules.) Specifically NPS-002-gated
-  (Draft, benchmark-blocked); see `src/experimental/mod.rs` and
+  no budgets, no fairness rules.) ~~Specifically NPS-002-gated
+  (Draft, benchmark-blocked)~~ **Update 2026-10-11: NPS-002 was
+  Accepted (AG row I1) -- the gate is gone; the enforcing §5
+  lifecycle landed as the first policy increment the same day, and
+  the remaining policy work (capability-scoped isolation, fairness,
+  preemption rules) is now open conformance work, not blocked.**
+  See `src/experimental/mod.rs`'s banner and
   PHASES.md Phase 3 for the precise split between what's done
-  (the switch mechanism) and what isn't (any real policy)
+  (the switch mechanism + the lifecycle) and what isn't (any
+  real policy)
 - Interrupt handling beyond the four lines now proven (timer IRQ0,
   RTC IRQ8, keyboard IRQ1, ATA IRQ14/15 -- all unmasked with real
   handlers, see above): every *other* IRQ line is still masked, and
@@ -823,8 +876,13 @@ effect, not a suppression: no `#[allow]` was added anywhere.
 - Any actual IPC policy beyond the pre-normative mailbox proof of
   concept: capability-scoped transfer validation, kernel-as-arbiter
   semantics, blocking receive, or anything resembling NPS-003's
-  eventual transport requirements. Specifically NPS-003-gated (Draft,
-  transport-pending); see PHASES.md Phase 4 for the same split as
+  eventual transport requirements. ~~Specifically NPS-003-gated (Draft,
+  transport-pending)~~ **Update 2026-10-11: NPS-003 was Accepted
+  (AG row I2) -- the gate is gone; the §5.4 arbiter identity check +
+  §4.3 revocation register landed as the first policy increment the
+  same day, and the remaining policy work (§5.1 capability-transfer
+  objects, blocking receive) is now open conformance work, not
+  blocked.** See PHASES.md Phase 4 for the same split as
   Phase 3
 - Real dynamic linking -- `experimental::elf::load` now handles
   `ET_DYN`/PIE via `R_X86_64_RELATIVE` relocations (see above), but
@@ -873,17 +931,41 @@ effect, not a suppression: no `#[allow]` was added anywhere.
   assertions need complete yield cycles); the preemption proof is its
   own phase -- two non-yielding tasks (H, I) round-robined purely by
   IRQ0. See the increment above. What deliberately does *not* exist is
-  any preemption *policy* (that stays NPS-002-gated, below)
+  any preemption *policy* (NPS-002 is now Accepted -- AG row I1,
+  2026-10-11 -- so policy here is open conformance work rather than
+  blocked; see the Phase 3 entry in PHASES.md)
 - A per-container root filesystem, `pivot_root`, or any storage
   integration
 - GPU command submission path (NPS-001 §3's one kernel-space
   exception) -- not started
 - Windows or Android compatibility -- not started; scope for these is
   now defined precisely in RFC-0001 §4 and `PHASES.md` Phase 5/6
-- UEFI boot or Secure Boot (ADR-0014 is still `Proposed`) -- Phase 1
-  boots via legacy BIOS/GRUB2/Multiboot2 only
+- UEFI boot or Secure Boot (ADR-0014 ~~is still `Proposed`~~ was
+  **Accepted 2026-10-11**, AG row I3 -- Phase 10 is now an open
+  implementation phase, not a governance-blocked one) -- Phase 1
+  still boots via legacy BIOS/GRUB2/Multiboot2 only
 
 ## Limitation disposition (2026-10-09): why each remaining item is not fixed here
+
+**2026-10-11 UPDATE -- the governance category below is now EMPTY.**
+NPS-002, NPS-003, and ADR-0014 were all **Accepted 2026-10-11** (AG
+decision-log rows I1/I2/I3, owner direction via the recorded session --
+see `docs/00-platform/AG_AGENDA.md`). The first conformance increments
+against the now-binding specs landed the same day: an enforcing NPS-002
+§5 process-lifecycle state machine in `experimental::scheduler` (36/36
+edge-table pairs verified every boot), and the NPS-003 §5.4
+kernel-arbiter identity check + §4.3 endpoint revocation register in
+`experimental::ipc` (forged-sender and post-revocation sends refused,
+queued-past-revocation still receivable, all every-boot). The two
+"Blocked by governance" bullets below are retained as the historical
+record of why the policy work waited until the specs were binding --
+the posture change itself is recorded in `src/experimental/mod.rs`'s
+banner and `PHASES.md`'s Phase 3/4 sections.
+
+---
+
+*(Historical record, 2026-10-09: why each remaining item was not fixed
+then.)*
 
 The request that drove the recent increments was to process every
 documented limitation. Some are genuinely fixable and were fixed (TLB
@@ -892,19 +974,23 @@ the keyboard/ATA IRQ lines, timer-driven ring-3 preemption).
 The rest fall into clear categories, and pretending otherwise would be
 the opposite of this repo's honest-scope posture. Stated explicitly:
 
-**Blocked by governance (must stay pre-normative):**
+**Blocked by governance (must stay pre-normative) -- [RESOLVED
+2026-10-11, see the update above]:**
 
 - *Scheduling policy* (capability-scoped isolation, fairness, rules
-  governing preemption) -- NPS-002 is `Draft`, benchmark-blocked at
-  §9. Implementing it as if binding would violate NPC-001 §5. The
-  switch *mechanism* is done -- including timer-driven preemption of
-  ring-3 tasks, added 2026-10-09 as explicitly pre-normative proof --
-  the policy is not, by design.
+  governing preemption) -- NPS-002 was `Draft`, benchmark-blocked at
+  §9. Implementing it as if binding would have violated NPC-001 §5.
+  The switch *mechanism* was done -- including timer-driven preemption
+  of ring-3 tasks, added 2026-10-09 as explicitly pre-normative proof.
+  The spec is now Accepted (row I1), and the first policy increment
+  (the enforcing §5 lifecycle) is landed and boot-verified.
 - *IPC policy* (capability-scoped transfer validation, kernel arbiter,
-  blocking receive) -- NPS-003 is `Draft`, transport-pending at §6.1.
-  Same reasoning; the mailbox mechanism is done, the policy is not.
+  blocking receive) -- NPS-003 was `Draft`, transport-pending at §6.1.
+  Same reasoning; the mailbox mechanism was done, the policy was not.
+  The spec is now Accepted (row I2), and the first policy increment
+  (the §5.4 arbiter + §4.3 revocation) is landed and boot-verified.
 
-**Blocked by a Proposed ADR:**
+**Blocked by a Proposed ADR -- [RESOLVED 2026-10-11, AG row I3]:**
 
 - *UEFI boot / Secure Boot* -- ADR-0014 is `Proposed`, not `Accepted`.
   Phase 1 boots via legacy BIOS/GRUB2/Multiboot2 only.

@@ -331,8 +331,10 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     serial_println!("nyrqis kernel: phase 1+2+3-prep complete, boot phase = {} (Ready)", boot_phase::current());
 
     // ---- experimental: cooperative scheduler proof of concept ----
-    // NOT NPS-002 conformance -- see crate::experimental's doc comment.
-    // Real correctness proof, same standard as everything above: two
+    // NPS-002 was ACCEPTED 2026-10-11 (AG row I1) -- see
+    // crate::experimental's doc comment; the enforcement increment
+    // below (the §5 lifecycle state machine) implements against the
+    // accepted text. Real correctness proof, same standard as everything above: two
     // tasks each increment their own counter and print once per
     // activation, then yield; kernel_main (task 0) drives exactly
     // TARGET_ROUNDS round trips through the whole task set. With
@@ -345,11 +347,11 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     experimental::scheduler::spawn(experimental_task_a, &mut mapper, &mut frame_allocator);
     experimental::scheduler::spawn(experimental_task_b, &mut mapper, &mut frame_allocator);
     serial_println!(
-        "  experimental scheduler: {} tasks registered (pre-normative, not NPS-002 conformant)",
+        "  experimental scheduler: {} tasks registered (lifecycle-enforcing, NPS-002 §5)",
         experimental::scheduler::task_count()
     );
     experimental::ipc::init(experimental::scheduler::task_count());
-    serial_println!("  experimental ipc: {} mailboxes initialized (pre-normative, not NPS-003 conformant)", experimental::scheduler::task_count());
+    serial_println!("  experimental ipc: {} mailboxes initialized (arbiter-checked, NPS-003 §5.4)", experimental::scheduler::task_count());
 
     const TARGET_ROUNDS: u32 = 6;
     for _ in 0..TARGET_ROUNDS {
@@ -372,6 +374,26 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         "  experimental ipc self-test: {} messages sent task A -> task B and received correctly, 0 mismatches",
         ipc_received
     );
+
+    // ---- experimental: NPS-002 §5 lifecycle negative controls ----
+    // Accepted-spec enforcement, proven every boot: four illegal
+    // lifecycle transitions deliberately attempted, each must be
+    // refused with state unchanged and the rejection counter ticked.
+    // The positive half is the A/B demo above itself -- its counters
+    // can't reach their asserted values unless every dispatch/yield
+    // animated legally through set_state.
+    let lifecycle_ok = experimental::scheduler::self_test_illegal_refusals();
+    assert!(lifecycle_ok, "a deliberately illegal NPS-002 §5 lifecycle transition was not refused, or a legal one was wrongly blocked");
+
+    // ---- experimental: NPS-003 §5.4/§4.3 arbiter + revocation controls ----
+    // Accepted-spec enforcement, proven every boot against a scratch
+    // mailbox: a forged sender refused (NotRunningTask), a revoked
+    // sender's future sends refused (Revoked), a message queued
+    // before revocation still receivable (the forward-looking rule),
+    // and re-revocation a no-op. Honest send (the positive control)
+    // queues normally.
+    let arbiter_ok = experimental::ipc::self_test_arbiter_and_revocation();
+    assert!(arbiter_ok, "the NPS-003 arbiter/revocation contract self-test failed");
 
     // ---- experimental: isolated tasks under the ordinary scheduler ----
     // NOT NPS-002/NPS-003 conformance -- see crate::experimental's doc

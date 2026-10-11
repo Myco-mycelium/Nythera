@@ -1,11 +1,11 @@
 ---
 title: Adopt UEFI Secure Boot with User-Enrollable Keys
 document_id: ADR-0014
-version: 1.0.0
-status: Proposed
+version: 1.1.0
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-10-11
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, NPS-001]
 ---
@@ -19,7 +19,7 @@ failures halt boot with a diagnostic rather than continue in a
 possibly-compromised state — but the mechanism for establishing "this
 kernel image is trusted" was never decided.
 
-## Decision (Proposed)
+## Decision (Accepted 2026-10-11)
 Adopt standard **UEFI Secure Boot**, verified by the boot loader (NPS-001
 §5, Stage 2) against a certificate chain that supports **user-enrollable
 keys** — the same general model used by shim-based Linux distributions:
@@ -71,5 +71,39 @@ kernels/backends (relevant given ADR-0012's pluggable NyHAL backends).
   interaction is deferred to a future NPS-001 revision once backend
   implementation begins.
 
+## Revision History
+
+| Version | Date       | Change              |
+|---------|------------|----------------------|
+| 1.1.0   | 2026-10-11 | **Accepted** (AG decision-log row I3, owner direction via the recorded session, the E1/F1/G1 shape) — as proposed, no text amendments; was never named a blocker (REPOSITORY_STATE: "not benchmark-blocked"); D3's key-trust mirror conforms to its postures; the two Consequences work items become properly-scoped follow-ups (NPS-001 Stage 2 text rides the first UEFI increment; key-management tooling rides Phase 10) |
+| 1.0.0   | 2026-07-13 | Initial draft        |
+
 ## Status
-Proposed — pending Architecture Group review.
+**Accepted** — AG decision-log row I3 (2026-10-11, owner direction via the
+recorded session, the E1/F1/G1 shape). Proposed 2026-07-13; was never named
+a benchmark or dependency gate (REPOSITORY_STATE's own record: "not
+benchmark-blocked") — it was simply awaiting Group review. The decision is
+fully conformant in postures with the adopted ADR-0014 mirror (AG log row
+D3, 2026-09-21): bundled platform root set, protected-confirmation
+enrollment, revocation via platform list + expiry, cross-signature
+rotation — all four mirror postures are exactly what this ADR's Decision
+section specifies for the boot trust chain. The two Consequences
+paragraph's work items (NPS-001 Stage 2 text update; key-management
+tooling) become PROPERLY-SCOPED-FOLLOW-UPS; see below.
+
+**Accepted as proposed, no text amendments:**
+
+- The three Decision bullets are unchanged — they were complete as drafted,
+  and each is a user-protection MUST exactly as argued.
+- The first consequence (updating NPS-001 §5 Stage 2's boot-path text to
+  reference the shim-equivalent + Nyrqis key + optional user-MOK chain) is
+  now actionable — that update is expected to ride the first UEFI
+  implementation increment (Phase 10 in `PHASES.md`), not to precede it.
+- The second consequence (key-management tooling) is likewise actionable;
+  the NPS-004 §4.2 snapshot-rollback integration holds, noted in the
+  change log (CR-0038) as an implementation-sequencing  dependency.
+
+**Phase 10 note:** accepting this ADR does not by itself change what Phase
+10 (UEFI Secure Boot, `PHASES.md`) ships; it unblocks it. Phase 10's boot
+path work rides the firmware implementation increments; the boot-path text
+amendment and tool landing ride those increments, not this decision.
