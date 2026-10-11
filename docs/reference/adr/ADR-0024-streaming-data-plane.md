@@ -1,16 +1,24 @@
 ---
 title: Streaming Data Plane — Chunked Framing for Large CALL Payloads
 document_id: ADR-0024
-version: 0.2.0
-status: Proposed
+version: 1.0.0
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-16
-updated: 2026-09-20
+updated: 2026-10-11
 ai_assisted: true
 depends_on: [NPS-003, NPS-011, ADR-0009, ADR-0020, ADR-0021, ADR-0022, ADR-0023]
 ---
 
-> **Status (2026-08-16):** Proposed — drafted for Architecture Group
+> **Status (2026-08-16):** ~~Proposed — drafted for Architecture Group~~
+> **ACCEPTED 2026-10-11** (AG decision-log row J2, owner direction via
+> the recorded session) — as proposed, no decision text amended. The
+> review-input record below closes every open item: both increments
+> implemented same-day (0.14.20, 0.14.21), §29 measured, and the one
+> missing artifact (the post-0.14.21 §27 re-measurement) collected
+> 2026-09-20. The two structured caveats land verbatim in the
+> Consequences section. The originally-drafted text follows, retained
+> in full for the record.
 > review as the documented next step of ADR-0022's data plane. This ADR
 > fixes the *wire-level* answer to the 32 KiB per-call payload cap: how
 > a single CALL/REPLY carries more data than one 64 KiB datagram holds.
@@ -287,6 +295,24 @@ Specifically:
   the platform spec is next touched (the codec is migration #4's
   `rust/ipc` framing — its header gains the stream flag). No
   renumbering (ADR-0017).
+
+## Accepted consequence record (landed verbatim from the review input, per AG row J2)
+
+- **The win is scoped to the WRITE path + dispatch amortization, not
+  I/O in general.** §29's reads moved ~1.02–1.08×; a streamed read still
+  carries each ≤32 KiB piece in its own REPLY datagram and the AEAD
+  block decode dominates that path. If read-side streaming is wanted
+  later, the leverage is the REPLY datagram boundary and/or the AEAD
+  block size (ADR-0023), not this framing.
+- **Current-stack numbers (the 2026-09-20 §27 re-measurement) supersede
+  the historical §27 baselines:** wire-streamed 1 MiB writes
+  9.58–10.47 MB/s (~3× the pre-streaming 3.25–3.40 through a real
+  kernel mount); reads 6.30–6.34 MB/s (~3×) — exactly the write-path +
+  dispatch win this ADR predicts, with the read side AEAD-bound as
+  scoped above.
+- **Remaining follow-on (named, not a gate):** the Rust client half's
+  streaming (the floor path streams; the Rust loop client still pages)
+  — the same increment-pair cadence that landed 0.14.20/0.14.21.
 
 ## References
 

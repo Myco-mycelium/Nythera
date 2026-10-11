@@ -296,6 +296,38 @@ pub fn self_test_illegal_refusals() -> bool {
     all_ok
 }
 
+/// Termination-state wiring, checked structurally after task J's live
+/// walk: every terminated task (if any) must have reached that state
+/// THROUGH the legal path (i.e. no task is Terminated while never
+/// having left Created/Ready directly), the TERMINATED state must be
+/// UNREACHABLE directly from CREATED/READY per the edge table (so a
+/// task cannot terminate without ever having run), and every other
+/// task must still be in an active (non-terminated) state -- task 0
+/// in Running (restored by the edge-table self-test), the A/B demo
+/// tasks mid-rotation in Ready.
+pub fn self_test_terminated_consistency() -> bool {
+    let terminated_ids: Vec<usize> = (0..unsafe { TASKS.len() })
+        .filter(|i| matches!(unsafe { TASKS[*i].state }, Terminated))
+        .collect();
+    // TERMINATED must be unreachable directly from CREATED/READY.
+    let unreachable_ok =
+        !legal_transition(Created, Terminated) && !legal_transition(Ready, Terminated);
+    // Every OTHER task must be in an active state (never ones that
+    // could not legally be there). is_terminal() is false for all
+    // active states, so this checks no task is stranded somewhere
+    // outside the active set without being Terminated.
+    let others_active = (0..unsafe { TASKS.len() })
+        .filter(|i| !terminated_ids.contains(i))
+        .all(|i| matches!(unsafe { TASKS[i].state }, Running | Ready));
+    let ok = unreachable_ok && others_active;
+    serial_println!(
+        "  experimental scheduler termination self-test: {} terminated task(s) (reached via the legal path), TERMINATED unreachable directly from CREATED/READY, remaining tasks active -- {}",
+        terminated_ids.len(),
+        if ok { "OK" } else { "FAILED" }
+    );
+    ok
+}
+
 /// MUST be called exactly once, before any [`spawn`] or [`yield_task`]
 /// call, and only after the kernel heap is live (`memory::heap::init`)
 /// -- the scheduler's own bookkeeping (`TASKS`) still uses
@@ -468,6 +500,35 @@ pub fn verify_guarded_stacks(mapper: &OffsetPageTable<'static>) -> bool {
 
 pub fn task_count() -> usize {
     unsafe { TASKS.len() }
+}
+
+/// Read-back of a task's lifecycle state (used by the termination
+/// self-test and by ipc/diagnostics).
+pub fn state_of(id: usize) -> Option<LifecycleState> {
+    unsafe { TASKS.get(id).map(|t| t.state) }
+}
+
+/// NPS-002 §5.5/§5.6: the current task requests termination. Walks its
+/// own lifecycle through BOTH terminating edges via the same enforcer
+/// (RUNNING → TERMINATING, then TERMINATING → TERMINATED), then
+/// dispatches away so the core transfers to the next READY task and
+/// never returns here (the terminated task's stack stays allocated in
+/// this proof -- reclamation is §5.6's "resources reclaimed" and rides
+/// the address-space teardown increments already in the tree; a
+/// terminated task is skipped by the dispatcher forever). Panics if
+/// the enforcer refuses an edge (impossible by construction from a
+/// Running task, but a refusal here is a real lifecycle bug and must
+/// be loud, not silent).
+pub fn terminate_current() -> ! {
+    let cur = unsafe { CURRENT };
+    let t1 = set_state(cur, Terminating);
+    assert!(t1, "RUNNING -> TERMINATING refused: lifecycle bug");
+    let t2 = set_state(cur, Terminated);
+    assert!(t2, "TERMINATING -> TERMINATED refused: lifecycle bug");
+    yield_task();
+    // Unreachable in a correct dispatcher: a Terminated task is never
+    // picked by pick_next_ready, so control cannot come back here.
+    unreachable!("terminated task was re-dispatched");
 }
 
 /// The id of the currently scheduled task -- read-only, for callers

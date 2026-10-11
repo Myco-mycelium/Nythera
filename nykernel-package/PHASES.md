@@ -26,8 +26,8 @@ yet -- noted here so it's not lost by the time Phase 9 starts.
 | 0 | Documentation gate | ✅ Done | NPC-001 §3.1/§6 |
 | 1 | Boot to a running kernel | ✅ Done & verified | NPS-001 (Accepted), NPS-017 (Accepted) |
 | 2 | Memory management | ✅ Done & verified | NPS-001 (Accepted) |
-| 3 | Scheduling / processes | ✅ Pre-normative proof done & verified; ✅ First policy increment landed 2026-10-11 (enforcing NPS-002 §5 lifecycle) — conformance track open | NPS-002 (**Accepted** 2026-10-11, AG row I1) |
-| 4 | Kernel IPC | ✅ Pre-normative proof done & verified; ✅ First policy increment landed 2026-10-11 (NPS-003 §5.4 arbiter + §4.3 revocation) — conformance track open | NPS-003 (**Accepted** 2026-10-11, AG row I2) |
+| 3 | Scheduling / processes | ✅ Pre-normative proof done & verified; ✅ Policy increments landed 2026-10-11 (enforcing §5 lifecycle; §5.5/§5.6 termination walked live by task J) — conformance track open | NPS-002 (**Accepted** 2026-10-11, AG row I1) |
+| 4 | Kernel IPC | ✅ Pre-normative proof done & verified; ✅ Policy increments landed 2026-10-11 (§5.4 arbiter + §4.3 revocation + §3 blocking receive) — conformance track open | NPS-003 (**Accepted** 2026-10-11, AG row I2) |
 | 5 | Windows compatibility | 🚧 Prerequisites done; first real capability (PE32+ loader) landed | NPS-007 (Accepted; scope confirmation needed — see below) |
 | 6 | Android compatibility | 🚧 First real capability (DEX format parser) landed | NPS-008 (Accepted) |
 | 7 | GPU / graphics kernel path | ⬜ Not started | NPS-001 §3, NPS-013 (Accepted) |

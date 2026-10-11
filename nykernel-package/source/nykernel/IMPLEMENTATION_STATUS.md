@@ -778,6 +778,57 @@ effect, not a suppression: no `#[allow]` was added anywhere.
 
 ## What does NOT exist yet (do not assume otherwise)
 
+**2026-10-11 (second policy round) — three more documented gaps closed,
+each with an every-boot self-test:**
+
+- **RTC wall-clock time** (the "does NOT exist yet" entry that said
+  reading the CMOS time registers was "deliberately left out"): `rtc::read_time`
+  reads seconds/minutes/hours, decoding per Status B's ACTUAL mode bits
+  (binary vs BCD; 12-vs-24-hour with PM normalized), with a bounded
+  update-in-progress wait per register (never hangs; a stuck UI flag is
+  a typed failure). `self_test_time_registers` decodes real values per
+  boot (verified transcript: `08:57:10` decoded via BCD/24h), asserts
+  field ranges through whichever mode the firmware reports, and proves
+  read-order monotonicity plus tick correlation between reads.
+- **Task termination states** (NPS-002 §5.5/§5.6), after their legal
+  edges landed in the first round's lifecycle: `terminate_current()`
+  walks RUNNING → TERMINATING → TERMINATED through the enforcer and
+  dispatches away; task J exists solely to terminate on its first
+  activation, and the exact-count assertions prove a terminated task is
+  never re-dispatched (J runs exactly once; A/B still reach exactly 6
+  each across a 4-task round-robin). `self_test_terminated_consistency`
+  checks TERMINATED is unreachable directly from CREATED/READY and the
+  remaining tasks are all active.
+- **Blocking receive** (NPS-003 §3's `receive` primitive):
+  `ipc::receive(dest, max_polls)` yields the core between polls (an
+  idle receiver never spins hot) and returns the typed
+  `ReceiveTimedOut` when its budget elapses — "a defined error rather
+  than blocking indefinitely". Verified both ways every boot: an empty
+  mailbox times out typed, then a send makes the same receive deliver
+  exactly that message.
+
+Two honest self-test bugs this round's own boot caught and fixed (the
+pattern holds): the termination consistency check initially asserted
+its own stale precondition ("no task has terminated" — false after task
+J legitimately terminates, caught on the first boot); and the blocking-
+receive positive half reused the revocation test's scratch mailbox,
+whose sender-0 revocation made the honest send correctly return
+`Err(Revoked)` (also caught on the first boot). Both fixed at the
+cause; the negative-path work the checks do is unchanged.
+
+Verified transcript lines (from `tools/qemu_boot_test.sh`, passing):
+
+```
+  rtc wall-clock self-test: first read Ok(RtcTime { second: 10, minute: 57, hour: 8 }) (decoded via the hardware's actual mode bits, fields in valid ranges) -- OK
+  rtc wall-clock self-test: wall-clock reads decode via the hardware's reported modes and order monotonically -- OK
+  experimental scheduler termination proof: task J walked RUNNING -> TERMINATING -> TERMINATED and was never re-dispatched (ran exactly 1 time) -- OK
+  experimental scheduler termination self-test: 1 terminated task(s) (reached via the legal path), TERMINATED unreachable directly from CREATED/READY, remaining tasks active -- OK
+  experimental ipc blocking-receive self-test: bounded receive on an empty mailbox returned ReceiveTimedOut (typed, never an indefinite block) -- OK
+  experimental ipc blocking-receive self-test: bounded receive delivered the message sent before it (Ok(IpcMessage { sender: 0, seq: 7 })) -- OK
+  experimental ipc self-test: arbiter + revocation + blocking-receive contract checks -- OK
+PASS: kernel reached BootPhase::Ready and exited cleanly
+```
+
 **2026-10-11 gap-closure increment: the first NPS-002/NPS-003
 conformance increments** (the governance unblock: AG decision-log rows
 I1/I2 landed the specs, the same session's code landed the first

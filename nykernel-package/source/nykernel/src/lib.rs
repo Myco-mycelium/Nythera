@@ -257,12 +257,14 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     const TARGET_RTC_TICKS: u64 = 4;
     while rtc::ticks() < rtc_before + TARGET_RTC_TICKS {
         x86_64::instructions::hlt();
-    }
-    serial_println!(
-        "  rtc self-test: {} additional RTC periodic interrupts observed and handled after a snapshot ({} total; IRQ8, via the slave-PIC cascade)",
+    }    serial_println!("  rtc self-test: {} additional RTC periodic interrupts observed and handled after a snapshot ({} total; IRQ8, via the slave-PIC cascade)",
         rtc::ticks() - rtc_before,
         rtc::ticks()
     );
+
+    // ---- RTC wall-clock time registers (the 2026-10-11 increment) ----
+    let rtc_time_ok = rtc::self_test_time_registers();
+    assert!(rtc_time_ok, "RTC wall-clock self-test failed");
 
     // Third real IRQ line, same evidence standard as the timer and RTC:
     // drive the 8042 to inject a known scancode into its own output
@@ -346,6 +348,7 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     experimental::scheduler::init();
     experimental::scheduler::spawn(experimental_task_a, &mut mapper, &mut frame_allocator);
     experimental::scheduler::spawn(experimental_task_b, &mut mapper, &mut frame_allocator);
+    experimental::scheduler::spawn(experimental_terminating_task, &mut mapper, &mut frame_allocator);
     serial_println!(
         "  experimental scheduler: {} tasks registered (lifecycle-enforcing, NPS-002 §5)",
         experimental::scheduler::task_count()
@@ -353,6 +356,12 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     experimental::ipc::init(experimental::scheduler::task_count());
     serial_println!("  experimental ipc: {} mailboxes initialized (arbiter-checked, NPS-003 §5.4)", experimental::scheduler::task_count());
 
+    // 4 tasks = main + A + B + J. Round-robin is strict, so exactly
+    // TARGET_ROUNDS yields from main give A and B TARGET_ROUNDS runs
+    // each, and J -- which terminates on its first activation -- runs
+    // EXACTLY ONCE and then is skipped forever (a dispatcher that
+    // picked terminated tasks would give J more runs and the asserts
+    // below would fire).
     const TARGET_ROUNDS: u32 = 6;
     for _ in 0..TARGET_ROUNDS {
         experimental::scheduler::yield_task();
@@ -361,6 +370,13 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     let b_runs = TASK_B_RUNS.load(Ordering::Relaxed);
     assert_eq!(a_runs, TARGET_ROUNDS, "task A ran the wrong number of times -- scheduler is broken");
     assert_eq!(b_runs, TARGET_ROUNDS, "task B ran the wrong number of times -- scheduler is broken");
+    assert_eq!(TASK_J_RUNS.load(Ordering::Relaxed), 1, "terminal task J ran the wrong number of times (must be exactly 1 -- a terminated task must never be re-dispatched)");
+    assert_eq!(
+        experimental::scheduler::state_of(TASK_J_ID),
+        Some(experimental::scheduler::LifecycleState::Terminated),
+        "task J's final lifecycle state must be TERMINATED (NPS-002 §5.6)"
+    );
+    serial_println!("  experimental scheduler termination proof: task J walked RUNNING -> TERMINATING -> TERMINATED and was never re-dispatched (ran exactly 1 time) -- OK");
     serial_println!(
         "  experimental scheduler self-test: {} round trips completed, task A ran {} times, task B ran {} times",
         TARGET_ROUNDS, a_runs, b_runs
@@ -384,6 +400,14 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     // animated legally through set_state.
     let lifecycle_ok = experimental::scheduler::self_test_illegal_refusals();
     assert!(lifecycle_ok, "a deliberately illegal NPS-002 §5 lifecycle transition was not refused, or a legal one was wrongly blocked");
+
+    // 2026-10-11 increment: termination states verified structurally
+    // (live tasks alive, TERMINATED unreachable from pre-dispatch
+    // states). The live walk-through itself runs in the ring3 chain:
+    // `experimental::terminated_task` uses terminate_current() there
+    // so the §5.5/§5.6 edges are exercised on a real dispatch.
+    let term_ok = experimental::scheduler::self_test_terminated_consistency();
+    assert!(term_ok, "NPS-002 §5.5/§5.6 termination-state consistency self-test failed");
 
     // ---- experimental: NPS-003 §5.4/§4.3 arbiter + revocation controls ----
     // Accepted-spec enforcement, proven every boot against a scratch
@@ -456,6 +480,7 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
 
 static TASK_A_RUNS: AtomicU32 = AtomicU32::new(0);
 static TASK_B_RUNS: AtomicU32 = AtomicU32::new(0);
+static TASK_J_RUNS: AtomicU32 = AtomicU32::new(0);
 static IPC_RECEIVED: AtomicU32 = AtomicU32::new(0);
 static IPC_MISMATCHES: AtomicU32 = AtomicU32::new(0);
 
@@ -465,6 +490,26 @@ static IPC_MISMATCHES: AtomicU32 = AtomicU32::new(0);
 /// here rather than left as magic numbers at each call site.
 const TASK_A_ID: usize = 1;
 const TASK_B_ID: usize = 2;
+const TASK_J_ID: usize = 3;
+
+extern "C" fn experimental_terminating_task() -> ! {
+    // First activation: prove it ran (print once), then walk the
+    // NPS-002 §5.5/§5.6 termination edges live via
+    // scheduler::terminate_current() -- RUNNING → TERMINATING →
+    // TERMINATED, then dispatch away. A second activation of this
+    // function is impossible (a TERMINATED task is never picked by
+    // `pick_next_ready`), so TASK_J_RUNS can end at exactly 1 and must
+    // never increment again -- asserted by kernel_main after the round
+    // trips. If the dispatcher DID pick a terminated task, we'd
+    // re-enter here and the count assertion would fail loudly.
+    TASK_J_RUNS.fetch_add(1, Ordering::Relaxed);
+    serial_println!("    [experimental task J] activation 1: terminating per NPS-002 §5.5/§5.6 (RUNNING -> TERMINATING -> TERMINATED, then dispatch away)");
+    experimental::scheduler::terminate_current();
+    // terminate_current is `-> !` -- reaching here means the
+    // terminated task WAS re-dispatched, which the dispatcher's
+    // pick_next_ready(Ready-only) must never do.
+    unreachable!("terminated task re-dispatched");
+}
 
 extern "C" fn experimental_task_a() -> ! {
     loop {

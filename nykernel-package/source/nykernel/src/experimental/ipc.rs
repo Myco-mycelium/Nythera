@@ -59,6 +59,10 @@ pub enum IpcError {
     /// arbitrating, it's failing quietly).
     MailboxFull,
     NoSuchMailbox,
+    /// A blocking [`receive`]'s poll budget elapsed with no message
+    /// (the blocking receive's typed failure, never an indefinite
+    /// block).
+    ReceiveTimedOut,
     /// The send was refused by the arbiter check: the `sender` field
     /// does not name the actually-running task. NPS-003 §5.4: user
     /// code cannot forge identity past the kernel; the kernel-side
@@ -158,6 +162,35 @@ pub fn try_receive(dest: usize) -> Option<IpcMessage> {
     interrupts::without_interrupts(|| unsafe {
         MAILBOXES.get_mut(dest).and_then(|m| m.queue.pop_front())
     })
+}
+
+/// Blocking receive, added 2026-10-11 as the next NPS-003 conformance
+/// increment (NPS-003 §3: `receive` "blocks the calling thread until a
+/// message arrives at an endpoint it owns"). Cooperative-blocking:
+/// the caller yields the core between polls (NPS-002 §5.4 -- a
+/// process whose thread waits on a receive MUST yield the core, per
+/// "Performance"), so a waiting receiver never spins hot. Bounded by
+/// `max_polls` so a sender that never sends fails with a typed error
+/// ("defined error rather than blocking indefinitely" -- the NPS-002
+/// §7.1 posture, adapted here to a receive timeout) -- pass
+/// `Option::None` to wait without a bound (used by nothing yet; kept
+/// for callers whose protocol has its own liveness story). Returns
+/// the message on success; `ReceiveTimedOut` if `max_polls` elapsed;
+/// `NoSuchMailbox` for an out-of-range endpoint.
+pub fn receive(dest: usize, max_polls: Option<u32>) -> Result<IpcMessage, IpcError> {
+    let mut polls = 0u32;
+    loop {
+        if let Some(msg) = try_receive(dest) {
+            return Ok(msg);
+        }
+        if let Some(limit) = max_polls {
+            if polls >= limit {
+                return Err(IpcError::ReceiveTimedOut);
+            }
+        }
+        polls += 1;
+        crate::experimental::scheduler::yield_task();
+    }
 }
 
 /// NPS-003 §4.3: the owning process (here: the endpoint's task) MAY
@@ -281,9 +314,45 @@ pub fn self_test_arbiter_and_revocation() -> bool {
         if idempotent_ok { "OK" } else { "FAILED" }
     );
 
+    // ---- Blocking receive (NPS-003 §3, added 2026-10-11): use a
+    // FRESH scratch mailbox (the first one is revoked for sender 0 by
+    // the revocation test above, by design). An empty bounded
+    // `receive` MUST return the typed ReceiveTimedOut rather than
+    // hanging or busy-spinning (each poll yields the core, so a hung
+    // test here would show as a boot timeout, caught by the harness).
+    let scratch_dest2 = unsafe { MAILBOXES.len() };
+    unsafe {
+        MAILBOXES.push(Mailbox {
+            queue: VecDeque::new(),
+            capacity: DEFAULT_CAPACITY,
+            revoked: Vec::new(),
+        });
+    }
+    let timed_out = receive(scratch_dest2, Some(2));
+    let timeout_ok = matches!(timed_out, Err(IpcError::ReceiveTimedOut));
+    all_ok &= timeout_ok;
+    serial_println!(
+        "  experimental ipc blocking-receive self-test: bounded receive on an empty mailbox returned ReceiveTimedOut (typed, never an indefinite block) -- {}",
+        if timeout_ok { "OK" } else { "FAILED" }
+    );
+
+    // Then the positive half: send once (as the running task), and the
+    // SAME bounded receive must now deliver exactly that message.
+    let delivered = match send(scratch_dest2, IpcMessage { sender: 0, seq: 7 }) {
+        Ok(()) => receive(scratch_dest2, Some(2)),
+        Err(e) => Err(e),
+    };
+    let deliver_ok = matches!(delivered, Ok(IpcMessage { sender: 0, seq: 7 }));
+    all_ok &= deliver_ok;
+    serial_println!(
+        "  experimental ipc blocking-receive self-test: bounded receive delivered the message sent before it ({:?}) -- {}",
+        delivered,
+        if deliver_ok { "OK" } else { "FAILED" }
+    );
+
     let summary_ok = all_ok;
     serial_println!(
-        "  experimental ipc self-test: arbiter + revocation contract checks -- {}",
+        "  experimental ipc self-test: arbiter + revocation + blocking-receive contract checks -- {}",
         if summary_ok { "OK" } else { "FAILED" }
     );
     summary_ok

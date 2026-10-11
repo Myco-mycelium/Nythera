@@ -1,14 +1,14 @@
 ---
 title: Transparent Compression Policy
 document_id: NPS-005
-version: 1.0.1
-status: Draft
+version: 1.1.0
+status: Accepted
 classification: Normative
 subsystem: storage
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-07-13
+updated: 2026-10-11
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0007, NPS-004]
@@ -21,6 +21,12 @@ depends_on: [NTM-000, NPC-001, ADR-0007, NPS-004]
 This document is **normative**. RFC 2119 terms apply as in NPC-001. It
 defines the policy layer that decides *how aggressively* to compress data
 under NyFS (NPS-004 §4.5), separate from the codec mechanics themselves.
+
+**Accepted 2026-10-11** (AG decision-log row J1, owner direction via the
+recorded session): the Draft was transitive ONLY — on ADR-0007 remaining
+`Proposed` — and ADR-0007 has been Accepted since 2026-09-19 with its
+default level (3) explicitly adopted "per NPS-005 §3". See §7 for the
+disposition.
 
 ## 2. Scope
 
@@ -85,24 +91,36 @@ successfully," completing the write **MUST** take priority.
 
 ## 7. Open Questions *(Informative)*
 
-- **Status note (Milestone 9 review):** this document defines default
+- ~~**Status note (Milestone 9 review):** this document defines default
   compression levels per data category (§3), which are directly tied to
   ADR-0007's still-`Proposed` codec/level benchmarks. It remains `Draft`
   transitively — not for issues in its own normative content, but because
   accepting a policy that names specific default levels ahead of the ADR
   that sets them would be premature. It is expected to move to `Accepted`
-  in the same review cycle as ADR-0007.
+  in the same review cycle as ADR-0007.~~ **DISPOSITION (AG decision
+  record J1, 2026-10-11): the gate is discharged.** ADR-0007 was Accepted
+  2026-09-19 with its default level (3) explicitly adopted "per NPS-005
+  §3" — the levels table this document defines was already normatively
+  relied upon by an Accepted ADR, and this is exactly the same review
+  cycle the note expected. The Draft status was transitive-only, never a
+  defect in this document's own content.
 - The exact inactivity threshold for automatic Active→Cold migration
   (§4.2) requires usage-pattern data and is left unspecified pending
-  benchmarking, per NPC-002 §5.2.
+  benchmarking — a **tuning follow-up on the accepted §4.2 mechanism**
+  (per the ADR-0019/CRY-001 precedent), NOT an acceptance gate; the
+  normative requirement (background recompression of cold data, §4.3's
+  scheduling posture) is accepted as written.
 - Whether compression category should be exposed per-file in the standard
   file-properties UI or only through an advanced settings view is a UX
-  decision deferred to the adaptive UI shell specification (Milestone M5).
+  decision deferred to the adaptive UI shell specification (Milestone M5)
+  — a named follow-up on the accepted §4.4 must-override requirement,
+  not a gate.
 
 ## Revision History
 
 | Version | Date       | Change       |
 |---------|------------|---------------|
+| 1.1.0   | 2026-10-11 | **Accepted** (AG decision-log row J1, owner direction via the recorded session): the transitive ADR-0007 gate discharged (ADR-0007 Accepted 2026-09-19, default level adopted "per NPS-005 §3"); §7's status note dispositioned, and the two remaining open questions reclassified as named tuning/UX follow-ups, not gates |
 | 1.0.0   | 2026-07-12 | Initial draft |
 | 1.0.1   | 2026-07-13 | Clarify Draft status is a transitive dependency on ADR-0007, not an issue in this document's own content (Milestone 9 review) |
 
