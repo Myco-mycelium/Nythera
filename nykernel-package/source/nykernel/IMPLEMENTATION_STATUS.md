@@ -921,9 +921,12 @@ The pre-existing list continues unchanged:
   handlers, see above): every *other* IRQ line is still masked, and
   unmasking a line with no handler wired up is worse than not
   supporting it. Reading the RTC's actual wall-clock *time* (as opposed
-  to its periodic tick) is also not implemented -- that needs the CMOS
-  time registers' BCD/binary and 12/24-hour modes, deliberately left
-  out of the periodic-interrupt module
+  to its periodic tick) ~~is also not implemented -- that needs the
+  CMOS time registers' BCD/binary and 12/24-hour modes, deliberately
+  left out of the periodic-interrupt module~~ **Update 2026-10-11: closed
+  -- `rtc::read_time` decodes per Status B's actual mode bits with a
+  bounded UIP wait, proven every boot (see the second-round increment
+  above)**
 - Any actual IPC policy beyond the pre-normative mailbox proof of
   concept: capability-scoped transfer validation, kernel-as-arbiter
   semantics, blocking receive, or anything resembling NPS-003's

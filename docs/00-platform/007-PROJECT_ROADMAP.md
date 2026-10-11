@@ -63,10 +63,10 @@ and [`docs/reference/security/README.md`](../reference/security/README.md).
 ### M4 — Storage
 - [x] Finalize ADR-0002 (filesystem) into NPS specifications (NPS-004, Draft)
 - [x] Compression codec selection (ADR-0007 — Zstd default, LZ4 fast-path override)
-- [x] NPS-005 Transparent Compression Policy (Draft)
+- [x] NPS-005 Transparent Compression Policy (Draft — **Accepted 2026-10-11**, AG decision-log row J1: the transitive ADR-0007 gate discharged)
 - [x] NPS-006 Game/Application Image Format (.nygi) and Overlay (Draft, implements ADR-0003)
 - [x] Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed — **struck 2026-10-08 re-probe: the §2 close-out landed 2026-09-10 as BENCHMARK_RESULTS §31** (real-asset level sweep — ratio flat ≈1.07 on already-compressed data, level ≥7 buys ≤2% for 60× compute; the real LZ4 fast path; concurrent scaling), and ADR-0007 is now `Accepted`
-- [~] Architecture Group review to move ADR-0002/0003/0007 and NPS-004..006 to Accepted — **re-probe 2026-10-08: ADR-0002/0003 (M9), ADR-0007 (after the §31 close-out), NPS-004 and NPS-006 are `Accepted`; NPS-005 is the one document in this set still `Draft`** despite its ADR-0007 dependency now being Accepted — the remaining promotion is a status review
+- [x] Architecture Group review to move ADR-0002/0003/0007 and NPS-004..006 to Accepted — all seven are now `Accepted` (the set closed 2026-10-11 when **NPS-005 was Accepted**, AG decision-log row J1: its ADR-0007 dependency had been Accepted since 2026-09-19 with the default level explicitly adopted "per NPS-005 §3", so the transitive gate discharged via the very review cycle its own §7 note expected)
 
 ### M5 — Runtime
 - [x] Windows compatibility subsystem NPS (NPS-007, Draft, implements ADR-0005)
@@ -125,7 +125,7 @@ honestly be resolved and naming what couldn't, per NPC-001 §5's rule that
 - [x] Keep ADR-0007, ADR-0009, ADR-0013 at `Proposed` — each explicitly benchmark/tuning-blocked in its own text, not a review oversight
 - [x] Keep NPS-002, NPS-003 at `Draft` — each self-blocks on benchmark data in its own normative text (§9, §6.1 respectively)
 - [x] Keep NPS-005, NPS-010 at `Draft` — each transitively blocked on an ADR (0007, 0009) that isn't Accepted yet, with an explicit status note added explaining why
-- [~] Re-review ADR-0007, ADR-0009, ADR-0013, NPS-002, NPS-003, NPS-005, NPS-010 once their respective benchmarks land — **re-probe 2026-10-08 corrected: 4 of the 7 are now `Accepted`** (ADR-0007 after the §31 close-out, ADR-0009 after §32, ADR-0013 after §33, NPS-010), so their re-review has happened; **NPS-002, NPS-003 and NPS-005 remain `Draft`** (benchmark/self-blocked) — the only still-open half
+- [x] Re-review ADR-0007, ADR-0009, ADR-0013, NPS-002, NPS-003, NPS-005, NPS-010 once their respective benchmarks land — **all seven are now `Accepted`** (ADR-0007/0009/0013 and NPS-010 by 2026-10-08's re-probe; **NPS-002/NPS-003 on 2026-10-11** via AG rows I1/I2 — the gates reclassified as tuning follow-ups on accepted designs, and NPS-003's wire gate MET via IPC-001 §38; **NPS-005 the same day via row J1** — the transitive gate discharged). The box closes with no documents left in this review set
 
 ### M10 — Backlog Closure Pass
 A follow-up pass working through Milestone 9's remaining `Next Actions`
