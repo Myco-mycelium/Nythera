@@ -115,6 +115,68 @@ pub fn translate(mapper: &OffsetPageTable<'static>, addr: VirtAddr) -> Option<Ph
     mapper.translate_addr(addr)
 }
 
+/// Reads the current page-table flags of one 4KiB page through the
+/// currently active page-table hierarchy: walks PML4->PDPT->PD->PT via
+/// the identity-mapped table frames, and returns the leaf PTE's flags
+/// (the `mapper` parameter is kept for interface symmetry with
+/// `translate` and is not dereferenced -- observation goes through
+/// `CR3` so the answer is exactly what the CPU would use for `addr`
+/// (`None` when any level is absent or the leaf is unused). This is
+/// an observation primitive for self-tests that must check
+/// permission state *directly* rather than infer it from fault
+/// behavior -- `experimental::pie_demo`'s GNU_RELRO
+/// read-only-after-relocation check is the first caller: it asserts
+/// every RELRO page's leaf PTE genuinely lacks `WRITABLE` after
+/// `experimental::elf::load`'s revoke pass.
+///
+/// Returns `Err` for structurally unexpected states (huge-page leaf
+/// at an unexpected level, frame address not identity-reachable) so
+/// a caller cannot mistake "couldn't observe" for "observed clean".
+pub fn page_flags_of(
+    _mapper: &OffsetPageTable<'static>,
+    addr: VirtAddr,
+) -> Option<Result<PageTableFlags, ()>> {
+    use x86_64::structures::paging::PageTable;
+
+    let page: Page<Size4KiB> = Page::containing_address(addr);
+
+    // The mapper's level-4 table, via the same identity mapping every
+    // other page-table walker in this kernel uses (physical_memory_offset
+    // == 0; the tables themselves were allocated inside the first 1GiB --
+    // see the module doc at the top of this file).
+    let (pml4_frame, _) = Cr3::read();
+    let pml4: &PageTable = unsafe { &*(pml4_frame.start_address().as_u64() as *const PageTable) };
+
+    let p4e = &pml4[page.p4_index()];
+    if !p4e.flags().contains(PageTableFlags::PRESENT) {
+        return None;
+    }
+    if p4e.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Some(Err(())); // boot.s's shared 2MiB huge pages never host relocated user code
+    }
+    let pdpt: &PageTable = unsafe { &*(p4e.addr().as_u64() as *const PageTable) };
+    let p3e = &pdpt[page.p3_index()];
+    if !p3e.flags().contains(PageTableFlags::PRESENT) {
+        return None;
+    }
+    if p3e.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Some(Err(())); // same: process-private subtrees only map 4KiB pages
+    }
+    let pd: &PageTable = unsafe { &*(p3e.addr().as_u64() as *const PageTable) };
+    let p2e = &pd[page.p2_index()];
+    if !p2e.flags().contains(PageTableFlags::PRESENT) {
+        return None;
+    }
+    if p2e.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Some(Err(()));
+    }
+    let pt: &PageTable = unsafe { &*(p2e.addr().as_u64() as *const PageTable) };
+    let p1e = &pt[page.p1_index()];
+    if !p1e.flags().contains(PageTableFlags::PRESENT) {
+        return None;
+    }
+    Some(Ok(p1e.flags()))
+}
 /// Unmaps the 4 KiB page containing `addr` and invalidates its TLB
 /// entry. Returns `true` when a mapping existed and was removed.
 ///

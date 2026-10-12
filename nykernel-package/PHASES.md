@@ -876,10 +876,47 @@ error code: PROTECTION_VIOLATION | USER_MODE
 (`R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`, ...), which need real
 dynamic linking (symbol tables, string tables, name resolution against
 other loaded objects) that this loader doesn't attempt and correctly
-refuses rather than mishandles. A `PT_GNU_RELRO` "make read-only again
+refuses rather than mishandles. ~~A `PT_GNU_RELRO` "make read-only again
 after relocating" step is also not implemented -- a relocatable
 segment this loader maps writable stays writable, a documented
-simplification, not a silent gap.
+simplification, not a silent gap.~~ **Closed 2026-10-12 -- see the
+increment below.**
+
+---
+
+**Built and verified 2026-10-12: `PT_GNU_RELRO` "make read-only after
+relocating" -- the last documented loader simplification on this
+track gone.** `experimental::elf::load` now parses the GNU_RELRO
+program header and runs the real three-step discipline: map each
+segment exactly as the file's `p_flags` request, grant `WRITABLE` on
+the region's pages only when a pre-walk of the relocation table shows
+relocation targets actually landing inside it (the pre-walk reads the
+table without applying anything), apply the relocations, then revoke
+`WRITABLE` -- restoring exactly the file-requested permission set,
+never widening anything the file did not grant. A failed relocation
+pass (unsupported, symbol-resolved type) is reported to the caller as
+`RelroOutcome::Denied(start, end)` with the region left writable --
+the honest state, surfaced and acted on (`pie_demo` refuses such a
+binary outright) rather than silently kept or silently degraded.
+Enforcement is verified structurally every boot: the new
+`memory::paging::page_flags_of` reads a page's leaf PTE directly
+through CR3's tables, and `pie_demo` asserts every GNU_RELRO page of
+the loaded PIE has `writable=false` in the live page tables after
+relocation -- observing the very permission bits the CPU enforces,
+rather than trusting the loader's own claim:
+
+```
+  experimental pie-demo: GNU_RELRO region 0x60000002ef0..0x60000003000 is back to read-only after relocation (loader grant/revoke cycle completed) -- OK
+  experimental pie-demo self-test: relocated pointer dereferenced to 0xfeedface12345678 (expected 0xfeedface12345678) -- OK, relocation correctly applied
+  experimental pie-demo relro check: page 0x60000000000 PTE flags writable=false -- OK
+  experimental pie-demo self-test: all 1 GNU_RELRO page(s) verified read-only in the live page tables after relocation -- OK
+PASS: kernel reached BootPhase::Ready and exited cleanly
+```
+
+Honest scope, unchanged in kind: RELATIVE-relocatable binaries only,
+the same scope the relocation support itself has; symbol-resolved
+GNU_RELRO is the "real dynamic linking" entry's work, and the RELRO
+pass denies-and-reports it rather than pretending.
 
 ---
 

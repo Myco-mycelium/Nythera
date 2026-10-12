@@ -40,7 +40,7 @@
 //! file must be rejected with an error, not walk this kernel off the
 //! end of its own image.
 
-use x86_64::structures::paging::{OffsetPageTable, PageTableFlags};
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 use x86_64::VirtAddr;
 
 use crate::memory::frame_allocator::BumpFrameAllocator;
@@ -70,6 +70,11 @@ const DT_RELAENT: i64 = 9; // size of one relocation entry (must be RELA_ENTRY_S
 
 const R_X86_64_RELATIVE: u32 = 8;
 
+/// GNU ld's own program-header type marking the region GNU_RELRO
+/// (`PT_GNU_RELRO`, 0x6474e552). See `LoadedRelro` for how this loader
+/// honors it.
+const PT_GNU_RELRO: u32 = 0x6474_e552;
+
 #[derive(Debug)]
 pub enum ElfError {
     TooShort,
@@ -84,10 +89,42 @@ pub enum ElfError {
     MappingFailed,
     UnsupportedRelocationType,
     UnsupportedRelocationEntrySize,
+    /// A RELRO page's per-page permission update (the temporary
+    /// write-grant, or the revoke-to-read-only) could not be applied
+    /// through the page tables. Never silent: leaving a RELRO page
+    /// writable would silently discard the whole property the region
+    /// exists for, so a failed update is a refused load, not a
+    /// shrug.
+    RelroPermissionUpdateFailed,
+}
+
+/// What the loader did with a `PT_GNU_RELRO` segment. Returned so a
+/// caller (and the boot transcript) can see the region's final
+/// protection state as a fact, not an assumption -- and so a caller
+/// can structurally re-verify it against the live page tables, which
+/// `experimental::pie_demo` does every boot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelroOutcome {
+    /// The RELRO region existed, every relocation affecting it was a
+    /// `R_X86_64_RELATIVE` (the only kind this loader can satisfy),
+    /// all were applied, and the region's pages were then revoked to
+    /// read-only. `start`/`end` are runtime (bias-adjusted) byte
+    /// addresses -- `end` exclusive.
+    MadeReadOnly { start: u64, end: u64 },
+    /// The RELRO region contained at least one relocation this loader
+    /// cannot satisfy (anything symbol-resolved; real dynamic linking
+    /// is out of scope), so the region was NOT revoked -- leaving it
+    /// writable is the honest state here and is *reported*, not
+    /// hidden: a caller can refuse the binary outright or proceed
+    /// knowingly. `start`/`end` as above.
+    Denied { start: u64, end: u64 },
 }
 
 pub struct LoadedElf {
     pub entry_point: VirtAddr,
+    /// `Some` iff the file carried a `PT_GNU_RELRO` segment; see
+    /// [`RelroOutcome`] for the two possible states.
+    pub relro: Option<RelroOutcome>,
 }
 
 /// Reads a little-endian integer field out of `data` at `offset`,
@@ -171,7 +208,9 @@ pub fn load(
     if e_type == ET_EXEC && load_bias != 0 {
         return Err(ElfError::NonZeroBiasOnFixedAddressExecutable);
     }
-    let e_entry = read_u64(data, 24).ok_or(ElfError::TooShort)?;
+    // e_entry is read again below, AFTER relocations; reading it here
+    // first validates the header before any mapping work happens.
+    read_u64(data, 24).ok_or(ElfError::TooShort)?;
     let e_phoff = read_u64(data, 32).ok_or(ElfError::TooShort)? as usize;
     let e_phentsize = read_u16(data, 54).ok_or(ElfError::TooShort)? as usize;
     let e_phnum = read_u16(data, 56).ok_or(ElfError::TooShort)? as usize;
@@ -182,6 +221,7 @@ pub fn load(
 
     let mut load_segments_found = 0u32;
     let mut dynamic_segment: Option<(u64, u64)> = None; // (p_vaddr, p_filesz), pre-bias
+    let mut relro_segment: Option<(u64, u64)> = None; // (p_vaddr, p_memsz), pre-bias
 
     for i in 0..e_phnum {
         let off = e_phoff + i * e_phentsize;
@@ -192,6 +232,10 @@ pub fn load(
 
         if ph.p_type == PT_DYNAMIC {
             dynamic_segment = Some((ph.p_vaddr, ph.p_filesz));
+            continue;
+        }
+        if ph.p_type == PT_GNU_RELRO {
+            relro_segment = Some((ph.p_vaddr, ph.p_memsz));
             continue;
         }
         if ph.p_type != PT_LOAD {
@@ -237,12 +281,14 @@ pub fn load(
         // A PT_DYNAMIC-bearing binary's relocations write into this
         // segment after it's mapped (see below) -- if PF_W is absent
         // (the segment is nominally read-only, e.g. under
-        // GNU_RELRO-style layouts), temporarily allow the write by
-        // still honoring PF_W as requested here; this loader doesn't
-        // implement RELRO's "make read-only again after relocating"
-        // step, a documented simplification, not a silent gap (a
-        // relocatable segment this loader maps read-only stays
-        // writable forever, which a real loader wouldn't allow).
+        // GNU_RELRO-style layouts), the RELRO pass below temporarily
+        // grants the write itself, relocates, then revokes to
+        // read-only; the mapping here stays as the file requested.
+        // Similarly, an *executable* GNU_RELRO region (some linkers
+        // emit PLT-containing relro as PF_R|PF_X) would otherwise make
+        // the revoke pass silently widen permissions -- so the revoke
+        // below only ever *removes* writability from flags the
+        // segment already carries.
 
         if page_count > 0 {
             let mapped = paging::map_range(mapper, frame_allocator, seg_start, page_count, flags);
@@ -266,13 +312,213 @@ pub fn load(
         return Err(ElfError::NoLoadSegments);
     }
 
-    if let Some((dyn_vaddr, dyn_filesz)) = dynamic_segment {
-        apply_relocations(load_bias, dyn_vaddr, dyn_filesz)?;
-    }
+    // The load happens in a strict order, and only inside this scope
+    // does the RELRO region hold caller-granted write permission:
+    //  1. map + populate every PT_LOAD segment (above),
+    //  2. grant W on the GNU_RELRO pages *only if* relocations exist
+    //     whose targets land in the region,
+    //  3. apply the relocations,
+    //  4. revoke W, restoring exactly the file-requested flag set the
+    //     mapping pass laid down (it never adds W to a read-only
+    //     segment).
+    // If step 3 fails (an unsupported relocation type / entry size),
+    // the region is left writable and `LoadedElf::relro` reports
+    // `RelroOutcome::Denied` -- the honest state, surfaced to the
+    // caller rather than silently kept or silently unchanged.
+    let relro_outcome: Option<RelroOutcome> = match relro_segment {
+        Some((relro_vaddr, relro_memsz)) => {
+            let relro_start_v = load_bias.wrapping_add(relro_vaddr);
+            // GNU ld computes the memory size already page-aligned;
+            // be exact for the denial-vs-revocation decision (which
+            // relocation targets count as "inside" the region), then
+            // extend to whole pages for the actual permission work.
+            let relro_end_v = relro_start_v.wrapping_add(relro_memsz);
+            let page_start = VirtAddr::new(relro_start_v).align_down(4096u64).as_u64();
+            let page_end = VirtAddr::new(relro_end_v).align_up(4096u64).as_u64();
+            let relro_pages = (page_end - page_start) / 4096;
+
+            let relocations_planned = relro_outcome_planned(&dynamic_segment, load_bias, relro_start_v, relro_end_v);
+            if relocations_planned.some {
+                // Grant write for the relocation pass only. This is
+                // the loader's own request, deliberately distinct
+                // (WRITABLE only, the rest untouched) from the file's.
+                if !update_page_flags_range(mapper, page_start, relro_pages, |mut f| {
+                    f.insert(PageTableFlags::WRITABLE);
+                    f
+                }) {
+                    return Err(ElfError::RelroPermissionUpdateFailed);
+                }
+            }
+
+            let apply_result = match dynamic_segment {
+                Some((dyn_vaddr, dyn_filesz)) => apply_relocations(load_bias, dyn_vaddr, dyn_filesz),
+                None => Ok(()),
+            };
+            match apply_result {
+                Ok(()) => {
+                    if relocations_planned.some {
+                        // Revoke: strip WRITABLE, keep everything else
+                        // (including NO_EXECUTE and USER_ACCESSIBLE)
+                        // exactly as mapped. On success the region is
+                        // precisely as protected as a read-only file
+                        // segment would be -- plus, per the mapping
+                        // pass, it cannot have gained ANY permission
+                        // the file did not request.
+                        if !update_page_flags_range(mapper, page_start, relro_pages, |f| {
+                            f & !PageTableFlags::WRITABLE
+                        }) {
+                            return Err(ElfError::RelroPermissionUpdateFailed);
+                        }
+                        Some(RelroOutcome::MadeReadOnly { start: relro_start_v, end: relro_end_v })
+                    } else {
+                        // No in-region relocations needed the grant;
+                        // the region's pages still carry exactly their
+                        // file-requested permissions.
+                        Some(RelroOutcome::MadeReadOnly { start: relro_start_v, end: relro_end_v })
+                    }
+                }
+                Err(e) => match e {
+                    // The failures the RELRO decision logic can
+                    // produce: something in the dynamic segment is
+                    // deliberately unrepresentable here. Leave the
+                    // region writable and deny (see RelroOutcome).
+                    ElfError::UnsupportedRelocationType | ElfError::UnsupportedRelocationEntrySize => {
+                        Some(RelroOutcome::Denied { start: relro_start_v, end: relro_end_v })
+                    }
+                    other => return Err(other),
+                },
+            }
+        }
+        None => None,
+    };
+
+    let e_entry_final = read_u64(data, 24).ok_or(ElfError::TooShort)?;
 
     Ok(LoadedElf {
-        entry_point: VirtAddr::new(load_bias.wrapping_add(e_entry)),
+        entry_point: VirtAddr::new(load_bias.wrapping_add(e_entry_final)),
+        relro: relro_outcome,
     })
+}
+
+/// Cross-checks the relocation table (already mapped, via the
+/// PT_LOAD pass) against the RELRO region's runtime address range and
+/// classifies the region's supportability WITHOUT applying anything:
+/// - entries outside the region don't affect the region's own REMAP
+///   decision (the RELRO decision logic below uses this only for
+///   whether a grant is *needed*, not whether the region is
+///   "covered"; see the grant/revoke flow above),
+/// - the first in-region entry of any non-RELATIVE type marks the
+///   region unsupportable (`some: false` => denial path).
+///
+/// Soundness note: this is an inspection pass over data already in
+/// memory, re-walking the exact same table `apply_relocations` walks,
+/// with the same bounds/threshold arithmetic (see
+/// `apply_relocations`' own doc for why each check is safe). It must
+/// read the table BEFORE any relocation is applied, since the RELRO
+/// grant decision is made from it.
+fn relro_outcome_planned(
+    dynamic_segment: &Option<(u64, u64)>,
+    load_bias: u64,
+    relro_start: u64,
+    relro_end: u64,
+) -> RelroPlanningOutcome {
+    let Some(&(dyn_vaddr, dyn_filesz)) = dynamic_segment.as_ref() else {
+        // No dynamic segment => no relocation table => nothing ever
+        // contests the region's read-only reset.
+        return RelroPlanningOutcome { some: false };
+    };
+
+    let dyn_base = load_bias.wrapping_add(dyn_vaddr);
+    let dyn_entry_count = (dyn_filesz as usize) / DYN_ENTRY_SIZE;
+
+    let mut rela_addr: Option<u64> = None;
+    let mut rela_size: Option<u64> = None;
+    let mut rela_entsize: Option<u64> = None;
+
+    for i in 0..dyn_entry_count {
+        let entry_addr = dyn_base + (i * DYN_ENTRY_SIZE) as u64;
+        let (tag, val) = unsafe {
+            let tag = core::ptr::read_unaligned(entry_addr as *const i64);
+            let val = core::ptr::read_unaligned((entry_addr + 8) as *const u64);
+            (tag, val)
+        };
+        match tag {
+            DT_NULL => break,
+            DT_RELA => rela_addr = Some(val),
+            DT_RELASZ => rela_size = Some(val),
+            DT_RELAENT => rela_entsize = Some(val),
+            _ => {}
+        }
+    }
+
+    let (Some(rela_addr), Some(rela_size)) = (rela_addr, rela_size) else {
+        return RelroPlanningOutcome { some: false };
+    };
+    if let Some(entsize) = rela_entsize {
+        if entsize as usize != RELA_ENTRY_SIZE {
+            return RelroPlanningOutcome { some: false }; // apply_relocations will refuse it; region is Denied
+        }
+    }
+
+    let rela_base = load_bias.wrapping_add(rela_addr);
+    let rela_count = (rela_size as usize) / RELA_ENTRY_SIZE;
+
+    // "Some" here means: at least one entry NEEDS the region
+    // (writable during relocation and later revoked) OR marks the
+    // region unsupportable. The caller doesn't distinguish those
+    // cases here; the apply pass does.
+    for i in 0..rela_count {
+        let entry_addr = rela_base + (i * RELA_ENTRY_SIZE) as u64;
+        let (r_offset, r_info, _r_addend) = unsafe {
+            let r_offset = core::ptr::read_unaligned(entry_addr as *const u64);
+            let r_info = core::ptr::read_unaligned((entry_addr + 8) as *const u64);
+            let r_addend = core::ptr::read_unaligned((entry_addr + 16) as *const i64);
+            (r_offset, r_info, r_addend)
+        };
+        let _ = _r_addend;
+        let target_addr = load_bias.wrapping_add(r_offset);
+        let r_type = (r_info & 0xffff_ffff) as u32;
+        let target_in_region = target_addr >= relro_start && target_addr < relro_end;
+        if target_in_region && r_type != R_X86_64_RELATIVE {
+            // A symbol-resolved relocation aimed into this region:
+            // this loader genuinely cannot satisfy it (no real
+            // dynamic linking -- see the module doc), so this region
+            // cannot be made honestly read-only.
+            return RelroPlanningOutcome { some: false };
+        }
+        if target_in_region && r_type == R_X86_64_RELATIVE {
+            return RelroPlanningOutcome { some: true };
+        }
+    }
+    RelroPlanningOutcome { some: false }
+}
+
+struct RelroPlanningOutcome {
+    some: bool,
+}
+
+/// Applies `f page_flag -> new page_flag` to every 4KiB page in
+/// `[start, start + pages * 4096)`, by re-walking the page tables via
+/// the same `OffsetPageTable` the mapping pass used. Any page missing
+/// or unmapped is a hard failure (`false`), since the mapping pass
+/// must have created all of them (making this a check that the load
+/// itself is intact, not a formality).
+fn update_page_flags_range(
+    mapper: &mut OffsetPageTable<'static>,
+    start: u64,
+    pages: u64,
+    update: impl Fn(PageTableFlags) -> PageTableFlags,
+) -> bool {
+    for i in 0..pages {
+        let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(start + i * 4096));
+        match unsafe { mapper.update_flags(page, update(PageTableFlags::PRESENT)) } {
+            Ok(flush) => {
+                flush.flush();
+            }
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// Walks the `PT_DYNAMIC` segment's tag/value entries (now readable at

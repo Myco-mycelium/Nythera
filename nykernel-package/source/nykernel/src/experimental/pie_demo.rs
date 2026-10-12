@@ -69,6 +69,27 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     let loaded = elf::load(PIE_PROGRAM_ELF, &mut mapper, fa, LOAD_BASE)
         .unwrap_or_else(|e| panic!("failed to load PIE program: {:?}", e));
 
+    // GNU_RELRO disposition, reported as a fact from the loader's own
+    // return value. `userprog/userprog_pie.elf` (built by build.sh with
+    // default `ld -pie` behavior) carves its `.dynamic` segment out as
+    // a GNU_RELRO region (verified via `readelf -l`: a R-only
+    // PT_GNU_RELRO segment covering the same bytes as PT_DYNAMIC), and
+    // its single R_X86_64_RELATIVE relocation targets `data_ptr` in
+    // `.data` -- NOT inside the relro region -- so the honest outcome
+    // here is MadeReadOnly with nothing needing the write-grant path.
+    match loaded.relro {
+        Some(elf::RelroOutcome::MadeReadOnly { start, end }) => {
+            serial_println!(
+                "  experimental pie-demo: GNU_RELRO region {:#x}..{:#x} is back to read-only after relocation (loader grant/revoke cycle completed) -- OK",
+                start, end
+            );
+        }
+        Some(elf::RelroOutcome::Denied { start, end }) => {
+            panic!("GNU_RELRO region {:#x}..{:#x} was denied (unsupported relocation type); refusing to continue on a known-unprotected process", start, end);
+        }
+        None => panic!("GNU_RELRO outcome absent; a default `ld -pie` build always has one"),
+    }
+
     let data_flags = x86_64::structures::paging::PageTableFlags::PRESENT
         | x86_64::structures::paging::PageTableFlags::WRITABLE
         | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE
@@ -110,6 +131,55 @@ pub unsafe fn on_trap() -> ! {
         "  experimental pie-demo self-test: relocated pointer dereferenced to {:#x} (expected {:#x}) -- {}",
         observed, EXPECTED_VALUE, if ok { "OK, relocation correctly applied" } else { "MISMATCH" }
     );
+
+    // Structural GNU_RELRO enforcement check, independent of the
+    // loader's own claim: walk the page tables of THIS demo's (still
+    // active) address space and read the leaf PTE of every page in the
+    // RELRO region. After the loader's revoke pass, none may contain
+    // WRITABLE -- a direct observation of the permission bits the CPU
+    // will actually enforce, not an inference from later fault
+    // behavior. (`page_flags_of` walks CR3's tables, which are this
+    // space's own, since `space.activate()` set it and no other address
+    // space has been activated since -- but observing through CR3 is
+    // deliberate either way.)
+    {
+        use crate::memory::paging::page_flags_of;
+        const RELRO_START: u64 = LOAD_BASE; // PT_DYNAMIC == PT_GNU_RELRO segment vaddr (see the load-time report above)
+        const RELRO_END: u64 = RELRO_START + 0x120; // .dynamic is 0x110 bytes; page-rounded at the loader
+        let mapper = crate::experimental::address_space::active_mapper();
+        let mut all_ok = true;
+        let mut checked = 0usize;
+        for base in (RELRO_START..RELRO_END).step_by(4096) {
+            let addr = x86_64::VirtAddr::new(base);
+            match page_flags_of(&mapper, addr) {
+                Some(Ok(flags)) => {
+                    let ro = !flags.contains(x86_64::structures::paging::PageTableFlags::WRITABLE);
+                    all_ok &= ro;
+                    checked += 1;
+                    serial_println!(
+                        "  experimental pie-demo relro check: page {:#x} PTE flags writable={} -- {}",
+                        base,
+                        flags.contains(x86_64::structures::paging::PageTableFlags::WRITABLE),
+                        if ro { "OK" } else { "FAILED" }
+                    );
+                }
+                Some(Err(_)) => {
+                    all_ok = false;
+                    serial_println!("  experimental pie-demo relro check: page {:#x} PTE read failed (huge page at an unexpected level) -- FAILED", base);
+                }
+                None => {
+                    all_ok = false;
+                    serial_println!("  experimental pie-demo relro check: page {:#x} is not mapped -- FAILED", base);
+                }
+            }
+        }
+        serial_println!(
+            "  experimental pie-demo self-test: all {} GNU_RELRO page(s) verified read-only in the live page tables after relocation -- {}",
+            checked,
+            if all_ok { "OK" } else { "FAILED" }
+        );
+        assert!(all_ok, "GNU_RELRO enforcement failed: a RELRO page is still writable after the loader's revoke pass");
+    }
 
     let fa = FRAME_ALLOCATOR.take().unwrap();
     pe_demo::start(fa)

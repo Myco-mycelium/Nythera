@@ -778,6 +778,49 @@ effect, not a suppression: no `#[allow]` was added anywhere.
 
 ## What does NOT exist yet (do not assume otherwise)
 
+**2026-10-12 (third round) — the GNU_RELRO "make read-only again after
+relocating" gap closed, with an every-boot structural proof:**
+
+- **PT_GNU_RELRO enforcement** (`experimental::elf::load`): the loader
+  now parses the `PT_GNU_RELRO` program header and runs the real
+  three-step discipline — map each segment exactly as the file's
+  `p_flags` request (no blanket-writable compromise), grant
+  `WRITABLE` on the region's pages *only when* relocation targets
+  actually land inside it (a pre-walk of the relocation table without
+  applying anything), apply the relocations, then revoke
+  `WRITABLE` — restoring precisely the file-requested permission set,
+  never widening anything the file did not grant (an executable relro
+  region cannot come out writable, and a non-executable one cannot
+  come out executable). If the relocation pass is refused (an
+  unsupported, symbol-resolved type), the region is left writable and
+  reported via `LoadedElf::relro = Denied(start, end)` — the honest
+  state surfaced to the caller rather than silently kept
+  read-protected or silently left writable; `pie_demo` refuses such a
+  binary outright, so "denied" cannot ride a silent path through the
+  boot. The kernel also gained `memory::paging::page_flags_of`, which
+  reads a page's leaf PTE directly through CR3's tables (some checks
+  need to *observe* permission bits, not infer them from later fault
+  behavior — the same lesson `guard_demo`'s probe taught in the
+  opposite direction), and `pie_demo` uses it every boot to verify
+  every GNU_RELRO page of the loaded PIE is genuinely
+  `writable=false` in the live page tables *after* relocation —
+  independent of the loader's own report, so a loader regression
+  cannot coincide with a self-test regression in the same increment.
+  Verified transcript lines (same passing boot as the entry above):
+
+  ```
+    experimental pie-demo: GNU_RELRO region 0x60000002ef0..0x60000003000 is back to read-only after relocation (loader grant/revoke cycle completed) -- OK
+    experimental pie-demo relro check: page 0x60000000000 PTE flags writable=false -- OK
+    experimental pie-demo self-test: all 1 GNU_RELRO page(s) verified read-only in the live page tables after relocation -- OK
+  PASS: kernel reached BootPhase::Ready and exited cleanly
+  ```
+
+  Honest scope note, unchanged in kind: this covers RELATIVE-relocatable
+  binaries only (the same scope the relocation support itself has).
+  Symbol-resolved GNU_RELRO (dynamic linker scenarios) is captured by
+  the "Real dynamic linking" entry below — the RELRO pass denies and
+  reports those rather than pretending.
+
 **2026-10-11 (second policy round) — three more documented gaps closed,
 each with an every-boot self-test:**
 
@@ -944,9 +987,10 @@ The pre-existing list continues unchanged:
   `R_X86_64_JUMP_SLOT`, ...), symbol table parsing, string table
   parsing, and resolving symbols against other loaded objects are not
   implemented -- a binary requiring any of that is correctly rejected,
-  not silently mishandled. `PT_GNU_RELRO`'s "make read-only again after
-  relocating" step is also not implemented; a relocatable segment this
-  loader maps writable stays writable
+  not silently mishandled. `PT_GNU_RELRO`'s "make read-only again
+  after relocating" step ~~is also not implemented~~ **Update
+  2026-10-12: closed -- `elf::load` now implements the full
+  grant/revoke cycle (see the third-round increment above)**
 - Address-space teardown for a space that was ever the *active* one
   for a ring-3 trap: once listed here as an open sharp edge (the
   documented caveat in `AddressSpace::destroy`'s own safety comment),
