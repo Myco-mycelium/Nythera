@@ -44,6 +44,15 @@ const USER_STACK_ADDR: u64 = 0x_6000_0020_000;
 
 const EXPECTED_VALUE: u64 = 0xFEEDFACE12345678;
 
+/// The loader's actual GNU_RELRO range endpoints, stashed by `start`
+/// from `LoadedElf::relro` and consumed by the structural check in
+/// `on_trap` -- so the checked range is what `elf::load` decided, never
+/// a copied constant (a copied constant could not fail when the
+/// loader's revoke pass is removed). Two atomics because each endpoint
+/// is a full 64-bit address (this demo's base alone needs 44 bits).
+static RELRO_START: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static RELRO_END: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 
 /// Builds an address space, loads the PIE binary at [`LOAD_BASE`],
@@ -70,15 +79,22 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         .unwrap_or_else(|e| panic!("failed to load PIE program: {:?}", e));
 
     // GNU_RELRO disposition, reported as a fact from the loader's own
-    // return value. `userprog/userprog_pie.elf` (built by build.sh with
-    // default `ld -pie` behavior) carves its `.dynamic` segment out as
-    // a GNU_RELRO region (verified via `readelf -l`: a R-only
+    // return value, and STASHED for the on-trap structural check below:
+    // the checked range must be the loader's own relro range (0x2ef0..
+    // 0x3000 under this pie's layout), not something this module guesses
+    // -- a hand-copied constant could not fail when the loader's revoke
+    // pass is removed, and a check that cannot fail is decorative.
+    // `userprog/userprog_pie.elf` (built by build.sh with default
+    // `ld -pie` behavior) carves its `.dynamic` segment out as a
+    // GNU_RELRO region (verified via `readelf -l`: a R-only
     // PT_GNU_RELRO segment covering the same bytes as PT_DYNAMIC), and
     // its single R_X86_64_RELATIVE relocation targets `data_ptr` in
     // `.data` -- NOT inside the relro region -- so the honest outcome
     // here is MadeReadOnly with nothing needing the write-grant path.
     match loaded.relro {
         Some(elf::RelroOutcome::MadeReadOnly { start, end }) => {
+            RELRO_START.store(start, core::sync::atomic::Ordering::SeqCst);
+            RELRO_END.store(end, core::sync::atomic::Ordering::SeqCst);
             serial_println!(
                 "  experimental pie-demo: GNU_RELRO region {:#x}..{:#x} is back to read-only after relocation (loader grant/revoke cycle completed) -- OK",
                 start, end
@@ -144,12 +160,16 @@ pub unsafe fn on_trap() -> ! {
     // deliberate either way.)
     {
         use crate::memory::paging::page_flags_of;
-        const RELRO_START: u64 = LOAD_BASE; // PT_DYNAMIC == PT_GNU_RELRO segment vaddr (see the load-time report above)
-        const RELRO_END: u64 = RELRO_START + 0x120; // .dynamic is 0x110 bytes; page-rounded at the loader
+        // The checked range comes from the loader's own report (end
+        // exclusive), page-walked at 4096 -- see the RELRO_START/END docs
+        // above for why it must not be a hand-copied constant.
+        let relro_start = RELRO_START.load(core::sync::atomic::Ordering::SeqCst);
+        let relro_end = RELRO_END.load(core::sync::atomic::Ordering::SeqCst);
+        assert!(relro_end > relro_start, "loader reported an empty RELRO range");
         let mapper = crate::experimental::address_space::active_mapper();
         let mut all_ok = true;
         let mut checked = 0usize;
-        for base in (RELRO_START..RELRO_END).step_by(4096) {
+        for base in (relro_start..relro_end).step_by(4096) {
             let addr = x86_64::VirtAddr::new(base);
             match page_flags_of(&mapper, addr) {
                 Some(Ok(flags)) => {

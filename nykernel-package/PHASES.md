@@ -891,17 +891,33 @@ program header and runs the real three-step discipline: map each
 segment exactly as the file's `p_flags` request, grant `WRITABLE` on
 the region's pages only when a pre-walk of the relocation table shows
 relocation targets actually landing inside it (the pre-walk reads the
-table without applying anything), apply the relocations, then revoke
-`WRITABLE` -- restoring exactly the file-requested permission set,
-never widening anything the file did not grant. A failed relocation
-pass (unsupported, symbol-resolved type) is reported to the caller as
+table without applying anything), apply the relocations, then
+UNCONDITIONALLY revoke `WRITABLE` -- restoring exactly the
+file-requested permission set, never widening anything the file did
+not grant. The revoke is unconditional because a GNU_RELRO region
+often overlaps a writable PT_LOAD segment (here the relro covers
+PT_DYNAMIC, inside the RW data segment): "no in-region relocations"
+does not imply "already read-only", and skipping the revoke for that
+case leaves the dynamic segment writable while the loader still
+reports it protected -- the exact silent lie this increment exists to
+eliminate. Two honest bugs in this round's own work were caught by
+the boot itself and fixed at cause (the pattern holding yet again):
+that initial skipped-revoke-on-no-relocation-path logic bug (the
+first structural check read back `writable=true` on the real RELRO
+page); and a decorative-check bug in the demo (it first examined the
+ELF header page, which is read-only regardless of the RELRO pass and
+so could not fail if the revoke pass were removed -- it now walks the
+loader's own reported range, stashed at load time, asserting
+`checked > 0`). A failed relocation pass (unsupported,
+symbol-resolved type) is reported to the caller as
 `RelroOutcome::Denied(start, end)` with the region left writable --
 the honest state, surfaced and acted on (`pie_demo` refuses such a
 binary outright) rather than silently kept or silently degraded.
 Enforcement is verified structurally every boot: the new
 `memory::paging::page_flags_of` reads a page's leaf PTE directly
 through CR3's tables, and `pie_demo` asserts every GNU_RELRO page of
-the loaded PIE has `writable=false` in the live page tables after
+the loaded PIE -- the loader's own reported range, not a hand-copied
+constant -- has `writable=false` in the live page tables after
 relocation -- observing the very permission bits the CPU enforces,
 rather than trusting the loader's own claim:
 

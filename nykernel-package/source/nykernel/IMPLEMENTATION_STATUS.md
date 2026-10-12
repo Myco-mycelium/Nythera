@@ -787,25 +787,44 @@ relocating" gap closed, with an every-boot structural proof:**
   `p_flags` request (no blanket-writable compromise), grant
   `WRITABLE` on the region's pages *only when* relocation targets
   actually land inside it (a pre-walk of the relocation table without
-  applying anything), apply the relocations, then revoke
-  `WRITABLE` — restoring precisely the file-requested permission set,
-  never widening anything the file did not grant (an executable relro
-  region cannot come out writable, and a non-executable one cannot
-  come out executable). If the relocation pass is refused (an
-  unsupported, symbol-resolved type), the region is left writable and
-  reported via `LoadedElf::relro = Denied(start, end)` — the honest
-  state surfaced to the caller rather than silently kept
-  read-protected or silently left writable; `pie_demo` refuses such a
-  binary outright, so "denied" cannot ride a silent path through the
-  boot. The kernel also gained `memory::paging::page_flags_of`, which
-  reads a page's leaf PTE directly through CR3's tables (some checks
-  need to *observe* permission bits, not infer them from later fault
-  behavior — the same lesson `guard_demo`'s probe taught in the
-  opposite direction), and `pie_demo` uses it every boot to verify
-  every GNU_RELRO page of the loaded PIE is genuinely
-  `writable=false` in the live page tables *after* relocation —
-  independent of the loader's own report, so a loader regression
-  cannot coincide with a self-test regression in the same increment.
+  applying anything), apply the relocations, then UNCONDITIONALLY
+  revoke `WRITABLE` on the success path — restoring precisely the
+  file-requested permission set, never widening anything the file did
+  not grant (an executable relro region cannot come out writable, and
+  a non-executable one cannot come out executable). The revoke is
+  unconditional for a reason the discipline itself makes easy to get
+  wrong: a GNU_RELRO region often overlaps a writable `PT_LOAD`
+  segment (here the relro covers `PT_DYNAMIC`, inside the RW data
+  segment), so "no in-region relocations" does NOT imply "already
+  read-only" — the first boot with the structural check caught
+  exactly that variant (the revoke was initially skipped on the
+  no-in-region-relocation path, the real RELRO page read back
+  `writable=true`, the boot refused to pass). Two honest bugs in this
+  round's own checks were caught and fixed at cause rather than
+  softened: that skipped-revoke-on-no-relocation-path logic bug, and
+  a decorative-check bug in the demo itself (the structural check
+  first examined a page that would be read-only regardless of the
+  RELRO pass — the ELF header page — so it could not fail if the
+  revoke pass were removed; it now walks the loader's own reported
+  `RelroOutcome::MadeReadOnly` range, stashed at load time, and
+  asserts `checked > 0` — which is also how the bug above was caught,
+  as the boot residue of the second check-rewrite). If the relocation
+  pass is refused (an unsupported, symbol-resolved type), the region
+  is left writable and reported via `LoadedElf::relro = Denied(start,
+  end)` — the honest state surfaced to the caller rather than
+  silently kept read-protected or silently left writable; `pie_demo`
+  refuses such a binary outright, so "denied" cannot ride a silent
+  path through the boot. The kernel also gained
+  `memory::paging::page_flags_of`, which reads a page's leaf PTE
+  directly through CR3's tables (some checks need to *observe*
+  permission bits, not infer them from later fault behavior — the
+  same lesson `guard_demo`'s probe taught in the opposite direction),
+  and `pie_demo` uses it every boot to verify every GNU_RELRO page of
+  the loaded PIE — the loader's own reported range, not a hand-copied
+  constant — is genuinely `writable=false` in the live page tables
+  *after* relocation, independent of the loader's internal state, so
+  a loader regression cannot coincide with a self-test regression in
+  the same increment.
   Verified transcript lines (same passing boot as the entry above):
 
   ```

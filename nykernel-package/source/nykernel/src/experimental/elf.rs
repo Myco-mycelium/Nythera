@@ -356,26 +356,25 @@ pub fn load(
             };
             match apply_result {
                 Ok(()) => {
-                    if relocations_planned.some {
-                        // Revoke: strip WRITABLE, keep everything else
-                        // (including NO_EXECUTE and USER_ACCESSIBLE)
-                        // exactly as mapped. On success the region is
-                        // precisely as protected as a read-only file
-                        // segment would be -- plus, per the mapping
-                        // pass, it cannot have gained ANY permission
-                        // the file did not request.
-                        if !update_page_flags_range(mapper, page_start, relro_pages, |f| {
-                            f & !PageTableFlags::WRITABLE
-                        }) {
-                            return Err(ElfError::RelroPermissionUpdateFailed);
-                        }
-                        Some(RelroOutcome::MadeReadOnly { start: relro_start_v, end: relro_end_v })
-                    } else {
-                        // No in-region relocations needed the grant;
-                        // the region's pages still carry exactly their
-                        // file-requested permissions.
-                        Some(RelroOutcome::MadeReadOnly { start: relro_start_v, end: relro_end_v })
+                    // Revoke: strip WRITABLE, keep everything else
+                    // (including NO_EXECUTE and USER_ACCESSIBLE)
+                    // exactly as mapped. This runs UNCONDITIONALLY on
+                    // the success path: a GNU_RELRO region often
+                    // overlaps a writable PT_LOAD segment (here it sits
+                    // inside the RW data segment), so "no in-region
+                    // relocations" does NOT imply "already read-only"
+                    // -- skipping the revoke for that case would leave
+                    // the dynamic segment writable while the loader
+                    // still reported it protected (exactly the silent
+                    // lie this increment exists to eliminate). A revoke
+                    // on an already-read-only page is a harmless
+                    // no-op.
+                    if !update_page_flags_range(mapper, page_start, relro_pages, |f| {
+                        f & !PageTableFlags::WRITABLE
+                    }) {
+                        return Err(ElfError::RelroPermissionUpdateFailed);
                     }
+                    Some(RelroOutcome::MadeReadOnly { start: relro_start_v, end: relro_end_v })
                 }
                 Err(e) => match e {
                     // The failures the RELRO decision logic can
