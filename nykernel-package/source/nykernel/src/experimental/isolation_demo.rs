@@ -178,6 +178,12 @@ pub unsafe fn on_syscall_trap(cpl: u64) -> bool {
                 // is A, so map the probe stack into A's tables.
                 let fa = FRAME_ALLOCATOR.as_mut().unwrap();
                 let mut mapper = SPACE_A.as_mut().unwrap().mapper();
+                // Immediately before the terminal guard proof: the
+                // guarded-region's slot-reuse mechanism's boot proof
+                // (allocate/release/re-hand-out byte-identically, the
+                // guard staying unmapped). Non-terminal; the guard
+                // demo's exit below still closes the boot.
+                crate::memory::kernel_stack::reuse_self_test(&mut mapper, fa);
                 crate::memory::guard_demo::run_and_prove(&mut mapper, fa)
             } else {
                 report_failure_and_exit("process B or the post-switch isolation check failed");

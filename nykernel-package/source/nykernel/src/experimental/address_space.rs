@@ -33,7 +33,7 @@
 
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use x86_64::structures::paging::{
-    FrameDeallocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+    FrameDeallocator, OffsetPageTable, PageTable, PageTableFlags, PhysFrame,
 };
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -56,9 +56,12 @@ pub struct AddressSpace {
     pml4_frame: PhysFrame,
     /// This address space's own private RSP0 stack -- the stack the CPU
     /// switches to on a ring-3->ring-0 trap while this space is active.
-    /// Kept alive for as long as the `AddressSpace` is (typically
-    /// forever, via `mem::forget`, same as everything else in this
-    /// proof of concept with no teardown story yet).
+    /// Lives for as long as the `AddressSpace` does: every demo
+    /// `mem::forget`s its spaces (this proof of concept has no general
+    /// teardown story), but the ONE real teardown site —
+    /// `ring3_scheduler::finale` destroying suspended task F — calls
+    /// `destroy`, which now hands the slot back to
+    /// `memory::kernel_stack`'s exact-count reuse pool for re-hand-out.
     ///
     /// Unlike the heap `Vec<u8>` this used to be, the stack now comes
     /// from `memory::kernel_stack`'s shared region and carries a real
@@ -76,9 +79,26 @@ impl AddressSpace {
     /// Allocates a fresh PML4, zeroes it, then copies just the shared
     /// entries (see [`SHARED_PML4_INDICES`]) from whichever address
     /// space is currently active, and allocates this space's own
-    /// private RSP0 stack. Does NOT activate the new space -- see
-    /// [`activate`](Self::activate).
+    /// private RSP0 stack sized by
+    /// [`kernel_stack::DEFAULT_STACK_PAGES`]. Does NOT activate the
+    /// new space -- see [`activate`](Self::activate).
     pub fn new_sharing_kernel(frame_allocator: &mut BumpFrameAllocator) -> Result<Self, AddressSpaceError> {
+        Self::new_sharing_kernel_with_stack_pages(frame_allocator, kernel_stack::DEFAULT_STACK_PAGES)
+    }
+
+    /// [`new_sharing_kernel`](Self::new_sharing_kernel) with an
+    /// explicit RSP0-stack page budget. The chain partition makes
+    /// each stage's budget PER-STAGE, so a stage whose kernel-side
+    /// work is genuinely deeper than the default (the deps demo
+    /// recurses TWO catalog levels under `load_tree`) declares its
+    /// own size instead of forcing every stage (and the shared
+    /// budget) up with it. The guard page is always added on top of
+    /// `pages`, so an oversized request still faults loudly on
+    /// overflow instead of corrupting its neighbor.
+    pub fn new_sharing_kernel_with_stack_pages(
+        frame_allocator: &mut BumpFrameAllocator,
+        stack_pages: u64,
+    ) -> Result<Self, AddressSpaceError> {
         use x86_64::structures::paging::FrameAllocator;
         let pml4_frame = frame_allocator.allocate_frame().ok_or(AddressSpaceError)?;
 
@@ -99,7 +119,7 @@ impl AddressSpace {
         // index-2 subtree, so the entries written here are the ones
         // every space (including the kernel's own) resolves through.
         let mut mapper = unsafe { OffsetPageTable::new(&mut *pml4_virt.as_mut_ptr(), VirtAddr::new(0)) };
-        let kernel_stack = kernel_stack::allocate(&mut mapper, frame_allocator, kernel_stack::DEFAULT_STACK_PAGES)
+        let kernel_stack = kernel_stack::allocate(&mut mapper, frame_allocator, stack_pages)
             .ok_or(AddressSpaceError)?;
 
         Ok(AddressSpace { pml4_frame, kernel_stack })
@@ -162,12 +182,15 @@ impl AddressSpace {
     ///
     /// `self.kernel_stack` (the guarded RSP0 stack) *is* reclaimed here
     /// too, even though it lives in `memory::kernel_stack`'s shared
-    /// region: that region hands out a fresh slot per allocation and
-    /// never reuses one, so this slot is owned exclusively by this
-    /// space. Clearing its page-table entries through the currently
-    /// active (shared) tables and freeing their data frames therefore
-    /// cannot affect any other space -- only the shared PDPT/PD/PT
-    /// frames that hold those entries outlive every space.
+    /// region: its page-table entries sit under the shared index-2
+    /// subtree, so clearing them through the currently active (shared)
+    /// tables and freeing their data frames cannot affect any other
+    /// space — only the shared PDPT/PD/PT frames that hold those
+    /// entries outlive every space. Via `kernel_stack::release` the
+    /// slot ALSO returns to the region's exact-count reuse pool: the
+    /// hand-rolled loop this used to keep (unmap + flush + free)
+    /// and the pool hand-back are now ONE code path, so `destroy` and
+    /// the region's own proof cannot drift apart.
     ///
     /// Must NOT be called while this space is the currently active one
     /// (its own page tables, including the ones about to be freed,
@@ -191,14 +214,15 @@ impl AddressSpace {
             let active: &'static mut PageTable =
                 &mut *(active_pml4.start_address().as_u64() as *mut PageTable);
             let mut mapper = OffsetPageTable::new(active, VirtAddr::new(0));
-            for i in 0..self.kernel_stack.pages {
-                let page: Page<Size4KiB> =
-                    Page::containing_address(self.kernel_stack.base + i * 4096);
-                if let Ok((frame, flush)) = mapper.unmap(page) {
-                    flush.flush();
-                    frame_allocator.deallocate_frame(frame);
-                }
-            }
+            // Single source of truth for RSP0-stack reclamation: the
+            // same unmap + flush + frame-free this function used to
+            // hand-roll, now via `kernel_stack::release` — which ALSO
+            // hands the slot back to `kernel_stack`'s exact-count
+            // reuse pool, so the next allocation of the same page
+            // count (a later live task, e.g. the scheduler finale's
+            // task H) re-hands out this RSP0 slot byte-identically
+            // (same guard position, same top) instead of bumping.
+            crate::memory::kernel_stack::release(&self.kernel_stack, &mut mapper, frame_allocator);
         }
 
         let pml4_virt = VirtAddr::new(self.pml4_frame.start_address().as_u64());

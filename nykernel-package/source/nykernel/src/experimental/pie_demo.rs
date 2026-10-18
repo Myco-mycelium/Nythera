@@ -14,7 +14,7 @@
 use x86_64::VirtAddr;
 
 use crate::experimental::address_space::AddressSpace;
-use crate::experimental::{elf, pe_demo, usermode};
+use crate::experimental::{elf, usermode};
 use crate::memory::frame_allocator::BumpFrameAllocator;
 use crate::serial_println;
 
@@ -54,6 +54,11 @@ static RELRO_START: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU6
 static RELRO_END: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
+/// The demo's address space, stashed for the stage-two continuation
+/// (see `chain::run_on_fresh_stack`): the chained demo's kernel-side
+/// work runs on THIS space's own fresh guarded RSP0 stack, not the
+/// accumulating stack of whoever chained into us.
+static mut STAGE_SPACE: Option<AddressSpace> = None;
 
 /// Builds an address space, loads the PIE binary at [`LOAD_BASE`],
 /// maps a private stack, and enters ring 3 -- a one-way transition,
@@ -70,12 +75,29 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
     let fa = FRAME_ALLOCATOR.as_mut().unwrap();
 
-    let mut space = AddressSpace::new_sharing_kernel(fa)
+    let space = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build pie_demo address space"));
     space.activate();
-    let mut mapper = space.mapper();
+    STAGE_SPACE = Some(space);
+    // The chain-partition rule: this demo's kernel-side work (loads,
+    // checks, the ring-3 entry) runs on ITS OWN fresh guarded RSP0
+    // stack, not the stack of whoever chained into us -- the chained
+    // demos' completion traps never return, so without the switch
+    // every stage's frames would pile up on one stack across the boot.
+    crate::experimental::chain::run_on_fresh_stack(
+        (*&raw const STAGE_SPACE).as_ref().unwrap(),
+        stage_two_after_stack_switch,
+    )
+}
 
-    let loaded = elf::load(PIE_PROGRAM_ELF, &mut mapper, fa, LOAD_BASE)
+/// The rest of the demo, running on THIS space's own kernel stack
+/// (see `start`).
+unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
+    let space = (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing");
+    let mut mapper = space.mapper();
+    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+
+    let loaded = elf::load(PIE_PROGRAM_ELF, &mut mapper, fa, LOAD_BASE, &elf::LoadContext::none())
         .unwrap_or_else(|e| panic!("failed to load PIE program: {:?}", e));
 
     // GNU_RELRO disposition, reported as a fact from the loader's own
@@ -126,11 +148,8 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         LOAD_BASE, loaded.entry_point.as_u64()
     );
 
-    // `space` must outlive this function (the process runs for the
-    // rest of the kernel's life) -- deliberately leaked, matching the
-    // no-teardown honesty already established for every other
-    // experimental address space.
-    core::mem::forget(space);
+    // The space lives in STAGE_SPACE (a 'static slot -- same
+    // no-teardown honesty as before, no `mem::forget` needed).
 
     let user_rsp = VirtAddr::new(USER_STACK_ADDR + 4096 - 16);
     usermode::enter_with_stack(loaded.entry_point, user_rsp)
@@ -139,7 +158,11 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 /// Called from `idt::init`'s installed handler on the one trap this
 /// demo's program issues. Reports whether the relocated pointer
 /// dereferenced to the expected value, then chains into
-/// `experimental::isolation_demo`.
+/// `experimental::elf_dyn_demo` (the shared-object loader proof --
+/// the next capability class up from this demo's RELATIVE-only
+/// relocations), whose own trap continues the chain into
+/// `experimental::elf_dyn_cross_demo` and thence
+/// `experimental::pe_demo`.
 pub unsafe fn on_trap() -> ! {
     let observed = core::ptr::read_volatile(PRIVATE_ADDR as *const u64);
     let ok = observed == EXPECTED_VALUE;
@@ -202,5 +225,5 @@ pub unsafe fn on_trap() -> ! {
     }
 
     let fa = FRAME_ALLOCATOR.take().unwrap();
-    pe_demo::start(fa)
+    crate::experimental::elf_dyn_demo::start(fa)
 }

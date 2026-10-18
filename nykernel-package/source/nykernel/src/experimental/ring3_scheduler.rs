@@ -179,7 +179,7 @@ fn build_ring3_task(
     unsafe { space.activate() };
     let mut mapper = space.mapper();
 
-    let loaded = elf::load(program, &mut mapper, frame_allocator, 0)
+    let loaded = elf::load(program, &mut mapper, frame_allocator, 0, &elf::LoadContext::none())
         .unwrap_or_else(|e| panic!("failed to load yield program for task {}: {:?}", id, e));
 
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE; // data + stack pages, never meant to be executed
@@ -598,11 +598,19 @@ unsafe fn finale() -> ! {
     // stack here would free the memory we're standing on. F's stack is
     // a different allocation, so this is safe.
     let reclaimed_frames;
+    let f_stack_desc;
     {
         let fa = FRAME_ALLOCATOR.as_mut().unwrap();
         let before = fa.frames_in_use();
         let f_task = TASKS.remove(1); // task F (the middle of E, F, G)
         let f_pml4 = crate::experimental::address_space::pml4_phys_addr(&f_task.address_space);
+        // F's live RSP0 stack descriptor, captured BEFORE destroy:
+        // destroy routes the slot through kernel_stack::release into
+        // the exact-count pool, and the hand-back claim below pins
+        // task H onto exactly this slot.
+        f_stack_desc = *f_task.address_space.kernel_stack();
+        assert_eq!(f_stack_desc.pages, kernel_stack::DEFAULT_STACK_PAGES,
+            "task F's RSP0 stack must still be the shared default budget");
         f_task.address_space.destroy(fa);
         let after = fa.frames_in_use();
         reclaimed_frames = before.saturating_sub(after);
@@ -632,8 +640,47 @@ unsafe fn finale() -> ! {
     // preempt_finale pins the exact per-task preemption counts and
     // that zero cooperative yields happened during the phase.
     let fa = (*core::ptr::addr_of_mut!(FRAME_ALLOCATOR)).as_mut().unwrap();
-    let (task_h, h_entry, h_rsp) = build_ring3_task(fa, 3, true, SPIN_PROGRAM_ELF);
+    let (mut task_h, h_entry, h_rsp) = build_ring3_task(fa, 3, true, SPIN_PROGRAM_ELF);
     let (mut task_i, _, _) = build_ring3_task(fa, 4, false, SPIN_PROGRAM_ELF);
+
+    // ---- LIVE-RSP0-SLOT hand-back proof: F was destroyed above, and
+    // `destroy` now routes that stack through `kernel_stack::release`
+    // into the exact-count reuse pool. (Nothing here claims F is the
+    // boot's FIRST release — `teardown-demo`'s destroyed space X also
+    // releases through `destroy` — but that slot is re-consumed by
+    // that demo's space Y immediately, so by the time the proof tasks
+    // build, F's slot is the pool's only entry.) Both proof tasks
+    // request the shared default budget -- so task H's build MUST
+    // re-hand out F's released slot byte-identically (same guard
+    // position, same top), re-verified through H's own page tables
+    // (guard unmapped, pages present); task I (built next, pool empty
+    // again) must be a fresh bump. Anything else would mean a live
+    // task silently running on a wrong-sized or half-reclaimed slot,
+    // so every claim here is an assert, not a print.
+    {
+        let h_stack = *task_h.address_space.kernel_stack();
+        let i_stack = *task_i.address_space.kernel_stack();
+        assert_eq!(
+            h_stack.base, f_stack_desc.base,
+            "task H's RSP0 stack must re-hand out destroyed task F's released slot (same base), not bump\n        (F was {:#x} guard {:#x}; H is {:#x})",
+            f_stack_desc.base.as_u64(), f_stack_desc.guard.as_u64(), h_stack.base.as_u64()
+        );
+        assert_eq!(h_stack.guard, f_stack_desc.guard, "the re-handed slot must keep F's guard position");
+        assert_eq!(h_stack.top, f_stack_desc.top, "the re-handed slot must keep F's top");
+        assert_ne!(
+            i_stack.base, f_stack_desc.base,
+            "task I must NOT land in the pool look-alike (the pool must be empty after H consumed F's slot)"
+        );
+        let h_mapper = task_h.address_space.mapper();
+        assert!(kernel_stack::verify(&h_mapper, &h_stack),
+            "the re-handed live slot must verify through the page tables (guard unmapped, pages present)");
+        serial_println!(
+            "  experimental ring3-scheduler teardown: LIVE slot hand-back -- destroyed task F's RSP0 slot (base {:#x}, guard {:#x}) re-handed out byte-identically as task H's live RSP0 stack, re-verified through H's page tables; task I bumped a fresh slot instead -- {}",
+            f_stack_desc.base.as_u64(),
+            f_stack_desc.guard.as_u64(),
+            if h_stack.base == f_stack_desc.base { "OK, the teardown path feeds the exact-count pool" } else { "FAILED" }
+        );
+    }
 
     // Guard pages under the new live RSP0 stacks -- the same
     // structural check start() runs for E/F/G; any task's mapper sees

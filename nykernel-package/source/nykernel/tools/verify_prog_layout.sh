@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+#
+# verify_prog_layout.sh -- the CI layout gate for every userprog .so
+# the kernel embeds via include_bytes!. Each file's contractually
+# load-bearing facts (SONAMEs, version tables, DT_NEEDED chains,
+# JUMP_SLOT/GLOB_DAT surface, weak dynsym entries) are read out with
+# readelf and compared against the fact list the kernel's loader and
+# demos are written against. A mismatch REFUSES THE BUILD: the file
+# facts are the input the kernel's proofs are pinned to; kernel code
+# must never see a drifted .so and discover it by panic.
+#
+# Usage: sourced by build.sh (after the .so links, before the kernel
+# build), or run standalone: tools/verify_prog_layout.sh
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+factcheck() {
+    local desc="$1"
+    local file="$2"
+    shift 2
+    if [[ ! -f "$file" ]]; then
+        echo "FAIL: $file does not exist (build.sh order drifted past verify_prog_layout.sh?)" >&2
+        exit 1
+    fi
+    local out
+    out="$(readelf -d -V -r --dyn-syms "$file" 2>&1)"
+    for pat in "$@"; do
+        if ! printf '%s' "$out" | grep -qsE -- "$pat"; then
+            echo "FAIL: userprog layout fact missing in $file: [$pat] ($desc)" >&2
+            echo "     --- actual readelf surface: ---" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+        fi
+    done
+    echo "  layout-gate: $file OK ($desc)"
+}
+
+# Provider 1 (V1 build): SONAME crosslib.so.1, provides VERS_1.0.
+# Both hash styles are REQUIRED facts: DT_HASH stays the symbol-count
+# authority, and the GNU table (bloom + bucket/chain) is what the
+# kernel's lookup prefers when both exist.
+factcheck "version+SONAME provider (V1)" userprog/userprog_cross_all_lib.elf \
+    'SONAME.*crosslib\.so\.1' \
+    'VERDEF' \
+    'VERS_1\.0' \
+    '\(HASH\)' \
+    'GNU_HASH'
+
+# Provider 1 (V2 build): SAME SONAME, VERS_2.0 only (the version
+# negative control's other half).
+factcheck "version+SONAME provider (V2 control)" userprog/userprog_cross_all_lib2.elf \
+    'SONAME.*crosslib\.so\.1' \
+    'VERS_2\.0'
+
+# The versioned dependent: NEEDED crosslib.so.1, VERNEED VERS_1.0,
+# a JUMP_SLOT for cross_fn, the versioned GLOB_DAT for cross_value.
+factcheck "full dependent (NEEDED + VERSYM + lazy PLT)" userprog/userprog_cross_all.elf \
+    'NEEDED.*crosslib\.so\.1' \
+    'VERNEED' \
+    'VERS_1\.0' \
+    'JUMP_SLO.*cross_fn' \
+    'GLOB_DAT.*cross_value'
+
+# The depth-3 catalog chain: B NEEDs C, C NEEDs D, D NEEDs A; the
+# loader must auto-load B, C and D from the catalog before relocating
+# the dependent (the demo's auto-load count fact pins 3).
+#
+# COVERAGE RULE for the loader's negative controls: the DEPENDENCY-CYCLE
+# and DEPTH-CAP refusals run their deliberately-looping / deliberately-
+# too-shallow catalogs over exactly the artifact set fact-checked
+# above -- no control uses an object this gate has not verified, so a
+# future fifth provider cannot enter the demo tree without its own
+# factcheck block appearing here first.
+factcheck "chain provider B (SONAME + hop to C)" userprog/userprog_cross_all2.elf \
+    'SONAME.*crosslib2\.so\.1' \
+    'NEEDED.*crosslib3\.so\.1'
+factcheck "chain provider C (SONAME + hop to D)" userprog/userprog_cross_all3.elf \
+    'SONAME.*crosslib3\.so\.1' \
+    'NEEDED.*crosslib4\.so\.1'
+factcheck "chain provider D (SONAME + hop to A)" userprog/userprog_cross_all4.elf \
+    'SONAME.*crosslib4\.so\.1' \
+    'NEEDED.*crosslib\.so\.1'
+
+# The interposition overlay: its own SONAME + the conflicting export.
+factcheck "interposition overlay" userprog/userprog_interposer.elf \
+    'SONAME.*interposer\.so\.1' \
+    'dup_symbol'
+
+# Dependent #3: BOTH NEEDED edges, both version facts, the lazy PLT
+# surface -- and the WEAK, versioned UNDEF ghost_fn (demos the weak-
+# semantics: refused-if-strong, NULL-slot-if-weak).
+factcheck "catalog dependent (chain + weak + lazy)" userprog/userprog_deps.elf \
+    'NEEDED.*crosslib2\.so\.1' \
+    'NEEDED.*crosslib\.so\.1' \
+    'VERNEED' \
+    'VERS_1\.0' \
+    'JUMP_SLO.*cross_fn' \
+    'GLOB_DAT.*cross_value' \
+    'WEAK.*UND ghost_fn|UND ghost_fn.*WEAK' \
+    'GLOB_DAT.*ghost_fn' \
+    'GLOB_DAT.*interp_mark'
+
+# The weak VERSION-FLAG artifact: its only UNDEF is the WEAK bind of
+# the versioned cross_value; because NO bind in that version's
+# dependency is strong, GNU ld MUST set VER_FLG_WEAK on the AUX entry
+# (the kernel tolerates the unmet requirement through exactly that
+# flag path when the scope cannot provide VERS_1.0).
+factcheck "weak version-flag artifact" userprog/userprog_weak.elf \
+    'NEEDED.*crosslib\.so\.1' \
+    'Flags: WEAK' \
+    'GLOB_DAT.*cross_value' \
+    'WEAK.*UND|UND.*WEAK'
+
+# The OWN-.plt GNU-protocol dependent: an ORDINARY `ld -shared`
+# product -- the whole point. The gate pins that the REAL linker
+# machinery is present (PLTGOT + JMPREL/PLTREL=RELA/PLTRELSZ, a real
+# .plt JUMP_SLOT for cross_fn) and that the kernel demo's readelf-
+# pinned addresses (PLTGOT 0x2fe8, JUMP_SLOT slot 0x3000, GNU initial
+# plt+6 value 0x1016) match the file facts. These are the facts
+# experimental::elf_dyn_plt_demo (and elf::arm_own_plt's no-touch
+# JUMP_SLOT policy) are written against.
+factcheck "own-.plt GNU-protocol dependent" userprog/userprog_plt_res.elf \
+    'NEEDED.*crosslib\.so\.1' \
+    '\(PLTGOT\)' \
+    '\(JMPREL\)' \
+    '\(PLTREL\).*RELA' \
+    '\(PLTRELSZ\)' \
+    'JUMP_SLO.*cross_fn' \
+    'GLOB_DAT.*cross_value'
+
+# The MULTI-ENTRY GNU pair: a second sonamed provider with two
+# function exports, and a dependent linked against BOTH providers, so
+# its .rela.plt carries TWO JUMP_SLOT entries (fn_a, fn_b) -- the
+# resolver's first multi-entry object, one link-map cookie bundling
+# TWO first-use binds.
+factcheck "multi-entry GNU provider" userprog/userprog_pltprov.elf \
+    'SONAME.*pltprov\.so\.1' \
+    'fn_a' \
+    'fn_b'
+factcheck "multi-entry GNU dependent" userprog/userprog_multi.elf \
+    'NEEDED.*crosslib\.so\.1' \
+    'NEEDED.*pltprov\.so\.1' \
+    '\(PLTGOT\)' \
+    '\(JMPREL\)' \
+    '\(PLTREL\).*RELA' \
+    '\(PLTRELSZ\).*48' \
+    'JUMP_SLO.*fn_b' \
+    'JUMP_SLO.*fn_a'
+
+# The PLT-LESS boundary artifact: a versioned GLOB_DAT-dependent with
+# NO PLT machinery WHATEVER (no DT_JMPREL / DT_PLTGOT / DT_PLTRELSZ /
+# DT_PLTREL). The ABSENCE is the load-bearing fact for the GNU
+# protocol's boundary so it is gate-checked directly: if any of those
+# tags ever appeared here, the refusal/untouched-side-effects proofs
+# below would be testing a different artifact than the one embedded.
+factcheck "PLT-less boundary artifact" userprog/userprog_pltless.elf \
+    'NEEDED.*crosslib\.so\.1' \
+    'GLOB_DAT.*cross_value'
+pltless_tags="$(readelf -d userprog/userprog_pltless.elf | grep -cE '\(JMPREL\)|\(PLTGOT\)|\(PLTRELSZ\)|\(PLTREL\)' || true)"
+if [ "$pltless_tags" -ne 0 ]; then
+    echo "FAIL: userprog_pltless.elf carries PLT dynamic tags ($pltless_tags) -- the GNU-protocol boundary artifact must NOT have any" >&2
+    exit 1
+fi
+echo "  layout-gate: userprog/userprog_pltless.elf OK (zero PLT tags: the absence is pinned)"
+
+echo "  layout-gate: all embedded userprog .so facts verified"
+
+# ---- negative-control window pin (the scratch-base rule) ----
+#
+# The kernel's negative controls load deliberately-refused objects and
+# probe deliberately-unregistered trampolines at KERNEL-PICKED bases
+# (the source constants named here). The rule: no embedded artifact may
+# ever be PRE-LINKED (non-PIE, fixed placed) inside those windows --
+# if one were, a control could land a load mid-artifact (or the probe
+# page inside a real mapping) and the refusal would mean something
+# different from what the demo asserts. Today every artifact is ET_DYN
+# with PT_LOAD VirtAddr near 0 (the demos choose bases at runtime), so
+# this check passes trivially -- that is exactly the property a gate
+# pins BEFORE it becomes a regression.
+# Windows (one open-handed stride above each base group, matching
+# the source constants):
+scratch_windows=(
+    "0x6d000500000 0x6d000580000" # deps demo: cycle scratch 0x6D0_0050_0000, depth-cap scratch 0x6D0_0055_0000, lazy-binder probe page 0x6D0_0057_0000
+    "0x6c000400000 0x6c000510000" # full demo refusal carriers SCRATCH_BASE_A 0x6C0_0040_0000 / SCRATCH_BASE_B 0x6C0_0050_0000
+    "0x6d000700000 0x6d000800000" # plt demo: dependent 0x6D0_0070_0000, resolver thunk 0x6D0_0071_0000, private page 0x6D0_0072_0000, user stack 0x6D0_0073_0000
+)
+for art in userprog/userprog_cross_all_lib.elf userprog/userprog_cross_all_lib2.elf \
+           userprog/userprog_cross_all.elf userprog/userprog_cross_all2.elf \
+           userprog/userprog_cross_all3.elf userprog/userprog_cross_all4.elf \
+           userprog/userprog_interposer.elf userprog/userprog_deps.elf \
+           userprog/userprog_weak.elf userprog/userprog_plt_res.elf \
+           userprog/userprog_pltprov.elf userprog/userprog_multi.elf \
+           userprog/userprog_pltless.elf; do
+    out=$(readelf -l "$art" 2>&1) || { echo "FAIL: readelf -l on $art" >&2; exit 1; }
+    # Each '  LOAD ...' program-header line: Offset VirtAddr PhysAddr FileSiz MemSiz Flags Align
+    while read -r off vaddr paddr fsiz msiz flags align; do
+        v=$(( $vaddr )); m=$(( $msiz )); end=$((v + m))
+        for w in "${scratch_windows[@]}"; do
+            read -r w0 w1 <<<"$w"
+            s=$(( $w0 )); e=$(( $w1 ))
+            if [ $v -lt $e ] && [ $end -gt $s ]; then
+                echo "FAIL: $art has a PT_LOAD [0x$vaddr..0x$(printf %x $end)) intersecting the kernel negative-control window [0x$w0..0x$w1) -- refuse the artifact or re-place the control base" >&2
+                exit 1
+            fi
+        done
+    done < <(printf '%s\n' "$out" | grep -E '^  LOAD ')
+    echo "  layout-gate: $art OK (no PT_LOAD inside the kernel negative-control windows)"
+
+done

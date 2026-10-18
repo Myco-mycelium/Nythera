@@ -78,6 +78,8 @@ and `qemu-system-x86_64`. On Ubuntu the last three are `apt` packages;
 | Address-space switching integrated into the scheduler | `src/experimental/isolated_tasks.rs` | 🔶 pre-normative |
 | Real ring-3 task scheduling, 3 tasks (full-GPR trap handler) | `src/experimental/ring3_scheduler.rs` | 🔶 pre-normative |
 | Timer-driven (preemptive) ring-3 switching of non-yielding tasks | `src/experimental/ring3_scheduler.rs`, `userprog/prog_spin.s` | 🔶 pre-normative (NPS-002 Draft) |
+| Both hash mechanisms: DT_HASH walk + glibc-style DT_GNU_HASH walk (answer equality pinned) | `src/experimental/elf.rs`, `elf_dyn_deps_demo.rs` | 🔶 pre-normative |
+| Depth-3 catalog-driven dependency chains + weak `VER_FLG_WEAK` artifact | `src/experimental/elf.rs`, `elf_dyn_deps_demo.rs`, `tools/patch_weak_verneed.py` | 🔶 pre-normative |
 | Address-space teardown + frame reclamation | `src/experimental/address_space.rs`, `teardown_demo.rs` | 🔶 pre-normative |
 | TLB invalidation (`invlpg`) on unmap | `src/memory/paging.rs`, `tlb_demo.rs` | ✅ NPS-001-grounded |
 | Guard pages for stack-overflow detection (probe) | `src/memory/guard_demo.rs` | ✅ NPS-001-grounded |
@@ -150,7 +152,73 @@ sections throughout.
 
 Read `IMPLEMENTATION_STATUS.md`'s "What does NOT exist yet" section in
 full before assuming this kernel does something it doesn't. Headlines:
-real dynamic linking (symbol-resolved relocations), and -- the largest
+the `ld.so`-grade remainder of dynamic linking (the in-object,
+registry-scoped cross-object, AND full-contract halves landed
+2026-10-13/14: `GLOB_DAT`/`JUMP_SLOT`/`64` relocations,
+DT_HASH/DT_SYMTAB/DT_STRTAB, by-name SysV lookup, a documented
+self-first/load-order-resolution registry, enforced `DT_NEEDED`/`DT_SONAME`
+dependency contracts, `DT_VERSYM`/`DT_VERDEF`/`DT_VERNEED` versioned
+symbol resolution, and trap-based LAZY PLT binding through a genuine
+shared service; the seventh round (2026-10-14) additionally closed:
+recursive `DT_NEEDED` discovery through a named in-memory catalog
+(the storage client, when Phase 8 lands, replaces the catalog's file
+entries and the loader's shape stands), `SymbolRegistry::interpose`
+interposition overlays beyond load order, weak-version symbol
+semantics (`STB_WEAK`/`VER_FLG_WEAK`: tolerated-unresolved resolves
+the NULL slot, never a guess), and a readelf CI gate that refuses the
+BUILD on fact drift in the embedded .so files; the eighth round
+(2026-10-15) additionally closed: DT_GNU_HASH as a real second lookup
+mechanism (glibc-style bloom + bucket/chain walk, GNU hash function,
+GNU-preferred resolution with DT_HASH kept as the authority for the
+symbol count and the GNU table's undefined-symbol exclusion, and the
+two walkers' answer equality pinned every boot), per-stage guarded
+RSP0 stack ownership (`run_on_fresh_stack`; the shared default is back
+to 5 pages,the
+deepest stage declares its own), a DEPTH-3 catalog
+chain (dep → B → C → D → A, all link-recorded edges,
+auto-load count == 3, per-provider marker immediates pinned at each
+loaded base, and the depth cap checked by a real negative control),
+and the weak VERNEED
+flag on a real readelf-verified artifact (built by a checked, gate-
+pinned patch step that discloses rather than simulates the toolchain,
+and whose idempotence is verified with a real second run), a lazy-
+binder typed-refusal negative control (unregistered trampoline page =
+typed `UnregisteredTrampoline`, handler panic demonstrated; the
+EMPTY-registry branch pinned as typed `ServiceEmpty` at the site of
+the chain's first registration), and a
+guarded-stack exact-slot reuse mechanism (allocate/release/re-hand-out
+byte-identically, guard intact, exact page-count matching proven both
+directions, whole-slot absorption for smaller requests (best-fit,
+never split — the guard invariant is the reason), and the FIRST LIVE
+hand-back proven through the real
+teardown site — `AddressSpace::destroy` routes its reclamation through
+`kernel_stack::release`, so the ring-3 scheduler's destroyed task F's
+RSP0 slot is re-handed out as another live task's stack, boot-proved) —
+plus a CI-gate rule pinning the kernel's negative-control scratch
+windows against artifact PT_LOAD ranges — and the ninth round
+(2026-10-17) closed the GNU OWN-`.plt` lazy protocol itself: the
+dependent's REAL linker `.plt`/`.got.plt` machinery (GOT[1] = a
+per-object link-map id cookie, GOT[2] = the user-executable resolver
+thunk, JUMP_SLOT slots at GNU lazy bias state), the real
+cookie/index/caller-ret spill identification, resolution through the
+same registry + version contract, and the guided return that drops
+only the two spilled words and enters the resolved callee directly,
+with one registry serving the 0x88 trap-stub path AND the 0x8B GNU
+protocol path, where the same dependent artifact loaded TWICE at
+two bases carries two distinct link-map cookies, each bound
+EXACTLY once through the one gate, and a THIRD genuinely different
+artifact (linked against both providers) carries a MULTI-ENTRY
+.plt relocation table under ONE cookie -- two first-use binds,
+each resolved by its own index -- and the protocol is OPT-IN PER
+LOAD with its own absence pinned: requested on a PLT-LESS GLOB_DAT-
+only dependent it is a typed `MalformedDynamicTables` refusal, and
+the same artifact loads eagerly with ZERO GNU side effects -- but GNU-`ld.so` resolver internals (a
+ring-3-executable resolver body with its own private hash tables,
+and symbol merging across unregistered scopes) stay open;
+unresolvable requirements are still
+refused with typed errors (except the weak NULL-slot rule), never
+mis-resolved), and -- the
+largest
 gap by far --
 everything an actual Windows or Android compatibility layer needs on
 top of these kernel-level prerequisites: import handling for real

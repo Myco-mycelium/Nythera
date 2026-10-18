@@ -33,10 +33,17 @@
 //! boot-verified self-test discipline is unchanged.
 
 pub mod address_space;
+pub mod chain;
 pub mod crypto;
 pub mod dex;
 pub mod dex_demo;
 pub mod elf;
+pub mod elf_dyn_cross_demo;
+pub mod elf_dyn_deps_demo;
+pub mod elf_dyn_demo;
+pub mod lazy_binder;
+pub mod elf_dyn_full_demo;
+pub mod elf_dyn_plt_demo;
 pub mod ipc;
 pub mod isolated_tasks;
 pub mod isolation_demo;

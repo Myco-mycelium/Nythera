@@ -167,6 +167,73 @@ pub fn init() {
         idt[crate::experimental::pe_reloc_demo::TRAP_VECTOR as usize]
             .set_handler_fn(pe_reloc_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // A sixth ring-3-callable vector, dedicated to
+        // experimental::elf_dyn_demo -- the first shared-object
+        // (real `ld -shared` .so) loading proof with symbol-resolved
+        // relocations, same simple report-once ABI as the others.
+        idt[crate::experimental::elf_dyn_demo::TRAP_VECTOR as usize]
+            .set_handler_fn(elf_dyn_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // A seventh ring-3-callable vector, dedicated to
+        // experimental::elf_dyn_cross_demo -- the cross-object
+        // symbol-resolution proof (a dependent .so whose UNDEF
+        // GLOB_DAT resolves against the registry-held provider .so).
+        idt[crate::experimental::elf_dyn_cross_demo::TRAP_VECTOR as usize]
+            .set_handler_fn(elf_dyn_cross_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // The eighth ring-3-callable vector: the SHARED lazy-bind
+        // service -- loader-armed trampoline stubs trap here on a
+        // JUMP_SLOT's first use; the SHARED lazy_binder service
+        // identifies the owning object by its trampoline page, so
+        // EVERY lazy-armed dependent in a boot binds through this one
+        // gate. Resolves through the same registry + version contract
+        // and PATCHES the slot, then returns (it does not chain).
+        idt[crate::experimental::elf::LAZY_BIND_VECTOR as usize]
+            .set_handler_fn(elf_lazy_bind_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // The eleventh ring-3-callable vector: the OWN-.plt GNU
+        // resolver gate -- an own-`.plt`-armed object's `.got.plt`[2]
+        // thunk traps `int 0x8B` here on a JUMP_SLOT's first use, with
+        // the REAL linker-protocol spill (PLT1's index, PLT0's
+        // link-map cookie) on the user stack. Installed as a RAW
+        // handler address (like the timer IRQ -- the same reasoning:
+        // this gate never exits through the x86-interrupt ABI),
+        // because the resolver GUIDES its return straight into the
+        // resolved callee with EVERY user GPR restored -- GNU
+        // _dl_runtime_resolve's shape, implemented in
+        // experimental::lazy_binder::plt_resolver_raw.
+        unsafe {
+            idt[crate::experimental::elf::PLT_RESOLVE_VECTOR as usize]
+                .set_handler_addr(VirtAddr::new(
+                    crate::experimental::lazy_binder::plt_resolver_raw as *const () as u64,
+                ))
+                .set_privilege_level(PrivilegeLevel::Ring3);
+        }
+
+        // A ninth ring-3-callable vector, dedicated to
+        // experimental::elf_dyn_full_demo -- the DT_NEEDED + version
+        // contract + lazy-binding proof.
+        idt[crate::experimental::elf_dyn_full_demo::TRAP_VECTOR as usize]
+            .set_handler_fn(elf_dyn_full_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // A tenth ring-3-callable vector, dedicated to
+        // experimental::elf_dyn_deps_demo -- the recursive DT_NEEDED
+        // catalog, interposition, and weak-version proof.
+        idt[crate::experimental::elf_dyn_deps_demo::TRAP_VECTOR as usize]
+            .set_handler_fn(elf_dyn_deps_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // A twelfth ring-3-callable vector, dedicated to
+        // experimental::elf_dyn_plt_demo -- the OWN-.plt GNU lazy
+        // protocol proof.
+        idt[crate::experimental::elf_dyn_plt_demo::TRAP_VECTOR as usize]
+            .set_handler_fn(elf_dyn_plt_demo_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
         idt
     });
     idt.load();
@@ -322,6 +389,65 @@ extern "x86-interrupt" fn pe_trap_handler(_stack_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn pe_reloc_trap_handler(_stack_frame: InterruptStackFrame) {
     unsafe {
         crate::experimental::pe_reloc_demo::on_trap();
+    }
+}
+
+/// The one trap `experimental::elf_dyn_demo`'s program (the shared
+/// object's `dyn_payload`) issues -- reports the by-name-lookup /
+/// symbol-resolution result and chains into `experimental::pe_demo`.
+extern "x86-interrupt" fn elf_dyn_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::elf_dyn_demo::on_trap();
+    }
+}
+
+/// The one trap `experimental::elf_dyn_cross_demo`'s program (the
+/// dependent .so's `cross_payload`) issues -- reports the
+/// cross-resolved GOT dereference result and chains into
+/// `experimental::pe_demo`.
+extern "x86-interrupt" fn elf_dyn_cross_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::elf_dyn_cross_demo::on_trap();
+    }
+}
+
+/// The shared lazy-bind service: the loader-armed stub traps here on
+/// a PLT entry's first use; the SHARED lazy_binder service owns
+/// per-object dispatch (by trampoline page), resolution + patching
+/// happens inside it, and the handler RETURNS (never chains).
+extern "x86-interrupt" fn elf_lazy_bind_handler(stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::lazy_binder::service(stack_frame);
+    }
+}
+
+/// The one trap `experimental::elf_dyn_full_demo`'s program (the
+/// versioned dependent's `all_payload`) issues -- verifies the
+/// cross_value + lazy-binding facts and chains into
+/// `experimental::elf_dyn_deps_demo`.
+extern "x86-interrupt" fn elf_dyn_full_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::elf_dyn_full_demo::on_trap();
+    }
+}
+
+/// The one trap `experimental::elf_dyn_deps_demo`'s program (the
+/// catalog-dependent's `deps_payload`) issues -- verifies the
+/// catalog/interposition/weak facts and chains into
+/// `experimental::pe_demo`.
+extern "x86-interrupt" fn elf_dyn_deps_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::elf_dyn_deps_demo::on_trap();
+    }
+}
+
+/// The one trap `experimental::elf_dyn_plt_demo`'s program (the
+/// own-`.plt` GNU-protocol dependent's `plt_payload`) issues --
+/// verifies the GNU lazy-resolution facts and chains into
+/// `experimental::pe_demo`.
+extern "x86-interrupt" fn elf_dyn_plt_demo_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::elf_dyn_plt_demo::on_trap();
     }
 }
 

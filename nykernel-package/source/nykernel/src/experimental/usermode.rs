@@ -92,7 +92,8 @@ pub fn prepare_elf(
     mapper: &mut OffsetPageTable<'static>,
     frame_allocator: &mut BumpFrameAllocator,
 ) -> Result<VirtAddr, UsermodeError> {
-    let loaded = elf::load(elf_bytes, mapper, frame_allocator, 0).map_err(UsermodeError::Elf)?;
+    let loaded = elf::load(elf_bytes, mapper, frame_allocator, 0, &elf::LoadContext::none())
+        .map_err(UsermodeError::Elf)?;
 
     let stack_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
     let stack_mapped = paging::map_range(mapper, frame_allocator, VirtAddr::new(USER_STACK_ADDR), 1, stack_flags);

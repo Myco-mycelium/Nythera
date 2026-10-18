@@ -419,6 +419,13 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     let arbiter_ok = experimental::ipc::self_test_arbiter_and_revocation();
     assert!(arbiter_ok, "the NPS-003 arbiter/revocation contract self-test failed");
 
+    // (The shared-object loader proofs run inside the ring-3 demo
+    // CHAIN: pie_demo's trap hands to elf_dyn_demo (in-object
+    // symbol resolution), whose trap hands to elf_dyn_cross_demo
+    // (cross-object symbol resolution via the registry), whose own
+    // trap hands to pe_demo -- the same one-way chain structure
+    // every other ring-3 demo in this file participates in.)
+
     // ---- experimental: isolated tasks under the ordinary scheduler ----
     // NOT NPS-002/NPS-003 conformance -- see crate::experimental's doc
     // comment. Extends the round-robin above from 3 tasks to 5: C and
@@ -472,8 +479,9 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     // two non-yielding tasks round-robined purely by the timer, IRQ0
     // preemption. This is kernel_main's last direct action; the rest
     // of the demo chain (ring3_scheduler's finale and preemption
-    // phase -> pie/PE/isolation demos -> guard_demo's exit) handles
-    // final reporting and halt/exit from here.
+    // phase -> pie -> elf-dyn -> cross -> PE/isolation demos ->
+    // guard_demo's exit) handles final reporting and halt/exit from
+    // here.
     unsafe { experimental::ring3_scheduler::start(frame_allocator) }
     // unreachable: start() is `-> !`.
 }

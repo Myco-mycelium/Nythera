@@ -778,8 +778,250 @@ effect, not a suppression: no `#[allow]` was added anywhere.
 
 ## What does NOT exist yet (do not assume otherwise)
 
+**2026-10-15 (eighth round) — the GNU hash table as a REAL second mechanism, per-stage stack ownership, a depth-2 dependency chain, and the weak VERNEED flag proven on a real artifact:**
+
+- **DT_GNU_HASH lookups, glibc-style** (`elf::DynTables::lookup_gnu_hash` + `elf::lookup_symbol_gnu`): DT_GNU_HASH is no longer an unparsed stub — the table is captured, and the lookup is the genuine glibc mechanism, a SEPARATE mechanism from the SysV walk, not a re-skin: the GNU multiplicative hash (DJBX33A, init 5381 ×33) — NOT the SysV ELF hash the code originally (wrongly) reused for it; the two-bit bloom filter, the symoffset-bounded buckets with the GNU-hash-ordered chains, and per-chain low-bit end markers, every hop bounds-checked, bloom miss typed as `SymbolNotFound` (absent) and structural corruption as `MalformedDynamicTables`, never confused. Two documented, verified asymmetries between the mechanisms made this perf-not-semantics only with care: (a) DT_GNU_HASH EXCLUDES undefined symbols from its buckets (confirmed against the actual artifacts), so `lookup_symbol`'s "name present but UNDEF → `UndefinedSymbol`" contract needs the SysV re-walk when GNU says absent; (b) DT_HASH remains the AUTHORITY over the symbol count and the absence arbiter — every artifact in this repo is built `--hash-style=both`, so the resolution paths prefer GNU, and the deps demo pins the equality every boot: GNU walk == SysV walk on the SAME both-tables artifact (`cross_value` → same address). What this does NOT pretend: a userland `ld.so`-grade .plt resolver (a listed Phase-5 remainder, unchanged; on the .plt-resolver side the binder scripts the fix-up, see the seventh round).
+- **GNU==SysV answer-equality + demo interfaces**: the two public per-mechanism functions ([`lookup_symbol_sysv`] / [`lookup_symbol_gnu`]) and the combined GNU-preferred `lookup_hash_any` all serve real resolution paths; the deps demo pins the equality every boot — `carries_gnu_hash()` (the file carries BOTH tables, set by `--hash-style=both`) and both walkers' returned addresses compared on the same name. The equality check is a real crown trial, not a tautology: it caught BOTH of this round's root bugs on the first boots — the digit-swapped `DT_GNU_HASH` tag constant (`0x6fffffef` vs readelf-pinned `0x6ffffef5`) and the original walker's reuse of the SysV hash function — and would catch them again. The walkers' REFUSALS are typed facts too, pinned every boot: a name in neither of provider A's tables answers `SymbolNotFound` through the GNU walk (absent, not malformed), and the weak artifact's UNDEF `cross_value` — present in dynsym and the DT_HASH chain, excluded from the GNU bloom/buckets — answers ABSENT by GNU while the SysV walk reports it `UndefinedSymbol`, exactly the asymmetry `lookup_symbol`'s documented SysV re-walk preserves.
+- **Per-stage stack ownership** (`experimental::chain::run_on_fresh_stack`): the demo chain's `on_trap` continuations never return, so WITHOUT this, each demo's kernel-side frames accumulate on ONE kernel stack across the whole boot — the original reason `DEFAULT_STACK_PAGES` grew 5→8. This fixes the cause, not the budget: each chained demo now jumps onto ITS OWN address space's guarded RSP0 stack and runs its stage there, and the shared default stays 5 pages. The deps demo — the chain's deepest — completes the round by SPLITTING its own stage into two phases: phase A (the deep loader work: GNU facts, interposition, the depth-3 tree, the weak controls) and phase B (map/arm/enter ring 3), each on its own fresh stack, phase B on the shared DEFAULT budget. The split was then MEASURED at the boots, loudly: phase A at 6 and at 7 pages faulted a #PF→#DF at the guard on the tree load (zero corruption, twice, exactly what the guard exists for) and holds 8 — the honest per-phase allocation, declared via `AddressSpace::new_sharing_kernel_with_stack_pages`, not a silent shared bump. The seam deliberately does NOT switch CR3: everything the payload needs (its own mappings, the loaded providers' tables, the registry) lives under phase A's private PML4 subtree (only indices 0 and 2 are shared), so the split is a STACK split — `TSS.RSP0` moves to phase B's fresh shared-region stack and `run_on_fresh_stack` jumps, while the address-space context stays phase A's. What is shared stays shared; what is private stays private; and the guard keeps every page-count claim checked at every boot.
+- **Depth-3 dependency chain realized as a fact**: after provider C (`crosslib3.so.1`, real SONAME) and provider D (`crosslib4.so.1`) joined, and each upstream link was RE-LINKED to record its edge at build time (B's link line against C, C's against D, D's against the first provider), the chain is now `userprog_deps.elf` NEEDs `crosslib2.so.1` NEEDs `crosslib3.so.1` NEEDs `crosslib4.so.1` NEEDs `crosslib.so.1`: the catalog auto-load count is checked at == 3 (B, C and D auto-loaded from catalog; A was pre-registered), so the loader's recursion depth has grown one hop per round with the check retargeted each time. TWO further per-object facts close the round: (a) each auto-loaded provider carries a DISTINCT marker immediate (its own `cross*_marker` symbol, contents pinned against the source constants at ITS OWN loaded base — the right file at the right base, not a count alone); (b) the loader's OTHER typed refusal, `DependencyDepthExceeded`, is now a checked negative control like the cycle refusal: the same depth-3 chain under a catalog whose declared cap is 2 refuses at the D hop (B and C mapped into scratch bases, A never reached) every boot.
+- **The weak VERNEED flag on a REAL artifact** (`tools/patch_weak_verneed.py` + `userprog_weak.elf`): the seventh round proved the weak SYMBOL-side rule and stated honestly that no artifact carried `VER_FLG_WEAK`; this round closes the FLAG half, composed deliberately rather than simulated: the environment's GNU ld refuses to set `VER_FLG_WEAK` even when every bind in the dependency is weak (this round's author verified the behavior empirically with readelf before accepting the gap), so `build.sh` links the WEAK-ONLY artifact (`userprog_weak.elf`, its ONLY undefined symbol a weak bind of the versioned `cross_value`) and then a checked Python step patches `VER_FLG_WEAK` onto the vernaux entry, self-verifying the patch via readelf and aborting the build when the flag is not visible to readelf. The gate refuse the build unless the file carries `Flags: WEAK`. The kernel-side driver runs both controls (the POSITIVE control: the weak requirement against the providing scope resolves normally — weak relaxes only the UNRESOLVED case; the NEGATIVE control: the weak requirement against the WRONG-version scope takes the NULL slot, the load proceeds, RELRO still revokes — the seventh round's strong-refusal is unchanged under the same conditions) and both checks the walker-taxonomy asymmetry facts below. The composition is disclosed, not simulated toolchain behavior; a toolchain that emits the flag naturally passes through as a verified no-op. The patcher is also IDEMPOTENT, verified by a real second run: a file already carrying `Flags: WEAK` triggers no re-write (a lazy old|or re-patch could not corrupt the aux entry, but neither run costs anything, so the no-op is explicit, self-checking and reported).
+- **Per-dynsymbol slot facts by SYMBOL + the demo authority**: the eighth round follows the seventh's rule: demo-side facts are located by SYMBOL (via the version-aware tables) so they survive a layout-tool drift; the static readelf pins live in the CI gate.
+- **The lazy-binder refusal as a NEGATIVE CONTROL, not an assumption** (`experimental::lazy_binder::identify` + `probe_unregistered`): the 0x88 handler's behavior on a trampoline page NO registered object owns was a documented loud panic; the round split the identification into one shared typed path (`LazyBindRefusal::UnregisteredTrampoline { ip_page }` / `ServiceEmpty`) and gave it a probe so the deps demo can check the refusal WITHOUT killing the boot: the typed variant carries the probe page back, the registry size and bind totals stay frozen, and the page has zero binds. The handler and the probe consult the SAME decision (`identify`), so "the handler would panic exactly here" is a demonstrated fact, not a reader's inference.
+- **The guarded-stack region's first slot-reuse mechanism** (`memory::kernel_stack::release` + reuse pool): the region was a documented allocate-forever bump. It still is for LIVE stacks (nothing running releases its own stack until the teardown story exists), but release() now unmaps a completed stack's pages, frees the backing frames through the same deallocation path `AddressSpace::destroy` uses, and returns the slot to the reuse pool; `allocate` re-hands out a released slot of the same page count byte-identically — same guard position, same top — instead of bumping, and (superseding the never-split wording of the earlier increments, below) a SMALLER request absorbs the smallest strictly-larger released slot WHOLE. No rewind of the region offset; the monotonic-region invariant survives. Its own boot proof (`reuse_self_test`, run immediately before the terminal guard demo) allocates, releases, re-hands-out, verifies the reused slot THROUGH THE PAGE TABLES (verify(): guard unmapped, pages present), and proves the absorption bounds (whole slot, zero splits). Hand-back sites: originally hypothetical, now REAL at the one place a space is actually torn down — see the LIVE-slot hand-back bullet below. What remains not claimed: a live IN-USE stack released while someone is running on it; no such site exists and none is needed until tasks can exit mid-chain.
+- **The lazy-binder's EMPTY-registry refusal branch, proven kernel-side** (close-out of the typed-refusal round, after its `UnregisteredTrampoline` control): that round's `LazyBindRefusal` enum and `probe_unregistered` left the `ServiceEmpty` variant not yet boot-fact'd — only the registered-side refusal was. Now the full demo — the site of the CHAIN's first `lazy_binder::register` call — probes the service immediately BEFORE that registration, at the one point of every boot where the registry is genuinely empty, and pins the typed refusal EXACTLY as `ServiceEmpty` (not the `UnregisteredTrampoline` the same shared `identify` path serves once entries exist; the deps demo's negative control, against the same probe, runs later with count 1, so the two variants are distinguished by the same probe in the SAME boot). The outcome is an assert at the registration site (the proof fails the boot, not just the transcript) plus a transcript fact line. Design note: `probe_unregistered` cannot be run against the 0x88 trap path for this branch without killing the boot — the handler still panics loudly on any refusal (arm-before-use remains the wiring contract) — so the probe, not the trap, IS the proof surface, same as that round's control.
+- **The exact-count reuse pool's page-count matching, proven BOTH directions** (close-out of the slot-reuse round): that round's `reuse_self_test` proved a released 2-page slot satisfies a 2-page request and that a different count (3) bumps fresh; this increment added the REVERSED direction — a released 3-page slot must not silently satisfy a later 2-page request — asserted two ways (the reversed request checked against `NEXT_OFFSET` exactly, and its slot base differing from the released 3-page slot's) and folded into the same transcript fact line. **Update (current increment): this rule is superseded by WHOLE-SLOT ABSORPTION** — a smaller request now takes the smallest strictly-larger released slot, but ENTIRELY and only then: exact matches still win, the absorbed descriptor keeps the slot's own page count (never resized to the request), and splitting is impossible by design, not just unimplemented — each slot's guard is the ONE unmapped page separating it from its neighbor, so a split-off remainder would inherit a MAPPED page as its "guard" and the exact guard invariant every proof re-verifies through the page tables could not survive. The absorption counter's bounds are boot-asserted (region offset frozen across the absorb, descriptor stays 8 pages, same guard/top, verified afresh), and a BIGGER request still never touches a smaller pooled slot (fresh bump).
+- **The layout gate's coverage rule**: the dependency-CYCLE and DEPTH-CAP negative controls run their deliberately-broken catalogs over exactly the artifact set the gate fact-checks, and the gate states that rule — a future provider cannot enter the demo tree (as a real edge or as a control) without its own factcheck block appearing first.
+- **The FIRST LIVE on-DRAM-slot hand-back, proven at the one real teardown site** (`memory::kernel_stack::release` ← `AddressSpace::destroy` ← `ring3_scheduler::finale`): until now every claim of slot reuse was self-test-only — no running demo ever released anything. This closes that: `destroy` no longer hand-rolls its stack reclamation (the same unmap + flush + frame-free it used to keep in parallel with `release`, a drift hazard), it calls `kernel_stack::release`, so EVERY destroyed address space's RSP0 slot flows into the exact-count pool — and the boot already has a real teardown site: the ring-3 scheduler finale destroys suspended task F, whose space was built through `new_sharing_kernel` so its slot IS a pool member. The proof pins the semantics concretely on that: F's stack descriptor is captured before destroy, the descriptor demands the default budget, and after the preemption-proof tasks are built the finale asserts task H's live RSP0 stack base/guard/top equals F's released slot's — byte-identically — and re-verifies it through H's OWN page tables (guard unmapped, pages present); task I (built next, pool consumed) must be a fresh bump. Nothing about the proof is inferred from code reading: the strongest assert fires if a live task ends up on a wrong-sized or half-reclaimed slot. (Nothing about `teardown-demo`'s earlier X/Y destroys breaks the proof: X's released slot is immediately re-consumed by that demo's own space Y, so by the time finale runs the pool holds exactly F's slot — and the asserts, not the prose, are what's verified.) Scope note: still no live IN-USE stack released mid-execution; the (rare) teardown sites outside `destroy` — the `mem::forget`ed demo spaces — remain deliberately leaked.
+- **The negative-control windows are now a CI-gate rule, not just prose** (`tools/verify_prog_layout.sh` scratch-window pin): the kernel's negative controls load deliberately-refused objects and probe deliberately-unregistered trampolines at KERNEL-PICKED bases (deps demo's cycle scratch 0x6D0_0050_0000 / depth-cap 0x6D0_0055_0000 / lazy-binder probe page 0x6D0_0057_0000; full demo's refusal carriers SCRATCH_BASE_A/B). A new gate section parses every embedded artifact's PT_LOAD range out of real readelf output and REFUSES THE BUILD if any artifact is ever pre-linked (non-PIE, fixed-placed) or drifts into a window — so a control can never land mid-artifact or probe inside a real mapping and mean something other than what the demo asserts. Today every artifact is ET_DYN with PT_LOAD VirtAddr near 0 (the demos choose bases at runtime) so the check passes trivially — exactly the property a gate pins before it becomes a regression — and the overlap arithmetic itself was probe-verified to concede: a synthetic artifact placed at the probe page is refused, the current PIE artifacts pass. Real bugs already caught by rounds of this block (1) the demo hash-tag constant was wrong (digit-swap, above), so the walk never saw real GNU data from the demo-direction; (2) the GNU walker originally REUSED the SysV ELF hash function (above); (3) `build.sh`'s echo line around `.weak` — the backquotes were being expanded by bash as command substitution, so `.weak` was run as a COMMAND on every build (harmless-looking failure, actually eats the script confirming that the weak-variant half of the gate had ALREADY passed); (4) the flag patcher's readelf regex had to cross the line between the section title and its `Addr:` header, and missed it without `re.DOTALL` (composed with the same bug-fix discipline: verified against the REAL readelf layout); (5) the deps-demo stage overflowed the shared 5-page default RSP0 budget on the new depth-2 work — a #PF at the guard escalating to #DF, zero corruption, exactly what the guard exists for — and the per-stage declaration above is the fix at the RULE level (the shared default stays; the demanding stage declares its own budget).
+
+**2026-10-14 (seventh round) — recursive DT_NEEDED through a catalog, interposition beyond load order, weak versioned symbols, and the lazy binder as a real shared SERVICE:**
+
+- **Recursive dependency loading from a named catalog** (`elf::DepCatalog` + `elf::load_tree`): the "`DT_NEEDED`-driven dependency discovery needs a filesystem" limitation is now OPEN-CLOSED by rule, not hardware: a named, in-memory table (SONAME -> embedded file bytes + load base — exactly what `/lib` + a search path becomes when Phase 8's storage arrives) lets the loader automatically satisfy a dependent's declared dependencies DEPENDENCY-FIRST, recursively, before relocating the object that needs them. Cycle handling is typed (`DependencyCycle`: a file can never load itself to satisfy itself — proved every boot against a deliberately looping catalog) and so is the depth cap (`DependencyDepthExceeded`). The verified chain: `userprog_deps.elf` NEEDs `crosslib2.so.1`, which NEEDs `crosslib.so.1` — one call loads both providers before the dependent relocates (the catalog auto-loaded object count is a checked fact, not prose). What this does NOT pretend: a filesystem. The catalog cannot find anything not registered into it, the loader probes no storage.
+- **Interposition beyond load order** (`SymbolRegistry::interpose`): an explicit overlay that is consulted BEFORE the load order for every object loaded LATER (the same one-way effect `LD_PRELOAD` has; already-relocated slots keep their resolutions). Proven every boot with a REAL name conflict across providers: the overlay's `interp_mark` (unversioned, deliberately absent from the earlier provider) resolves to the OVERLAY's address through the dependent's GLOB_DAT slot, and the ring-3 payload reads the overlay's immediate (0x1111222233334444) through it. A pre/post `lookup` pair pins the flip.
+- **Weak versioned semantics** (`STB_WEAK` binds + `VER_FLG_WEAK` verneed flags): a WEAK undefined symbol — or a VERNEED requirement carrying `VER_FLG_WEAK` — resolves to the NULL slot (0) when no candidate exists and the load PROCEEDS (the same posture glibc takes; the program owns the consequence of dereferencing 0). A real artifact exercises it: `prog_deps_dep.s` carries a compiled `.weak ghost_fn` UNDEF GOTPCREL reference with NO provider defining it — the dependent's ghost GLOB_DAT slot reads NULL-slot 0, its GNU_RELRO region still revokes read-only (weak != denial), and the loader did NOT refuse. Strong requirements stay hard, typed refusals (unchanged; the sixth round's `VersionNotProvided` negative control still fires every boot). Honest note: the PLANTED proof runs through the SYMBOL-side weak bit; the VERNEED-flag half is parsed and honored (all three passes — relocation, RELRO planning, lazy trap — share the same tolerance rule) but no natural toolchain output in this repo carries a flag-weak VERNEED, because GNU ld only emits `VER_FLG_WEAK` on an aux entry when ALL its binds are weak, and this dependent's strong `cross_value@VERS_1.0` shares the file entry. **Update 2026-10-15 (eighth round): the FLAG half is now proven on a REAL (`readelf`-verified) artifact too — a dedicated weak-only dependent whose flag is composed deliberately into the file by a checked build step with a gate pinning `Flags: WEAK`; see the eighth-round block above.** The original statement (no natural toolchain emission in this environment) stands, verified empirically.
+- **The lazy binder is a SERVICE, not a demo** (`experimental::lazy_binder`): the `0x88` handler now dispatches through a registry of ALL lazy-armed objects — identified by their own trampoline page — so the FULL demo's dependent AND the deps demo's dependent (loaded later, different address space, different resolver scope) both bind through ONE vector in ONE boot: 2 independent objects registered, 2 binds served. Per-object bind counts keep each laziness claim checkable (exactly 1 trap across that object's repeated calls); the service totals keep the single-vector fact checkable. The full demo migrated off its demo-private `on_plt_trap` statics onto the service (a rule cleanup, not a behavior change — its transcript lines are byte-identical except naming the service). 
+- **Deeper chain, deeper stacks** (`memory::kernel_stack::DEFAULT_STACK_PAGES` 5 -> 8): the demo chain's completion traps never return, so each chained demo's frames ACCUMULATE on the current kernel stack across the whole boot; the seventh demo's recursive loader path pushed the accumulated depth past 5 pages, and the architecture's guard page faulted LOUDLY (verified: a #PF at the guard address escalating to #DF, zero corruption) rather than silently overwriting the heap — the system did exactly what the guard exists to do. The default now reflects the measured chain depth, with the reason written next to the constant.
+- **The CI layout gate** (`tools/verify_prog_layout.sh`, hooked into `build.sh` BEFORE kernel code ever sees the .so files): every embedded object's load-bearing facts are readelf-checked — SONAMEs, VERDEF/VERNEED presence with the expected version names, the DT_NEEDED chain edges, the JUMP_SLOT/JUMP_SLO (readelf column truncation: encoded in the gate), GLOB_DAT surface, and the WEAK UNDEF ghost entry. A drift refuses the build with the exact absent pattern and the full readelf surface, so file-fact drift is a build error instead of a boot-time panic hunt. First integration already paid for itself: it mis-flagged `JUMP_SLOT` vs readelf's truncated `JUMP_SLO` output, which is now an explicit pinned fact.
+- **Slot facts by SYMBOL, not only by pinned offset** (`elf::find_slot_for_symbol`): the new demo checks locate GLOB_DAT/JUMP_SLOT slots by the SYMBOL they bind (through the version-aware tables), so the checks stay correct when the layout tool changes section placement — the static readelf pins remain as the CI gate's file facts.
+- Real bugs caught on the first boots, fixed at cause: (1) the link-time removal of an unreferenced weak symbol left the `.symver`-decorated variant un-linkable (`no symbol version section for versioned symbol`) — the reference had to be REAL (the payload now stores the ghost slot ADDRESS, never dereferencing the null) and plain-reference auto-versioning does the version attribution the way real linkers do; (2) the interposated observable was flagged UNDEF with a VERSION (the linker auto-bound it to a versioned provider's definition), which would have eaten the file-binding requirement the overlay cannot satisfy — renamed to a deliberately unversioned symbol so the interposition question and the version question stay independent (both explained in the source files' headers); (3) the versioned GLOB_DAT slot check first compared slot CONTENT SYMBOL ADDRESS against the DATA value expected — the demo corrected to compare address-vs-resolution and let the payload's deref prove the data, exactly the same 32/64-bit ABI-mismatch correction pattern as the sixth round, caught by the boot transcript before the assert.
+- Verified transcript lines (from `tools/qemu_boot_test.sh`, passing twice consecutively; 181 OK lines total, all prior demos still present):
+
+  ```
+  experimental deps-demo: provider A loaded (crosslib.so.1) -- OK
+  experimental deps-demo: pre-overlay lookup of interp_mark = absent (provider A does not define it) -- OK, absent before the overlay exists
+  experimental deps-demo: after interpose(overlay), lookup of interp_mark = 0x6d000103000 (data 0x1111222233334444, the overlay's value) -- OK, interposition overrides load order
+  experimental deps-demo: looping catalog refused with DependencyCycle -- OK, a file can never load itself to satisfy itself
+  experimental deps-demo: DT_NEEDED CHAIN (dependent -> crosslib2.so.1 -> crosslib.so.1) satisfied dependency-first; 1 catalog object(s) auto-loaded -- OK
+  experimental deps-demo: dependent's GNU_RELRO revokes read-only WITH an unresolved WEAK entry in-region (weak != denial) -- OK
+  experimental deps-demo: dependent's versioned GLOB_DAT slot 0x6d000302fe0 == 0x6d000003000 (provider's cross_value as resolved BY THE CATALOG CHAIN) -- OK
+  experimental deps-demo: dependent's interp_mark slot 0x6d000302fd8 == 0x6d000103000 (the INTERPOSITION overlay's address) -- OK
+  experimental deps-demo: WEAK UNDEF ghost_fn@VERS_1.0 slot 0x6d000302fd0 == 0x0 (the NULL slot; unresolved weak stays non-fatal) -- OK
+  experimental deps-demo: lazy JUMP_SLOT slot 0x6d000303000 == 0x6d000310000 (trap stub armed on THIS object's own trampoline page) -- OK
+  experimental deps-demo self-test: cross_value = 0xace5f00dd1ce5eed (expected) -- OK
+  experimental deps-demo self-test: interp_mark = 0x1111222233334444 (the overlay's value read through ring 3) -- OK
+  experimental deps-demo: lazy-bind service fired 1 time(s) across 3 calls (exactly 1 required) -- OK
+  experimental deps-demo: shared lazy-bind service: 2 independent object(s) registered, 2 bind(s) served through ONE vector (0x88) this boot -- OK, the vector is a SERVICE, not a demo
+  ```
+
+  Warning accounting: +7 warnings, ALL the pre-existing `reference to a mutable static` category (the new demos' armed-state statics, the same shape every prior demo carries); no new categories and no `#[allow]`.
+
+**2026-10-14 (sixth round) — the full dependent contract: DT_NEEDED, versioned symbols, and lazy PLT binding — the three limitations the fifth round listed as open, closed together:**
+
+- **The `DT_NEEDED`/`DT_SONAME` dependency contract** (`experimental::elf::load`): the loader parses `DT_NEEDED` and consults the resolver's new `has_soname` for each declared dependency BEFORE any relocation work; a contract the declared scope cannot satisfy refuses the whole load with the typed `MissingDependency` (a distinct error from `UndefinedSymbol`, because "you did not provide the object I named" is not "that symbol does not exist"). A resolver that does not model dependency contracts answers `true` by default — explicit, so a silent no-veto cannot masquerade as enforcement. Proven every boot against an empty registry (refused), and against the correctly-registered provider (load proceeds).
+- **Versioned symbol resolution** (`experimental::elf`): real `DT_VERSYM`/`DT_VERDEF`/`DT_VERNEED` parsing (aux/parent vends walked, `vd_flags`/`vd_ndx` honored by index), and the `SymbolResolver` trait's new `resolve_versioned(name, (version, soname))` form, whose [`SymbolRegistry`] implementation requires a candidate to satisfy BOTH the required version AND the required file/SONAME before a match counts. A same-SONAME provider declaring only `VERS_2.0` refuses the `@VERS_1.0` requirement with the typed `VersionNotProvided` — the name alone is provably NOT enough, checked every boot. A symbol with a required version and NO version-aware resolver stays refused: unversioned resolvers are explicitly incompatible, never silently version-blind.
+- **Lazy PLT binding** (`experimental::elf` + a new IDT service): `DT_JMPREL`/`DT_PLTREL`/`DT_PLTRELSZ` are parsed with the other dynamic tables, but `R_X86_64_JUMP_SLOT` entries bound lazily no longer resolve at load. `load` instead takes optional `LoadContext { resolver, lazy_plt_page }` and on commitment emits a 16-byte trampoline per slot into a loader-mapped, kernel-executable page — `push idx; int 0x88; add rsp, 8; jmp *[%rip-rel32]` pointing at the GOT slot — then publishes the stub's address in the slot. The first user call executes the stub and traps; the (kernel, ring-0) `0x88` handler reads the pushed index off the user stack and calls the new `elf::resolve_lazy_entry`, which applies the SAME self-dynsym-then-registry, version-and-SONAME-checked rules as the load-time pass, patches the actual slot address via the new `elf::lazy_slot_for`, and returns so the stub's tail jumps through the now-real target. Every later call takes the direct path. Proven every boot: exactly ONE trap across THREE calls of the dependent's function, and the first (lazy-bound) and second (direct) calls return identical results.
+- **The demo** (`experimental::elf_dyn_full_demo`, chained after `elf_dyn_cross_demo` on the ring-3 chain): one dependent carries the whole contract AT ONCE — `DT_NEEDED crosslib.so.1`, a `@VERS_1.0`-required `cross_value` GLOB_DAT, a lazy `cross_fn` JUMP_SLOT/PLT call, and its own `dup_symbol` (the self-priority control re-proven under versioned lookup). The `V1`/`V2` provider pair is the same source linked twice by `build.sh` with `-soname crosslib.so.1` plus two `--version-script` files (`userprog/ver_lib_v1.ld`/`ver_lib_v2.ld`), so nothing is hand-simulated; the dependent is a real `ld -shared dep.o provider.so` link, which is where its `DT_NEEDED`/VERNEED come from. `readelf`-verified the whole layout (SONAME present, VERDEF nodes, VERNEED's `vn_other` file-binding linkage to the CORRECT provider, JMPREL surface) before any kernel code touched the files. IDT vectors: `0x88` (the lazy binder, a shared service — multiple dependents could register against it) and `0x89` (the demo's completion/chain trap).
+- **Toolchain/ABI facts the demo honors**: `cross_fn` returns its result in `%eax` only (a 32-bit store); the completion check compares the 32-bit return width the ABI actually delivers, not a full-rax read (whose upper bits are caller-leftover and no callee's responsibility) — that exact mismatch was one of two real bugs this increment caught, see below.
+- **Real bugs caught on the first boots, fixed at cause (the pattern holds):** (1) the lazy-stub emitters encoded `rel32 = slot - (stub + 14)` as a plain u64 subtraction, which panics in debug builds (`attempt to subtract with overflow`, the boot's panic named the exact line) whenever the trampoline page's frame lands BELOW the GOT slot — legal, since the address is allocator-chosen; fixed with `wrapping_sub`, and the comment records why the wrap is the CORRECT encoding, not a workaround. (2) with lazy binding on, every boot PANICKED at the completion check's `fn_ok` because the check read 8 bytes where the payload stored 4 (`mov %eax`) — the mismatch in the serial transcript was REAL, not a test artifact, so the check was corrected to the declared 32-bit contract (see the fact above). Both failures surfaced as boot-test timeouts that the fault reports narrowed in one step.
+- Verified transcript lines (from `tools/qemu_boot_test.sh`, passing twice consecutively; all prior demos' lines still present):
+
+  ```
+  experimental full-demo: provider loaded; DT_SONAME fact (crosslib.so.1) validated -- OK
+  experimental full-demo: same-SONAME V2 provider refuses the VERS_1.0 requirement with VersionNotProvided -- OK, version matching is enforced; the name alone is NOT enough
+  experimental full-demo: dependent's versioned GLOB_DAT slot 0x6c000202fe0 == 0x6c000003000 (provider's cross_value, version-checked) -- OK
+  experimental full-demo: dependent's duplicate-name slot 0x6c000202fd8 == 0x6c000203008 (its OWN dup_symbol) -- OK, self-priority held under the versioned provider too
+  experimental full-demo: lazy JUMP_SLOT slot 0x6c000203000 == 0x6c000210000 (trap stub armed; NOT eagerly resolved) -- OK
+  experimental full-demo: empty-registry dependent refused with MissingDependency -- OK, the declared dependency contract is enforced
+  experimental full-demo: V2-registry dependent refused (denied region or typed version error) -- OK, the version contract refuses end to end
+  experimental full-demo self-test: cross_value via versioned slot = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental full-demo self-test: cross_fn results (eax) 0xfa571ae5 / 0xfa571ae5 (expected 0xfa571ae5 both; first via lazy bind, later direct) -- OK
+  experimental full-demo self-test: lazy-bind trap fired 1 time(s) across 3 calls (exactly 1 required) -- OK, binding is lazy; later calls are direct
+  ```
+
+  Honest scope, unchanged in kind: the contract is between ALREADY-LOADED objects — the decorated scope, not the filesystem. Finding and loading a `DT_NEEDED` file from storage remains Phase 8 scope (needs a filesystem surface); lazy binding resolves through the same explicit registry and version contract as the eager pass, not a GNU-style .plt resolver with its own hash tables; and `LD_PRELOAD`-style interposition beyond the documented load-order search is still not modeled. Unresolvable requirements are refused with TYPED errors (`MissingDependency`/`VersionNotProvided`/`UndefinedSymbol`), never mis-resolved. See the "Real dynamic linking" entry below for the current remainder.
+  Warning accounting: the increment removes the one warning it
+  initially introduced (an unused `mut` on the negative-control probe
+  variable) and adds no suppressions: the two `reference to a mutable
+  static` instances in `elf_dyn_full_demo` are the same pre-existing
+  category every demo's static hand-off of the frame allocator to a
+  ring-0 trap handler carries. No `#[allow]` was added anywhere.
+
+**2026-10-13 (fifth round) — cross-object symbol resolution: ANOTHER
+real `ld -shared` .so now loads whose relocations genuinely need the
+registry, resolving an UNDEFINED symbol against an earlier-loaded
+object:**
+
+- **A registry-based `SymbolResolver`** (`experimental::elf`): the
+  loader's relocation pass now consults an optional resolver for
+  `SHN_UNDEF` symbols (`R_X86_64_GLOB_DAT`/`JUMP_SLOT`/`64` entries
+  whose symbol is not defined in the object itself). What the resolver
+  cannot resolve stays REFUSED — `UndefinedSymbol` — the same
+  never-guess posture, now enforced THROUGH the resolution path
+  (every-boot check: the identical dependent object loaded WITHOUT a
+  resolver comes back refused — `Ok(relro = Denied)`, the loader's
+  documented honest state — while the same bytes load and run WITH
+  the registry).
+- **The search discipline, documented and pinned every boot**:
+  the object being relocated resolves its OWN dynsym entries first
+  (its defined symbols are taken from the FILE, never displaced by a
+  registered object's same-named definition), then registered
+  objects resolve in load order, first DEFINED match wins. Two real
+  .so pair exposes both rules observably: the dependent re-exports
+  `dup_symbol` which the provider ALSO exports (distinct immediates)
+  — the dependent's GOT slot must hold ITS OWN definition while the
+  provider's table still resolves to the provider's, and two
+  registries built in opposite orders return observably different
+  addresses. A lazy by-name registry pass would MISMATCH loudly on
+  the duplicate-name slot.
+- **The dependent object itself** (`userprog/prog_cross_app.s`,
+  `ld -shared`): `cross_value` referenced `@GOTPCREL` with NO local
+  definition — `ld -shared` materializes it as a real
+  `R_X86_64_GLOB_DAT` against a `SHN_UNDEF` dynsym entry, the exact
+  file shape that needed the refusal type before a resolver existed.
+  Both of its GOT slots sit inside its GNU_RELRO region
+  (0x2ee8..0x3000), so the RELRO planner had to consult the resolver
+  for the UNDEF-but-resolvable entry: the grant/revoke cycle ran and
+  landed read-only. The provider (`userprog_cross_lib.elf`) is a
+  data-export-only .so — registered into the registry after its own
+  load completes, structurally guaranteeing self-priority.
+- **The behavioral half**: the dependent's own `cross_payload` code
+  runs in ring 3, dereferences its registry-resolved GOT slot, and
+  reads the PROVIDER's data — the value only the cross-object
+  resolution path could have produced (its local lookup refuses;
+  the transcript shows BOTH facts).
+  Verified transcript lines (from `tools/qemu_boot_test.sh`,
+  passing; two consecutive runs, 155 OK lines each — all prior
+  demos' lines still present):
+
+  ```
+  experimental cross-demo: provider registered (registry 1 object(s)); cross_value 0x6c000002000, dup_symbol 0x6c000002008 resolve from the provider's own tables -- OK
+  experimental cross-demo: dependent's GNU_RELRO region 0x6c000042ee8..0x6c000043000 revoked read-only; the grant half ran for both in-region GLOB_DAT slots (one UNDEF-but-resolved) -- OK
+  experimental cross-demo: the app's own by-name lookup of cross_value refused with UndefinedSymbol -- OK, the app genuinely does not define it
+  experimental cross-demo: app's UNDEF GLOB_DAT slot 0x6c000042fe0 == 0x6c000002000 (the PROVIDER's cross_value, via the registry) -- OK, cross-object relocation applied correctly
+  experimental cross-demo: app's duplicate-name GLOB_DAT slot 0x6c000042fd8 == 0x6c000043000 (ITS OWN dup_symbol) -- OK, self-priority: the app's OWN dynsym entry won, not the registry's earlier same-named entry
+  experimental cross-demo: registry search order decides -- [app,lib] -> 0x6c000043000 (app), [lib] -> 0x6c000002008 (lib) -- OK, first DEFINED match in order wins
+  experimental cross-demo: absent-name registry lookup returned Ok(None) (typed absent, no parse error) -- OK
+  experimental cross-demo: the same dependent WITHOUT a resolver refused with Ok(relro = Denied) -- the caller must refuse -- OK, the refusal is NOT gone now that resolution exists
+  experimental cross-demo self-test: the dependent's own code read 0xace5f00dd1ce5eed through its cross-resolved GOT slot (expected 0xace5f00dd1ce5eed, the provider's cross_value) -- OK
+  ```
+
+  A real bug caught on the first boot, fixed at cause (the pattern
+  holds): the dependent's private-page immediate in the assembly was
+  one placement off from the demo's constant (`0x6c000800000` vs
+  `0x6c000080000`), so the ring-3 store missed its mapped page and
+  the boot timed out — with the fault report naming the exact
+  write-address and the exact instruction, narrowing it to a
+  single-digit layout mismatch. The loader's sanity was confirmed by
+  what did NOT happen: both GOT reads and dereferences succeeded.
+
+  Honest scope, unchanged in kind: this is a load-order registry
+  with one documented rule — not `ld.so`-grade dependency-graph
+  walking. `DT_NEEDED` (dependency discovery from filenames, needs a
+  filesystem surface), interposition beyond registry order, and lazy
+  PLT binding (JUMP_SLOT entries bind eagerly at load, equivalent to
+  `-z now`; a lazy .plt-resolver trampoline stays future work) are
+  the open track. See the "Real dynamic linking" entry below.
+
+**2026-10-13 (fourth round) — in-object symbol resolution: a real
+`ld -shared` shared object now loads, relocates, resolves symbols by
+name, and its own code runs in ring 3:**
+
+- **Symbol-resolved relocations** (`experimental::elf::load`): the
+  loader now applies the in-object symbol-resolved relocation class —
+  `R_X86_64_GLOB_DAT`/`R_X86_64_JUMP_SLOT` (`S`) and `R_X86_64_64`
+  (`S + A`) — where `S` is `load_bias + st_value` of a symbol DEFINED
+  in the object. A symbol-resolved entry against a genuinely UNDEFINED
+  symbol (`SHN_UNDEF`) is refused with the typed `UndefinedSymbol` —
+  cross-object resolution is real dynamic linking's work and remains
+  the documented boundary (see the "Real dynamic linking" entry
+  below).
+- **The SysV dynamic tables**, parsed once from the mapped
+  `PT_DYNAMIC` with the same paranoia the format has met all along:
+  `DT_HASH` nchain capped at a sane 2^20, `DT_SYMENT` must be 24,
+  string offsets bounded by `DT_STRSZ`, names NUL-terminated inside
+  the string table, malformed dynamic surface = typed
+  `MalformedDynamicTables`, never a guess.
+- **By-name symbol lookup** (`elf::lookup_symbol`): a real SysV
+  DT_HASH bucket/chain walk (the mechanism a dynamic linker uses for
+  this table kind, not a linear scan), with `SymbolNotFound` typed
+  DISTINCT from parse errors so an absent name is a checkable outcome
+  — the demo's negative control resolves a deliberately absent name
+  every boot.
+- **The RELRO grant half ran for the first time.** `ld -shared` places
+  `.got` INSIDE the `PT_GNU_RELRO` region (0x2ef0..0x3000 in this
+  object) and the in-region GLOB_DAT needs the write-grant, so the
+  grant/revoke cycle finally exercised both halves. That exposed a
+  real correctness bug in the flag-update pass, caught during this
+  increment's review and fixed before the first boot: `Mapper::update_flags`
+  REPLACES the whole flag set, and the pass had been handing it a
+  synthetic (`PRESENT`-based) result — silently stripping
+  `USER_ACCESSIBLE` and `NO_EXECUTE` from the RELRO pages, i.e.
+  exactly the pages the loaded code's GOT reads touch (ring 3 would
+  have faulted reading its own resolved GOT slot). The grant/revoke
+  now read each page's CURRENT leaf PTE flags first (through
+  `memory::paging::page_flags_of`) and change exactly one bit. The
+  every-boot check now also asserts the RELRO page is still
+  USER_ACCESSIBLE after the revoke — the property whose silent loss
+  the bug was.
+- **Toolchain verified first**, same discipline as PIE/PE: `readelf`
+  on the hand-built object (`userprog/prog_dyn.s`, linked plain
+  `ld -shared`) confirmed DT_HASH present (not just DT_GNU_HASH),
+  DT_SYMTAB/DT_STRTAB, exactly two symbol-resolved relocations
+  (`R_X86_64_GLOB_DAT` r_offset 0x2fe0, in-`.got`; `R_X86_64_64`
+  r_offset 0x3008, in-`.data`), GNU_RELRO 0x2ef0..0x3000, and 5
+  dynsym entries — before any kernel code touched the file.
+- **An assembly-level fact worth recording:** a plain RIP-relative
+  read of an EXPORTED symbol does not link into a shared object
+  (`ld -shared` refuses the `R_X86_64_PC32`; exported symbols are
+  preemptible). The loaded code instead dereferences `dyn_value`
+  through the linker-created GOT (`mov dyn_value@GOTPCREL(%rip)`) —
+  exactly the producer convention that forces the `R_X86_64_GLOB_DAT`
+  entry the loader processes. The demo's behavioral half therefore
+  exercises the real GOT mechanism, not a special case.
+- **Chain wiring**: `pie_demo`'s trap now hands control to
+  `elf_dyn_demo` (its own vector, 0x86), whose `on_trap` chains into
+  `elf_dyn_cross_demo` (0x87) and thence into `pe_demo` — the same
+  one-way demo-chain structure as every other ring-3 demo.
+  `kernel_main`'s direct flow is unchanged (so
+  isolated-tasks, DEX, teardown, and the ring3-scheduler
+  phases all still run before the chain's final leg). The program's
+  trap-handler check is the behavioral proof: the `.so`'s own code,
+  running in ring 3, reads its resolved GOT slot and produces the
+  value only a correctly resolved/relocated load could.
+  Verified transcript lines (from `tools/qemu_boot_test.sh`, passing;
+  all prior demos' lines still present):
+
+  ```
+  experimental elf-dyn-demo: GNU_RELRO region 0x64000002ef0..0x64000003000 revoked read-only after grant/relocate (the GRANT half ran for the first time) -- OK
+  experimental elf-dyn-demo: resolved by name via the DT_HASH walk -- dyn_payload 0x64000001000, dyn_value 0x64000003000, dyn_timestamp 0x64000003010 -- OK
+  experimental elf-dyn-demo: absent-name lookup returned the typed SymbolNotFound (not a parse error) -- OK
+  experimental elf-dyn-demo: GLOB_DAT slot 0x64000002fe0 (in-RELRO .got) == 0x64000003000 (resolved dyn_value) -- OK, symbol-resolved relocation applied correctly
+  experimental elf-dyn-demo: R_X86_64_64 slot 0x64000003008 (writable .data) == 0x64000003000 (resolved dyn_value) -- OK, symbol-resolved relocation applied correctly
+  experimental elf-dyn-demo: RELRO page 0x64000002000 is read-only and user-readable after the grant/revoke cycle -- OK
+  experimental elf-dyn-demo: GLOB_DAT slot residency check: 0x64000002fe0 inside RELRO region 0x64000002ef0..0x64000003000 = true -- OK
+  experimental elf-dyn-demo: wrote 0x5eed0001 through resolved dyn_timestamp (0x64000003010) and read it back -- OK, a resolved runtime address is a real mapped address
+  experimental elf-dyn-demo: kernel-side proof complete; entering dyn_payload (ring 3) which dereferences its own resolved GOT slot
+  experimental elf-dyn-demo self-test: the .so's own code read 0xd1ce00f00d through its resolved GOT slot (expected 0xd1ce00f00d) -- OK
+  ```
+
+  Honest scope, unchanged in kind: WITHIN-object resolution only. A
+  genuinely undefined symbol is refused (`UndefinedSymbol`), not
+  mis-resolved; dependency walking, symbol interposition, and lazy PLT
+  binding remain the open cross-object track (see the "Real dynamic
+  linking" entry below).
+
 **2026-10-12 (third round) — the GNU_RELRO "make read-only again after
-relocating" gap closed, with an every-boot structural proof:**
+relocating" gap closed, with an every-boot structural proof:****
 
 - **PT_GNU_RELRO enforcement** (`experimental::elf::load`): the loader
   now parses the `PT_GNU_RELRO` program header and runs the real
@@ -1009,7 +1251,124 @@ The pre-existing list continues unchanged:
   not silently mishandled. `PT_GNU_RELRO`'s "make read-only again
   after relocating" step ~~is also not implemented~~ **Update
   2026-10-12: closed -- `elf::load` now implements the full
-  grant/revoke cycle (see the third-round increment above)**
+  grant/revoke cycle (see the third-round increment above)**.
+  **Update 2026-10-13: partially closed — the in-object half landed**
+  (symbol-resolved `GLOB_DAT`/`JUMP_SLOT`/`64` relocations,
+  DT_HASH/DT_SYMTAB/DT_STRTAB parsing, and by-name SysV lookup —
+  see the fourth-round increment above, `experimental::elf_dyn_demo`).
+  **Update 2026-10-13 (same day, second increment): the cross-object
+  half landed for the registry scope** — an `SHN_UNDEF` symbol now
+  RESOLVES against earlier-loaded objects via the
+  `elf::SymbolRegistry` (documented self-own-dynsym-first, then
+  load-order-first-match search), proven end to end by a real .so
+  PAIR (`experimental::elf_dyn_cross_demo`; see the fifth-round
+  increment above). ~~What remains open is beyond the registry's
+  scope: `DT_NEEDED`-driven dependency discovery, interposition
+  beyond plain load order, lazy PLT binding (JUMP_SLOTs bind eagerly,
+  `-z now`-style — no .plt-resolver trampoline), and versioned symbol
+  requirements (`DT_VERDEF`/`DT_VERNEED`)~~
+  **Update 2026-10-14: three of those five closed — see the
+  sixth-round increment above**: the `DT_NEEDED`/`DT_SONAME` contract
+  IS enforced (typed `MissingDependency` refusal before any
+  relocation work), versioned symbol requirements ARE processed
+  (`DT_VERSYM`/`DT_VERDEF`/`DT_VERNEED`, typed `VersionNotProvided`
+  when a candidate fails the version/file check), and lazy PLT
+  binding IS real (a trap-based first-use binder, IDT `0x88`, proven
+  to bind exactly once across repeated calls).
+  ~~What REMAINS open is what genuinely needs surfaces the kernel does
+  not yet have: filesystem discovery/loading of a `DT_NEEDED` FILE
+  (Phase 8: needs storage), interposition beyond the documented
+  load-order registry rule, and GNU-`ld.so`-grade resolver internals
+  (a .plt resolver with its own tables, hash-table alternatives like
+  DT_GNU_HASH, symbol-merging semantics)~~
+  **Update 2026-10-14 (see the seventh-round increment above): two of
+  those closed by rule — recursive `DT_NEEDED` discovery through the
+  named `DepCatalog` surface (the file-system client, when Phase 8
+  lands, replaces the catalog's embedded-file entries and NOTHING in
+  the loader changes shape), and interposition beyond load order via
+  the explicit `SymbolRegistry::interpose` overlay. Weak-versioned
+  semantics (`STB_WEAK`/`VER_FLG_WEAK`) are also in as of that
+  round: tolerated-unresolved means the NULL slot, never a guess.**
+  **Update 2026-10-15 (eighth round): DT_GNU_HASH is IN — parsed and
+  looked up glibc-style (bloom + bucket/chain), as a separate
+  mechanism from the SysV walk with the two answers' equality checked
+  every boot, GNU preferred on `--hash-style=both` objects while
+  DT_HASH keeps its authority (the symbol count and the GNU table's
+  undefined-symbol exclusion). The resolver is PLURAL about hash
+  tables now; ~~what remains open is genuinely GNU-`ld.so`-grade resolver
+  internals: a userland .plt resolver with its own hash tables (the
+  kernel's lazy binding is trap-based and kernel-arbitrated —
+  semantics-identical first-use binding, different mechanism, a
+  deliberate scope choice), and full symbol-merging semantics across
+  unregistered scopes.~~
+  **Update 2026-10-17 (ninth round): the GNU OWN-`.plt` lazy protocol
+  IS IN — `elf::arm_own_plt`, armed via
+  `LoadContext::own_plt_resolver_page` (`experimental::elf_dyn_plt_demo`
+  proves it end to end in ring 3).** For an own-armed object the
+  loader emits NO synthetic `int 0x88` trampoline pages and instead
+  hands the object's REAL linker `.plt`/`.got.plt` machinery over to
+  the GNU protocol: `DT_PLTGOT` required up front (typed
+  `MalformedDynamicTables` otherwise, before any relocation work);
+  GOT[1] := a per-object LINK-MAP ID (an integer cookie the registry
+  owns — deliberately NOT a user-writable kernel pointer, this
+  kernel's honest analogy to the GNU `struct link_map*`); GOT[2] := a
+  user-executable resolver thunk (`int 0x8B`, a NEW ring-3-privileged
+  gate installed as a RAW handler whose body restores EVERY user GPR
+  before the guided `iretq` — the `x86-interrupt` ABI's register
+  restore is bypassed by any frame-guiding return, and a naked-entry
+  blob+pop scheme like `ring3_scheduler`'s is what keeps the user
+  state intact); every JUMP_SLOT slot := the linker's own baked
+  initial `plt_stub+6` value ADJUSTED BY THE LOAD BIAS (exactly GNU
+  `elf_machine_lazy_rel`'s lazy relocation — the file bytes carry
+  pre-bias, the runtime slots carry live state); and the GOT[1]/GOT[2]
+  arming writes happen INSIDE the GNU_RELRO grant window, GNU-ld's
+  own order (the first three `.got.plt` slots sit inside the region by
+  linker layout), revoked read-only with everything else. First use:
+  PLT1's `push $idx` and PLT0's `push GOT[1]` put the REAL spill
+  (cookie, index, caller ret) on the user stack;
+  `lazy_binder::plt_service_core` identifies the object BY THE COOKIE
+  (new typed `UnregisteredLinkMap` refusal + its
+  `probe_unregistered_lm` negative control), resolves through the
+  SAME registry + version contract as every other path, patches the
+  REAL slot, and then GUIDES the return the way GNU
+  `_dl_runtime_resolve` ends: `rsp += 16` drops ONLY the two
+  callee-side spilled words and execution resumes INSIDE the resolved
+  callee, whose own `ret` reaches the original caller — every-boot
+  facts: exactly ONE bind across three calls PER OBJECT, the slot
+  patched to the resolved cross_fn, three correct eax results read
+  from the dependent's own page, and the SERVICE-level GNU facts:
+  the SAME dependent artifact loaded TWICE at two bases with two
+  distinct, monotonically-allocated link-map cookies — each bound
+  EXACTLY once through ONE gate (0x8B); and the MULTI-ENTRY GNU
+  artifact (userprog_multi.elf, linked against BOTH providers):
+  its `.rela.plt` carries TWO R_X86_64_JUMP_SLOT entries, ONE
+  link-map cookie takes EXACTLY TWO first-use binds (one per
+  entry, each resolved by ITS OWN index), both slots patch to
+  their respective resolved addresses, per-entry laziness held
+  (the third fn_b call is direct) — one registry serving the GNU
+  instances (5 objects / 6 binds: 2 trap-stub + 1 + 1 + 2 per
+  boot), plus CI-gate facts pinning PLTGOT/JMPREL/PLTREL=RELA,
+  the multi provider's SONAME and its dependent's NEEDED pair,
+  the PLT-LESS boundary artifact's load-bearing ABSENCE (zero PLT
+  dynamic tags, gate-checked directly), and the new scratch window.
+  The GNU protocol is OPT-IN PER LOAD and refuses its own
+  machinery's absence: requested on the PLT-LESS artifact it is a
+  typed `MalformedDynamicTables` refusal before any lazy work, and
+  the SAME artifact loads eagerly in the plain resolver mode — its
+  GLOB_DAT resolves AT LOAD, relro revoked read-only, ZERO GNU
+  arming side effects (registry 5 -> 5, binds 6 -> 6, no thunk
+  page) — eager stays the default for objects that never had a
+  PLT.
+  What GENUINELY remains open of the GNU-`ld.so` internals: a
+  ring-3-EXECUTABLE resolver code body with its own private hash
+  tables (the resolution itself stays kernel-arbitrated
+  `resolve_lazy_entry` through the registry — the WIRE protocol is
+  GNU-shaped, the resolver is not), and full symbol-merging semantics
+  across unregistered scopes.** Unresolvable requirements are STILL REFUSED
+  with typed errors (`UndefinedSymbol`/`MissingDependency`/
+  `VersionNotProvided`/`DependencyCycle`) except the weak rule's
+  NULL-slot case / surfaced as `RelroOutcome::Denied`, never
+  mis-resolved.
 - Address-space teardown for a space that was ever the *active* one
   for a ring-3 trap: once listed here as an open sharp edge (the
   documented caveat in `AddressSpace::destroy`'s own safety comment),
@@ -1125,6 +1484,9 @@ kernel, and documented as such rather than half-attempted:**
 - *Real dynamic linking for ELF* (`R_X86_64_GLOB_DAT`,
   `_JUMP_SLOT`, symbol/string tables, cross-object resolution,
   `PT_GNU_RELRO`) -- a dynamic linker is its own subsystem.
+  (2026-10-13: the in-object and registry-scoped cross-object
+  halves above are landed; the `ld.so`-grade remainder noted there
+  still is.)
 - *APK (ZIP) container unwrapping + DEFLATE* -- the DEX parser handles
   a standalone `.dex`; a real `.apk` needs ZIP central-directory
   parsing and an inflate implementation to get at a compressed
