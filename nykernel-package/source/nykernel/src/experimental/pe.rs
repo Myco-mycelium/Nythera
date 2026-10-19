@@ -311,7 +311,6 @@ fn load_callers(
         let hdr_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
         let hdr_start = VirtAddr::new(load_base).align_down(4096u64);
         let hdr_mapped = paging::map_range(mapper, frame_allocator, hdr_start, pages, hdr_flags);
-        crate::serial_println!("  [dbg map] header pages={:#x} span={:#x} mapped={:#x} flags={:?}", pages, header_span, hdr_mapped, hdr_flags);
         if hdr_mapped != pages {
             return Err(PeError::MappingFailed);
         }
@@ -319,7 +318,6 @@ fn load_callers(
             core::ptr::write_bytes(hdr_start.as_mut_ptr::<u8>(), 0, header_span as usize);
             let n = (headers_file_end as usize).min(data.len());
             core::ptr::copy_nonoverlapping(data.as_ptr(), hdr_start.as_mut_ptr::<u8>(), n);
-            crate::serial_println!("  [dbg copy] headers copied ({} bytes) to {:#x}", n, hdr_start.as_u64());
         }
     }
 
@@ -361,7 +359,6 @@ fn load_callers(
         }
 
         let mapped = paging::map_range(mapper, frame_allocator, seg_start, page_count, flags);
-        crate::serial_println!("  [dbg map] section {:#x}..{:#x} pages={} mapped={} flags={:?} chars={:#x}", seg_start.as_u64(), seg_end.as_u64(), page_count, mapped, flags, sh.characteristics);
         if mapped != page_count {
             return Err(PeError::MappingFailed);
         }
@@ -371,7 +368,6 @@ fn load_callers(
             if sh.size_of_raw_data > 0 {
                 let dest = VirtAddr::new(runtime_vaddr).as_mut_ptr::<u8>();
                 core::ptr::copy_nonoverlapping(data.as_ptr().add(file_start), dest, sh.size_of_raw_data as usize);
-                crate::serial_println!("  [dbg copy] section {:#x} copied ({} bytes) from file+{:#x}", seg_start.as_u64(), sh.size_of_raw_data, file_start);
             }
         }
     }
@@ -474,11 +470,8 @@ unsafe fn read_u32_at(load_base: u64, rva: u64, max_rva: u64) -> Result<u32, PeE
 /// supplies a valid optional header offset (this fn re-leafs it).
 unsafe fn read_data_directory(load_base: u64, index: u32) -> Result<(u32, u32), PeError> {
     let base = load_base as *const u8;
-    crate::serial_println!("  [dbg dd] about to translate base={:#x}", load_base);
     let x = crate::memory::paging::translate(&crate::experimental::address_space::active_mapper(), x86_64::VirtAddr::new(load_base + 0x3c));
-    crate::serial_println!("  [dbg dd] translate(+3c)={:?}", x.map(|p| p.as_u64()));
     let sig_off = core::ptr::read_unaligned(base.add(0x3c) as *const u32) as usize;
-    crate::serial_println!("  [dbg dd] sig_off={:#x}", sig_off);
     let coff = load_base + sig_off as u64 + 4;
     let machine = core::ptr::read_unaligned(coff as *const u16);
     if machine != MACHINE_AMD64 {
