@@ -678,7 +678,6 @@ impl DllExportTable {
     /// `load_base` must name a mapped image; headers must be readable.
 pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeError> {
         let (dir_rva, dir_size) = read_data_directory(load_base, 0)?;
-        crate::serial_println!("  [dbg parse] dir0={:#x}/{:#x}", dir_rva, dir_size);
         if dir_rva == 0 || dir_size == 0 {
             return Ok(DllExportTable {
                 load_base,
@@ -701,19 +700,12 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
             _ => {}
         }
         let d = load_base.wrapping_add(dir_rva as u64);
-        crate::serial_println!("  [dbg parse] d={:#x}", d);
         let _name_rva = core::ptr::read_unaligned((d + 12) as *const u32);
-        crate::serial_println!("  [dbg parse] name_rva={:#x}", _name_rva);
         let number_of_functions = core::ptr::read_unaligned((d + 20) as *const u32);
-        crate::serial_println!("  [dbg parse] nfun={}", number_of_functions);
         let number_of_names = core::ptr::read_unaligned((d + 24) as *const u32);
-        crate::serial_println!("  [dbg parse] nnam={}", number_of_names);
         let address_of_functions_rva = core::ptr::read_unaligned((d + 28) as *const u32);
-        crate::serial_println!("  [dbg parse] eat={:#x}", address_of_functions_rva);
         let address_of_names_rva = core::ptr::read_unaligned((d + 32) as *const u32);
-        crate::serial_println!("  [dbg parse] npt={:#x}", address_of_names_rva);
         let address_of_name_ordinals_rva = core::ptr::read_unaligned((d + 36) as *const u32);
-        crate::serial_println!("  [dbg parse] ordt={:#x}", address_of_name_ordinals_rva);
         // u32*u32 arithmetic in u64 cannot overflow before the bound
         // check answers for it.
         let names_end = address_of_names_rva as u64 + number_of_names as u64 * 4;
