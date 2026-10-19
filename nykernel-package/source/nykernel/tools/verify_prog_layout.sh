@@ -166,6 +166,89 @@ echo "  layout-gate: userprog/userprog_pltless.elf OK (zero PLT tags: the absenc
 
 echo "  layout-gate: all embedded userprog .so facts verified"
 
+# =========================================================================
+# PE32+ import-resolution pair (experimental::pe_import_demo). Both files
+# are plain `ld -m i386pep` products: the provider DLL's .edata and the
+# client's .idata/IAT are ld-synthesized from a DIRECT dll link -- no
+# dlltool exists on this host and none is needed. The facts below are what
+# pe.rs's import walk and pe_import_demo's assertions are written against;
+# the same-loudness gate rule applies: a drift REFUSES THE BUILD.
+# =========================================================================
+pafacts() {
+    local desc="$1"
+    local file="$2"
+    local tool="$3"
+    shift 3
+    if [[ ! -f "$file" ]]; then
+        echo "FAIL: $file does not exist (build.sh order drifted past verify_prog_layout.sh?)"
+        exit 1
+    fi
+    local out
+    out="$($tool "$file" 2>&1)"
+    for pat in "$@"; do
+        if ! printf '%s' "$out" | grep -qsE -- "$pat"; then
+            echo "FAIL: userprog PE layout fact missing in $file: [$pat] ($desc)" >&2
+            echo "     --- actual $(basename "$tool") surface: ---" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+        fi
+    done
+    echo "  layout-gate: $file OK ($desc)"
+}
+
+# The provider DLL: a REAL Export Directory (Entry 0 nonzero), at the
+# pinned ImageBase, exporting exactly the two fixture symbols by name
+# with the pinned EAT RVAs and Ordinal Base 1.
+pafacts "PE import provider DLL (real export directory)" userprog/userprog_pe_import_dll.dll \
+    "objdump -p" \
+    'ImageBase.*0000180000000000' \
+    'Entry 0 0000000000003000.*Export Directory' \
+    'Export Address Table -- Ordinal Base 1' \
+    '\[ *0\] \+base\[ *1\] 1000 Export RVA' \
+    '\[ *1\] \+base\[ *2\] 2000 Export RVA' \
+    'crossfn' \
+    'crossmark'
+# ...and exactly two names in its name/ordinal table (NUMBER pinned, not
+# just presence: a third export would change the demo's ==2 assertion's
+# meaning).
+prov_names="$(objdump -p userprog/userprog_pe_import_dll.dll | sed -n '/Ordinal\/Name Pointer/,/^$/p' | grep -cE '\] cross')"
+if [ "$prov_names" -ne 2 ]; then
+    echo "FAIL: provider DLL exports $prov_names name(s) -- the demo pins exactly 2 (crossfn, crossmark)" >&2
+    exit 1
+fi
+echo "  layout-gate: userprog/userprog_pe_import_dll.dll OK (exactly 2 exported names: the count is pinned)"
+
+# The dependent client: a REAL Import Directory (Entry 1 nonzero) at the
+# pinned ImageBase, NO export directory (Entry 0 -- the negative-control
+# carrier's load-bearing ABSENCE: the client exe registered as its own
+# provider is an empty table), the pinned DLL name, BOTH intended
+# imports by hint/name, and the faithful Windows-shaped call site
+# (indirect call through the IAT slot, plus the demo's own trap).
+pafacts "PE import dependent client (real import directory)" userprog/userprog_pe_import_app.exe \
+    "objdump -p" \
+    'ImageBase.*0000140000000000' \
+    'Entry 0 0000000000000000 00000000 Export Directory' \
+    'Entry 1 0000000000002000.*Import Directory'
+pafacts "PE import dependent client (import table contents)" userprog/userprog_pe_import_app.exe \
+    "objdump -x" \
+    'DLL Name: userprog_pe_import_dll\.dll' \
+    'crossfn' \
+    'crossmark'
+# The disassembly pin: ld emits `call *0x8d(%rip)` for the demo's
+# `call *__imp_crossfn(%rip)` (GOT-relative, no literal __IAT_start__),
+# so only the trap instruction is pinned by text; DAR-through-IAT is
+# asserted at runtime by the demo itself.
+pafacts "PE import dependent client (faithful IAT call site)" userprog/userprog_pe_import_app.exe \
+    "objdump -d" \
+    'int    \$0x8d'
+iat_slots="$(objdump -x userprog/userprog_pe_import_app.exe | grep -cE '__imp_crossfn|__imp_crossmark')"
+if [ "$iat_slots" -lt 2 ]; then
+    echo "FAIL: client carries $iat_slots __imp_* IAT definitions -- both fixture imports must exist"
+    exit 1
+fi
+echo "  layout-gate: userprog/userprog_pe_import_app.exe OK (both __imp_ IAT entries pinned; call sites are DAR-through-IAT)"
+echo "  layout-gate: PE import pair facts verified"
+
 # ---- negative-control window pin (the scratch-base rule) ----
 #
 # The kernel's negative controls load deliberately-refused objects and

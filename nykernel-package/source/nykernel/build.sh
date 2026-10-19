@@ -99,12 +99,24 @@ ld -shared --no-as-needed --hash-style=both -o userprog/userprog_pltless.elf use
 # on the vernaux; the weak-version-FLAG half of the kernel's rule needs a
 # real flagged artifact, so the build composes it (readelf-verified by the gate).
 python3 tools/patch_weak_verneed.py userprog/userprog_weak.elf || exit 1
-echo "==> readelf LAYOUT GATE: every embedded .so is fact-checked (SONAMEs, version tables, NEEDED chains, PLT/JUMP_SLOT, WEAK dynsym) BEFORE kernel code ever sees them"
-./tools/verify_prog_layout.sh
+
+echo "==> link userprog pe-import PAIR: the provider DLL (its own ld-synthesized .edata) + the client linked DIRECTLY against it -- GNU ld emits the client's REAL import table (IMAGE_DIRECTORY_ENTRY_IMPORT) and IAT; no dlltool, no import library"
+as --64 userprog/prog_pe_import_dll.s -o userprog/prog_pe_import_dll.o
+# ImageBase 0x180000000000: PML4 index 0x18. The bases must be OUTSIDE
+# the shared PML4[0] identity subtree: pe_demo's program lives at
+# 0x140000000 under index 0, and a shared-index collision surfaced as a
+# PageAlreadyMapped on the second import demo's header page (boot-caught,
+# fixed at cause by picking private indexes for both halves).
+ld -m i386pep --shared --enable-auto-import --image-base=0x180000000000 -o userprog/userprog_pe_import_dll.dll userprog/prog_pe_import_dll.o
+as --64 userprog/prog_pe_import_app.s -o userprog/prog_pe_import_app.o
+ld -m i386pep --subsystem native -e _start --image-base=0x140000000000 -o userprog/userprog_pe_import_app.exe userprog/prog_pe_import_app.o userprog/userprog_pe_import_dll.dll
 as --64 userprog/prog_pe.s -o userprog/prog_pe.o
 ld -m i386pep --subsystem native -e _start -o userprog/userprog_pe.exe userprog/prog_pe.o
 as --64 userprog/prog_pe_reloc.s -o userprog/prog_pe_reloc.o
 ld -m i386pep --subsystem native -e _start -o userprog/userprog_pe_reloc.exe userprog/prog_pe_reloc.o
+
+echo "==> readelf LAYOUT GATE: every embedded userprog artifact is fact-checked (SONAMEs, version tables, NEEDED chains, PLT/JUMP_SLOT, WEAK dynsym, PE edata/idata) BEFORE kernel code ever sees them"
+./tools/verify_prog_layout.sh
 
 echo "==> assembling boot/boot.s"
 as --64 boot/boot.s -o target/boot.o --gdwarf-2 2>/dev/null || {

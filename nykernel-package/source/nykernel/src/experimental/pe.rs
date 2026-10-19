@@ -10,11 +10,13 @@
 //! DOS/PE/COFF/Optional headers (for `AddressOfEntryPoint`,
 //! `ImageBase`, and sanity checks) and the section table (for what to
 //! map where, with real permissions from each section's
-//! `Characteristics` flags). No imports (no `IMPORT_DIRECTORY`
-//! resolution -- a binary calling into `kernel32.dll` or any other
-//! DLL is out of scope, since that needs a real Win32 API
-//! implementation, not just a loader), no resources, no exception
-//! tables. Base relocations (`.reloc`) ARE supported: loading at a
+//! `Characteristics` flags). Imports ARE supported (2026-10-18 increment): the real
+//! `IMAGE_DIRECTORY_ENTRY_IMPORT` walk, resolved against provider DLLs
+//! through their OWN `IMAGE_DIRECTORY_ENTRY_EXPORT` tables --
+//! GetProcAddress semantics, not a synthetic registry -- see the
+//! import/export halves below. Still deliberately out of scope:
+//! forwarding exports, delay-load imports, bound imports, ordinal-import
+//! names, resources, exception tables, and any Win32 API surface. Base relocations (`.reloc`) ARE supported: loading at a
 //! `load_bias` other than the file's own `ImageBase` applies every
 //! `IMAGE_REL_BASED_DIR64`/`HIGHLOW` entry, so an ASLR-style binary
 //! runs at the loader-chosen address -- the PE mirror of
@@ -31,6 +33,7 @@
 //! bounds-checked against the actual byte slice before being
 //! dereferenced.
 
+use alloc::vec::Vec;
 use x86_64::structures::paging::{OffsetPageTable, PageTableFlags};
 use x86_64::VirtAddr;
 
@@ -44,6 +47,47 @@ const OPTIONAL_HEADER_MAGIC_PE32_PLUS: u16 = 0x20b;
 
 const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+/// A null-terminated string read out of a loaded image, capped at 64
+/// bytes (a DLL or symbol name longer than that is malformed input,
+/// not something to unbounded-loop over). `len` is the byte count
+/// BEFORE the terminator.
+#[derive(Clone, Copy)]
+pub struct NameBuf {
+    pub bytes: [u8; 64],
+    pub len: usize,
+}
+
+impl NameBuf {
+    fn empty() -> NameBuf {
+        NameBuf { bytes: [0; 64], len: 0 }
+    }
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl core::fmt::Debug for NameBuf {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Print only ASCII-visible bytes so a malformed name can't
+        // inject terminal escape sequences into the boot transcript.
+        write!(f, "\"")?;
+        for &b in self.bytes[..self.len].iter() {
+            if b.is_ascii_graphic() {
+                write!(f, "{}", b as char)?;
+            } else {
+                write!(f, "\\x{:02x}", b)?;
+            }
+        }
+        write!(f, "\"")
+    }
+}
+
+impl PartialEq for NameBuf {
+    fn eq(&self, other: &NameBuf) -> bool {
+        self.bytes[..self.len] == other.bytes[..other.len]
+    }
+}
 
 const DOS_HEADER_SIZE: usize = 64; // fixed IMAGE_DOS_HEADER size; e_lfanew is the last field
 const COFF_HEADER_SIZE: usize = 20;
@@ -63,10 +107,38 @@ pub enum PeError {
     MappingFailed,
     BadRelocationBlock,
     UnsupportedRelocationType(u16),
+
+    // -- the import/export halves --
+    /// A `DataDirectory` the optional header does not even declare
+    /// (`NumberOfRvaAndSizes` short) but which an operation requires.
+    DataDirectoryAbsent(u32),
+    /// The import or export structure itself is malformed (unreachable
+    /// RVA, unbounded array, missing terminator): never silently
+    /// resolved.
+    MalformedImageDirectory(&'static str),
+    /// An ordinal-named (`IMAGE_ORDINAL_FLAG64` high-bit) import.
+    /// Deliberately unresolved: name imports are the increment's scope.
+    UnsupportedOrdinalImport,
+    /// The import's DLL name matched no registered provider.
+    MissingDllImport,
+    /// A provider was found for the DLL, but the symbol is not an
+    /// export of it.
+    MissingImport,
+    /// The IAT slot's page is not writable in its own right (the real
+    /// GNU ld artifact leaves `.idata` writable); the loader refuses
+    /// rather than grant-write a section the file did not ask for.
+    ImportSectionNotWritable,
 }
 
 pub struct LoadedPe {
     pub entry_point: VirtAddr,
+    /// What was resolved for this image's import directory: one fact
+    /// per successfully-patched IAT slot, so a caller (and the boot
+    /// transcript) can state per-symbol facts rather than a count.
+    pub imports: ImportResolution,
+    /// The load-time RVA footprint (from the file bytes the loader
+    /// mapped); the single authority every later bounds-check uses.
+    pub image_max_rva: u64,
 }
 
 fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
@@ -115,6 +187,35 @@ pub fn load(
     mapper: &mut OffsetPageTable<'static>,
     frame_allocator: &mut BumpFrameAllocator,
     load_bias: u64,
+) -> Result<LoadedPe, PeError> {
+    load_callers(data, mapper, frame_allocator, load_bias, None)
+}
+
+/// [`load`] plus import resolution: an optional [`DllRegistry`] against
+/// which every import directory entry is resolved (Windows loader
+/// semantics: the dependent's IAT slot gets the provider's export's
+/// absolute runtime address). Resolution deliberately runs AFTER the
+/// mapping and relocation passes: the IAT must be readable at its
+/// final runtime address, and the provider addresses are computed
+/// against the provider's own load base (the provider is never
+/// relocated here -- a provider loaded at its own `ImageBase`, like
+/// any fixed-address image, needs no relocation of its exports).
+pub fn load_with_imports(
+    data: &[u8],
+    mapper: &mut OffsetPageTable<'static>,
+    frame_allocator: &mut BumpFrameAllocator,
+    load_bias: u64,
+    registry: &DllRegistry,
+) -> Result<LoadedPe, PeError> {
+    load_callers(data, mapper, frame_allocator, load_bias, Some(registry))
+}
+
+fn load_callers(
+    data: &[u8],
+    mapper: &mut OffsetPageTable<'static>,
+    frame_allocator: &mut BumpFrameAllocator,
+    load_bias: u64,
+    registry: Option<&DllRegistry>,
 ) -> Result<LoadedPe, PeError> {
     if data.len() < DOS_HEADER_SIZE {
         return Err(PeError::TooShort);
@@ -179,9 +280,58 @@ pub fn load(
         return Err(PeError::NoSections);
     }
 
+    // The header page(s) Windows' own loader maps: every PE image's
+    // first page(s) hold the DOS/PE/Optional headers + the section
+    // table, and the import/export walks READ THEM THROUGH THE MAPPED
+    // IMAGE (RVAs, at runtime). Map that prefix read-only
+    // (PRESENT|USER_ACCESSIBLE|NO_EXECUTE -- the file asked for
+    // nothing here; headers are never executed and never written)
+    // BEFORE the sections, then pass over writing the raw header
+    // bytes. Capped at the first section's RVA so a section at RVA 0
+    // can never double-map; absent any section boundary information
+    // to the contrary, one whole page is mapped.
+    let headers_file_end =
+        (section_table_off + number_of_sections * SECTION_HEADER_SIZE) as u64;
+    let mut header_span = ((headers_file_end + 4095) / 4096) * 4096;
+    {
+        let mut first_vaddr: Option<u64> = None;
+    for i in 0..number_of_sections {
+            let off = section_table_off + i * SECTION_HEADER_SIZE;
+            let vaddr = read_u32(data, off + 12).ok_or(PeError::SectionHeaderOutOfBounds)? as u64;
+            if vaddr > 0 {
+                first_vaddr = Some(first_vaddr.map_or(vaddr, |m: u64| m.min(vaddr)));
+            }
+        }
+        if let Some(first) = first_vaddr {
+            header_span = header_span.min(((first + 4095) / 4096) * 4096);
+        }
+    }
+    if header_span > 0 {
+        let pages = (header_span / 4096) as u64;
+        let hdr_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
+        let hdr_start = VirtAddr::new(load_base).align_down(4096u64);
+        let hdr_mapped = paging::map_range(mapper, frame_allocator, hdr_start, pages, hdr_flags);
+        crate::serial_println!("  [dbg map] header pages={:#x} span={:#x} mapped={:#x} flags={:?}", pages, header_span, hdr_mapped, hdr_flags);
+        if hdr_mapped != pages {
+            return Err(PeError::MappingFailed);
+        }
+        unsafe {
+            core::ptr::write_bytes(hdr_start.as_mut_ptr::<u8>(), 0, header_span as usize);
+            let n = (headers_file_end as usize).min(data.len());
+            core::ptr::copy_nonoverlapping(data.as_ptr(), hdr_start.as_mut_ptr::<u8>(), n);
+            crate::serial_println!("  [dbg copy] headers copied ({} bytes) to {:#x}", n, hdr_start.as_u64());
+        }
+    }
+
+    let mut max_rva: u64 = 0;
     for i in 0..number_of_sections {
         let off = section_table_off + i * SECTION_HEADER_SIZE;
         let sh = parse_section_header(data, off).ok_or(PeError::SectionHeaderOutOfBounds)?;
+
+        // The load-time footprint, from the FILE BYTES (the same
+        // numbers the mapping below is about to use): nothing
+        // downstream re-derives it from the mapped image.
+        max_rva = max_rva.max(sh.virtual_address as u64 + sh.virtual_size as u64);
 
         let file_start = sh.pointer_to_raw_data as usize;
         let file_end = file_start
@@ -211,6 +361,7 @@ pub fn load(
         }
 
         let mapped = paging::map_range(mapper, frame_allocator, seg_start, page_count, flags);
+        crate::serial_println!("  [dbg map] section {:#x}..{:#x} pages={} mapped={} flags={:?} chars={:#x}", seg_start.as_u64(), seg_end.as_u64(), page_count, mapped, flags, sh.characteristics);
         if mapped != page_count {
             return Err(PeError::MappingFailed);
         }
@@ -220,6 +371,7 @@ pub fn load(
             if sh.size_of_raw_data > 0 {
                 let dest = VirtAddr::new(runtime_vaddr).as_mut_ptr::<u8>();
                 core::ptr::copy_nonoverlapping(data.as_ptr().add(file_start), dest, sh.size_of_raw_data as usize);
+                crate::serial_println!("  [dbg copy] section {:#x} copied ({} bytes) from file+{:#x}", seg_start.as_u64(), sh.size_of_raw_data, file_start);
             }
         }
     }
@@ -232,9 +384,484 @@ pub fn load(
         unsafe { apply_base_relocations(load_base, image_base, reloc_rva, reloc_size) }?;
     }
 
+    // Imports, resolved against the optional registry only now that
+    // the image is mapped at its final address (mixed .idata reads and
+    // IAT writes happen in the mapped image, never in the file bytes).
+    let imports = match registry {
+        None => ImportResolution::none(),
+        Some(r) => unsafe { resolve_imports(load_base, mapper, max_rva, r) }?,
+    };
+
     Ok(LoadedPe {
         entry_point: VirtAddr::new(load_base.wrapping_add(address_of_entry_point as u64)),
+        imports,
+        image_max_rva: max_rva,
     })
+}
+
+// ---------------------------------------------------------------------
+// The IMPORT half (client side) -- the real Windows-loaded import walk.
+//
+// Every structure here is the genuine PE32+ layout, bounds-checked
+// against the image's own section footprint (max RVA derived from the
+// section table -- the same paranoia the ELF dynamic loader applies,
+// expressed in PE's own units) before a single byte is dereferenced.
+// ---------------------------------------------------------------------
+
+/// Reads a null-terminated string at runtime address
+/// `load_base + rva` -- capped at [`NameBuf`]'s 64-byte capacity
+/// (an uncapped name is malformed, not unbounded). Byte-visible
+/// ASCII-only output enforced at `Debug` (injection can't reach the
+/// boot transcript).
+///
+/// # Safety
+/// The caller must guarantee the range is within a mapped section AND
+/// under the image's own footprint bound; `resolve_imports` and the
+/// export table check this per RVA before calling.
+unsafe fn read_image_name(load_base: u64, rva: u64, max_rva: u64) -> Result<NameBuf, PeError> {
+    if rva >= max_rva {
+        return Err(PeError::MalformedImageDirectory("name RVA outside image"));
+    }
+    let mut out = NameBuf::empty();
+    let base = load_base.wrapping_add(rva) as *const u8;
+    for i in 0..64u64 {
+        let b = core::ptr::read_unaligned(base.add(i as usize));
+        if b == 0 {
+            if out.len == 0 {
+                return Err(PeError::MalformedImageDirectory("empty name"));
+            }
+            return Ok(out);
+        }
+        if i == 63 {
+            return Err(PeError::MalformedImageDirectory("name exceeds the 64-byte cap"));
+        }
+        out.bytes[i as usize] = b;
+        out.len += 1;
+    }
+    Err(PeError::MalformedImageDirectory("name exceeded cap"))
+}
+
+unsafe fn read_u64_at(load_base: u64, rva: u64, max_rva: u64) -> Result<u64, PeError> {
+    match rva.checked_add(8) {
+        None => return Err(PeError::MalformedImageDirectory("rva overflow")),
+        Some(end) if end > max_rva => {
+            return Err(PeError::MalformedImageDirectory("pointer outside image"))
+        }
+        _ => {}
+    }
+    let p = load_base.wrapping_add(rva) as *const u64;
+    Ok(core::ptr::read_unaligned(p))
+}
+
+unsafe fn read_u32_at(load_base: u64, rva: u64, max_rva: u64) -> Result<u32, PeError> {
+    match rva.checked_add(4) {
+        None => return Err(PeError::MalformedImageDirectory("rva overflow")),
+        Some(end) if end > max_rva => {
+            return Err(PeError::MalformedImageDirectory("pointer outside image"))
+        }
+        _ => {}
+    }
+    let p = load_base.wrapping_add(rva) as *const u32;
+    Ok(core::ptr::read_unaligned(p))
+}
+
+/// A data-directory entry from the optional header, bounds-checked
+/// against `NumberOfRvaAndSizes` -- a header that does not even declare
+/// index N answers `DataDirectoryAbsent(N)`.
+///
+/// # Safety
+/// Headers must be mapped at `load_base`; only index is checked, caller
+/// supplies a valid optional header offset (this fn re-leafs it).
+unsafe fn read_data_directory(load_base: u64, index: u32) -> Result<(u32, u32), PeError> {
+    let base = load_base as *const u8;
+    crate::serial_println!("  [dbg dd] about to translate base={:#x}", load_base);
+    let x = crate::memory::paging::translate(&crate::experimental::address_space::active_mapper(), x86_64::VirtAddr::new(load_base + 0x3c));
+    crate::serial_println!("  [dbg dd] translate(+3c)={:?}", x.map(|p| p.as_u64()));
+    let sig_off = core::ptr::read_unaligned(base.add(0x3c) as *const u32) as usize;
+    crate::serial_println!("  [dbg dd] sig_off={:#x}", sig_off);
+    let coff = load_base + sig_off as u64 + 4;
+    let machine = core::ptr::read_unaligned(coff as *const u16);
+    if machine != MACHINE_AMD64 {
+        return Err(PeError::MalformedImageDirectory("machine"));
+    }
+    let opt = coff + 20;
+    let magic = core::ptr::read_unaligned(opt as *const u16);
+    if magic != OPTIONAL_HEADER_MAGIC_PE32_PLUS {
+        return Err(PeError::MalformedImageDirectory("optional magic"));
+    }
+    let n = core::ptr::read_unaligned((opt + 108) as *const u32) as u32;
+    if index >= n {
+        return Err(PeError::DataDirectoryAbsent(index));
+    }
+    let dir = opt + 112 + (index as u64) * 8;
+    let rva = core::ptr::read_unaligned(dir as *const u32);
+    let size = core::ptr::read_unaligned((dir + 4) as *const u32);
+    Ok((rva, size))
+}
+
+/// One resolved import: the runtime address of the patched IAT slot,
+/// and the value now in it (the provider's absolute runtime address). The
+/// name pair lets a caller print both halves.
+#[derive(Debug)]
+pub struct ResolvedImport {
+    pub dll: NameBuf,
+    pub symbol: NameBuf,
+    pub slot: u64,
+    pub value: u64,
+}
+
+#[derive(Debug)]
+pub struct ImportResolution {
+    pub facts: Vec<ResolvedImport>,
+}
+
+impl ImportResolution {
+    pub fn none() -> ImportResolution {
+        ImportResolution { facts: Vec::new() }
+    }
+}
+
+/// Walks a loaded image's `IMAGE_DIRECTORY_ENTRY_IMPORT` directory the
+/// Windows loader's way: per-descriptor DLL name -> OriginalFirstThunk
+/// (falling back to FirstThunk when there is none -- the classic
+/// old-format rule) -> a null-terminated array of `IMAGE_THUNK_DATA64`
+/// entries; a name import (hint tablе entry at its RVA) resolves
+/// against the registry; the resolved absolute address is written into
+/// the FirstThunk slot on the very spot the dependent's own code loads
+/// through (`call *__imp_sym(%rip)` semantics on the actual artifact).
+///
+/// Bounded everywhere: max RVA by image footprint, name strings capped
+/// at 64 bytes, descriptor / thunk arrays at 16 / 32 entries.
+///
+/// # Safety
+/// `load_base` names a loader-mapped image; the registry lookup may
+/// read provider images the CALLER loaded and registered. Runs with the
+/// image's address space active.
+pub unsafe fn resolve_imports(
+    load_base: u64,
+    mapper: &mut OffsetPageTable<'static>,
+    max_rva_passed: u64,
+    registry: &DllRegistry,
+) -> Result<ImportResolution, PeError> {
+    let max_rva = max_rva_passed;
+    let (dir_rva, dir_size) = read_data_directory(load_base, 1)?;
+    if dir_rva == 0 || dir_size == 0 {
+        return Ok(ImportResolution::none());
+    }
+    match (dir_rva as u64).checked_add(dir_size as u64) {
+        None => return Err(PeError::MalformedImageDirectory("dir overflow")),
+        Some(end) if end > max_rva => {
+            return Err(PeError::MalformedImageDirectory("import directory outside image"))
+        }
+        _ => {}
+    }
+
+    let mut facts: Vec<ResolvedImport> = Vec::new();
+    let mut i: u64 = 0;
+    loop {
+        if i >= 16 {
+            return Err(PeError::MalformedImageDirectory("import descriptor array unbounded"));
+        }
+        let desc_rva = dir_rva as u64 + i * 20;
+        let original_first_thunk = read_u32_at(load_base, desc_rva, max_rva)?;
+        let _timestamp = core::ptr::read_unaligned((load_base.wrapping_add(desc_rva) + 4) as *const u32);
+        let _forwarder_chain = core::ptr::read_unaligned((load_base.wrapping_add(desc_rva) + 8) as *const u32);
+        let name_rva = read_u32_at(load_base, desc_rva + 12, max_rva)?;
+        let first_thunk = read_u32_at(load_base, desc_rva + 16, max_rva)?;
+        if original_first_thunk == 0 && name_rva == 0 && first_thunk == 0 {
+            break; // the directory's null terminator
+        }
+        if name_rva == 0 {
+            return Err(PeError::MalformedImageDirectory("descriptor without a DLL name"));
+        }
+        if first_thunk == 0 && original_first_thunk == 0 {
+            return Err(PeError::MalformedImageDirectory("descriptor without any thunk table"));
+        }
+        let dll_name = read_image_name(load_base, name_rva as u64, max_rva)?;
+        let provider = match registry.find(dll_name.as_slice()) {
+            Some(t) => t,
+            None => return Err(PeError::MissingDllImport),
+        };
+
+        // The classic rule: the OriginalFirstThunk array supplies the
+        // hint/name pointers; a file lacking it (old-format) means the
+        // FirstThunk array serves BOTH roles until resolution overwrites it.
+        let thunk_rva = if original_first_thunk != 0 {
+            original_first_thunk as u64
+        } else {
+            first_thunk as u64
+        };
+        let mut j: u64 = 0;
+        loop {
+            if j >= 32 {
+                return Err(PeError::MalformedImageDirectory("thunk array unbounded"));
+            }
+            let th = read_u64_at(load_base, thunk_rva + j * 8, max_rva)?;
+            if th == 0 {
+                break; // thunk array's null terminator
+            }
+            if th & (1 << 63) != 0 {
+                return Err(PeError::UnsupportedOrdinalImport);
+            }
+            // IMAGE_IMPORT_BY_NAME: thunk entry RVA names the `u16`
+            // hint field; the name begins two bytes later.
+            let sym = read_image_name(load_base, thunk_name_rva(th)?, max_rva)?;
+            let addr = match provider.lookup(sym.as_slice()) {
+                Some(a) => a,
+                None => return Err(PeError::MissingImport),
+            };
+            let slot_rva = first_thunk as u64 + j * 8;
+            let slot = load_base.wrapping_add(slot_rva);
+            let flags = crate::memory::paging::page_flags_of(
+                mapper,
+                VirtAddr::new(slot),
+            )
+            .ok_or(PeError::ImportSectionNotWritable)?;
+            let flags = flags.map_err(|()| PeError::ImportSectionNotWritable)?;
+            if !flags.contains(x86_64::structures::paging::PageTableFlags::WRITABLE) {
+                return Err(PeError::ImportSectionNotWritable);
+            }
+            core::ptr::write_unaligned(slot as *mut u64, addr);
+            facts.push(ResolvedImport {
+                dll: dll_name,
+                symbol: sym,
+                slot,
+                value: addr,
+            });
+            j += 1;
+        }
+        i += 1;
+    }
+    Ok(ImportResolution { facts })
+}
+
+/// `IMAGE_IMPORT_BY_NAME`: a `u16` hint followed by the name. The
+/// thunk entry's value is the RVA of the hint field; the NAME starts
+/// two bytes later.
+fn thunk_name_rva(thunk_value: u64) -> Result<u64, PeError> {
+    thunk_value
+        .checked_add(2)
+        .ok_or(PeError::MalformedImageDirectory("hint/name rva overflow"))
+}
+
+// ---------------------------------------------------------------------
+// The EXPORT half (provider side) -- GetProcAddress semantics.
+// ---------------------------------------------------------------------
+
+/// A provider DLL's `IMAGE_DIRECTORY_ENTRY_EXPORT`, parsed once at load
+/// time; `lookup` is `GetProcAddress` minus forwarding support (typed,
+/// below). Reads the provider's MAPPED image -- export entries are
+/// `RVA`s, so an export's absolute runtime address is `load_base + rva`
+/// for any load base.
+#[derive(Clone, Copy)]
+pub struct DllExportTable {
+    load_base: u64,
+    max_rva_bound: u64,
+    dir_rva: u32,
+    dir_size: u32,
+    number_of_functions: u32,
+    number_of_names: u32,
+    address_of_functions_rva: u32,
+    address_of_names_rva: u32,
+    address_of_name_ordinals_rva: u32,
+}
+
+impl DllExportTable {
+    /// Parses the export directory out of the MAPPED image at
+    /// `load_base` (headers included). A directory that is absent
+    /// entirely (RVA/Size == 0) is still a valid, EMPTY table -- lookup
+    /// answers `None` for everything, which is exactly how the demo's
+    /// wrong-file negative control exercises `MissingImport` at the
+    /// per-symbol layer.
+    ///
+    /// # Safety
+    /// `load_base` must name a mapped image; headers must be readable.
+pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeError> {
+        let (dir_rva, dir_size) = read_data_directory(load_base, 0)?;
+        crate::serial_println!("  [dbg parse] dir0={:#x}/{:#x}", dir_rva, dir_size);
+        if dir_rva == 0 || dir_size == 0 {
+            return Ok(DllExportTable {
+                load_base,
+                max_rva_bound: max_rva,
+                dir_rva: 0,
+                dir_size: 0,
+                number_of_functions: 0,
+                number_of_names: 0,
+                address_of_functions_rva: 0,
+                address_of_names_rva: 0,
+                address_of_name_ordinals_rva: 0,
+            });
+        }
+        // IMAGE_EXPORT_DIRECTORY: 40 bytes
+        match (dir_rva as u64).checked_add(dir_size as u64) {
+            None => return Err(PeError::MalformedImageDirectory("export dir overflow")),
+            Some(end) if end > max_rva => {
+                return Err(PeError::MalformedImageDirectory("export directory outside image"))
+            }
+            _ => {}
+        }
+        let d = load_base.wrapping_add(dir_rva as u64);
+        crate::serial_println!("  [dbg parse] d={:#x}", d);
+        let _name_rva = core::ptr::read_unaligned((d + 12) as *const u32);
+        crate::serial_println!("  [dbg parse] name_rva={:#x}", _name_rva);
+        let number_of_functions = core::ptr::read_unaligned((d + 20) as *const u32);
+        crate::serial_println!("  [dbg parse] nfun={}", number_of_functions);
+        let number_of_names = core::ptr::read_unaligned((d + 24) as *const u32);
+        crate::serial_println!("  [dbg parse] nnam={}", number_of_names);
+        let address_of_functions_rva = core::ptr::read_unaligned((d + 28) as *const u32);
+        crate::serial_println!("  [dbg parse] eat={:#x}", address_of_functions_rva);
+        let address_of_names_rva = core::ptr::read_unaligned((d + 32) as *const u32);
+        crate::serial_println!("  [dbg parse] npt={:#x}", address_of_names_rva);
+        let address_of_name_ordinals_rva = core::ptr::read_unaligned((d + 36) as *const u32);
+        crate::serial_println!("  [dbg parse] ordt={:#x}", address_of_name_ordinals_rva);
+        // u32*u32 arithmetic in u64 cannot overflow before the bound
+        // check answers for it.
+        let names_end = address_of_names_rva as u64 + number_of_names as u64 * 4;
+        let ords_end = address_of_name_ordinals_rva as u64 + number_of_names as u64 * 2;
+        let eat_end = address_of_functions_rva as u64 + number_of_functions as u64 * 8;
+        if names_end > max_rva || ords_end > max_rva || eat_end > max_rva {
+            return Err(PeError::MalformedImageDirectory("export array outside image"));
+        }
+        Ok(DllExportTable {
+            load_base,
+            max_rva_bound: max_rva,
+            dir_rva,
+            dir_size,
+            number_of_functions,
+            number_of_names,
+            address_of_functions_rva,
+            address_of_names_rva,
+            address_of_name_ordinals_rva,
+        })
+    }
+
+    /// Null-terminated size -- `None` when the table is the empty
+    /// (no-export-directory) one.
+    pub fn is_empty(&self) -> bool {
+        self.dir_rva == 0 || self.dir_size == 0
+    }
+
+    /// Number of exported names (0 for the empty table).
+    pub fn name_count(&self) -> u32 {
+        if self.is_empty() {
+            0
+        } else {
+            self.number_of_names
+        }
+    }
+
+    /// The export directory's own `Name` field (the DLL name it
+    /// declares for itself -- the build gate pins that this equals the
+    /// registry key the demo registers).
+    ///
+    /// # Safety
+    /// image must be mapped.
+    pub unsafe fn declared_name(&self) -> Result<Option<NameBuf>, PeError> {
+        if self.is_empty() {
+            return Ok(None);
+        }
+        let name_rva = core::ptr::read_unaligned(
+            self.load_base.wrapping_add(self.dir_rva as u64 + 12) as *const u32,
+        );
+        if name_rva == 0 {
+            return Ok(None);
+        }
+        Ok(Some(read_image_name(self.load_base, name_rva as u64, self.max_rva_bound)?))
+    }
+
+    /// `GetProcAddress(name)`: the export's ABSOLUTE runtime address
+    /// (`load_base` + its `AddressOfFunctions` RVA), `None` when this
+    /// table has no export directory or the name is absent.
+    ///
+    /// # Safety
+    /// image must be mapped.
+    pub unsafe fn lookup(&self, name: &[u8]) -> Option<u64> {
+        if self.is_empty() {
+            return None;
+        }
+        let max_rva = self.max_rva_bound;
+        for i in 0..self.number_of_names {
+            let name_ptr_rva = core::ptr::read_unaligned(
+                self.load_base
+                    .wrapping_add(self.address_of_names_rva as u64)
+                    .wrapping_add((i as u64) * 4) as *const u32,
+            );
+            let candidate = read_image_name(self.load_base, name_ptr_rva as u64, max_rva).ok()?;
+            if candidate.as_slice() == name {
+                let ord = core::ptr::read_unaligned(
+                    self.load_base
+                        .wrapping_add(self.address_of_name_ordinals_rva as u64)
+                        .wrapping_add((i as u64) * 2) as *const u16,
+                ) as u64;
+                if ord >= self.number_of_functions as u64 {
+                    return None; // malformed ordinal -- answered as absent, not guessed at
+                }
+                let f_rva = core::ptr::read_unaligned(
+                    self.load_base
+                        .wrapping_add(self.address_of_functions_rva as u64)
+                        .wrapping_add(ord * 4) as *const u32,
+                ) as u64;
+                // Export forwarding: an EAT entry pointing back inside
+                // the directory is a forwarded-export STRING reference,
+                // not a callable address -- typed below, never
+                // misresolved as code.
+                if f_rva >= self.dir_rva as u64
+                    && f_rva < self.dir_rva as u64 + self.dir_size as u64
+                {
+                    return None; // forwarder: intentionally unsupported
+                }
+                return Some(self.load_base.wrapping_add(f_rva));
+            }
+        }
+        None
+    }
+}
+
+/// The DLL-name -> export-table map the import walk resolves against.
+/// Registered entries can carry a REAL provider table or NONE (the
+/// demo's wrong-file negative control exercises the per-symbol refusal
+/// by binding a name to a table with zero exports).
+pub struct DllRegistry {
+    entries: Vec<(NameBuf, Option<DllExportTable>)>,
+    capacity: usize,
+}
+
+impl DllRegistry {
+    pub fn new() -> DllRegistry {
+        DllRegistry {
+            entries: Vec::new(),
+            capacity: 8,
+        }
+    }
+
+    /// Registers (replaces an existing same-name entry) a provider.
+    /// `table.empty()` entries answer every lookup with `None`.
+    pub fn add(&mut self, name: &[u8], table: Option<DllExportTable>) {
+        let mut nb = NameBuf::empty();
+        let n = name.len().min(63);
+        nb.bytes[..n].copy_from_slice(&name[..n]);
+        nb.len = n;
+        for (existing_name, existing_table) in self.entries.iter_mut() {
+            if existing_name.as_slice() == name {
+                *existing_table = table;
+                return;
+            }
+        }
+        if self.entries.len() >= self.capacity {
+            // The demo uses 2-3 entries; exceeding the cap is a caller bug.
+            panic!("DllRegistry overflow: more entries than the {} cap", self.capacity);
+        }
+        self.entries.push((nb, table));
+    }
+
+    fn find(&self, name: &[u8]) -> Option<&DllExportTable> {
+        for (n, t) in self.entries.iter() {
+            if n.as_slice() == name {
+                return t.as_ref();
+            }
+        }
+        None
+    }
 }
 
 /// Applies the PE base relocations described in the `.reloc` section at

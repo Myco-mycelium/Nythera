@@ -5,7 +5,11 @@ NPS-001/017. Ten pre-normative Phase 5/6 kernel-level prerequisites
 Complete and Verified (`src/experimental/mod.rs`'s banner -- none of
 it is NPS-002/003 conformance). Two genuine first-capability
 increments landed: a minimal PE32+ (Windows) loader, proven by
-executing a real PE binary's own code in ring 3,and a minimal DEX (Android) format parser, proven against a real DEX
+executing a real PE binary's own code in ring 3, and -- as of
+2026-10-19 -- its import resolution: a real Windows-format DLL's own
+export directory and a real client's kernel-resolved IAT, both
+exercised in ring 3 by the client's own code (`pe_import_demo`),
+and a minimal DEX (Android) format parser, proven against a real DEX
 file whose Adler-32 checksum and SHA-1 signature are now verified
 in-kernel, with both positive and permanent negative checks. On the
 NPS-001-grounded side, several more documented gaps are now closed: a
@@ -776,6 +780,109 @@ a frame-allocator access through a raw pointer, so the build now emits
 33 lib warnings where it used to emit 34. An honest refactoring side
 effect, not a suppression: no `#[allow]` was added anywhere.
 
+## Gap-closure increment (2026-10-19): PE32+ import resolution -- a real DLL's export directory and a real client's kernel-resolved IAT
+
+The Windows gap "loading a PE's own code is a loader -- but with no import
+resolution, real Windows-format binaries that need imports still won't run"
+now loses its import-resolution half. `experimental::pe_import_demo` proves
+the real Windows import/export machinery, end to end and every boot, on a
+real `ld -m i386pep` pair built by `build.sh`:
+
+- **The provider and its export table are real, and read the real way.**
+  A genuine Windows-format DLL (`userprog_pe_import_dll.dll`,
+  `ld -m i386pep --shared --enable-auto-import`) loads at its own
+  `ImageBase 0x180000000000`, and `pe::DllExportTable` parses its REAL
+  `IMAGE_DIRECTORY_ENTRY_EXPORT` directory -- the actual GetProcAddress
+  mechanism, not a synthetic name->address map. Facts checked every boot:
+  the directory declares the DLL's own name, carries exactly the two
+  exported names, `lookup(crossfn)` answers `provider + 0x1000` (the
+  provider's own `.text`) and `lookup(crossmark)` answers
+  `provider + 0x2000` (its own `.data`), and an absent symbol answers
+  `None`.
+- **The client's imports are resolved through its REAL import
+  directory.** The dependent (`userprog_pe_import_app.exe`,
+  `ld -m i386pep --subsystem native`) is linked DIRECTLY against the
+  DLL -- GNU ld synthesizes the client's `.idata`/IAT itself from the
+  link-line dependency; no dlltool/import-library step exists or is
+  needed on this host. `pe::resolve_imports` walks its REAL
+  `IMAGE_DIRECTORY_ENTRY_IMPORT` descriptors and patches both IAT
+  slots: `IAT[0x140000002040] = 0x180000001000` (`crossfn`) and
+  `IAT[0x140000002048] = 0x180000002000` (`crossmark`), each value
+  equal to the independent export lookup and read back unchanged.
+- **The client's own code consumes the imports the faithful Windows
+  way, in ring 3.** It loads `__imp_crossmark(%rip)` (the resolved DATA
+  export's address out of its IAT slot), dereferences the provider's
+  data through it, and `call *__imp_crossfn(%rip)` (indirect call
+  THROUGH the resolved FUNCTION export's slot). After the client's one
+  `int $0x8D` trap both results are checked:
+  `0xace5f00dd1ce5eed` (the provider's data immediate) and
+  `0xfa571ae5` (the provider's own code's return value). The chain then
+  continues into `isolation_demo` as before (no halt).
+- **Both negative controls are typed refusals, permanent, every boot.**
+  An EMPTY registry refuses the whole import walk with
+  `PeError::MissingDllImport`; the DLL name bound to the WRONG FILE
+  (the client itself, which has no export directory) refuses
+  per-symbol with `PeError::MissingImport`. The second is the sharp
+  edge the registry's name-vs-file distinction exists for: the identity
+  is the FILE, not whatever name a session may register under it.
+- **The build gate pins the pair before the kernel sees it.**
+  `tools/verify_prog_layout.sh` fact-checks both embedded artifacts
+  from real `objdump` output (provider export-directory sizes, client
+  `ImageBase 0x140000000000`, the real import directory with the pinned
+  DLL name and both hint/name entries, both `__imp_*` IAT definitions)
+  and pins the client text's `int $0x8d`; the indirect call site is
+  asserted at RUNTIME instead of pinned by disassembly (ld emits
+  `call *0x8d(%rip)` -- GOT-relative, no literal `__IAT_start__` --
+  so the exact call encoding is a toolchain fact, not a source one).
+- **The silent fault, found and fixed at cause.** The first confident
+  boots of this demo ended in a clean ring-3 entry (RIP in the client,
+  CS=27) followed by a PAGE FAULT on the client's very first slot
+  write -- instead of the markers. The bisect (pre-entry and fault-time
+  CR3/translate probes, then a full PML4 sweep at both moments) proved
+  the surprising negative: at fault time CR3 was unchanged and every
+  nonzero PML4 entry was IDENTICAL to the pre-entry state -- nothing
+  was ever erased or remapped; the faulting address walked PML4 index
+  8, whereas `SLOT_A = 0x4000_0000_0000` lives under index 128. The
+  kernel-side mapping was right the whole time; the CLIENT assembly's
+  slot constants were 16x off -- the same 11-vs-12-digit constant
+  class that bit other demo artifacts earlier
+  (`0x40000000000` vs `0x400000000000`). Fixed in the client source;
+  all transient bisect instrumentation removed afterward, including
+  the one compiler warning it left behind (the build is as clean as it
+  was before the probe was added). The demo's slot rule is now ALSO a
+  fact the demo itself restates: `SLOT_A = 0x4000_0000_0000`
+  (PML4 index 128 -- a private index, deliberately outside the shared
+  PML4[0] identity subtree), `SLOT_B = SLOT_A + 8` inside the same
+  page, stack at `0x4000_0001_0000`; one 1-page mapping covers both
+  slots.
+- **Map/flags parity with the proven paths.** The slot page and the
+  user stack are mapped user-accessible + NX with the same one
+  `map_range` walk every other ring-3 entry uses (isolation_demo,
+  pe-demo, pe-reloc-demo), and the client enters through
+  `usermode::enter_with_stack` -- the same bare `iretq` mechanism all
+  the other booted ring-3 demos went through. Nothing in this increment
+  is new transport; the new things are the export-directory parse, the
+  import-directory resolution, and the faithful IAT consumption.
+
+Deliberate scope (same honest posture as `pe.rs` itself): no forwarding
+exports (the export walk refuses an EAT entry pointing back inside the
+directory rather than mis-resolving it), no delay-load, no bound
+imports, ordinal imports typed
+`UnsupportedOrdinalImport`, and no Win32 API surface. A real
+Windows-format pair's own import/export machinery, driven by the
+loader, is what ends this boot -- not Windows applications.
+
+The passing boot's pe-import lines (full transcript in the increment
+for the pe-reloc work and the chain order):
+
+```
+  experimental pe-import-demo: provider loaded at its own ImageBase 0x180000000000; its export table declares "userprog_pe_import_dll.dll"
+  experimental pe-import-demo: export table facts -- 2 name(s), lookup(crossfn) = provider+0x1000, lookup(crossmark) = provider+0x2000
+  experimental pe-import-demo: resolved 2 import(s) through the REAL import directory -- OK: each slot's value == the independent export lookup, and reads back unchanged
+  experimental pe-import-demo: resolved crossmark address dereferences to 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed, the provider's own .data immediate) -- OK
+  experimental pe-import-demo self-test: imported data read 0xace5f00dd1ce5eed through the resolved IAT slot (expected 0xace5f00dd1ce5eed); imported function returned 0xfa571ae5 (expected 0xfa571ae5) -- OK, a real Windows-format executable's own imports resolved through a real Windows-format DLL's own export table (GetProcAddress), and its own code used them in ring 3
+```
+
 ## What does NOT exist yet (do not assume otherwise)
 
 **2026-10-15 (eighth round) — the GNU hash table as a REAL second mechanism, per-stage stack ownership, a depth-2 dependency chain, and the weak VERNEED flag proven on a real artifact:**
@@ -1389,9 +1496,20 @@ The pre-existing list continues unchanged:
   self-contained PE32+ uses (`IMAGE_REL_BASED_DIR64`/`HIGHLOW`),
   proven by `pe_reloc_demo` loading a relocatable PE at a
   loader-chosen address -- an unsupported relocation type is rejected
-  rather than mishandled, but most real-world Windows binaries
-  additionally need imports, so they still won't run. No
-  Win32 API surface, no resources, no exception tables
+  rather than mishandled. ~~Most real-world Windows binaries
+  additionally need imports, so they still won't run.~~ No Win32 API
+  surface, no resources, no exception tables. **Update 2026-10-19: the
+  import-resolution half is IN** (`experimental::pe_import_demo` -- see
+  the 2026-10-19 increment above): a real DLL's own export directory
+  selects both exports (the real GetProcAddress mechanism), a real
+  Windows-format client linked directly against it has its IAT
+  kernel-resolved through its REAL import directory, and its own ring-3
+  code consumes both a data export and an indirect call through the
+  resolved slots, with two typed negative refusals checked every boot
+  (empty registry -> `MissingDllImport`; DLL name bound to the wrong
+  file -> `MissingImport`). ~~No import resolution (DLL calls do
+  nothing);~~ what still does not exist: Win32 API surface, resources,
+  exception tables
 - Real Android application compatibility -- `experimental::dex` parses
   a DEX file's container format and validates its structure (including,
   now, its Adler-32 checksum and SHA-1 signature via
@@ -1478,6 +1596,12 @@ kernel, and documented as such rather than half-attempted:**
   code (now including its base relocations) is a loader; Windows
   *application* compatibility is a full user-mode API translation
   layer. Different order of magnitude.
+  **Update 2026-10-19: the PE-import-resolution half is landed**
+  (`experimental::pe_import_demo` -- a real DLL's export directory, a
+  real client's kernel-resolved IAT, both exercised in ring 3 -- see
+  the increment above); what remains here is ONLY the Win32-shaped
+  user-mode API translation layer, still a different order of
+  magnitude.
 - *DEX bytecode execution (ART/Dalvik semantics)* -- parsing the DEX
   container (done) is not running the bytecode; the latter is
   comparable in scope to writing a JVM.

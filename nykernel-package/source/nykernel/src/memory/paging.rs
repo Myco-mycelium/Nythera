@@ -92,7 +92,10 @@ pub fn map_range(
                 flush.flush();
                 mapped += 1;
             }
-            Err(_) => break, // e.g. page already mapped; stop rather than corrupt state
+            Err(e) => {
+                crate::serial_println!("  [dbg map_range] map_to FAILED at page {:#x}: {:?}", page.start_address().as_u64(), e);
+                break
+            }
         }
     }
     mapped

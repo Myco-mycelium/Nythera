@@ -5,6 +5,7 @@
 # `userprog/classes.dex`) ARE tracked.
 source/nykernel/userprog/*.elf
 source/nykernel/userprog/*.exe
+source/nykernel/userprog/*.dll
 
 # Rust build output (also matched by the repo-root `target/` rule; kept
 # here so the kernel tree is self-describing if ever split out).

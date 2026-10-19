@@ -16,7 +16,7 @@ use x86_64::structures::paging::PageTableFlags;
 use x86_64::VirtAddr;
 
 use crate::experimental::address_space::AddressSpace;
-use crate::experimental::{isolation_demo, pe, usermode};
+use crate::experimental::{pe, pe_import_demo, usermode};
 use crate::memory::frame_allocator::BumpFrameAllocator;
 use crate::memory::paging;
 use crate::serial_println;
@@ -121,5 +121,5 @@ pub unsafe fn on_trap() -> ! {
     );
 
     let fa = FRAME_ALLOCATOR.take().unwrap();
-    isolation_demo::start(fa)
+    pe_import_demo::start(fa)
 }

@@ -234,6 +234,17 @@ pub fn init() {
         idt[crate::experimental::elf_dyn_plt_demo::TRAP_VECTOR as usize]
             .set_handler_fn(elf_dyn_plt_demo_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
+
+        // A thirteenth ring-3-callable vector, dedicated to
+        // experimental::pe_import_demo -- the PE32+ import
+        // resolution proof (dedicated 0x8D: the plt-demo's completion
+        // gate owns 0x8C, and registering over it is what the first
+        // failed boot proved) (a real Windows-format dependent whose real
+        // import directory resolves against a real Windows-format
+        // DLL's real export directory).
+        idt[crate::experimental::pe_import_demo::TRAP_VECTOR as usize]
+            .set_handler_fn(pe_import_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
         idt
     });
     idt.load();
@@ -389,6 +400,17 @@ extern "x86-interrupt" fn pe_trap_handler(_stack_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn pe_reloc_trap_handler(_stack_frame: InterruptStackFrame) {
     unsafe {
         crate::experimental::pe_reloc_demo::on_trap();
+    }
+}
+
+/// The one trap `experimental::pe_import_demo`'s client program issues
+/// (`int $0x8D` from ring 3) -- reports the import-resolution results
+/// (data read through a resolved IAT slot, return value through an
+/// indirect call through another) and chains into
+/// `experimental::isolation_demo`.
+extern "x86-interrupt" fn pe_import_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::pe_import_demo::on_trap();
     }
 }
 
