@@ -249,6 +249,49 @@ fi
 echo "  layout-gate: userprog/userprog_pe_import_app.exe OK (both __imp_ IAT entries pinned; call sites are DAR-through-IAT)"
 echo "  layout-gate: PE import pair facts verified"
 
+# ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
+#
+# The ring-3 hang of this demo's first confident boots was NOT a kernel
+# bug: the client assembly's slot constants were 16x below the slots the
+# kernel mapped -- the same 11-vs-12-digit constant class that bit other
+# demo artifacts (fault-time PML4 sweeps proved the kernel mapping was
+# never wrong; the client walked PML4 index 8 instead of index 128).
+# Two independent copies of the constants exist (the tracked client
+# .s and the demo driver's consts), so an agreement drift in EITHER
+# half would hang the boot while every other fact stayed green. Pinned
+# here, at gate time: (1) the two copies must be EQUAL; (2) every slot
+# constant must sit in the PRIVATE PML4 index 128 subtree -- bit_length
+# 47 (2^46 has bit_length 47, i.e. the 0x4000_0000_0000 12-digit class;
+# the 11-digit 0x40000000000 = 2^42 is bit_length 43 and is refused
+# outright); (3) SLOT_B stays SLOT_A + 8, inside the page one mapping
+# covers.
+python3 - <<'EOF' || exit 1
+import re, sys
+s_src = open('userprog/prog_pe_import_app.s').read()
+demo_src = open('src/experimental/pe_import_demo.rs').read()
+def one(pat, why, text, to_int=False):
+    m = re.search(pat, text)
+    if not m:
+        sys.exit(f"FAIL: got-by-check -- {why} not found by the gate parser (format drifted?)")
+    v = m.group(1)
+    return int(v.replace('_', ''), 16) if to_int else v
+cs_a = one(r'(?m)^\.set SLOT_A, (0x[0-9a-f]+)\s*$', "client SLOT_A .set", s_src, True)
+cs_b = one(r'(?m)^\.set SLOT_B, (0x[0-9a-f]+)\s*$', "client SLOT_B .set", s_src, True)
+rs_a = one(r'const SLOT_A: u64 = (0x[0-9a-f_]+);', "demo const SLOT_A", demo_src, True)
+rs_b = one(r'const SLOT_B: u64 = (0x[0-9a-f_]+);', "demo const SLOT_B", demo_src, True)
+rs_stack = one(r'const USER_STACK_ADDR: u64 = (0x[0-9a-f_]+);', "demo const USER_STACK_ADDR", demo_src, True)
+print(f"  layout-gate: slot-constant cross-check -- client .set SLOT_A={cs_a:#x} SLOT_B={cs_b:#x}; demo consts SLOT_A={rs_a:#x} SLOT_B={rs_b:#x} stack={rs_stack:#x}")
+for name, v, a, b in (("SLOT_A", cs_a, rs_a, rs_a), ("SLOT_B", cs_b, rs_b, rs_b)):
+    if v != a or a != b:
+        sys.exit(f"FAIL: PE import slot constants DIVERGE between the client .s and the demo driver ({name}: client={v:#x}, demo={a:#x}) -- the 16x-off digit-class hang, reintroduced")
+for name, v in (("SLOT_A", cs_a), ("SLOT_B", cs_b), ("USER_STACK_ADDR", rs_stack)):
+    if v.bit_length() != 47:
+        sys.exit(f"FAIL: {name}={v:#x} is NOT the private-index-128 12-digit class (bit_length {v.bit_length()}, need 47 = 2^46) -- this is the 11-vs-12-digit bug class, refused at gate time")
+if cs_b - cs_a != 8:
+    sys.exit(f"FAIL: SLOT_B must be SLOT_A + 8 (client {cs_b - cs_a:+#x}); one mapped page must cover both report slots")
+print("  layout-gate: PE import slot-constant digit-class rule -- both halves equal, 47-bit 2^46 private-index class, SLOT_B = SLOT_A + 8 -- OK")
+EOF
+
 # ---- negative-control window pin (the scratch-base rule) ----
 #
 # The kernel's negative controls load deliberately-refused objects and
