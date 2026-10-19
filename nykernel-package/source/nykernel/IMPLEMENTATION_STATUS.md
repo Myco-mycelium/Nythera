@@ -872,13 +872,13 @@ real `ld -m i386pep` pair built by `build.sh`:
   is new transport; the new things are the export-directory parse, the
   import-directory resolution, and the faithful IAT consumption.
 
-Deliberate scope (same honest posture as `pe.rs` itself): no forwarding
-exports (the export walk refuses an EAT entry pointing back inside the
-directory rather than mis-resolving it), no delay-load, no bound
-imports, ordinal imports typed
-`UnsupportedOrdinalImport`, and no Win32 API surface. A real
-Windows-format pair's own import/export machinery, driven by the
-loader, is what ends this boot -- not Windows applications.
+Deliberate scope (same honest posture as `pe.rs` itself): no delay-load,
+no bound imports, and no Win32 API surface. Two items WRITTEN into this
+list when the increment landed -- "no forwarding exports (the export
+walk refuses an EAT entry pointing back inside the directory rather
+than mis-resolving it)" and "ordinal imports typed
+`UnsupportedOrdinalImport`" -- were closed the SAME DAY by the second
+increment immediately below.
 
 The passing boot's pe-import lines (full transcript in the increment
 for the pe-reloc work and the chain order):
@@ -890,6 +890,102 @@ for the pe-reloc work and the chain order):
   experimental pe-import-demo: resolved crossmark address dereferences to 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed, the provider's own .data immediate) -- OK
   experimental pe-import-demo self-test: imported data read 0xace5f00dd1ce5eed through the resolved IAT slot (expected 0xace5f00dd1ce5eed); imported function returned 0xfa571ae5 (expected 0xfa571ae5) -- OK, a real Windows-format executable's own imports resolved through a real Windows-format DLL's own export table (GetProcAddress), and its own code used them in ring 3
 ```
+
+## Gap-closure increment (2026-10-19, second of the day): forwarded exports and ordinal imports -- the PE import resolver is GetProcAddress-complete
+
+The two deliberate-scope items the first pe-import increment wrote into
+its own honest-scope list are now closed, end to end and every boot:
+
+- **Forwarded exports resolve through the registry, depth-capped.
+  The loader rule is spec'd exactly: an EAT value inside the export
+  directory is NOT an address -- it is a "dll.symbol" STRING reference.
+  The per-table `lookup` still answers `None` for it (a registry-
+  agnostic table cannot know whether the named DLL exists); the
+  REGISTRY is the thing that chases: `DllRegistry::resolve_in` follows
+  a forwarder string's two halves (split at the LAST component dot --
+  a dot-less, head-dot, or tail-dot string is a typed
+  `MalformedForwarder` refusal, never resolved by guessing), re-enters
+  on the named DLL's registered table, and caps the chain at 8 hops
+  (`ForwarderDepthExceeded`). The chase's answers are typed the same
+  way the import walk's are: an intermediate name with no registry
+  entry is `MissingDllImport` (the name-vs-file ruling applies to
+  forwarders exactly as it applies to import descriptors). A null EAT
+  slot (0) answers ABSENT -- GetProcAddress semantics, never
+  `load_base` itself, a tightening the old table walk silently
+  violated and now cannot.
+- **Ordinal imports resolve by the directory's OWN OrdinalBase.** The
+  old loader refused `IMAGE_ORDINAL_FLAG64` imports outright. Now the
+  ordinal import path mirrors the named path through the SAME chase:
+  `OrdinalBase` is PARSED from the provider's export directory (never
+  assumed), the thunk's ordinal names EAT index `ordinal -
+  OrdinalBase`, and an ordinal beyond the EAT answers `Ok(None)` --
+  which the walk turns into its per-symbol `MissingImport`, the exact
+  policy an out-of-range NAME behind the ordinal table already had.
+- **The fixtures are real on-disk compositions, checked, not
+  simulated.** Because this host's GNU ld emits neither forwarded
+  exports nor ordinal-form import thunks naturally (no dlltool on the
+  host either), both structures are COMPOSED on top of otherwise
+  ordinary toolchain output by `tools/patch_pe_forwarders.py` -- the
+  same checked-patch discipline the weak-VERNEED artifact
+  established: the patcher grows the .edata section into its own
+  file-alignment padding (the extension is checked to touch no other
+  section's bytes), grows the directory's declared Size to cover the
+  composed strings (a forwarded string must live inside
+  [dir_rva, dir_rva+dir_size) BY SPEC, so the growth is format-legal
+  composition), rewrites the forwarder host's three EAT entries, and
+  composes the CLIENT's crossmark OFT thunk into ordinal form with the
+  ordinal computed from the EXISTING provider's tables (OrdinalBase
+  read from the file, not assumed). It re-parses the files it wrote
+  and refuses the build on any mismatch; a second run on a patched
+  file refuses a double patch rather than recomposing. And the
+  composition is not self-confessed output only: a plain `objdump
+  -p` on the patched host prints its EAT entries as genuine
+  `Forwarder RVA -- <string>` lines, which the layout gate pins.
+  (An exploration-time bug was found and fixed the honest way: the
+  patcher read OrdinalBase from offset +20 -- AddressOfFunctions' slot
+  -- and the composed ordinal was visibly nonsense (0x3029); the
+  offset was corrected to +16 and composed ordinal is pinned 2 =
+  OrdinalBase(1) + crossmark's EAT index(1).)
+- **The proof facts, every boot.** A second real provider (the
+  "forwarder host", `userprog_pe_import_fwdprov.dll`, image base
+  0x1c0000000000 -- private PML4 index 0x1c, same rule as the pair's
+  bases) carries three names whose EAT entries are the composed
+  forwarders; the client then imports a third symbol from it
+  (`crossfn_fwd`) -- and the loader's chase lands the resolved slot
+  on the PROVIDER's own crossfn address (verified against the
+  named-form integration lookup), so the client's ring-3
+  `call *__imp_crossfn_fwd(%rip)` executes the PROVIDER's code
+  through the forwarder host's export entry. The client's crossmark
+  import now walks in as the composed ORDINAL form; the walk's fact
+  is labeled `ord2` and its value is checked to EQUAL the named
+  crossmark answer -- the named-vs-ordinal cross-path equality
+  (like the GNU==SysV hash answer-equality earlier rounds proved for
+  ELF). Four typed negative controls, permanent, every boot: the
+  self-cycling forwarder refuses `ForwarderDepthExceeded`; the
+  unregistered-DLL forwarder refuses `MissingDllImport`; an
+  out-of-range ordinal and an empty-table ordinal both answer
+  typed-None, never a guess. The client's third report slot
+  (`SLOT_C = SLOT_A + 16`, inside the one mapped page) is read back
+  beside the other two, and the slot-constant gate pin now covers
+  all three.
+- **The gate catches every regression surface of both halves.**
+  Provider-B's composed facts pinned from `objdump -p`'s own eyes
+  (three names, each `Forwarder RVA --` string content); the client's
+  three `__imp_*` IAT definitions and its double-descriptor import
+  table; and the slot-constant cross-check extended with
+  `SLOT_C == SLOT_A + 16` inside the 45-bit-class digit rule.
+- **An honest post-publication note.** The FIRST increment shipped
+  with sixteen one-line debug prints across the export parser, the
+  section mapper/copier, and the data-directory reader -- this round
+  caught and removed all of them (commits 696f41b and 1c46fa1), and
+  the residue grep now matches the marker class `[dbg ` itself, not
+  specific tags.
+
+Deliberately still out of scope, same posture as before: delay-load
+imports, bound imports, resources, exception tables, and any Win32
+API surface. What this is: a real Windows-format import resolver that
+answers named, ordinal, and forwarded exports the way GetProcAddress
+would. What this is not: Windows applications.
 
 ## What does NOT exist yet (do not assume otherwise)
 
@@ -1516,7 +1612,14 @@ The pre-existing list continues unchanged:
   resolved slots, with two typed negative refusals checked every boot
   (empty registry -> `MissingDllImport`; DLL name bound to the wrong
   file -> `MissingImport`). ~~No import resolution (DLL calls do
-  nothing);~~ what still does not exist: Win32 API surface, resources,
+  nothing);~~ **Update 2026-10-19, same day (second increment): the
+  last two GetProcAddress halves are in too** -- forwarded exports
+  chase through the registry depth-capped (typed
+  `MalformedForwarder`/`ForwarderDepthExceeded`/`MissingDllImport`
+  refusals, every boot) and ordinal imports resolve through the
+  directory's own parsed `OrdinalBase` with the named-vs-ordinal
+  cross-path equality checked every boot (see the second increment
+  above). What still does not exist: Win32 API surface, resources,
   exception tables
 - Real Android application compatibility -- `experimental::dex` parses
   a DEX file's container format and validates its structure (including,
@@ -1607,9 +1710,10 @@ kernel, and documented as such rather than half-attempted:**
   **Update 2026-10-19: the PE-import-resolution half is landed**
   (`experimental::pe_import_demo` -- a real DLL's export directory, a
   real client's kernel-resolved IAT, both exercised in ring 3 -- see
-  the increment above); what remains here is ONLY the Win32-shaped
-  user-mode API translation layer, still a different order of
-  magnitude.
+  the increment above), **and updated the same day: forwarded exports
+  and ordinal imports are in too** -- the resolver is GetProcAddress-
+  complete; what remains here is ONLY the Win32-shaped user-mode API
+  translation layer, still a different order of magnitude.
 - *DEX bytecode execution (ART/Dalvik semantics)* -- parsing the DEX
   container (done) is not running the bytecode; the latter is
   comparable in scope to writing a JVM.

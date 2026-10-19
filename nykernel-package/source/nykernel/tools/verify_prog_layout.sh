@@ -241,13 +241,32 @@ pafacts "PE import dependent client (import table contents)" userprog/userprog_p
 pafacts "PE import dependent client (faithful IAT call site)" userprog/userprog_pe_import_app.exe \
     "objdump -d" \
     'int    \$0x8d'
-iat_slots="$(objdump -x userprog/userprog_pe_import_app.exe | grep -cE '__imp_crossfn|__imp_crossmark')"
-if [ "$iat_slots" -lt 2 ]; then
-    echo "FAIL: client carries $iat_slots __imp_* IAT definitions -- both fixture imports must exist"
+iat_slots="$(objdump -x userprog/userprog_pe_import_app.exe | grep -cE '__imp_crossfn|__imp_crossmark|__imp_crossfn_fwd')"
+if [ "$iat_slots" -lt 3 ]; then
+    echo "FAIL: client carries $iat_slots __imp_* IAT definitions -- all three fixture imports (named, ordinal-composed, forwarder-resolved) must exist"
     exit 1
 fi
 echo "  layout-gate: userprog/userprog_pe_import_app.exe OK (both __imp_ IAT entries pinned; call sites are DAR-through-IAT)"
 echo "  layout-gate: PE import pair facts verified"
+
+# ---- the FORWARDER HOST's composed facts, from objdump's OWN eyes --
+#
+# The composition is not something only the patcher self-confesses:
+# a plain `objdump -p` prints the grown directory's EAT entries as
+# genuine `Forwarder RVA -- <string>` lines. Four facts are pinned:
+# three names (the composition count), and each forwarder STRING'S
+# CONTENT (it was composed from THESE exact bytes; the kernel's
+# forwarder chase resolves them as strings).
+pafacts "PE forwarder host (real export directory, 3 names)" userprog/userprog_pe_import_fwdprov.dll \
+    "objdump -p" \
+    'Name Pointer/Ordinal] Table.*00000003' \
+    'Export Address Table.*00000003'
+pafacts "PE forwarder host (the three forwarder strings as objdump sees them)" userprog/userprog_pe_import_fwdprov.dll \
+    "objdump -p" \
+    'Forwarder RVA -- userprog_pe_import_dll[.]dll[.]crossfn' \
+    'Forwarder RVA -- userprog_pe_import_fwdprov[.]dll[.]crossfn_cycle' \
+    'Forwarder RVA -- nobody[.]dll[.]crossfn'
+echo "  layout-gate: PE forwarder host composition facts verified"
 
 # ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
 #
@@ -277,14 +296,18 @@ def one(pat, why, text, to_int=False):
     return int(v.replace('_', ''), 16) if to_int else v
 cs_a = one(r'(?m)^\.set SLOT_A, (0x[0-9a-f]+)\s*$', "client SLOT_A .set", s_src, True)
 cs_b = one(r'(?m)^\.set SLOT_B, (0x[0-9a-f]+)\s*$', "client SLOT_B .set", s_src, True)
+cs_c = one(r'(?m)^\.set SLOT_C, (0x[0-9a-f]+)\s*$', "client SLOT_C .set", s_src, True)
 rs_a = one(r'const SLOT_A: u64 = (0x[0-9a-f_]+);', "demo const SLOT_A", demo_src, True)
 rs_b = one(r'const SLOT_B: u64 = (0x[0-9a-f_]+);', "demo const SLOT_B", demo_src, True)
+rs_c = one(r'const SLOT_C: u64 = (0x[0-9a-f_]+);', "demo const SLOT_C", demo_src, True)
 rs_stack = one(r'const USER_STACK_ADDR: u64 = (0x[0-9a-f_]+);', "demo const USER_STACK_ADDR", demo_src, True)
-print(f"  layout-gate: slot-constant cross-check -- client .set SLOT_A={cs_a:#x} SLOT_B={cs_b:#x}; demo consts SLOT_A={rs_a:#x} SLOT_B={rs_b:#x} stack={rs_stack:#x}")
-for name, v, a, b in (("SLOT_A", cs_a, rs_a, rs_a), ("SLOT_B", cs_b, rs_b, rs_b)):
+print(f"  layout-gate: slot-constant cross-check -- client .set SLOT_A={cs_a:#x} SLOT_B={cs_b:#x} SLOT_C={cs_c:#x}; demo consts SLOT_A={rs_a:#x} SLOT_B={rs_b:#x} SLOT_C={rs_c:#x} stack={rs_stack:#x}")
+for name, v, a, b in (("SLOT_A", cs_a, rs_a, rs_a), ("SLOT_B", cs_b, rs_b, rs_b), ("SLOT_C", cs_c, rs_c, rs_c)):
     if v != a or a != b:
         sys.exit(f"FAIL: PE import slot constants DIVERGE between the client .s and the demo driver ({name}: client={v:#x}, demo={a:#x}) -- the 16x-off digit-class hang, reintroduced")
-for name, v in (("SLOT_A", cs_a), ("SLOT_B", cs_b), ("USER_STACK_ADDR", rs_stack)):
+if cs_c != cs_a + 16:
+    sys.exit(f"FAIL: SLOT_C must be SLOT_A + 16 (one mapped page covers all three report slots; client {cs_c:#x} != {cs_a + 16:#x})")
+for name, v in (("SLOT_A", cs_a), ("SLOT_B", cs_b), ("SLOT_C", cs_c), ("USER_STACK_ADDR", rs_stack)):
     if v.bit_length() != 47:
         sys.exit(f"FAIL: {name}={v:#x} is NOT the private-index-128 12-digit class (bit_length {v.bit_length()}, need 47 = 2^46) -- this is the 11-vs-12-digit bug class, refused at gate time")
 if cs_b - cs_a != 8:

@@ -109,11 +109,27 @@ as --64 userprog/prog_pe_import_dll.s -o userprog/prog_pe_import_dll.o
 # fixed at cause by picking private indexes for both halves).
 ld -m i386pep --shared --enable-auto-import --image-base=0x180000000000 -o userprog/userprog_pe_import_dll.dll userprog/prog_pe_import_dll.o
 as --64 userprog/prog_pe_import_app.s -o userprog/prog_pe_import_app.o
-ld -m i386pep --subsystem native -e _start --image-base=0x140000000000 -o userprog/userprog_pe_import_app.exe userprog/prog_pe_import_app.o userprog/userprog_pe_import_dll.dll
 as --64 userprog/prog_pe.s -o userprog/prog_pe.o
 ld -m i386pep --subsystem native -e _start -o userprog/userprog_pe.exe userprog/prog_pe.o
 as --64 userprog/prog_pe_reloc.s -o userprog/prog_pe_reloc.o
 ld -m i386pep --subsystem native -e _start -o userprog/userprog_pe_reloc.exe userprog/prog_pe_reloc.o
+
+# The FORWARDER HOST (a second real provider) and the checked
+# COMPOSITION step: links DIRECTLY against the primary provider is how
+# the client got its first two imports; this second provider is linked
+# first LIKE a normal DLL -- three real exported stub functions -- and
+# then tools/patch_pe_forwarders.py composes, self-verified:
+# (a) the forwarder-host's three EAT entries become directory-internal
+#     forwarder STRING references (into raw-section padding the
+#     extension freshly owns -- the extension is checked to not touch
+#     any other section's bytes), and
+# (b) the CLIENT's crossmark OFT thunk becomes ORDINAL form with the
+#     ordinal computed from the provider's own export tables (never
+#     assumed). Patcher refuses the build on any mismatch it re-parses.
+as --64 userprog/prog_pe_import_fwdprov.s -o userprog/prog_pe_import_fwdprov.o
+ld -m i386pep --shared --enable-auto-import --image-base=0x1c0000000000 -o userprog/userprog_pe_import_fwdprov.dll userprog/prog_pe_import_fwdprov.o
+ld -m i386pep --subsystem native -e _start --image-base=0x140000000000 -o userprog/userprog_pe_import_app.exe userprog/prog_pe_import_app.o userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_fwdprov.dll
+python3 tools/patch_pe_forwarders.py userprog/userprog_pe_import_fwdprov.dll userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_app.exe
 
 echo "==> readelf LAYOUT GATE: every embedded userprog artifact is fact-checked (SONAMEs, version tables, NEEDED chains, PLT/JUMP_SLOT, WEAK dynsym, PE edata/idata) BEFORE kernel code ever sees them"
 ./tools/verify_prog_layout.sh

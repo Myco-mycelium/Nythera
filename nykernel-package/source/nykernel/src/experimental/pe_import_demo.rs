@@ -39,10 +39,18 @@
 //!   The per-symbol refusal carries the per-file ruling, and real
 //!   resolution still runs afterward, clean.
 //! Deliberate scope (same honest posture as `pe.rs`'s doc): no
-//! forwarding exports, no delay-load, no bound imports, no ordinal-name
-//! imports (typed `UnsupportedOrdinalImport` by the loader), no Win32
-//! API surface. A real Windows-format pair's own import/export
-//! machinery, driven by the loader, is what ends this boot.
+//! delay-load, no bound imports, no Win32 API surface. Forwarded
+//! exports and ordinal imports WERE in this list and are closed now:
+//! the forwarder-host provider's own EAT entries are directory-internal
+//! forwarder STRING references (composed deliberately and
+//! self-verified by `tools/patch_pe_forwarders.py`, the same
+//! checked-patch discipline the weak-VERNEED artifact used), the
+//! chase lands the client's third import on the PROVIDER's crossfn
+//! address, and crossmark's own thunk is composed ordinal-form
+//! (OrdinalBase taken from the provider's real export directory, not
+//! assumed) -- both with typed negative controls run every boot. A
+//! real Windows-format pair's own import/export machinery, driven by
+//! the loader, is what ends this boot.
 
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::VirtAddr;
@@ -61,6 +69,12 @@ pub const TRAP_VECTOR: u8 = 0x8D;
 /// Directory with the pinned DLL name and hint/name entries) BEFORE
 /// the kernel build.
 static PROVIDER_DLL: &[u8] = include_bytes!("../../userprog/userprog_pe_import_dll.dll");
+/// The FORWARDER HOST: a second real Windows-format provider whose
+/// THREE exports start as ordinary ld-emitted stubs and whose EAT
+/// entries the checked build-time patcher composes into 2 forwarded-
+/// export STRING references plus one unregistered-DLL string (and one
+/// self-cycling one); see `tools/patch_pe_forwarders.py`.
+static FWDPROV_DLL: &[u8] = include_bytes!("../../userprog/userprog_pe_import_fwdprov.dll");
 static IMPORT_APP: &[u8] = include_bytes!("../../userprog/userprog_pe_import_app.exe");
 
 /// The files' own fixed `ImageBase`s, pinned by the layout gate AND by
@@ -74,6 +88,9 @@ static IMPORT_APP: &[u8] = include_bytes!("../../userprog/userprog_pe_import_app
 /// involved), the provider at its own.
 const APP_IMAGE_BASE: u64 = 0x1400_0000_0000;
 const PROVIDER_IMAGE_BASE: u64 = 0x1800_0000_0000;
+/// The forwarder host's own private base (PML4 index 0x1c -- outside
+/// the shared identity subtree, same rule as the pair's bases).
+const FWDPROV_IMAGE_BASE: u64 = 0x1c00_0000_0000;
 
 /// The two exports' RVAs inside the provider (pinned by the layout
 /// gate's Export Address Table reading); the loader's answers are
@@ -90,6 +107,11 @@ const CROSSFN_VALUE: u64 = 0xFA57_1AE5;
 /// and reads them back from the trap handler).
 const SLOT_A: u64 = 0x4000_0000_0000; // *IAT-resolved crossmark (the data immediate)
 const SLOT_B: u64 = 0x4000_0000_0008; // the resolved crossfn call's result
+/// The forwarder-resolved import's report slot: lives in SLOT_A's own
+/// mapped page (one 4 KiB mapping covers all three), which is exactly
+/// what the slot-constant gate pin asserts
+/// (`SLOT_C == SLOT_A + 16`).
+const SLOT_C: u64 = 0x4000_0000_0010; // the forwarder-resolved crossfn_fwd call's result
 
 const USER_STACK_ADDR: u64 = 0x4000_0001_0000;
 
@@ -167,6 +189,37 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         crossfn_addr, crossmark_addr
     );
 
+    // --- load the FORWARDER HOST (a second real provider) and parse
+    // its OWN export directory. The checked composition's facts are
+    // real toolchain-observable output too: a plain `objdump -p` on
+    // the embedded file prints its EAT entries as `Forwarder RVA`
+    // lines, so the kernel reading them is reading what the file
+    // truly contains. ---
+    let fwdprov = pe::load(FWDPROV_DLL, &mut mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the forwarder-host DLL: {:?}", e));
+    let _ = fwdprov;
+    let fwd_export = pe::DllExportTable::parse(FWDPROV_IMAGE_BASE, fwdprov.image_max_rva)
+        .unwrap_or_else(|e| panic!("forwarder-host export table failed to parse: {:?}", e));
+    let fwd_declared = fwd_export
+        .declared_name()
+        .unwrap_or_else(|e| panic!("forwarder-host export table name failed: {:?}", e))
+        .unwrap_or_else(|| panic!("forwarder-host export table declares no DLL name"));
+    assert!(
+        fwd_declared.as_slice() == b"userprog_pe_import_fwdprov.dll",
+        "forwarder host must declare its own pinned DLL name"
+    );
+    assert_eq!(
+        fwd_export.name_count(),
+        3,
+        "the forwarder host must carry exactly the three composed exports"
+    );
+    serial_println!(
+        "  experimental pe-import-demo: forwarder host loaded at its own ImageBase {:#x}; its export table declares {:?} with {} name(s), every EAT entry a directory-internal forwarder -- OK",
+        FWDPROV_IMAGE_BASE,
+        fwd_declared,
+        fwd_export.name_count()
+    );
+
     // --- load the client WITHOUT imports, then run BOTH typed negative
     // controls on its real mapped import directory BEFORE real
     // resolution touches an IAT slot ---
@@ -203,41 +256,107 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         ),
     }
 
-    // --- real resolution ---
+    // --- typed refusals of the NEW halves, against the FULL registry
+    // (both provider tables registered, the same registry the real
+    // resolution runs on): two forwarder controls and two ordinal
+    // checks, every one of them typed, permanent, every boot ---
     let mut reg = pe::DllRegistry::new();
     reg.add(dll_name_bytes, Some(export));
+    reg.add(fwd_declared.as_slice(), Some(fwd_export));
+    // (a) a forwarder chain that only ever names ITSELF again never
+    // resolves -- the depth cap's typed refusal:
+    match reg.resolve_in(&fwd_export, Some(b"crossfn_cycle"), None) {
+        Err(pe::PeError::ForwarderDepthExceeded) => serial_println!(
+            "  experimental pe-import-demo: negative control 3 -- a SELF-CYCLING forwarded export refused at the depth cap with the typed ForwarderDepthExceeded -- OK"
+        ),
+        other => panic!(
+            "negative control 3 failed: expected ForwarderDepthExceeded, got {:?}",
+            other.err()
+        ),
+    }
+    // (b) a forwarder string naming a DLL the registry has no entry
+    // for: the name-vs-file ruling applies to forwarders exactly as
+    // it applies to import descriptors:
+    match reg.resolve_in(&fwd_export, Some(b"crossfn_nodll"), None) {
+        Err(pe::PeError::MissingDllImport) => serial_println!(
+            "  experimental pe-import-demo: negative control 4 -- a forwarded export naming an UNREGISTERED DLL refused with the typed MissingDllImport -- OK"
+        ),
+        other => panic!(
+            "negative control 4 failed: expected MissingDllImport, got {:?}",
+            other.err()
+        ),
+    }
+    // (c) an ordinal beyond the provider's EAT answers TYPED-ABSENT
+    // (Ok(None)), never a guess:
+    let far_out = reg
+        .resolve_in(&export, None, Some(99))
+        .expect("an out-of-range ordinal must answer, not error");
+    assert!(far_out.is_none(), "an out-of-range ordinal must answer None");
+    // (d) the same probe against the client's OWN (empty) export
+    // table -- every EAT-indexed lookup through a no-directory file is
+    // absent too:
+    let empty_ord = reg
+        .resolve_in(&client_exports, None, Some(1))
+        .expect("an empty-table ordinal must answer, not error");
+    assert!(empty_ord.is_none(), "an empty-table ordinal must answer None");
+    serial_println!(
+        "  experimental pe-import-demo: ordinal out-of-range / empty-table probes answer typed-None, never a guess -- OK"
+    );
+
+    // --- the client's ordinals and forwarders come through the walk
+    // with the SAME positive facts the named path gets ---
     let resolved = pe::resolve_imports(APP_IMAGE_BASE, &mut mapper, app.image_max_rva, &reg)
         .unwrap_or_else(|e| panic!("real import resolution failed: {:?}", e));
 
-    // Exact per-symbol facts, address-located by SYMBOL (the
-    // layout-drift rule): the first walk fact must be crossfn, the
-    // second crossmark -- assert that, THEN check each value both
-    // externally (independent export lookup) and internally (slot
-    // readback):
-    assert_eq!(resolved.facts.len(), 2, "exactly the two fixture imports must resolve");
+    // Per-symbol facts, located by SYMBOL (the layout-drift rule):
+    // crossfn (named form), crossmark (composed ORDINAL form; the
+    // label is `ord2` = OrdinalBase 1 + crossmark's EAT index 1), and
+    // crossfn_fwd (named through the forwarder host). The loop's
+    // readback check runs for every fact.
+    assert_eq!(resolved.facts.len(), 3, "exactly the three fixture imports must resolve");
     const CROSSFN: &[u8] = b"crossfn";
-    const CROSSMARK: &[u8] = b"crossmark";
-    assert!(resolved.facts[0].symbol.as_slice() == CROSSFN, "first import fact must be crossfn");
-    assert!(resolved.facts[1].symbol.as_slice() == CROSSMARK, "second import fact must be crossmark");
+    const CROSSMARK_ORDINAL: &[u8] = b"ord2";
+    const CROSSFN_FWD: &[u8] = b"crossfn_fwd";
+    let fact_fn = resolved
+        .facts
+        .iter()
+        .find(|f| f.symbol.as_slice() == CROSSFN)
+        .expect("the named crossfn fact must be present");
+    let fact_ord = resolved
+        .facts
+        .iter()
+        .find(|f| f.symbol.as_slice() == CROSSMARK_ORDINAL)
+        .expect("the ordinal-form crossmark fact (ord2) must be present");
+    let fact_fwd = resolved
+        .facts
+        .iter()
+        .find(|f| f.symbol.as_slice() == CROSSFN_FWD)
+        .expect("the forwarder-resolved crossfn_fwd fact must be present");
+    // The ORDINAL path must answer what the NAMED path answers (the
+    // independent named lookup was computed above, before any patch
+    // semantic could have leaked into it):
+    assert_eq!(
+        fact_ord.value, crossmark_addr,
+        "the ordinal-form import must resolve to the same crossmark address the named form computes (OrdinalBase semantics, not an index guess)"
+    );
+    // The forwarder chase must land on the PROVIDER's own crossfn:
+    // the forwarder host's own stub body is NEVER executed by it.
+    assert_eq!(
+        fact_fwd.value, crossfn_addr,
+        "the forwarder-resolved import must carry the PROVIDER's crossfn address, not the forwarder host's stub"
+    );
     for f in resolved.facts.iter() {
-        let expected_addr = export.lookup(f.symbol.as_slice());
-        assert!(expected_addr.is_some());
-        assert_eq!(
-            f.value,
-            expected_addr.unwrap(),
-            "IAT slot value must equal the independently-computed export address"
-        );
         let readback = core::ptr::read_volatile(f.slot as *const u64);
         assert_eq!(readback, f.value, "IAT slot readback mismatch");
     }
     serial_println!(
-        "  experimental pe-import-demo: resolved 2 import(s) through the REAL import directory -- OK: each slot's value == the independent export lookup, and reads back unchanged"
+        "  experimental pe-import-demo: resolved 3 import(s) through the REAL import directories -- OK: named crossfn -> {:#x}; ordinal-form crossmark (`ord2`) -> {:#x}, the same answer the named form computes; forwarder crossfn_fwd -> {:#x} (the PROVIDER's .text, chased through the forwarder host's export entry); every slot reads back its written value",
+        fact_fn.value, fact_ord.value, fact_fwd.value
     );
-    let slot_fn = &resolved.facts[0];
-    let slot_mark = &resolved.facts[1];
     serial_println!(
-        "  experimental pe-import-demo: IAT slot for {:?} at {:#x} == {:#x} (crossfn, the provider's .text); slot for {:?} at {:#x} == {:#x} (crossmark, the provider's .data) -- OK",
-        slot_fn.symbol, slot_fn.slot, slot_fn.value, slot_mark.symbol, slot_mark.slot, slot_mark.value
+        "  experimental pe-import-demo: IAT slots -- crossfn {:#x}, ordinal crossmark {:#x}, forwarder crossfn_fwd {:#x} (slot {}; slot {}; slot {}) -- OK",
+        fact_fn.value, fact_ord.value, fact_fwd.value,
+        fact_fn.slot, fact_ord.slot, fact_fwd.slot
     );
 
     // The resolved data export is a REAL mapped address: dereference it
@@ -283,15 +402,21 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 pub unsafe fn on_trap() -> ! {
     let via_pointer = core::ptr::read_volatile(SLOT_A as *const u64);
     let via_call = core::ptr::read_volatile(SLOT_B as *const u64);
-    let ok = via_pointer == CROSSMARK_VALUE && via_call == CROSSFN_VALUE;
+    // The third slot is the FORWARDER-resolved import's result: the
+    // same slots rule as A/B -- one private page, constants pinned by
+    // the slot-constant gate pin.
+    let via_fwd = core::ptr::read_volatile(SLOT_C as *const u64);
+    let ok = via_pointer == CROSSMARK_VALUE && via_call == CROSSFN_VALUE && via_fwd == CROSSFN_VALUE;
     serial_println!(
-        "  experimental pe-import-demo self-test: imported data read {:#x} through the resolved IAT slot (expected {:#x}); imported function returned {:#x} (expected {:#x}) -- {}",
+        "  experimental pe-import-demo self-test: imported data read {:#x} through the resolved IAT slot (expected {:#x}); imported function returned {:#x} (expected {:#x}); forwarder-resolved import returned {:#x} (expected {:#x}, the PROVIDER's own code executed through the forwarder host's export entry) -- {}",
         via_pointer,
         CROSSMARK_VALUE,
         via_call,
         CROSSFN_VALUE,
+        via_fwd,
+        CROSSFN_VALUE,
         if ok {
-            "OK, a real Windows-format executable's own imports resolved through a real Windows-format DLL's own export table (GetProcAddress), and its own code used them in ring 3"
+            "OK, a real Windows-format executable's own imports -- named, ordinal, and forwarder-chased -- all resolved through real Windows-format export tables (GetProcAddress semantics), and its own code used them in ring 3"
         } else {
             "MISMATCH"
         }
