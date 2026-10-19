@@ -854,7 +854,15 @@ real `ld -m i386pep` pair built by `build.sh`:
   (PML4 index 128 -- a private index, deliberately outside the shared
   PML4[0] identity subtree), `SLOT_B = SLOT_A + 8` inside the same
   page, stack at `0x4000_0001_0000`; one 1-page mapping covers both
-  slots.
+  slots. And the rule is a CI gate pin, not prose (same session, after
+  the demo itself was proven): `tools/verify_prog_layout.sh` parses
+  BOTH independent constant copies (the client assembly's `.set`
+  values and the demo driver's consts), refuses any divergence
+  between them, refuses any slot/stack constant outside the 47-bit
+  `2^46` private-index-128 12-digit class (the historical 11-digit
+  `2^42` value is bit_length 43 and dies at BUILD time), and pins
+  `SLOT_B = SLOT_A + 8` -- so this hang class can never again pass
+  every runtime fact and still hang the boot.
 - **Map/flags parity with the proven paths.** The slot page and the
   user stack are mapped user-accessible + NX with the same one
   `map_range` walk every other ring-3 entry uses (isolation_demo,
