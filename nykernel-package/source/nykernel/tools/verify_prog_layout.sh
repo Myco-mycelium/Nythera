@@ -483,6 +483,72 @@ if rs_ref_stamp != stamp + 1:
     raise SystemExit(f'FAIL: refstale forwarder ref stamp {rs_ref_stamp:#x}, must be stale (provider + 1 = {stamp + 1:#x})')
 print('  layout-gate: refstale carrier -- same composition, SAME fresh descriptor, ref stamp provider+1: exactly one stamp byte decides refuse-vs-discard -- OK')
 
+# The TWO-REF carriers (the multi-hop increment): the same
+# single-descriptor composition but with TWO forwarder refs -- the
+# PRIMARY PROVIDER then the FORWARDER HOST ITSELF, each declaring
+# its own module's real stamp. ref2bad carries both FRESH; ref2stale
+# is identical except the SECOND ref's stamp is the host's own + 1
+# (a stamp NO file carries). File-side the gate pins the composed
+# count=2 surfaces byte-exactly; the demo's Ok-path control pins the
+# same facts from mapped bytes.
+def bound_probe(data, label):
+    dirs, opt = pe_dirs_sorted(data)
+    rva, size = dirs[11]
+    if rva == 0 or size == 0:
+        raise SystemExit(f'FAIL: {label} has no bound directory')
+    sec = bound_section(data, opt)
+    at = rva_at(data, sec, rva)
+    desc_stamp, desc_off, ref_cnt = struct.unpack_from('<IHH', data, at)
+    return dirs, sec, rva, size, at, desc_stamp, desc_off, ref_cnt
+
+def name_at(data, sec, rva, off):
+    n_at = rva_at(data, sec, rva)
+    return data[n_at + off: n_at + off + 64].split(b'\x00')[0]
+
+fprovo = open('userprog/userprog_pe_import_fwdprov.dll','rb').read()
+fpdirs, fpopt = pe_dirs_sorted(fprovo)
+fststamp = edata_stamp(fprovo, fpopt)
+if fststamp in (0, 0xFFFFFFFF): raise SystemExit('FAIL: forwarder host stamp sentinel')
+for label, path, second_ref_stamp, expect in (
+    ('ref2bad', 'userprog/userprog_pe_bound_ref2bad.exe', fststamp, 'refuse with BoundValueCorrupt'),
+    ('ref2stale', 'userprog/userprog_pe_bound_ref2stale.exe', fststamp + 1, 'DISCARD and resolve fresh'),
+):
+    two = open(path,'rb').read()
+    tdirs, tsec, t_rva, t_size, t_at, t_stamp, t_off, t_refs = bound_probe(two, label)
+    # 1 descriptor + 2 refs = 3 entries (24 B) + terminator (8 B)
+    # + the three module names in entry order:
+    want_size = 3*8 + 8 + (len(b'userprog_pe_import_fwdprov.dll')+1)*2 + len(b'userprog_pe_import_dll.dll')+1
+    if t_size != want_size:
+        raise SystemExit(f'FAIL: {label} bound directory size {t_size}, composed exactly {want_size}')
+    if t_stamp != fststamp:
+        raise SystemExit(f'FAIL: {label} descriptor stamp {t_stamp:#x}, must be the forwarder host\'s OWN stamp {fststamp:#x}')
+    if t_refs != 2:
+        raise SystemExit(f'FAIL: {label} NumberOfModuleForwarderRefs {t_refs}, composed exactly 2')
+    ref1_stamp, ref1_off = struct.unpack_from('<IH', two, t_at + 8)[:2]
+    ref2_stamp, ref2_off = struct.unpack_from('<IH', two, t_at + 16)[:2]
+    ref1_name = name_at(two, tsec, t_rva, ref1_off)
+    ref2_name = name_at(two, tsec, t_rva, ref2_off)
+    if ref1_name != b'userprog_pe_import_dll.dll' or ref2_name != b'userprog_pe_import_fwdprov.dll':
+        raise SystemExit(f'FAIL: {label} ref modules drifted: {ref1_name!r}, {ref2_name!r}')
+    if ref1_stamp != stamp:
+        raise SystemExit(f'FAIL: {label} first ref stamp {ref1_stamp:#x}, must be FRESH (the provider stamp {stamp:#x})')
+    ref2_expect = "the host's OWN (FRESH)" if second_ref_stamp == fststamp else "host + 1 (STALE)"
+    if ref2_stamp != second_ref_stamp:
+        raise SystemExit(f'FAIL: {label} second ref stamp {ref2_stamp:#x}, must be {ref2_expect} {second_ref_stamp:#x}')
+    # the single wrong IAT slot, composed exactly:
+    imp_rva_t = tdirs[1][0]
+    for d in range(16):
+        at = rva_at(two, tsec, imp_rva_t + d*20)
+        oft, ts, fc, nrva, ft = struct.unpack_from('<IIIII', two, at)
+        if oft == 0 and nrva == 0 and ft == 0:
+            break
+        slot_off = rva_at(two, tsec, ft)
+        val = struct.unpack_from('<Q', two, slot_off)[0]
+        break
+    if val != wrong:
+        raise SystemExit(f'FAIL: {label} IAT slot is {val:#x}, must be the composed {wrong:#x}')
+    print(f'  layout-gate: {label} carrier -- fresh descriptor + TWO refs in ENTRY ORDER (provider FRESH {stamp:#x}, host {second_ref_stamp:#x}), single crossfn slot carries the wrong value -> {expect} -- OK')
+
 demo = open('src/experimental/pe_import_demo.rs').read()
 m = re.search(r'const BAD_IMAGE_BASE: u64 = (0x[0-9a-f_]+);', demo)
 if not m: raise SystemExit('FAIL: demo BAD_IMAGE_BASE constant drifted')
@@ -503,6 +569,27 @@ mp = re.search(r'WRONG = (0x[0-9a-fA-F_]+)', pt)
 if not mp or int(mp.group(1).replace('_',''),16) != wrong:
     raise SystemExit('FAIL: patcher WRONG constant != the demo/composed wrong value')
 print(f'  layout-gate: BAD_IMAGE_BASE {db:#x} (PML4 index {idx:#x}, private) and the {wrong:#x} contradiction -- demo/patcher/file all agree -- OK')
+
+# Every remaining probe carrier's fixed ImageBase is pinned the same
+# way: the file bytes LinkObject agree with the demo's constant, and
+# the PML4 index is private and fresh (never the shared index-0
+# identity subtree, never another demo's fixed region).
+for base_const, path, label in (
+    ('REFSTALE_IMAGE_BASE', 'userprog/userprog_pe_bound_refstale.exe', 'refstale carrier'),
+    ('REF2BAD_IMAGE_BASE', 'userprog/userprog_pe_bound_ref2bad.exe', 'two-ref refusal carrier'),
+    ('REF2STALE_IMAGE_BASE', 'userprog/userprog_pe_bound_ref2stale.exe', 'two-ref stale carrier'),
+):
+    mc = re.search(r'const ' + base_const + r': u64 = (0x[0-9a-fA-F_]+);', demo)
+    if not mc:
+        raise SystemExit(f'FAIL: demo {base_const} constant drifted')
+    want_base = int(mc.group(1).replace("_", ""), 16)
+    got_base = pe_image_base(open(path, 'rb').read())
+    if got_base != want_base:
+        raise SystemExit(f'FAIL: {label} ImageBase {got_base:#x} != demo {base_const} {want_base:#x}')
+    pidx = want_base >> 39
+    if pidx == 0 or pidx >= 512 or pidx == 0x80:
+        raise SystemExit(f'FAIL: {label} PML4 index {pidx:#x} is not a private fresh index')
+    print(f'  layout-gate: {label} ImageBase {want_base:#x} (PML4 index {pidx:#x}, private) -- OK')
 EOF
 # ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
 #
@@ -570,6 +657,9 @@ scratch_windows=(
     "0x6c000400000 0x6c000510000" # full demo refusal carriers SCRATCH_BASE_A 0x6C0_0040_0000 / SCRATCH_BASE_B 0x6C0_0050_0000
     "0x6d000700000 0x6d000800000" # plt demo: dependent 0x6D0_0070_0000, resolver thunk 0x6D0_0071_0000, private page 0x6D0_0072_0000, user stack 0x6D0_0073_0000
     "0x200000000000 0x200000100000" # bound-import bad client: fixed ImageBase 0x2000_0000_0000 (its entry point never runs; the pe-import demo probes its bound/import surfaces only) -- no ELF artifact may ever land in this PE image's private PML4-index-0x40 region either
+    "0x300000000000 0x300000100000" # bound-import refstale carrier: fixed ImageBase 0x3000_0000_0000 (same never-executed probe-only rule; PML4 index 0x60)
+    "0x500000000000 0x500000100000" # two-ref bound-import refusal carrier: fixed ImageBase 0x5000_0000_0000 (PML4 index 0xA0)
+    "0x600000000000 0x600000100000" # two-ref bound-import stale carrier: fixed ImageBase 0x6000_0000_0000 (PML4 index 0xC0)
 )
 for art in userprog/userprog_cross_all_lib.elf userprog/userprog_cross_all_lib2.elf \
            userprog/userprog_cross_all.elf userprog/userprog_cross_all2.elf \

@@ -1184,13 +1184,51 @@ discipline:- **Parsing (the boundary is a COUNT, not a heuristic):** the
   (the one-byte discard) both fire from real composed bytes at every
   boot; all prior controls keep firing.
 
-Still deliberately out, same posture: delay-load imports, bound
-`FORWARDER_REF` chains longer than one hop are unbounded by the
-parsed cap but semantically unexercised (no carrier composes two
-refs), structural `MalformedBoundImport` variants are code-verified
-but not boot-controlled, and Win32 API. The old bound round's ruling
-stands unchanged for descriptors WITHOUT refs; every existing fact,
-gate line, and carrier composes identically.
+## Gap-closure increment (2026-10-20, third of the day): TWO-ref chains -- the count is proven, not assumed
+
+The forwarder-ref round's own note named the next hole: chains of
+more than one ref parsed-capable but unexercised. Closed with two
+more carriers on the same composition family:
+
+- **The carriers:** `ref2bad` composes the same single fresh
+  descriptor naming the forwarder host -- but TWO forwarder refs: the
+  primary provider and then the FORWARDER HOST ITSELF, each
+  declaring its own module's real stamp, and the same wrong slot.
+  Two DIFFERENT registered modules in one ref list means the per-ref
+  lookup is real, not a one-module special case; the all-fresh
+  surface gates the honor path ON purely by stamps, so the slot
+  verification must refuse -- every boot refuses with the typed
+  `BoundValueCorrupt 0xdeadbeef00001000 != 0x180000001000`, the
+  chase proof that the walk consumed BOTH refs (a one-ref assumption
+  would have misparsed the directory before any stamp check).
+  `ref2stale` is the same composition except the SECOND ref's stamp
+  is the host's own + 1: the gate flips OFF by a LATER ref alone,
+  the same wrong slot is DISCARDED (typed `StaleRefDiscarded`) and
+  resolved fresh through the same chase. One ref-stamp byte past
+  the FIRST ref decides refuse-vs-discard across a two-ref chain.
+- **The rules that were NOT violated:** the guard patcher composes
+  both carriers under the same `{name, stamp, refs}` records path
+  (re-verified by re-parse), the layout gate pins both files' dirs
+  byte-exactly (entry count, ref order, both stamps, the wrong
+  slot) and the demo's Ok-path control pins names/order/stamps from
+  mapped bytes; new fixed bases 0x5000_0000_0000 / 0x6000_0000_0000
+  are private PML4 indexes 0xA0/0xC0 and scratch-window-protected.
+  A proven parse boundary: refusals discard the parsed surface by
+  design, so the refusal-path asserts only the typed pair and the
+  parse facts come from the Ok-path carrier + the gate -- no
+  recovery-through-error was added.
+- **Verified:** full boot exit 0, 3/3 consecutive soak, zero
+  FAILs; negative control 7 (two-ref all-fresh refusal) and control
+  8 (second-ref-stale discard) both fire from real composed bytes at
+  every boot; controls 1-6 all keep firing.
+
+Still deliberately out, same posture: delay-load imports, ref
+chains longer than TWO refs (the count-driven walk bounds and
+consumes any number, but no carrier composes three), structural
+`MalformedBoundImport` variants are code-verified but not
+boot-controlled, and Win32 API. The one-ref round's ruling stands
+unchanged for single-ref descriptors; every existing fact, gate
+line, and carrier composes identically.
 
 ## What does NOT exist yet (do not assume otherwise)
 

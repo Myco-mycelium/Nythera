@@ -424,13 +424,15 @@ def prefill_and_verify(data: bytearray, sections, ft_rva, values, labels):
 
 
 def main() -> None:
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 8:
         die("usage: patch_pe_bound.py <primary_provider_dll> <forwarder_host_dll> "
-            "<good_client_exe> <bad_client_exe> <refstale_client_exe>")
-    if len(sys.argv) != 6 or len(set(sys.argv[3:6])) != 3:
-        die("the bad and refstale clients must be SEPARATE files from each other "
+            "<good_client_exe> <bad_client_exe> <refstale_client_exe> "
+            "<ref2bad_client_exe> <ref2stale_client_exe>")
+    if len(sys.argv) != 8 or len(set(sys.argv[3:8])) != 5:
+        die("the four probe carriers must be SEPARATE files from each other "
             "and from the good client")
-    prov_path, fwd_path, good_path, bad_path, refstale_path = sys.argv[1:6]
+    prov_path, fwd_path, good_path, bad_path, refstale_path, \
+        ref2bad_path, ref2stale_path = sys.argv[1:8]
 
     # ---- the provider: the stamp and EAT addresses the whole
     # composition is pinned against ----
@@ -547,6 +549,47 @@ def main() -> None:
               f"{fx['stamp']:#x} (the forwarder host's OWN), ref stamp {ref_stamp:#x} "
               f"({ 'FRESH, all-fresh honors' if ref_stamp == stamp else 'STALE (provider + 1)' }) -> "
               f"{expect}")
+
+    # ---- the TWO-REF carriers (multi-hop proof, the next hole the
+    # one-ref round named honestly): the same single descriptor
+    # naming the forwarder host, but TWO forwarder refs -- the
+    # PRIMARY PROVIDER and (second) the FORWARDER HOST itself, so the
+    # per-ref module lookup runs against TWO DIFFERENT registered
+    # modules. Both refs fresh everywhere -> the honor gate is gated
+    # ON purely by stamps, so the contradicting slot must be REFUSED
+    # exactly as in the one-ref case (ref2bad); moving the SECOND
+    # ref's stamp to the host's own stamp + 1 flips the gate OFF by
+    # the second ref alone -> the same wrong slot is DISCARDED and
+    # resolved fresh through the same chase (ref2stale). If the walk
+    # consumed refs by a one-ref assumption instead of the composed
+    # count, these two carriers would not parse at the described
+    # stamps at all -- both facts are asserted in the demo.
+    for label, path, ref2_second_stamp, expect in (
+        ("ref2bad", ref2bad_path, fx["stamp"], "refuse with BoundValueCorrupt"),
+        ("ref2stale", ref2stale_path, fx["stamp"] + 1, "DISCARD and resolve fresh"),
+    ):
+        bio = bytearray(open(path, "rb").read())
+        bdirs, bsecs = parse_headers(bytes(bio))
+        if bdirs[11] != (0, 0):
+            die(f"the {label} client already carries a bound directory (double patch?)")
+        _b_oft, b_ft = find_import_descriptor(bytes(bio), bsecs, b"userprog_pe_import_fwdprov.dll")
+        b_thunks = thunks_as_written(bytes(bio), bsecs, _b_oft)
+        if len(b_thunks) != 1 or b_thunks[0] != ("name", b"crossfn_fwd"):
+            die(f"the {label} client's fwdprov descriptor must carry exactly one NAMED crossfn_fwd thunk, got {b_thunks!r}")
+        records2 = [
+            (b"userprog_pe_import_fwdprov.dll", fx["stamp"], [
+                (b"userprog_pe_import_dll.dll", stamp),
+                (b"userprog_pe_import_fwdprov.dll", ref2_second_stamp),
+            ]),
+        ]
+        b_base, b_size = compose_bound_dir(bio, bsecs, bdirs, records2)
+        verify_bound_dir(bytes(bio), b_base, b_size, records2)
+        prefill_and_verify(bio, bsecs, b_ft, [WRONG], [f"{label} crossfn_fwd ({expect})"])
+        open(path, "wb").write(bytes(bio))
+        fresh2 = "BOTH FRESH" if ref2_second_stamp == fx["stamp"] else "second STALE (host + 1)"
+        print(f"  patcher: {label} client composed at rva {b_base:#x} ({b_size} bytes): descriptor stamp "
+              f"{fx['stamp']:#x} (the forwarder host's OWN), refs: provider FRESH {stamp:#x} + "
+              f"host {ref2_second_stamp:#x} ({fresh2}) -> {expect}")
 
 
 if __name__ == "__main__":

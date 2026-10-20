@@ -109,6 +109,23 @@ static BOUND_BAD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_boun
 /// ruling's refuse-vs-discard demonstration. See
 /// `userprog/prog_pe_bound_refstale.s`.
 static BOUND_REFSTALE_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_bound_refstale.exe");
+/// The TWO-REF refusal carrier: the bad client's composition with the
+/// descriptor's ref list grown to two -- the PRIMARY PROVIDER then the
+/// FORWARDER HOST itself, both declaring their OWN real stamps. The
+/// walk must consume BOTH (the composed
+/// `NumberOfModuleForwarderRefs` field, not a one-ref assumption):
+/// all-fresh gate ON, so the same wrong slot must be REFUSED with the
+/// typed `BoundValueCorrupt` exactly as in the one-ref case. See
+/// `userprog/prog_pe_bound_ref2bad.s`.
+static BOUND_REF2BAD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_bound_ref2bad.exe");
+/// The TWO-REF stale carrier: byte-for-byte the ref2bad carrier's
+/// composition except ONE composed u32 -- the SECOND ref's stamp is
+/// the host's stamp PLUS ONE. The gate flips OFF by the second ref
+/// alone: the same wrong slot is DISCARDED (typed `StaleRef-
+/// Discarded`) and resolved fresh through the same chase. One LATER
+/// ref stamp byte decides refuse-vs-discard across a TWO-ref chain.
+/// See `userprog/prog_pe_bound_ref2stale.s`.
+static BOUND_REF2STALE_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_bound_ref2stale.exe");
 
 /// The files' own fixed `ImageBase`s, pinned by the layout gate AND by
 /// the build (--image-base on both links). Both bases sit in private
@@ -132,6 +149,14 @@ const BAD_IMAGE_BASE: u64 = 0x2000_0000_0000;
 /// link; PML4 index 0x60, a private fresh subtree, same rule as every
 /// other PE base).
 const REFSTALE_IMAGE_BASE: u64 = 0x3000_0000_0000;
+/// The two-ref refusal carrier's own fixed ImageBase (--image-base on
+/// its link; PML4 index 0xA0, a private fresh subtree, same rule as
+/// every other PE base).
+const REF2BAD_IMAGE_BASE: u64 = 0x5000_0000_0000;
+/// The two-ref stale carrier's own fixed ImageBase (--image-base on
+/// its link; PML4 index 0xC0, a private fresh subtree, same rule as
+/// every other PE base).
+const REF2STALE_IMAGE_BASE: u64 = 0x6000_0000_0000;
 /// The WRONG bound value `tools/patch_pe_bound.py` composes into the
 /// bad client's single IAT slot (the patcher's WRONG constant,
 /// mirrored here; its own re-parse guards the file side, and the
@@ -278,6 +303,10 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         .unwrap_or_else(|e| panic!("failed to load the bound-refusal PE: {:?}", e));
     let refstale = pe::load(BOUND_REFSTALE_CLIENT, &mut mapper, fa, 0)
         .unwrap_or_else(|e| panic!("failed to load the stale-ref PE: {:?}", e));
+    let ref2bad = pe::load(BOUND_REF2BAD_CLIENT, &mut mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the two-ref bound-refusal PE: {:?}", e));
+    let ref2stale = pe::load(BOUND_REF2STALE_CLIENT, &mut mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the two-ref stale PE: {:?}", e));
 
     match pe::resolve_imports(APP_IMAGE_BASE, &mut mapper, app.image_max_rva, &pe::DllRegistry::new()) {
         Err(pe::PeError::MissingDllImport) => serial_println!(
@@ -458,6 +487,122 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         }
         other => panic!(
             "negative control 6 failed: expected the stale-ref binding to be DISCARDED and resolved, got {:?}",
+            other.err()
+        ),
+    }
+
+    // Negative control 7 (the multi-hop count boundary, probed by
+    // REFUSAL): the REF2BAD carrier composes the SAME fresh
+    // descriptor but with TWO forwarder refs -- the primary provider
+    // and then the FORWARDER HOST ITSELF, both declaring their own
+    // modules' real stamps. If the walk consumed refs by a one-ref
+    // assumption instead of the composed NumberOfModuleForwarder-
+    // Refs count, this directory would not parse at the described
+    // stamps at all; parsed, the all-fresh surface gates the honor
+    // path ON purely by stamps, so the per-slot VALUE verification
+    // (which runs the forwarder chase) must refuse with the typed
+    // BoundValueCorrupt -- the refusal is SEMANTIC through a two-ref
+    // chain, never stamp-blind.
+    match pe::resolve_imports(REF2BAD_IMAGE_BASE, &mut mapper, ref2bad.image_max_rva, &reg) {
+        Err(pe::PeError::BoundValueCorrupt(wrong2, fresh2)) => {
+            assert_eq!(
+                wrong2, BOUND_WRONG_VALUE,
+                "the two-ref refusal must name the composed wrong bound value"
+            );
+            assert_eq!(
+                fresh2,
+                PROVIDER_IMAGE_BASE + FN_RVA,
+                "the two-ref refusal's fresh half must be the forwarder chase the two FRESH refs verified"
+            );
+            // The refusal reaching the slot-verify at all proves the
+            // count-driven parse consumed BOTH refs (a one-ref
+            // assumption would have misparsed the composed directory
+            // before any stamp check). The two-ref PARSE facts
+            // (names, order, both stamps) are pinned from real bytes
+            // by control 8's Ok path and file-side by the gate.
+            serial_println!(
+                "  experimental pe-import-demo: negative control 7 -- the REF2BAD carrier (TWO refs, BOTH FRESH) refused through the two-ref chain with the typed BoundValueCorrupt ({:#x} != {:#x}) -- OK, the count made the walk unambiguous and the fresh surface still verified the slot THROUGH both refs",
+                wrong2,
+                fresh2
+            );
+        }
+        other => panic!(
+            "negative control 7 failed: expected BoundValueCorrupt through two FRESH refs, got {:?}",
+            other.err()
+        ),
+    }
+
+    // Negative control 8 (the multi-hop flip, one ref byte again):
+    // the REF2STALE carrier is the ref2bad carrier's composition
+    // except the SECOND ref's stamp -- the HOST's stamp + 1, a stamp
+    // no registered file carries. The FIRST ref is still fresh (the
+    // same patch bytes the ref2bad carrier carries), so the gate
+    // flipping OFF by a LATER ref proves per-ref iteration: the same
+    // wrong slot must NOT honor and NOT refuse -- it is DISCARDED
+    // (typed StaleRefDiscarded) and resolved fresh through the same
+    // chase, landing on the same chased address control 7's refusal
+    // named.
+    match pe::resolve_imports(REF2STALE_IMAGE_BASE, &mut mapper, ref2stale.image_max_rva, &reg) {
+        Ok(res3) => {
+            assert_eq!(
+                res3.facts.len(),
+                1,
+                "the stale second-ref carrier carries exactly one import"
+            );
+            let fact_rs2 = &res3.facts[0];
+            assert!(
+                matches!(fact_rs2.origin, pe::ImportOrigin::StaleRefDiscarded),
+                "a later STALE forwarder ref must DISCARD through the ref flavor"
+            );
+            assert_eq!(
+                fact_rs2.prior, BOUND_WRONG_VALUE,
+                "the discarded bound value is the same wrong value control 7 refused"
+            );
+            assert_eq!(
+                fact_rs2.value,
+                PROVIDER_IMAGE_BASE + FN_RVA,
+                "the fresh resolution is the same forwarder chase control 7's refusal named"
+            );
+            let bm3 = &res3.bound_modules[0];
+            assert_eq!(
+                bm3.stamp,
+                fwd_export.time_date_stamp(),
+                "the second-ref carrier's descriptor stamp stayed FRESH -- the flip is by the ref alone"
+            );
+            assert_eq!(
+                bm3.forwarder_refs.len(),
+                2,
+                "exactly the composed TWO forwarder refs must parse even when the ruling discards"
+            );
+            assert!(
+                bm3.name.as_slice() == b"userprog_pe_import_fwdprov.dll",
+                "the two-ref entry must name the forwarder host"
+            );
+            assert!(
+                bm3.forwarder_refs[0].0.as_slice() == b"userprog_pe_import_dll.dll"
+                    && bm3.forwarder_refs[1].0.as_slice() == b"userprog_pe_import_fwdprov.dll",
+                "the two refs must name the provider and then the host, in composed order"
+            );
+            assert_eq!(
+                bm3.forwarder_refs[0].1,
+                export.time_date_stamp(),
+                "the FIRST ref stays FRESH in the stale second-ref carrier"
+            );
+            assert_eq!(
+                bm3.forwarder_refs[1].1,
+                fwd_export.time_date_stamp().wrapping_add(1),
+                "the SECOND ref's stamp must be the host's + 1: a stamp NO registered file carries"
+            );
+            serial_println!(
+                "  experimental pe-import-demo: negative control 8 -- the REF2STALE carrier (same two refs, only the SECOND's stamp moved to {:#x}) DISCARDED the same wrong slot ({:#x}) and resolved fresh through the same chase ({:#x}); the first ref stayed fresh ({:#x}) -- OK, a LATER ref stamp byte decides refuse-vs-discard across a TWO-ref chain",
+                bm3.forwarder_refs[1].1,
+                fact_rs2.prior,
+                fact_rs2.value,
+                bm3.forwarder_refs[0].1
+            );
+        }
+        other => panic!(
+            "negative control 8 failed: expected the stale second-ref binding to be DISCARDED and resolved, got {:?}",
             other.err()
         ),
     }
