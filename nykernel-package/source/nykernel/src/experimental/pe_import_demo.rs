@@ -85,15 +85,30 @@ static PROVIDER_DLL: &[u8] = include_bytes!("../../userprog/userprog_pe_import_d
 static FWDPROV_DLL: &[u8] = include_bytes!("../../userprog/userprog_pe_import_fwdprov.dll");
 static IMPORT_APP: &[u8] = include_bytes!("../../userprog/userprog_pe_import_app.exe");
 /// The BOUND-IMPORT negative-control carrier: a real Windows-format
-/// executable whose ONLY import is crossfn, and whose composed
-/// bound-import directory declares a FRESH stamp (the provider's own
-/// TimeDateStamp, read by the checked patcher) while its single IAT
-/// slot carries a deliberately WRONG bound value -- the stamp/IAT
-/// contradiction the loader must refuse with the typed
-/// `BoundValueCorrupt`, never trust blindly. The file is never
-/// executed; only its mapped import/bound surfaces are probed. See
-/// `userprog/prog_pe_bound_bad.s` and `tools/patch_pe_bound.py`.
+/// executable whose ONLY import is crossfn_fwd THROUGH the forwarder
+/// host, and whose composed bound-import directory declares a fresh
+/// descriptor stamp (the forwarder HOST's own .edata stamp, read by
+/// the checked patcher) plus ONE ALL-FRESH forwarder ref naming the
+/// primary provider, while its single IAT slot carries a deliberately
+/// WRONG bound value. The honor path is gated ON (descriptor and ref
+/// both fresh), so the loader verifies the slot against a fresh
+/// resolution -- which is the FORWARDER-CHASE target (the primary
+/// provider's crossfn) -- sees the contradiction and must refuse with
+/// the typed `BoundValueCorrupt` naming both halves. The file is
+/// never executed; only its mapped import/bound surfaces are probed.
+/// See `userprog/prog_pe_bound_bad.s` and `tools/patch_pe_bound.py`.
 static BOUND_BAD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_bound_bad.exe");
+/// The STALE-REF carrier: byte-for-byte the bad client's composition
+/// EXCEPT one composed u32 -- the forwarder ref's stamp is the
+/// provider's stamp PLUS ONE (a stamp no registered file carries).
+/// The honor gate flips OFF by the ref alone: the SAME wrong slot must
+/// NOT honor and NOT refuse -- it is DISCARDED (typed
+/// `StaleRefDiscarded`) and resolved fresh through the same
+/// forwarder chase, landing on the same chased address the bad
+/// client's refusal named. The bad/refstale pair is the ref-aware
+/// ruling's refuse-vs-discard demonstration. See
+/// `userprog/prog_pe_bound_refstale.s`.
+static BOUND_REFSTALE_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_bound_refstale.exe");
 
 /// The files' own fixed `ImageBase`s, pinned by the layout gate AND by
 /// the build (--image-base on both links). Both bases sit in private
@@ -113,6 +128,10 @@ const FWDPROV_IMAGE_BASE: u64 = 0x1c00_0000_0000;
 /// PML4 index 0x40, outside the shared identity subtree and outside
 /// every other demo's private subtree, same rule as the pair's bases).
 const BAD_IMAGE_BASE: u64 = 0x2000_0000_0000;
+/// The stale-ref carrier's own fixed ImageBase (--image-base on its
+/// link; PML4 index 0x60, a private fresh subtree, same rule as every
+/// other PE base).
+const REFSTALE_IMAGE_BASE: u64 = 0x3000_0000_0000;
 /// The WRONG bound value `tools/patch_pe_bound.py` composes into the
 /// bad client's single IAT slot (the patcher's WRONG constant,
 /// mirrored here; its own re-parse guards the file side, and the
@@ -257,6 +276,8 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     // its entry point is never entered.
     let bad = pe::load(BOUND_BAD_CLIENT, &mut mapper, fa, 0)
         .unwrap_or_else(|e| panic!("failed to load the bound-refusal PE: {:?}", e));
+    let refstale = pe::load(BOUND_REFSTALE_CLIENT, &mut mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the stale-ref PE: {:?}", e));
 
     match pe::resolve_imports(APP_IMAGE_BASE, &mut mapper, app.image_max_rva, &pe::DllRegistry::new()) {
         Err(pe::PeError::MissingDllImport) => serial_println!(
@@ -354,15 +375,89 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
             assert_eq!(
                 fresh,
                 PROVIDER_IMAGE_BASE + FN_RVA,
-                "the contradicting fresh resolution must be crossfn's own address"
+                "the contradicting fresh resolution must be the FORWARDER CHASE's answer -- the primary provider's crossfn"
             );
             serial_println!(
-                "  experimental pe-import-demo: negative control 5 -- a FRESH-stamped bound entry whose IAT slot contradicts fresh resolution refused with the typed BoundValueCorrupt ({:#x} != {:#x}) -- OK, stamps are verified, never trusted blindly",
+                "  experimental pe-import-demo: negative control 5 -- a fresh-stamped descriptor with an ALL-FRESH forwarder ref whose IAT slot contradicts the chased answer refused with the typed BoundValueCorrupt ({:#x} != {:#x}) -- OK, stamps are verified THROUGH the forwarder chains too, never trusted blindly",
                 wrong, fresh
             );
         }
         other => panic!(
             "negative control 5 failed: expected BoundValueCorrupt, got {:?}",
+            other.err()
+        ),
+    }
+
+    // Negative control 6 (the ref-aware ruling's gate, byte for
+    // byte): the REFSTALE carrier is the bad client's composition
+    // EXCEPT ONE ref stamp -- provider's + 1, a stamp no registered
+    // file carries. The descriptor's own stamp is still fresh, so the
+    // gate flips OFF by the ref alone: the SAME wrong slot must NOT
+    // honor and NOT refuse -- it is DISCARDED (typed StaleRef-
+    // Discarded, coarse per-descriptor, the Windows re-snap semantic)
+    // and resolved fresh through the same forwarder chase, landing on
+    // the same chased address the bad client's refusal carried. One
+    // composed stamp byte decides refuse-vs-discard.
+    match pe::resolve_imports(REFSTALE_IMAGE_BASE, &mut mapper, refstale.image_max_rva, &reg) {
+        Ok(res2) => {
+            assert_eq!(
+                res2.facts.len(),
+                1,
+                "the stale-ref carrier carries exactly one import"
+            );
+            let fact_rs = &res2.facts[0];
+            assert!(
+                matches!(fact_rs.origin, pe::ImportOrigin::StaleRefDiscarded),
+                "a fresh descriptor with a STALE forwarder ref must DISCARD through the ref flavor"
+            );
+            assert_eq!(
+                fact_rs.prior, BOUND_WRONG_VALUE,
+                "the discarded bound value is the SAME wrong value the bad client refused"
+            );
+            assert_eq!(
+                fact_rs.value,
+                PROVIDER_IMAGE_BASE + FN_RVA,
+                "the fresh resolution is the same forwarder chase the bad client's refusal named"
+            );
+            assert_eq!(
+                res2.bound_modules.len(),
+                1,
+                "the stale-ref carrier's bound directory has exactly the one entry"
+            );
+            let bm = &res2.bound_modules[0];
+            assert!(
+                bm.name.as_slice() == b"userprog_pe_import_fwdprov.dll",
+                "the stale-ref entry must name the forwarder host"
+            );
+            assert_eq!(
+                bm.stamp,
+                fwd_export.time_date_stamp(),
+                "the stale-ref descriptor's OWN stamp must be the forwarder host's real stamp (fresh) -- the gate flips OFF by the ref alone"
+            );
+            assert_eq!(
+                bm.forwarder_refs.len(),
+                1,
+                "exactly one composed forwarder ref"
+            );
+            assert!(
+                bm.forwarder_refs[0].0.as_slice() == b"userprog_pe_import_dll.dll",
+                "the stale ref must name the primary provider"
+            );
+            assert_eq!(
+                bm.forwarder_refs[0].1,
+                export.time_date_stamp().wrapping_add(1),
+                "the stale ref's stamp must be the provider's + 1: a stamp NO registered file carries"
+            );
+            serial_println!(
+                "  experimental pe-import-demo: negative control 6 -- the REFSTALE carrier (one ref stamp byte beyond the bad client's) DISCARDED the same wrong slot ({:#x}) and resolved it fresh through the same chase ({:#x}); the descriptor's own stamp stayed fresh ({:#x}) and the ref declared {:#x} -- OK, one ref stamp byte decides refuse-vs-discard",
+                fact_rs.prior,
+                fact_rs.value,
+                bm.stamp,
+                bm.forwarder_refs[0].1
+            );
+        }
+        other => panic!(
+            "negative control 6 failed: expected the stale-ref binding to be DISCARDED and resolved, got {:?}",
             other.err()
         ),
     }
@@ -457,26 +552,42 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     let bound_fresh = resolved
         .bound_modules
         .iter()
-        .find(|(n, _)| n.as_slice() == b"userprog_pe_import_dll.dll")
+        .find(|m| m.name.as_slice() == b"userprog_pe_import_dll.dll")
         .expect("the provider's bound entry must parse");
     let bound_stale = resolved
         .bound_modules
         .iter()
-        .find(|(n, _)| n.as_slice() == b"userprog_pe_import_fwdprov.dll")
+        .find(|m| m.name.as_slice() == b"userprog_pe_import_fwdprov.dll")
         .expect("the fwdprov bound entry must parse");
     assert!(
-        resolved.bound_modules.iter().any(|(n, _)| n.as_slice() == b"nobody.dll"),
+        resolved
+            .bound_modules
+            .iter()
+            .any(|m| m.name.as_slice() == b"nobody.dll"),
         "the inert unregistered entry must parse"
     );
     assert_eq!(
-        bound_fresh.1,
+        bound_fresh.stamp,
         export.time_date_stamp(),
         "the fresh entry's stamp must be the provider's OWN parsed stamp (two parsers, one file)"
     );
     assert_eq!(
-        bound_stale.1,
+        bound_stale.stamp,
         export.time_date_stamp().wrapping_add(1),
         "the stale entry's stamp must be fresh + 1: a stamp NO registered provider carries"
+    );
+    // Neither mid-app descriptor carries forwarder refs: their ref
+    // lists must parse EMPTY (the ref-aware kernel path reached these
+    // descriptors too, and found zero refs in each -- composed a
+    // different way than absent). The refstale carrier (below) is the
+    // one that owns the non-empty ref-list facts.
+    assert!(
+        bound_fresh.forwarder_refs.is_empty(),
+        "the fresh descriptor must parse with zero forwarder refs"
+    );
+    assert!(
+        bound_stale.forwarder_refs.is_empty(),
+        "the stale descriptor must parse with zero forwarder refs"
     );
     serial_println!(
         "  experimental pe-import-demo: BOUND-IMPORT facts -- provider's fresh-stamp entry: 2 slot(s) HONORED (prefills verified == fresh resolution, slots left un-written); the stale entry (stamp = provider's + 1, a stamp no file carries): its pre-bound contradiction {:#x} DISCARDED and resolved fresh to {:#x}; nobody.dll's inert entry parsed and ignored -- OK",

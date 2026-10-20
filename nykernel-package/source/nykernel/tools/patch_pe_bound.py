@@ -285,12 +285,16 @@ def resolved_rtva_for(pdata: bytes, psecs, x, thunk) -> int:
 
 
 def compose_bound_dir(data: bytearray, sections, dirs, records):
-    """Composes records [(dll_name, stamp)] into the .idata section's
-    own in-block padding (VirtualSize grows; SizeOfRawData stays, the
-    forwarders-patcher room rule), then dir[11] points at the result.
-    Returns (dir_rva, dir_size). The per-entry name field is an OFFSET
-    from the directory's start (the IMAGE_BOUND_IMPORT_DESCRIPTOR
-    contract), never an absolute RVA."""
+    """Composes records [(dll_name, stamp, refs)] -- each `refs` a list
+    of (ref_name, ref_stamp) composed as consecutive
+    IMAGE_BOUND_FORWARDER_REF entries AFTER its descriptor (the real
+    spec's NumberOfModuleForwarderRefs contract: the count makes the
+    walk unambiguous) -- into the .idata section's own in-block padding
+    (VirtualSize grows; SizeOfRawData stays, the forwarders-patcher
+    room rule), then dir[11] points at the result. Returns
+    (dir_rva, dir_size). Every name field is an OFFSET from the
+    directory's start (the bound-import contract), never an absolute
+    RVA."""
     idata = None
     for s in sections:
         if s["name"] == ".idata":
@@ -298,15 +302,18 @@ def compose_bound_dir(data: bytearray, sections, dirs, records):
     if idata is None:
         die("the client has no .idata section to compose into")
     pad = idata["rawsize"] - idata["vsize"]
-    # 8 bytes per entry, +8 for the null terminator, + the names:
-    want = len(records) * 8 + 8 + sum(len(n) + 1 for n, _ in records)
+    # 8 bytes per ENTRY (descriptors + refs), +8 for the null
+    # terminator, + the names (descriptors' and refs'):
+    entry_count = len(records) + sum(len(r[2]) for r in records)
+    want = entry_count * 8 + 8 + sum(len(n) + 1 for n, _s, _r in records)
+    want += sum(len(rn) + 1 for _n, _s, refs in records for rn, _rs in refs)
     if pad < want:
         die(f".idata in-block padding {pad:#x} < {want} needed bytes: extend the "
             "patcher's room logic (SizeOfRawData extension) for this file shape")
     base_rva = idata["vaddr"] + idata["vsize"]
     base_foff = idata["raw"] + idata["vsize"]
-    # The directory's full span: the descriptors, the names, and the
-    # terminator -- exactly what was measured into `want` above.
+    # The directory's full span: the descriptors, their refs, the
+    # names, and the terminator -- exactly what was measured above.
     dir_size = want
 
     # Not overlapping any OTHER declared directory in this file:
@@ -317,17 +324,32 @@ def compose_bound_dir(data: bytearray, sections, dirs, records):
             die(f"the composed directory [{base_rva:#x}..{base_rva + want:#x}) "
                 f"would overlap declared dir[{idx}] [{rva:#x}..{rva + size:#x})")
 
-    # Layout: descriptors first, then the NUL-terminated module names.
-    for k, (name, stamp) in enumerate(records):
+    # Layout: each descriptor followed by ITS ref entries, then the
+    # NUL-terminated module names (own names and ref names, in entry
+    # order, strictly sequential) after the entries. Every name offset
+    # counts from the directory start.
+    entries = []
+    for name, stamp, refs in records:
+        entries.append(("desc", name, stamp))
+        for rn, rs in refs:
+            entries.append(("ref", rn, rs))
+    name_area = entry_count * 8 + 8
+    cursor = name_area
+    for k, (kind, nm, st) in enumerate(entries):
         ent = base_foff + k * 8
-        off = len(records) * 8 + 8 + sum(len(n) + 1 for n, _ in records[:k])
+        off = cursor
+        cursor += len(nm) + 1
+        if kind == "desc":
+            n_refs = len(records[k][2])
+        else:
+            n_refs = 0  # a ref's own count field is Reserved, zero
         if off > 0xFFFF:
             die("a module-name offset exceeds the u16 field")
-        struct.pack_into("<IHH", data, ent, stamp, off, 0)
+        struct.pack_into("<IHH", data, ent, st, off, n_refs)
         at = base_foff + off
-        data[at:at + len(name) + 1] = name + b"\x00"
-    # the terminating ALL-ZERO descriptor:
-    struct.pack_into("<Q", data, base_foff + len(records) * 8, 0)
+        data[at:at + len(nm) + 1] = nm + b"\x00"
+    # the terminating ALL-ZERO entry:
+    struct.pack_into("<Q", data, base_foff + entry_count * 8, 0)
     # dir[11] = the bound directory; VirtualSize grows to cover it.
     struct.pack_into("<II", data, dir11_field_off(bytes(data)), base_rva, dir_size)
     new_vsize = max(idata["vsize"], dir_size + (base_rva - idata["vaddr"]))
@@ -337,7 +359,8 @@ def compose_bound_dir(data: bytearray, sections, dirs, records):
 
 def verify_bound_dir(data: bytes, base_rva: int, dir_size: int, records):
     """Re-parse what we wrote: exact directory bounds, exact stamps,
-    exact module-name strings at exact offsets, terminator all-zero."""
+    exact ref counts, exact module-name strings at exact offsets,
+    terminator all-zero."""
     vdata = bytes(data)
     d2, sec2 = parse_headers(vdata)
     got_rva, got_size = d2[11]
@@ -345,18 +368,39 @@ def verify_bound_dir(data: bytes, base_rva: int, dir_size: int, records):
         die(f"re-parse: dir[11] is ({got_rva:#x},{got_size:#x}), composed was ({base_rva:#x},{dir_size:#x})")
     foff, s = rva_to_file(sec2, base_rva)
     end_foff = s["raw"] + s["rawsize"]
-    for k, (name, stamp) in enumerate(records):
-        at = foff + k * 8
-        (st, off) = struct.unpack_from("<IH", vdata, at)
+    entry_count = len(records) + sum(len(r[2]) for r in records)
+    name_area = entry_count * 8 + 8
+    walk = 0
+    expected = name_area
+    for name, stamp, refs in records:
+        at = foff + walk * 8
+        (st, off, cnt) = struct.unpack_from("<IHH", vdata, at)
         if st != stamp:
-            die(f"re-parse: entry {k} stamp is {st:#x}, composed was {stamp:#x}")
-        expected_off = len(records) * 8 + 8 + sum(len(n) + 1 for n, _ in records[:k])
-        if off != expected_off or foff + off >= end_foff:
-            die(f"re-parse: entry {k} name offset {off} is not the composed offset {expected_off}")
+            die(f"re-parse: entry {walk} stamp is {st:#x}, composed was {stamp:#x}")
+        if cnt != len(refs):
+            die(f"re-parse: entry {walk} NumberOfModuleForwarderRefs is {cnt}, composed was {len(refs)}")
+        if off != expected or foff + off >= end_foff:
+            die(f"re-parse: entry {walk} name offset {off} is not the composed offset {expected}")
         nm = read_cstring(vdata, foff + off, end_foff)
         if nm != name:
-            die(f"re-parse: entry {k} name is {nm!r}, composed was {name!r}")
-    (term,) = struct.unpack_from("<Q", vdata, foff + len(records) * 8)
+            die(f"re-parse: entry {walk} name is {nm!r}, composed was {name!r}")
+        expected += len(nm) + 1
+        walk += 1
+        for rn, rs in refs:
+            at = foff + walk * 8
+            (rst, roff, rcnt) = struct.unpack_from("<IHH", vdata, at)
+            if rst != rs:
+                die(f"re-parse: ref {walk} of {name!r} stamp is {rst:#x}, composed was {rs:#x}")
+            if rcnt != 0:
+                die("re-parse: a ref's Reserved field is not zero")
+            if roff != expected or foff + roff >= end_foff:
+                die(f"re-parse: ref {walk} name offset {roff} is not the composed offset {expected}")
+            rnm = read_cstring(vdata, foff + roff, end_foff)
+            if rnm != rn:
+                die(f"re-parse: ref {walk} name is {rnm!r}, composed was {rn!r}")
+            expected += len(rnm) + 1
+            walk += 1
+    (term,) = struct.unpack_from("<Q", vdata, foff + walk * 8)
     if term != 0:
         die("re-parse: the composed directory's null terminator is not all zero")
     (vsize,) = struct.unpack_from("<I", vdata, s["hdr_off"] + 8)
@@ -380,12 +424,13 @@ def prefill_and_verify(data: bytearray, sections, ft_rva, values, labels):
 
 
 def main() -> None:
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 6:
         die("usage: patch_pe_bound.py <primary_provider_dll> <forwarder_host_dll> "
-            "<good_client_exe> <bad_client_exe>")
-    if sys.argv[1:5] and sys.argv[3] == sys.argv[4]:
-        die("the bad client must be a SEPARATE file from the good client")
-    prov_path, fwd_path, good_path, bad_path = sys.argv[1:5]
+            "<good_client_exe> <bad_client_exe> <refstale_client_exe>")
+    if len(sys.argv) != 6 or len(set(sys.argv[3:6])) != 3:
+        die("the bad and refstale clients must be SEPARATE files from each other "
+            "and from the good client")
+    prov_path, fwd_path, good_path, bad_path, refstale_path = sys.argv[1:6]
 
     # ---- the provider: the stamp and EAT addresses the whole
     # composition is pinned against ----
@@ -433,9 +478,9 @@ def main() -> None:
     if g_mark_rva != mark_rva:
         die(f"the second thunk (crossmark, {g_thunks[1]!r} form) does not resolve to crossmark's EAT {mark_rva:#x}")
     good_records = [
-        (b"userprog_pe_import_dll.dll", stamp),
-        (b"userprog_pe_import_fwdprov.dll", stamp + 1),
-        (b"nobody.dll", 42),
+        (b"userprog_pe_import_dll.dll", stamp, []),
+        (b"userprog_pe_import_fwdprov.dll", stamp + 1, []),
+        (b"nobody.dll", 42, []),
     ]
     base_rva, dir_size = compose_bound_dir(good, gsecs, gdirs, good_records)
     verify_bound_dir(bytes(good), base_rva, dir_size, good_records)
@@ -462,34 +507,46 @@ def main() -> None:
           "(the forwarder chase) overwrites it at boot")
     open(good_path, "wb").write(bytes(good))
 
-    # ---- the BAD client: one MATCHING-stamp entry whose single
-    # FirstThunk slot carries a deliberately WRONG bound value -- the
-    # stamp/IAT contradiction the kernel must refuse with the typed
-    # BoundValueCorrupt, never trust blindly ----
-    bad = bytearray(open(bad_path, "rb").read())
-    bdirs, bsecs = parse_headers(bytes(bad))
-    if bdirs[11] != (0, 0):
-        die("the bad client already carries a bound directory (double patch?)")
-    if image_base_of(bytes(bad)) == 0:
-        die("the bad client has no ImageBase set")
-    _b_oft, b_ft = find_import_descriptor(bytes(bad), bsecs, b"userprog_pe_import_dll.dll")
-    b_thunks = thunks_as_written(bytes(bad), bsecs, _b_oft)
-    if len(b_thunks) != 1 or b_thunks[0] != ("name", b"crossfn"):
-        die(f"the bad client's provider descriptor must carry exactly one NAMED crossfn thunk, got {b_thunks!r}")
-    # The compose-side cross-check: the named thunk resolves (through
-    # the PROVIDER's own tables) to exactly the EAT slot the composition
-    # wrong-fills on purpose.
-    if resolved_rtva_for(pdata, psecs, px, b_thunks[0]) != fn_rva:
-        die("the bad client's crossfn thunk does not resolve to crossfn's EAT slot")
+    # ---- the BAD and REFSTALE clients: the same composition on the
+    # same DLL pair, differing in ONE composed u32: the forwarder
+    # REF's stamp. Both import crossfn_fwd THROUGH the forwarder
+    # host; both declare the forwarder host's OWN real .edata stamp
+    # (a fresh descriptor) and one forwarder ref naming the primary
+    # provider; both slots carry the same deliberately WRONG bound
+    # value. The BAD client's ref carries the provider's own stamp
+    # (all-fresh) -- the honor path is GATED ON, so its verify sees the
+    # slot contradicting the forwarder-chased answer and refuses with
+    # the typed BoundValueCorrupt, whose fresh half IS the chase
+    # target. The REFSTALE client's ref carries stamp + 1 (stale) --
+    # the honor path is GATED OFF by the ref alone, so the same wrong
+    # slot is DISCARDED and resolved fresh through the same chase.
+    # The pair demonstrates the ref-aware ruling's gate byte
+    # for byte: one stamp byte decides refuse-vs-discard.
     WRONG = 0xDEAD_BEEF_0000_1000  # the deliberately wrong bound value
-    bad_records = [(b"userprog_pe_import_dll.dll", stamp)]
-    b_base, b_size = compose_bound_dir(bad, bsecs, bdirs, bad_records)
-    verify_bound_dir(bytes(bad), b_base, b_size, bad_records)
-    prefill_and_verify(bad, bsecs, b_ft, [WRONG], ["bad crossfn (stamp fresh, value wrong)"])
-    open(bad_path, "wb").write(bytes(bad))
-    print(f"  patcher: bad client composed at rva {b_base:#x} ({b_size} bytes): its entry declares "
-          f"the provider's OWN stamp {stamp:#x} while the IAT slot carries {WRONG:#x} "
-          "-- the kernel's verify-then-leave path must refuse with BoundValueCorrupt")
+    for label, path, ref_stamp, expect in (
+        ("bad", bad_path, stamp, "refuse with BoundValueCorrupt"),
+        ("refstale", refstale_path, stamp + 1, "DISCARD and resolve fresh"),
+    ):
+        bio = bytearray(open(path, "rb").read())
+        bdirs, bsecs = parse_headers(bytes(bio))
+        if bdirs[11] != (0, 0):
+            die(f"the {label} client already carries a bound directory (double patch?)")
+        _b_oft, b_ft = find_import_descriptor(bytes(bio), bsecs, b"userprog_pe_import_fwdprov.dll")
+        b_thunks = thunks_as_written(bytes(bio), bsecs, _b_oft)
+        if len(b_thunks) != 1 or b_thunks[0] != ("name", b"crossfn_fwd"):
+            die(f"the {label} client's fwdprov descriptor must carry exactly one NAMED crossfn_fwd thunk, got {b_thunks!r}")
+        bad_records = [
+            (b"userprog_pe_import_fwdprov.dll", fx["stamp"],
+             [(b"userprog_pe_import_dll.dll", ref_stamp)]),
+        ]
+        b_base, b_size = compose_bound_dir(bio, bsecs, bdirs, bad_records)
+        verify_bound_dir(bytes(bio), b_base, b_size, bad_records)
+        prefill_and_verify(bio, bsecs, b_ft, [WRONG], [f"{label} crossfn_fwd ({expect})"])
+        open(path, "wb").write(bytes(bio))
+        print(f"  patcher: {label} client composed at rva {b_base:#x} ({b_size} bytes): descriptor stamp "
+              f"{fx['stamp']:#x} (the forwarder host's OWN), ref stamp {ref_stamp:#x} "
+              f"({ 'FRESH, all-fresh honors' if ref_stamp == stamp else 'STALE (provider + 1)' }) -> "
+              f"{expect}")
 
 
 if __name__ == "__main__":

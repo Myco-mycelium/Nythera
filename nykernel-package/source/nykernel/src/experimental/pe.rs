@@ -561,10 +561,18 @@ pub enum ImportOrigin {
     /// contradicted, the load refuses with
     /// [`PeError::BoundValueCorrupt`] -- stamps are verified.
     BoundHonored,
-    /// The entry's stamp did NOT match (stale): the pre-bound value is
-    /// discarded (its prior read is recorded, never trusted) and the
+    /// The entry's own stamp did NOT match (stale): the pre-bound value
+    /// is discarded (its prior read is recorded, never trusted) and the
     /// slot is resolved fresh exactly as an unbound file would be.
     StaleDiscarded,
+    /// The entry's OWN stamp matched, but one of its FORWARDER REFS's
+    /// stamp did not (or named a DLL the registry could not verify):
+    /// the binding depends on the forwarded-to module's build, so the
+    /// descriptor's pre-bound values are discarded wholesale and the
+    /// slots are resolved fresh -- the Windows loader's coarse
+    /// per-descriptor re-snap (ReactOS `LdrpHandleOneNewFormatImport
+    /// Descriptor`), not a per-slot carve-out.
+    StaleRefDiscarded,
 }
 
 #[derive(Debug)]
@@ -577,14 +585,26 @@ pub struct ResolvedImport {
     pub prior: u64,
 }
 
+/// One bound-import directory entry, as parsed: the module name it
+/// declares a stamp for, the declared stamp, and its
+/// `IMAGE_BOUND_FORWARDER_REF` list (the real spec field
+/// `NumberOfModuleForwarderRefs` -- the count that makes the forwarder
+/// walk UNAMBIGUOUS; each ref is a same-shaped `module, stamp` pair).
+/// Includes entries no import descriptor uses (inert metadata,
+/// tolerated per spec) so a caller can state the inert fact
+/// explicitly.
+#[derive(Debug)]
+pub struct BoundModule {
+    pub name: NameBuf,
+    pub stamp: u32,
+    pub forwarder_refs: Vec<(NameBuf, u32)>,
+}
+
 #[derive(Debug)]
 pub struct ImportResolution {
     pub facts: Vec<ResolvedImport>,
-    /// The bound-import directory's parsed module entries, as read:
-    /// (module name, declared stamp). Includes entries no import
-    /// descriptor uses (inert metadata, tolerated per spec) so a caller
-    /// can state the inert fact explicitly.
-    pub bound_modules: Vec<(NameBuf, u32)>,
+    /// The bound-import directory's parsed module entries, as read.
+    pub bound_modules: Vec<BoundModule>,
 }
 
 impl ImportResolution {
@@ -645,7 +665,7 @@ pub unsafe fn resolve_imports(
     // bound imports": a malformed surface is worse than an absent
     // one.
     let (bound_rva, bound_size) = read_data_directory_absent_ok(load_base, 11)?;
-    let mut bound_modules: Vec<(NameBuf, u32)> = Vec::new();
+    let mut bound_modules: Vec<BoundModule> = Vec::new();
     if bound_rva != 0 && bound_size != 0 {
         let bound_end = match (bound_rva as u64).checked_add(bound_size as u64) {
             None => return Err(PeError::MalformedBoundImport("bound directory overflow")),
@@ -654,25 +674,38 @@ pub unsafe fn resolve_imports(
             }
             Some(end) => end,
         };
+        // IMAGE_BOUND_IMPORT_DESCRIPTOR: TimeDateStamp u32,
+        // OffsetModuleName u16 (offset from the directory's start),
+        // NumberOfModuleForwarderRefs u16 -- the REAL spec field (the
+        // authoritative check against ReactOS's own loader,
+        // `LdrpHandleOneNewFormatImportDescriptor`, which consumes
+        // exactly that many IMAGE_BOUND_FORWARDER_REF entries and jumps
+        // past them: `FirstEntry = ForwarderEntry`); the walk is
+        // therefore UNAMBIGUOUS, not name-heuristic. All-zero is the
+        // terminator. Entries consumed are capped in total (descriptors
+        // + refs), and descriptors themselves at 16.
         let mut bi: u64 = 0;
+        let mut entries_consumed: u64 = 0;
         loop {
-            if bi >= 16 {
+            if bound_modules.len() >= 16 {
                 return Err(PeError::MalformedBoundImport(
                     "bound descriptor array unbounded",
                 ));
             }
+            if entries_consumed > 32 {
+                return Err(PeError::MalformedBoundImport(
+                    "the bound directory exceeds the 32-entry cap (descriptors + refs)",
+                ));
+            }
             let e_rva = bound_rva as u64 + bi * 8;
-            // IMAGE_BOUND_IMPORT_DESCRIPTOR: TimeDateStamp u32,
-            // OffsetModuleName u16 (offset from the directory's start),
-            // Reserved u16 -- all-zero is the terminator.
             let stamp = read_u32_at(load_base, e_rva, max_rva)?;
             let name_off = core::ptr::read_unaligned(
                 (load_base.wrapping_add(e_rva + 4)) as *const u16,
             ) as u64;
-            let _reserved = core::ptr::read_unaligned(
+            let ref_count = core::ptr::read_unaligned(
                 (load_base.wrapping_add(e_rva + 6)) as *const u16,
             ) as u64;
-            if stamp == 0 && name_off == 0 && _reserved == 0 {
+            if stamp == 0 && name_off == 0 && ref_count == 0 {
                 break; // the bound directory's null terminator
             }
             if name_off == 0 {
@@ -687,8 +720,39 @@ pub unsafe fn resolve_imports(
                 bound_rva as u64 + name_off,
                 bound_end,
             )?;
-            bound_modules.push((name, stamp));
+            // The descriptor's forwarder REFS: exactly `ref_count`
+            // further same-shaped entries (each: stamp + module-name
+            // offset; the ref's own last field is Reserved, ignored).
+            // A ref's name obeys the same directory-bound rule.
+            let mut forwarder_refs: Vec<(NameBuf, u32)> = Vec::new();
+            for _ in 0..ref_count {
+                entries_consumed += 1;
+                if entries_consumed > 32 {
+                    return Err(PeError::MalformedBoundImport(
+                        "the bound directory exceeds the 32-entry cap (descriptors + refs)",
+                    ));
+                }
+                bi += 1;
+                let f_e_rva = bound_rva as u64 + bi * 8;
+                let f_stamp = read_u32_at(load_base, f_e_rva, max_rva)?;
+                let f_name_off = core::ptr::read_unaligned(
+                    (load_base.wrapping_add(f_e_rva + 4)) as *const u16,
+                ) as u64;
+                if f_name_off == 0 {
+                    return Err(PeError::MalformedBoundImport(
+                        "a forwarder ref without a module name",
+                    ));
+                }
+                let f_name = read_room_bounded_name(
+                    load_base,
+                    bound_rva as u64 + f_name_off,
+                    bound_end,
+                )?;
+                forwarder_refs.push((f_name, f_stamp));
+            }
+            bound_modules.push(BoundModule { name, stamp, forwarder_refs });
             bi += 1;
+            entries_consumed += 1;
         }
     }
 
@@ -721,19 +785,42 @@ pub unsafe fn resolve_imports(
 
         // ---- the bound ruling for THIS descriptor's DLL: the bound
         // entry's stamp must equal the provider's OWN export-directory
-        // stamp (parsed, never assumed). A matching stamp honors the
-        // pre-filled IAT (after verification, in the per-slot loop); a
-        // mismatched (stale) stamp DISCARDS whatever the file pre-bound
-        // and resolves fresh; no bound entry at all is the plain
-        // fresh-resolution path (a file never bound behaves exactly as
-        // it always did). No bound entry exists without an import
-        // descriptor to serve it: entries naming DLLs this image does
-        // not import never reach a registry lookup (inert metadata).
-        let bound_stamp = bound_modules
+        // stamp (parsed, never assumed), AND every forwarder REF the
+        // entry carries must name a REGISTERED DLL whose own
+        // export-directory stamp equals the ref's declared stamp -- a
+        // chase that lands in a rebuilt (or unverifiable) module is
+        // stale: the descriptor's pre-bound values depend on the
+        // forwarded-to module's build. A matching stamp with all-fresh
+        // refs honors the pre-filled IAT (after verification, in the
+        // per-slot loop); any stale INput DISCARDS whatever the file
+        // pre-bound and resolves fresh per descriptor -- the Windows
+        // loader's coarse re-snap (ReactOS re-snaps the whole import
+        // descriptor's IAT when its descriptor or any ref is stale;
+        // NOTE the divergence from ReactOS's literal loop, whose
+        // last-ref-wins can overwrite an earlier Stale=TRUE -- the
+        // conservative ANY-stale reading is enforced here); no bound
+        // entry at all is the plain fresh-resolution path (a file
+        // never bound behaves exactly as it always did). No bound
+        // entry exists without an import descriptor to serve it:
+        // entries naming DLLs this image does not import never reach a
+        // registry lookup (inert metadata).
+        let found_bound = bound_modules
             .iter()
-            .find(|(n, _)| *n == dll_name)
-            .map(|(_, s)| *s);
-        let honoring = bound_stamp == Some(provider.time_date_stamp());
+            .find(|b| b.name == dll_name);
+        let desc_ok = found_bound
+            .map_or(false, |b| b.stamp == provider.time_date_stamp());
+        // Per ref: a name the registry cannot verify is STALE
+        // (ReactOS: a failed ref load marks the binding stale), never a
+        // refusal -- the ruling is coarse and per-descriptor.
+        let refs_ok = found_bound.map_or(true, |b| {
+            b.forwarder_refs.iter().all(|(rname, rstamp)| {
+                registry
+                    .find(rname.as_slice())
+                    .map_or(false, |rt| *rstamp == rt.time_date_stamp())
+            })
+        });
+        let ref_flavor_stale = desc_ok && !refs_ok;
+        let honoring = desc_ok && refs_ok;
 
         // The classic rule: the OriginalFirstThunk array supplies the
         // hint/name pointers; a file lacking it (old-format) means the
@@ -826,7 +913,9 @@ pub unsafe fn resolve_imports(
                 symbol: sym,
                 slot,
                 value: addr,
-                origin: if bound_stamp.is_some() {
+                origin: if ref_flavor_stale {
+                    ImportOrigin::StaleRefDiscarded
+                } else if found_bound.is_some() {
                     ImportOrigin::StaleDiscarded
                 } else {
                     ImportOrigin::FreshResolution

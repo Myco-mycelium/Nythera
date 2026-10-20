@@ -1113,10 +1113,84 @@ bolted on:
 Deliberately still out of scope, same posture as before: delay-load
 imports, resources, exception tables, and any Win32 API surface. What
 this is: a bound-import walk that honors a stamp exactly as far as the
-stamp can be verified and discards it visibly otherwise. What this is
-not: a parser of bound FORWARDER-REF descriptors (the per-descriptor
-forwarder-references half is the natural next sub-increment, listed
-honestly), and not Windows either.
+stamp can be verified and discards it visibly otherwise. (The bound
+descriptors' FORWARDER-REF half -- the per-descriptor
+`NumberOfModuleForwarderRefs` sub-descriptors -- is now its own
+increment, below.) Not Windows either.
+
+## Gap-closure increment (2026-10-20, second of the day): bound FORWARDER-REFs -- the gate sees THROUGH the composed ref list
+
+The bound-import ruling's own status note named the open half
+honestly: a descriptor may declare
+`NumberOfModuleForwarderRefs` same-shaped ref entries AFTER itself,
+and the real loader consumes exactly that many (ReactOS's
+`LdrpHandleOneNewFormatImportDescriptor` sets `FirstEntry =
+ForwarderEntry` and jumps past them) -- so a descriptor whose OWN
+stamp matches can still be stale THROUGH its refs. This closes that
+half, with the conservative ruling and the same refuse/discard
+discipline:- **Parsing (the boundary is a COUNT, not a heuristic):** the
+  descriptor's third field is the real spec field, not a pad:
+  `NumberOfModuleForwarderRefs` u16. The walk consumes exactly that
+  many `IMAGE_BOUND_FORWARDER_REF` entries then (each: stamp u32 +
+  module-name-offset u16 + Reserved u16; the ref's own count field is
+  the Reserved half and is ignored), where the name offsets still
+  resolve from the DIRECTORY's start and still must terminate inside
+  the directory's declared span. Typed refusals stay typed: a ref
+  without a name, a name outside the bounds, or the 32-entry cap
+  (descriptors + refs TOGETHER) is `MalformedBoundImport`, never
+  silent. The parsed surface changed shape accordingly:
+  `tuple bound_modules` -> typed `BoundModule { name, stamp,
+  forwarder_refs }`, and the loader returns the ref list verbatim.
+- **The ruling (conservative, documented divergence).** Per
+  descriptor, stale = own-stamp mismatch OR ANY ref whose module
+  fails to load (registered stale/absent rules) OR a ref whose stamp
+  mismatches its module's real parsed stamp. Stale-by-anything
+  discards the WHOLE descriptor's pre-fill (coarse, per descriptor
+  -- the Windows re-snap semantic; ReactOS's loop lets the LAST
+  ref's check overwrite an earlier stale verdict, a quirk this
+  kernel deliberately does not inherit) and resolves every slot
+  fresh. A fresh-everything descriptor honors exactly as before --
+  but the per-slot VALUE verification now runs the forwarder chase
+  too, and a prefilled slot contradicting a verified chase target is
+  the typed `BoundValueCorrupt` refusal.
+- **The carrier pair, composing the decision boundary:** the bad
+  client (`prog_pe_bound_bad.s`, recomposed THROUGH the forwarder
+  host) carries a FRESH descriptor (the host's own .edata stamp)
+  with ONE all-FRESH forwarder ref naming the primary provider, and
+  its single IAT slot holds the composed contradiction. The honor
+  gate is therefore gated ON purely by stamps -- so the slot
+  verification must refuse it: every boot refuses with the typed
+  `BoundValueCorrupt 0xdeadbeef00001000 != 0x180000001000`. The
+  refstale carrier (`prog_pe_bound_refstale.s`) is the SAME
+  composition except exactly ONE ref-stamp byte:   `provider + 1`,
+  a stamp no file carries. The gate flips OFF by the ref alone: the
+  same wrong slot is DISCARDED (typed `StaleRefDiscarded`) and
+  resolved fresh through the same chase. One stamp byte decides
+  refuse-vs-discard, and the loader proves it from real bytes each
+  boot (include_bytes! both carriers).
+- **The patcher grew the ref half** (`tools/patch_pe_bound.py`):
+  `compose_bound_dir` now takes `[(name, stamp, refs)]` records,
+  writes each descriptor followed by ITS ref entries, strictly
+  sequential name area, dir[11] bounds = entries + refs + names +
+  terminator, and re-parses every name offset/count/stamp written.
+  `build.sh` links both carriers (private PML4-index-0x40 stays the
+  bad client's region alone; the refstale carrier composes at the
+  same RVA). The layout gate pins the new composition file-side:
+  the bad client's fresh descriptor + one all-fresh ref + the wrong
+  slot, and the refstale carrier's identical directory with exactly
+  the ref stamp moved to provider+1.
+- **Verified:** full boot exit 0, 3/3 consecutive soak, zero
+  FAILs; negative control 5 (the fresh/gated refusal) and control 6
+  (the one-byte discard) both fire from real composed bytes at every
+  boot; all prior controls keep firing.
+
+Still deliberately out, same posture: delay-load imports, bound
+`FORWARDER_REF` chains longer than one hop are unbounded by the
+parsed cap but semantically unexercised (no carrier composes two
+refs), structural `MalformedBoundImport` variants are code-verified
+but not boot-controlled, and Win32 API. The old bound round's ruling
+stands unchanged for descriptors WITHOUT refs; every existing fact,
+gate line, and carrier composes identically.
 
 ## What does NOT exist yet (do not assume otherwise)
 

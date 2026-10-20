@@ -285,6 +285,9 @@ pafacts "PE bound-import good client (composed bounded directory, Entry b)" user
 pafacts "PE bound-import bad client (its OWN Entry b line -- 16-digit RVA as objdump prints it)" userprog/userprog_pe_bound_bad.exe \
     "objdump -x" \
     'Entry b [0-9a-f]{16} [0-9a-f]{8} Bound Import Directory'
+pafacts "PE bound-import refstale carrier (its OWN Entry b line -- 16-digit RVA as objdump prints it)" userprog/userprog_pe_bound_refstale.exe \
+    "objdump -x" \
+    'Entry b [0-9a-f]{16} [0-9a-f]{8} Bound Import Directory'
 echo "  layout-gate: PE bound-import composition facts verified"
 
 # The bound composition's cross-FILE invariants (file bytes only, no
@@ -414,13 +417,26 @@ if b_rva == 0 or b_size == 0:
     raise SystemExit('FAIL: bad client has no bound directory')
 bsec = bound_section(bado, bopt)
 at = rva_at(bado, bsec, b_rva)
-bad_stamp, bad_off = struct.unpack_from('<IH', bado, at)[:2]
+bad_stamp, bad_off, bad_refs = struct.unpack_from('<IHH', bado, at)
 if bad_stamp != stamp:
     raise SystemExit(f'FAIL: bad client declares stamp {bad_stamp:#x}, must MATCH the provider stamp {stamp:#x}')
 n_at = rva_at(bado, bsec, b_rva)
 bad_name = bado[n_at + bad_off: n_at + bad_off + 64].split(b'\x00')[0]
-if bad_name != b'userprog_pe_import_dll.dll':
+if bad_name != b'userprog_pe_import_fwdprov.dll':
     raise SystemExit(f'FAIL: bad client bound name {bad_name!r} drifted')
+# The ref-aware composition: ONE forwarder ref follows the descriptor
+# (the composed NumberOfModuleForwarderRefs field makes the walk
+# unambiguous). The bad carrier's ref is ALL-FRESH -- the provider's
+# OWN stamp -- so the honor gate must flip by the VALUE verification
+# alone, never by a stale ref.
+if bad_refs != 1:
+    raise SystemExit(f'FAIL: bad client NumberOfModuleForwarderRefs {bad_refs}, composed exactly 1')
+ref_stamp, ref_off = struct.unpack_from('<IH', bado, at + 8)[:2]
+ref_name = bado[n_at + ref_off: n_at + ref_off + 64].split(b'\x00')[0]
+if ref_name != b'userprog_pe_import_dll.dll':
+    raise SystemExit(f'FAIL: bad client forwarder ref module {ref_name!r} drifted')
+if ref_stamp != stamp:
+    raise SystemExit(f'FAIL: bad client forwarder ref stamp {ref_stamp:#x}, must be FRESH (the provider stamp {stamp:#x})')
 # its single IAT slot must hold the WRONG value
 imp_rva_bad = bdirs[1][0]
 for d in range(16):
@@ -434,7 +450,38 @@ for d in range(16):
 wrong = 0xDEADBEEF00001000
 if val != wrong:
     raise SystemExit(f'FAIL: bad client IAT slot is {val:#x}, must be the composed {wrong:#x}')
-print('  layout-gate: bad client -- matching stamp, single crossfn slot carries the wrong value -- OK')
+print('  layout-gate: bad client -- FRESH descriptor + ONE all-FRESH forwarder ref, single crossfn slot carries the wrong value -- OK')
+
+# The refstale carrier: the same single-entry composition except the
+# REF's stamp is provider + 1 (a stamp NO file carries) -- the gate
+# flips OFF by the ref alone and the ruling becomes DISCARD, not
+# refuse. The directory is otherwise identical to the bad client's:
+# the composed pair differs by that one stamp byte.
+rsto = open('userprog/userprog_pe_bound_refstale.exe','rb').read()
+rdirs, ropt = pe_dirs_sorted(rsto)
+rs_rva, rs_size = rdirs[11]
+if rs_rva == 0 or rs_size == 0:
+    raise SystemExit('FAIL: refstale carrier has no bound directory')
+if rs_size != b_size:
+    raise SystemExit(f'FAIL: refstale bound directory size {rs_size} != bad client {b_size} (the pair must compose identically)')
+rsec = bound_section(rsto, ropt)
+at = rva_at(rsto, rsec, rs_rva)
+rs_stamp, rs_off, rs_refs = struct.unpack_from('<IHH', rsto, at)
+if rs_stamp != stamp:
+    raise SystemExit(f'FAIL: refstale descriptor stamp {rs_stamp:#x}, must MATCH the provider stamp {stamp:#x}')
+rn_at = rva_at(rsto, rsec, rs_rva)
+rs_name = rsto[rn_at + rs_off: rn_at + rs_off + 64].split(b'\x00')[0]
+if rs_name != bad_name:
+    raise SystemExit(f'FAIL: refstale descriptor module {rs_name!r} != the bad client {bad_name!r}')
+if rs_refs != 1:
+    raise SystemExit(f'FAIL: refstale NumberOfModuleForwarderRefs {rs_refs}, composed exactly 1')
+rs_ref_stamp, rs_ref_off = struct.unpack_from('<IH', rsto, at + 8)[:2]
+rs_ref_name = rsto[rn_at + rs_ref_off: rn_at + rs_ref_off + 64].split(b'\x00')[0]
+if rs_ref_name != ref_name:
+    raise SystemExit(f'FAIL: refstale forwarder ref module {rs_ref_name!r} != the bad client ref {ref_name!r}')
+if rs_ref_stamp != stamp + 1:
+    raise SystemExit(f'FAIL: refstale forwarder ref stamp {rs_ref_stamp:#x}, must be stale (provider + 1 = {stamp + 1:#x})')
+print('  layout-gate: refstale carrier -- same composition, SAME fresh descriptor, ref stamp provider+1: exactly one stamp byte decides refuse-vs-discard -- OK')
 
 demo = open('src/experimental/pe_import_demo.rs').read()
 m = re.search(r'const BAD_IMAGE_BASE: u64 = (0x[0-9a-f_]+);', demo)
