@@ -131,6 +131,27 @@ ld -m i386pep --shared --enable-auto-import --image-base=0x1c0000000000 -o userp
 ld -m i386pep --subsystem native -e _start --image-base=0x140000000000 -o userprog/userprog_pe_import_app.exe userprog/prog_pe_import_app.o userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_fwdprov.dll
 python3 tools/patch_pe_forwarders.py userprog/userprog_pe_import_fwdprov.dll userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_app.exe
 
+# The BOUND-IMPORT composition: GNU ld emits neither bound-import
+# directories nor pre-filled IAT thunks naturally, so a third checked
+# patcher composes them (tools/patch_pe_bound.py):
+# (a) the good CLIENT gains a 3-entry bound-import directory composed
+#     into its .idata in-block padding -- the provider's OWN .edata
+#     TimeDateStamp read from the file (the HONOR entry, whose slots
+#     are PRE-FILLED with the provider's freshly-resolved absolute
+#     addresses), a stamp+1 STALE entry for the forwarder host (the
+#     DISCARD path; its slots stay untouched), and an inert
+#     unregistered 'nobody.dll' entry;
+# (b) a dedicated BAD client (its own small .s, only ONE import:
+#     crossfn) carries a matching-stamp entry whose single IAT slot
+#     holds a deliberately WRONG value -- the stamp/IAT contradiction
+#     the kernel must refuse with the typed BoundValueCorrupt. The
+#     file IS embedded (include_bytes!) so the boot itself runs the
+#     refusal against real object-file bytes every time. Patcher
+#     refuses the build on any re-parse mismatch.
+as --64 userprog/prog_pe_bound_bad.s -o userprog/prog_pe_bound_bad.o
+ld -m i386pep --subsystem native -e _start --image-base=0x200000000000 -o userprog/userprog_pe_bound_bad.exe userprog/prog_pe_bound_bad.o userprog/userprog_pe_import_dll.dll
+python3 tools/patch_pe_bound.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_fwdprov.dll userprog/userprog_pe_import_app.exe userprog/userprog_pe_bound_bad.exe
+
 echo "==> readelf LAYOUT GATE: every embedded userprog artifact is fact-checked (SONAMEs, version tables, NEEDED chains, PLT/JUMP_SLOT, WEAK dynsym, PE edata/idata) BEFORE kernel code ever sees them"
 ./tools/verify_prog_layout.sh
 

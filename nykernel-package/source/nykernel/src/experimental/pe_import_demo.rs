@@ -39,9 +39,17 @@
 //!   The per-symbol refusal carries the per-file ruling, and real
 //!   resolution still runs afterward, clean.
 //! Deliberate scope (same honest posture as `pe.rs`'s doc): no
-//! delay-load, no bound imports, no Win32 API surface. Forwarded
-//! exports and ordinal imports WERE in this list and are closed now:
-//! the forwarder-host provider's own EAT entries are directory-internal
+//! delay-load, no Win32 API surface. Forwarded exports, ordinal
+//! imports, and BOUND IMPORTS were all in this list and are closed
+//! now -- the bound halves get their own round: the honor path (a
+//! fresh-stamp entry whose pre-filled IAT values are verified against
+//! a fresh resolution and then left UN-written), the stale-discard
+//! path (a stamp+1 entry whose pre-bound claim is discarded and
+//! replaced by the registry's fresh forwarder chase), an inert
+//! unregistered entry, and the typed stamp/IAT-contradiction refusal
+//! -- the directory composed by the same checked-patch discipline
+//! (`tools/patch_pe_bound.py`). The forwarder-host provider's own EAT
+//! entries are directory-internal
 //! forwarder STRING references (composed deliberately and
 //! self-verified by `tools/patch_pe_forwarders.py`, the same
 //! checked-patch discipline the weak-VERNEED artifact used), the
@@ -76,6 +84,16 @@ static PROVIDER_DLL: &[u8] = include_bytes!("../../userprog/userprog_pe_import_d
 /// self-cycling one); see `tools/patch_pe_forwarders.py`.
 static FWDPROV_DLL: &[u8] = include_bytes!("../../userprog/userprog_pe_import_fwdprov.dll");
 static IMPORT_APP: &[u8] = include_bytes!("../../userprog/userprog_pe_import_app.exe");
+/// The BOUND-IMPORT negative-control carrier: a real Windows-format
+/// executable whose ONLY import is crossfn, and whose composed
+/// bound-import directory declares a FRESH stamp (the provider's own
+/// TimeDateStamp, read by the checked patcher) while its single IAT
+/// slot carries a deliberately WRONG bound value -- the stamp/IAT
+/// contradiction the loader must refuse with the typed
+/// `BoundValueCorrupt`, never trust blindly. The file is never
+/// executed; only its mapped import/bound surfaces are probed. See
+/// `userprog/prog_pe_bound_bad.s` and `tools/patch_pe_bound.py`.
+static BOUND_BAD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_bound_bad.exe");
 
 /// The files' own fixed `ImageBase`s, pinned by the layout gate AND by
 /// the build (--image-base on both links). Both bases sit in private
@@ -91,6 +109,15 @@ const PROVIDER_IMAGE_BASE: u64 = 0x1800_0000_0000;
 /// The forwarder host's own private base (PML4 index 0x1c -- outside
 /// the shared identity subtree, same rule as the pair's bases).
 const FWDPROV_IMAGE_BASE: u64 = 0x1c00_0000_0000;
+/// The bad client's own fixed ImageBase (--image-base on its link;
+/// PML4 index 0x40, outside the shared identity subtree and outside
+/// every other demo's private subtree, same rule as the pair's bases).
+const BAD_IMAGE_BASE: u64 = 0x2000_0000_0000;
+/// The WRONG bound value `tools/patch_pe_bound.py` composes into the
+/// bad client's single IAT slot (the patcher's WRONG constant,
+/// mirrored here; its own re-parse guards the file side, and the
+/// refusal below asserts the exact contradicting pair).
+const BOUND_WRONG_VALUE: u64 = 0xDEAD_BEEF_0000_1000;
 
 /// The two exports' RVAs inside the provider (pinned by the layout
 /// gate's Export Address Table reading); the loader's answers are
@@ -225,6 +252,11 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     // resolution touches an IAT slot ---
     let app = pe::load(IMPORT_APP, &mut mapper, fa, 0)
         .unwrap_or_else(|e| panic!("failed to load the import-dependent PE: {:?}", e));
+    // The bound-refusal carrier loads NEXT TO the good client (its own
+    // private PML4 subtree); only its import/bound surfaces are probed,
+    // its entry point is never entered.
+    let bad = pe::load(BOUND_BAD_CLIENT, &mut mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the bound-refusal PE: {:?}", e));
 
     match pe::resolve_imports(APP_IMAGE_BASE, &mut mapper, app.image_max_rva, &pe::DllRegistry::new()) {
         Err(pe::PeError::MissingDllImport) => serial_println!(
@@ -303,6 +335,38 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         "  experimental pe-import-demo: ordinal out-of-range / empty-table probes answer typed-None, never a guess -- OK"
     );
 
+    // Negative control 5: the BAD client's bound IMPORT directory
+    // declares a FRESH stamp -- it names the provider and carries the
+    // provider's OWN ReadDateStamp -- while its single FirstThunk slot
+    // carries the composed contradicting value. The honor path trusts
+    // the stamp ONLY until it verifies the slot, then refuses with the
+    // typed BoundValueCorrupt, naming BOTH the contradicted bound
+    // value and the fresh resolution that contradicts it. The claim
+    // this pins: stamps are VERIFIED, never trusted blindly -- a
+    // wrong stamped slot can never silently become a wrong call
+    // target.
+    match pe::resolve_imports(BAD_IMAGE_BASE, &mut mapper, bad.image_max_rva, &reg) {
+        Err(pe::PeError::BoundValueCorrupt(wrong, fresh)) => {
+            assert_eq!(
+                wrong, BOUND_WRONG_VALUE,
+                "the refused bound value must be the composed contradiction"
+            );
+            assert_eq!(
+                fresh,
+                PROVIDER_IMAGE_BASE + FN_RVA,
+                "the contradicting fresh resolution must be crossfn's own address"
+            );
+            serial_println!(
+                "  experimental pe-import-demo: negative control 5 -- a FRESH-stamped bound entry whose IAT slot contradicts fresh resolution refused with the typed BoundValueCorrupt ({:#x} != {:#x}) -- OK, stamps are verified, never trusted blindly",
+                wrong, fresh
+            );
+        }
+        other => panic!(
+            "negative control 5 failed: expected BoundValueCorrupt, got {:?}",
+            other.err()
+        ),
+    }
+
     // --- the client's ordinals and forwarders come through the walk
     // with the SAME positive facts the named path gets ---
     let resolved = pe::resolve_imports(APP_IMAGE_BASE, &mut mapper, app.image_max_rva, &reg)
@@ -345,12 +409,85 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         fact_fwd.value, crossfn_addr,
         "the forwarder-resolved import must carry the PROVIDER's crossfn address, not the forwarder host's stub"
     );
+
+    // -- the BOUND-IMPORT facts, per origin (this round's own halves): --
+    // honored slots are LEFT UN-written (the whole point of binding):
+    // their prior value must equal the verified resolution; the stale
+    // slot's prior is the composed contradiction and its value is the
+    // fresh answer that replaced it.
+    assert!(
+        matches!(fact_fn.origin, pe::ImportOrigin::BoundHonored),
+        "the fresh-stamped provider entry must HONOR its pre-filled slots"
+    );
+    assert!(
+        matches!(fact_ord.origin, pe::ImportOrigin::BoundHonored),
+        "the ordinal-form crossmark lives in the same honored descriptor"
+    );
+    assert!(
+        matches!(fact_fwd.origin, pe::ImportOrigin::StaleDiscarded),
+        "the stamp+1 fwdprov entry must be DISCARDED, never honored"
+    );
+    assert_eq!(
+        fact_fn.prior, fact_fn.value,
+        "an honored slot's pre-existing value is verified against fresh resolution, never rewritten"
+    );
+    assert_eq!(
+        fact_ord.prior, fact_ord.value,
+        "the honored ordinal-form prefill is likewise verified, not rewritten"
+    );
+    assert_eq!(
+        fact_fwd.prior,
+        PROVIDER_IMAGE_BASE + MARK_RVA,
+        "the stale entry's discarded bound value must be the composed contradiction (crossmark's address in the crossfn slot)"
+    );
+    assert_ne!(
+        fact_fwd.prior, fact_fwd.value,
+        "the stale bound value must have been replaced by the fresh forwarder chase"
+    );
+    // The bound directory's parsed module surface: exactly the three
+    // composed entries; nobody.dll is the inert one (no import
+    // descriptor names it); both stamps must be the composed pair
+    // (fresh = the provider's own parsed stamp, stale = fresh + 1 --
+    // a stamp NO file carries, contradicting the actual mapping).
+    assert_eq!(
+        resolved.bound_modules.len(),
+        3,
+        "exactly the three composed bound modules must parse"
+    );
+    let bound_fresh = resolved
+        .bound_modules
+        .iter()
+        .find(|(n, _)| n.as_slice() == b"userprog_pe_import_dll.dll")
+        .expect("the provider's bound entry must parse");
+    let bound_stale = resolved
+        .bound_modules
+        .iter()
+        .find(|(n, _)| n.as_slice() == b"userprog_pe_import_fwdprov.dll")
+        .expect("the fwdprov bound entry must parse");
+    assert!(
+        resolved.bound_modules.iter().any(|(n, _)| n.as_slice() == b"nobody.dll"),
+        "the inert unregistered entry must parse"
+    );
+    assert_eq!(
+        bound_fresh.1,
+        export.time_date_stamp(),
+        "the fresh entry's stamp must be the provider's OWN parsed stamp (two parsers, one file)"
+    );
+    assert_eq!(
+        bound_stale.1,
+        export.time_date_stamp().wrapping_add(1),
+        "the stale entry's stamp must be fresh + 1: a stamp NO registered provider carries"
+    );
+    serial_println!(
+        "  experimental pe-import-demo: BOUND-IMPORT facts -- provider's fresh-stamp entry: 2 slot(s) HONORED (prefills verified == fresh resolution, slots left un-written); the stale entry (stamp = provider's + 1, a stamp no file carries): its pre-bound contradiction {:#x} DISCARDED and resolved fresh to {:#x}; nobody.dll's inert entry parsed and ignored -- OK",
+        fact_fwd.prior, fact_fwd.value
+    );
     for f in resolved.facts.iter() {
         let readback = core::ptr::read_volatile(f.slot as *const u64);
         assert_eq!(readback, f.value, "IAT slot readback mismatch");
     }
     serial_println!(
-        "  experimental pe-import-demo: resolved 3 import(s) through the REAL import directories -- OK: named crossfn -> {:#x}; ordinal-form crossmark (`ord2`) -> {:#x}, the same answer the named form computes; forwarder crossfn_fwd -> {:#x} (the PROVIDER's .text, chased through the forwarder host's export entry); every slot reads back its written value",
+        "  experimental pe-import-demo: resolved 3 import(s) through the REAL import directories -- OK: named crossfn -> {:#x} and ordinal-form crossmark (`ord2`) -> {:#x} both HONORED by stamp (verified prefills, left un-written); forwarder crossfn_fwd -> {:#x} (the PROVIDER's .text, chased through the forwarder host's export entry after its stale pre-binding was DISCARDED); every slot reads back its (verified or written) value",
         fact_fn.value, fact_ord.value, fact_fwd.value
     );
     serial_println!(

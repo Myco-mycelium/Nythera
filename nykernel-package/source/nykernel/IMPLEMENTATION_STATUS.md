@@ -982,10 +982,141 @@ its own honest-scope list are now closed, end to end and every boot:
   specific tags.
 
 Deliberately still out of scope, same posture as before: delay-load
-imports, bound imports, resources, exception tables, and any Win32
-API surface. What this is: a real Windows-format import resolver that
-answers named, ordinal, and forwarded exports the way GetProcAddress
-would. What this is not: Windows applications.
+imports, resources, exception tables, and any Win32 API surface. What
+this is: a real Windows-format import resolver that answers named,
+ordinal, and forwarded exports the way GetProcAddress would. What this
+is not: Windows applications. (Bound imports WERE in this list and are
+closed by the 2026-10-20 increment below.)
+
+## Gap-closure increment (2026-10-20): bound imports -- the stamp is honored exactly as far as it can be VERIFIED
+
+The Windows gap "a PE import resolver answers named/ordinal/forwarded
+exports, but it cannot honor (or honorably discard) a DLL's pre-bound
+IAT" now closes. `pe::resolve_imports` walks the real
+`IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT` directory (DataDirectory[11]) as
+the Windows loader would, with this kernel's own verification posture
+bolted on:
+
+- **The bound ruling, per descriptor.** The bound directory's
+  descriptors are parsed the bounded way (cap, terminator, per-entry
+  module names are OFFSETS from the directory's own start bound within
+  the directory's declared span) into `(module, stamp)` facts. For
+  each import descriptor, the bound entry whose module name matches
+  decides the path by comparing its stamp against the provider's OWN
+  parsed `IMAGE_EXPORT_DIRECTORY.TimeDateStamp` -- read from the
+  mapped image by the loader's OWN parser (`DllExportTable::
+  time_date_stamp`, 0 for the empty table), never assumed:
+  - **A matching stamp HONORS the pre-filled IAT -- after verifying.
+    Each honored slot's pre-existing value is read and compared
+    against what the registry freshly resolves for that import (named
+    or ordinal form alike, forwarder chase included); equality passes
+    and the slot is left UN-written (that is the point of binding:
+    resolution was paid for at bind time, and the per-slot fact is
+    recorded with `origin = BoundHonored`). A contradiction refuses
+    the WHOLE load with the typed
+    `PeError::BoundValueCorrupt(bound, fresh)` -- stamps claiming a
+    fresh binding are verified, never trusted blindly: a wrong
+    silently-honored call target is worse than a refused boot.
+  - **Any other stamp DISCARDS.** The mismatching (stale) entry's
+    pre-bound value is read, recorded verbatim as the slot's `prior`
+    fact, NEVER trusted, and replaced by the fresh resolution --
+    byte-identically what an unbound file would have gone through
+    (the pe-import demo's stale slot goes through the FORWARDER
+    CHASE and lands on the primary provider's own code, exactly as
+    before).
+  - **No bound entry (or no directory at all) is unchanged
+    behavior:** fresh resolution with `origin = FreshResolution`; a
+    directory the optional header does not even declare is ABSENT
+    (`read_data_directory_absent_ok`), not malformed.
+- **Inert entries are a fact, not a hazard.** A bound entry naming a
+  DLL this image does not import never reaches a registry lookup: the
+  demo composes `nobody.dll` deliberately and pins its ingest-and-
+  ignore as a transcript fact (`bound_modules` carries all THREE
+  parsed entries so the inert one's presence is checkable, not
+  implicit).
+- **The structural refusals are typed; the boot-controlled one is the
+  stamp/verification one.** Unbounded descriptor arrays, names outside
+  the directory's span, empty/overlong/un-terminatable names and a
+  name offset of zero all refuse with the typed
+  `MalformedBoundImport(&str)` and the load dies there -- same class
+  of posture the shared text applies everywhere ("a malformed surface
+  is worse than an absent one"), and same honest note as the forwarder
+  round: these structural variants are code paths the boot
+  transcript does NOT exercise (the bad-client control pins the
+  SEMANTIC refusal, `BoundValueCorrupt`, which is the one bound
+  imports exist for; the structural walk's every-failing-input game
+  is a follow-up, not a silent assumption).
+- **The composition is real on-disk bytes, checked (third patcher,
+  same discipline).** GNU ld emits neither bound directories nor
+  pre-filled IAT thunks naturally, so `tools/patch_pe_bound.py`
+  composes, from the provider's OWN read file facts: the good
+  client's 3-entry directory (the provider's real `.edata` stamp;
+  `stamp + 1` for the forwarder host -- deliberately a stamp NO file
+  carries; `nobody.dll` inert at 42) INSIDE the client's `.idata`
+  in-block padding (VirtualSize grows, `SizeOfRawData` stays -- the
+  first patcher's room rule) whose span is checked against EVERY
+  other declared directory; the honored descriptor's two FirstThunk
+  slots pre-filled with `PROVIDER_BASE + crossfn/crossmark EAT` (the
+  values a real binder writes, verified by the KERNEL against a fresh
+  resolution and then left un-written); the STALE descriptor's single
+  slot carrying the OLD build's contradiction (crossmark's address in
+  the crossfn-fwd slot -- any loader that trusted the stale stamp
+  calls the wrong target; the ring-3 check proves the discard); and
+  the BAD CLIENT (`userprog_pe_bound_bad.exe`, its own small `.s`,
+  embedded via `include_bytes!`, entry never executed) carrying a
+  matching-stamp entry whose single slot holds `0xdeadbeef00001000` --
+  the stamp/IAT contradiction for negative control 5. Every
+  composition re-parses what it wrote and refuses the build on a
+  mismatch; a plain `objdump -x` prints the composed directories as
+  genuine `Entry b ... Bound Import Directory` lines the gate pins.
+- **The gate pin is a CROSS-FILE invariant, not a build stamp.** The
+  stamps move every build (ld writes `time(2)`), so the gate pins the
+  agreement, in file bytes: fresh entry stamp == provider .edata
+  stamp; stale == fresh + 1; honored prefills == provider base + the
+  EAT addresses read from the provider's own directory; the stale
+  slot == the OLD-build contradiction; the bad client's single slot ==
+  the patcher's WRONG constant; and the demo driver's `BAD_IMAGE_BASE`
+  / `BOUND_WRONG_VALUE` consts agree with the file bytes and the
+  patcher (three independent copies, one value -- the same
+  never-drift rule the slot-constant pin families use).
+- **The first boot caught the composition's own hole, and the fix
+  went to the cause.** The initial composition left the stale
+  descriptor's slots UNtouched -- and the demo's fresh assert failed
+  with `left: 8360 (0x20a8)`, the toolchain's own UNBOUND hint/name
+  RVA content. That is an honest and useful catch: with the slot
+  carrying nothing pre-bound, "discard" would have been
+  INDISTINGUISHABLE from ordinary fresh resolution and the stale
+  claim would have proven nothing. The composition now pre-fills the
+  stale slot with the old build's contradiction precisely so the
+  discard is an observable fact (the pre-loader value is recorded as
+  the `prior` field, and the ring-3 result proves the overwrite was
+  the fresh chase, not the stale value).
+- **Negative control 5, every boot:** the bad client is loaded next
+  to the good one (own private PML4 index 0x40), its entry point is
+  never entered, `resolve_imports` walks with the FULL registry (the
+  refusal is SEMANTIC, not registry-shaped), and the specific
+  mismatch must fire: the typed refusal names BOTH the contradicted
+  bound value and the fresh resolution that contradicts it
+  (`BoundValueCorrupt (0xdeadbeef00001000 != 0x180000001000)`). The
+  old half's controls all keep firing (typed `MissingDllImport`,
+  `MissingImport`, `ForwarderDepthExceeded`, typed-None ordinals) and
+  the ring-3 self-test consumes all three fixture imports exactly as
+  before -- the honored slots' values are the SAME verified addresses
+  the fresh path would have written.
+- **Verified:** full boot exit 0, 3/3 consecutive soak (281 OK
+  lines), every gate line in the bound-composition family (Entry b
+  lines for both clients, the cross-file stamp/prefill agreement
+  block, the private-PML4-index rule for `BAD_IMAGE_BASE`), and the
+  scratch-window rule extended so no ELF artifact may ever land in
+  the bad client's fixed PML4-index-0x40 region.
+
+Deliberately still out of scope, same posture as before: delay-load
+imports, resources, exception tables, and any Win32 API surface. What
+this is: a bound-import walk that honors a stamp exactly as far as the
+stamp can be verified and discards it visibly otherwise. What this is
+not: a parser of bound FORWARDER-REF descriptors (the per-descriptor
+forwarder-references half is the natural next sub-increment, listed
+honestly), and not Windows either.
 
 ## What does NOT exist yet (do not assume otherwise)
 

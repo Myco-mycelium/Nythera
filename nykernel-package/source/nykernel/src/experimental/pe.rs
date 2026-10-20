@@ -18,7 +18,15 @@
 //! a forwarded-export STRING entry (`other.dll.other_fn`, an EAT value
 //! inside the directory) resolves through the registry depth-capped,
 //! and an ordinal (`IMAGE_ORDINAL_FLAG64`) import resolves by EAT
-//! index. Still deliberately out of scope: delay-load imports, bound
+//! index. Bound imports ARE supported (2026-10-20 increment): the
+//! `IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT` walk -- per-DLL stamp
+//! comparison against the provider's OWN export-directory stamp; a
+//! matching stamp HONORS the pre-filled IAT slots only after verifying
+//! each value against what the registry freshly resolves (the
+//! typed `BoundValueCorrupt` refusal otherwise: stamps are never
+//! trusted blindly); a mismatched (stale) stamp DISCARDS the pre-bound
+//! values and resolves through the registry exactly as if the file
+//! had never been bound. Still deliberately out of scope: delay-load
 //! imports, resources, exception tables, and any Win32 API surface. Base relocations (`.reloc`) ARE supported: loading at a
 //! `load_bias` other than the file's own `ImageBase` applies every
 //! `IMAGE_REL_BASED_DIR64`/`HIGHLOW` entry, so an ASLR-style binary
@@ -126,6 +134,20 @@ pub enum PeError {
     /// A forwarder chain exceeded the re-entry depth cap; refused
     /// rather than resolved unboundedly.
     ForwarderDepthExceeded,
+    /// The bound-import directory (`IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT`)
+    /// is malformed: an unbounded descriptor array, a module name
+    /// outside the directory's own bounds or un-terminatable inside
+    /// them, an empty/overlong name. A typed refusal, never silently
+    /// ignored -- a malformed surface is worse than an absent one.
+    MalformedBoundImport(&'static str),
+    /// An entry's stamp CLAIMS a fresh binding (it equals the
+    /// provider's own export-directory stamp) but a pre-filled IAT slot
+    /// does not equal what the registry freshly resolves for that
+    /// import. The stamp's whole guarantee is contradicted by the
+    /// file -- refused loudly: stamps are verified, never trusted
+    /// blindly. Payload: (the contradicted bound value, the freshly
+    /// resolved value).
+    BoundValueCorrupt(u64, u64),
     /// The import's DLL name matched no registered provider.
     MissingDllImport,
     /// A provider was found for the DLL, but the symbol is not an
@@ -498,25 +520,76 @@ unsafe fn read_data_directory(load_base: u64, index: u32) -> Result<(u32, u32), 
     Ok((rva, size))
 }
 
+/// [`read_data_directory`], but a directory the optional header does
+/// not even declare answers ABSENT (`(0, 0)`) instead of an error --
+/// the shape the bound-import walk wants, since absence of the
+/// directory means absence of the feature, not a malformed image.
+/// Re-derives the optional header the same way (through the mapped
+/// image's own `e_lfanew`), staying in sync with the original by
+/// construction.
+///
+/// # Safety
+/// Headers must be mapped at `load_base`; same caller contract as
+/// [`read_data_directory`].
+unsafe fn read_data_directory_absent_ok(load_base: u64, index: u32) -> Result<(u32, u32), PeError> {
+    let base = load_base as *const u8;
+    let sig_off = core::ptr::read_unaligned(base.add(0x3c) as *const u32) as usize;
+    let opt = load_base + sig_off as u64 + 4 + 20;
+    let n = core::ptr::read_unaligned((opt + 108) as *const u32) as u32;
+    if index >= n {
+        return Ok((0, 0));
+    }
+    unsafe { read_data_directory(load_base, index) }
+}
+
 /// One resolved import: the runtime address of the patched IAT slot,
 /// and the value now in it (the provider's absolute runtime address). The
-/// name pair lets a caller print both halves.
+/// name pair lets a caller print both halves. `origin` states HOW the
+/// slot came to its value (fresh registry resolution, a verified
+/// bound-honored prefill left un-written, or a stale pre-bound value
+/// that was discarded); `prior` carries the value the slot held BEFORE
+/// the loader touched it (== `value` for honored slots, the discarded
+/// bound value for stale ones, the on-disk zero for fresh ones) so a
+/// caller can state the discard fact, not just the outcome.
+#[derive(Debug)]
+pub enum ImportOrigin {
+    /// Resolved fresh through the registry and written.
+    FreshResolution,
+    /// The entry's stamp matched the provider's export-directory stamp;
+    /// the PRE-FILLED value was verified to equal the fresh resolution
+    /// and the slot is left UN-written (the honor path). If any slot had
+    /// contradicted, the load refuses with
+    /// [`PeError::BoundValueCorrupt`] -- stamps are verified.
+    BoundHonored,
+    /// The entry's stamp did NOT match (stale): the pre-bound value is
+    /// discarded (its prior read is recorded, never trusted) and the
+    /// slot is resolved fresh exactly as an unbound file would be.
+    StaleDiscarded,
+}
+
 #[derive(Debug)]
 pub struct ResolvedImport {
     pub dll: NameBuf,
     pub symbol: NameBuf,
     pub slot: u64,
     pub value: u64,
+    pub origin: ImportOrigin,
+    pub prior: u64,
 }
 
 #[derive(Debug)]
 pub struct ImportResolution {
     pub facts: Vec<ResolvedImport>,
+    /// The bound-import directory's parsed module entries, as read:
+    /// (module name, declared stamp). Includes entries no import
+    /// descriptor uses (inert metadata, tolerated per spec) so a caller
+    /// can state the inert fact explicitly.
+    pub bound_modules: Vec<(NameBuf, u32)>,
 }
 
 impl ImportResolution {
     pub fn none() -> ImportResolution {
-        ImportResolution { facts: Vec::new() }
+        ImportResolution { facts: Vec::new(), bound_modules: Vec::new() }
     }
 }
 
@@ -557,6 +630,68 @@ pub unsafe fn resolve_imports(
         _ => {}
     }
 
+    // The bound-import directory (DataDirectory[11]): OPTIONAL
+    // metadata about pre-filled IAT slots. A directory the optional
+    // header does not even declare -- or one whose RVA/Size are zero --
+    // means the feature is ABSENT, not malformed
+    // (read_data_directory_absent_ok). Present, it is parsed the
+    // bounded way: the per-entry module name is an OFFSET from the
+    // directory's own start (the IMAGE_BOUND_IMPORT_DESCRIPTOR
+    // contract, not an independent RVA), and every name must
+    // terminate inside the directory's declared bounds -- an
+    // unbounded descriptor array, a name outside those bounds, or an
+    // un-terminatable/empty/overlong name is a typed
+    // MalformedBoundImport refusal, never silently degraded to "no
+    // bound imports": a malformed surface is worse than an absent
+    // one.
+    let (bound_rva, bound_size) = read_data_directory_absent_ok(load_base, 11)?;
+    let mut bound_modules: Vec<(NameBuf, u32)> = Vec::new();
+    if bound_rva != 0 && bound_size != 0 {
+        let bound_end = match (bound_rva as u64).checked_add(bound_size as u64) {
+            None => return Err(PeError::MalformedBoundImport("bound directory overflow")),
+            Some(end) if end > max_rva => {
+                return Err(PeError::MalformedBoundImport("bound directory outside image"))
+            }
+            Some(end) => end,
+        };
+        let mut bi: u64 = 0;
+        loop {
+            if bi >= 16 {
+                return Err(PeError::MalformedBoundImport(
+                    "bound descriptor array unbounded",
+                ));
+            }
+            let e_rva = bound_rva as u64 + bi * 8;
+            // IMAGE_BOUND_IMPORT_DESCRIPTOR: TimeDateStamp u32,
+            // OffsetModuleName u16 (offset from the directory's start),
+            // Reserved u16 -- all-zero is the terminator.
+            let stamp = read_u32_at(load_base, e_rva, max_rva)?;
+            let name_off = core::ptr::read_unaligned(
+                (load_base.wrapping_add(e_rva + 4)) as *const u16,
+            ) as u64;
+            let _reserved = core::ptr::read_unaligned(
+                (load_base.wrapping_add(e_rva + 6)) as *const u16,
+            ) as u64;
+            if stamp == 0 && name_off == 0 && _reserved == 0 {
+                break; // the bound directory's null terminator
+            }
+            if name_off == 0 {
+                // A name offset of 0 lands the "name" on top of the
+                // descriptor array itself: malformed by construction.
+                return Err(PeError::MalformedBoundImport(
+                    "bound module name on top of the descriptor array",
+                ));
+            }
+            let name = read_room_bounded_name(
+                load_base,
+                bound_rva as u64 + name_off,
+                bound_end,
+            )?;
+            bound_modules.push((name, stamp));
+            bi += 1;
+        }
+    }
+
     let mut facts: Vec<ResolvedImport> = Vec::new();
     let mut i: u64 = 0;
     loop {
@@ -583,6 +718,22 @@ pub unsafe fn resolve_imports(
             Some(t) => t,
             None => return Err(PeError::MissingDllImport),
         };
+
+        // ---- the bound ruling for THIS descriptor's DLL: the bound
+        // entry's stamp must equal the provider's OWN export-directory
+        // stamp (parsed, never assumed). A matching stamp honors the
+        // pre-filled IAT (after verification, in the per-slot loop); a
+        // mismatched (stale) stamp DISCARDS whatever the file pre-bound
+        // and resolves fresh; no bound entry at all is the plain
+        // fresh-resolution path (a file never bound behaves exactly as
+        // it always did). No bound entry exists without an import
+        // descriptor to serve it: entries naming DLLs this image does
+        // not import never reach a registry lookup (inert metadata).
+        let bound_stamp = bound_modules
+            .iter()
+            .find(|(n, _)| *n == dll_name)
+            .map(|(_, s)| *s);
+        let honoring = bound_stamp == Some(provider.time_date_stamp());
 
         // The classic rule: the OriginalFirstThunk array supplies the
         // hint/name pointers; a file lacking it (old-format) means the
@@ -624,6 +775,42 @@ pub unsafe fn resolve_imports(
             };
             let slot_rva = first_thunk as u64 + j * 8;
             let slot = load_base.wrapping_add(slot_rva);
+            // The slot's PRE-LOADER value, read in every path: on the
+            // honor path it is the verified bound value; on the stale
+            // path it is the discarded bound value (recorded, never
+            // trusted); on the fresh path it is the on-disk value
+            // (usually zero). The facts are stated FROM it, not
+            // inferred around it.
+            let prior = core::ptr::read_unaligned(slot as *const u64);
+            if honoring {
+                // HONOR path: the stamp already guaranteed THIS
+                // provider build; the remaining CHECKABLE claim is
+                // that the pre-filled slot value is exactly what a
+                // fresh resolution would produce -- verified here,
+                // then the slot left UN-written (that is the whole
+                // point of binding). A contradiction refuses the
+                // whole load: the stamp's guarantee is contradicted by
+                // the file, and a silently-wrong call target is worse
+                // than a refused one. No writable-check and no write
+                // belong on this path.
+                if prior != addr {
+                    return Err(PeError::BoundValueCorrupt(prior, addr));
+                }
+                facts.push(ResolvedImport {
+                    dll: dll_name,
+                    symbol: sym,
+                    slot,
+                    value: addr,
+                    origin: ImportOrigin::BoundHonored,
+                    prior,
+                });
+                j += 1;
+                continue;
+            }
+            // The discard/fresh path is the only one that writes:
+            // the writable check protects the write (same rule as
+            // always -- the loader refuses rather than grant-write a
+            // section the file did not ask for).
             let flags = crate::memory::paging::page_flags_of(
                 mapper,
                 VirtAddr::new(slot),
@@ -639,12 +826,59 @@ pub unsafe fn resolve_imports(
                 symbol: sym,
                 slot,
                 value: addr,
+                origin: if bound_stamp.is_some() {
+                    ImportOrigin::StaleDiscarded
+                } else {
+                    ImportOrigin::FreshResolution
+                },
+                prior,
             });
             j += 1;
         }
         i += 1;
     }
-    Ok(ImportResolution { facts })
+    Ok(ImportResolution { facts, bound_modules })
+}
+
+/// Reads the bound-import directory's module name at `rva`: a
+/// NUL-terminated string whose terminator must land BEFORE
+/// `room_end` (the directory's declared end), capped at the 64-byte
+/// name capacity. Any failure -- outside-image bounds, past-the-end of
+/// the directory, empty, overlong -- is a typed
+/// `MalformedBoundImport` refusal, never a truncation and never a
+/// guess.
+///
+/// # Safety
+/// the image must be mapped and `bound_end` bounds-checked by the
+/// caller (it is: the directory's own span within `max_rva`).
+unsafe fn read_room_bounded_name(load_base: u64, rva: u64, room_end: u64) -> Result<NameBuf, PeError> {
+    if rva >= room_end {
+        return Err(PeError::MalformedBoundImport(
+            "bound module name outside the directory",
+        ));
+    }
+    let room = (room_end - rva) as usize;
+    let base = load_base.wrapping_add(rva) as *const u8;
+    let mut out = NameBuf::empty();
+    for i in 0..64usize {
+        if i >= room {
+            return Err(PeError::MalformedBoundImport(
+                "bound module name runs past the directory's end",
+            ));
+        }
+        let b = core::ptr::read_unaligned(base.add(i));
+        if b == 0 {
+            if out.len == 0 {
+                return Err(PeError::MalformedBoundImport("empty bound module name"));
+            }
+            return Ok(out);
+        }
+        out.bytes[i] = b;
+        out.len += 1;
+    }
+    Err(PeError::MalformedBoundImport(
+        "bound module name exceeds the 64-byte cap",
+    ))
 }
 
 /// `IMAGE_IMPORT_BY_NAME`: a `u16` hint followed by the name. The
@@ -782,6 +1016,10 @@ pub struct DllExportTable {
     /// The directory's `OrdinalBase`: the ordinal an import thunk names
     /// minus this is the real EAT index. Parsed, never assumed.
     ordinal_base: u32,
+    /// The directory's `TimeDateStamp`: the stamp a client's
+    /// bound-import entry is compared against (the honor-or-discard
+    /// question). Parsed, never assumed.
+    time_date_stamp: u32,
 }
 
 impl DllExportTable {
@@ -808,6 +1046,7 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
                 address_of_names_rva: 0,
                 address_of_name_ordinals_rva: 0,
                 ordinal_base: 0,
+                time_date_stamp: 0,
             });
         }
         // IMAGE_EXPORT_DIRECTORY: 40 bytes
@@ -819,6 +1058,8 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
             _ => {}
         }
         let d = load_base.wrapping_add(dir_rva as u64);
+        // IMAGE_EXPORT_DIRECTORY: Flags @0, TimeDateStamp @4.
+        let time_date_stamp = core::ptr::read_unaligned((d + 4) as *const u32);
         let _name_rva = core::ptr::read_unaligned((d + 12) as *const u32);
         let number_of_functions = core::ptr::read_unaligned((d + 20) as *const u32);
         let number_of_names = core::ptr::read_unaligned((d + 24) as *const u32);
@@ -845,7 +1086,19 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
             address_of_names_rva,
             address_of_name_ordinals_rva,
             ordinal_base,
+            time_date_stamp,
         })
+    }
+
+    /// The parsed `IMAGE_EXPORT_DIRECTORY.TimeDateStamp` (0 for the
+    /// empty table) -- the quantity any bound-import entry declares
+    /// itself bound to.
+    pub fn time_date_stamp(&self) -> u32 {
+        if self.is_empty() {
+            0
+        } else {
+            self.time_date_stamp
+        }
     }
 
     /// Null-terminated size -- `None` when the table is the empty

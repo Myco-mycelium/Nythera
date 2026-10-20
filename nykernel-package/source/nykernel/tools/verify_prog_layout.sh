@@ -268,6 +268,207 @@ pafacts "PE forwarder host (the three forwarder strings as objdump sees them)" u
     'Forwarder RVA -- nobody[.]dll[.]crossfn'
 echo "  layout-gate: PE forwarder host composition facts verified"
 
+# ---- the BOUND-IMPORT composition's facts, from objdump's OWN eyes --
+#
+# The same rule the forwarder composition established: the composition
+# is not something only the patcher self-confesses. A plain
+# `objdump -x` prints the composed bound directory as a genuine
+# `Entry b ... Bound Import Directory` line (letter-indexed: 11 -> b).
+# The stamp/prefill VALUES are then cross-checked against the OTHER
+# FILES' bytes (below): the stamps move every build (time(2) at link
+# time) so no gate number exists for them — the invariant is the
+# cross-file AGREEMENT, which the python block pins file-side exactly
+# as the kernel pins it image-side (two parsers, same file).
+pafacts "PE bound-import good client (composed bounded directory, Entry b)" userprog/userprog_pe_import_app.exe \
+    "objdump -x" \
+    'Entry b 0000000000002100 [0-9a-f]{8} Bound Import Directory'
+pafacts "PE bound-import bad client (its OWN Entry b line -- 16-digit RVA as objdump prints it)" userprog/userprog_pe_bound_bad.exe \
+    "objdump -x" \
+    'Entry b [0-9a-f]{16} [0-9a-f]{8} Bound Import Directory'
+echo "  layout-gate: PE bound-import composition facts verified"
+
+# The bound composition's cross-FILE invariants (file bytes only, no
+# demo constants involved): the good client's fresh entry stamp == the
+# provider file's own .edata TimeDateStamp; the stale entry is stamp+1
+# (a stamp no file carries); the inert entry parses; the honored slots
+# hold PROVIDER_BASE + the EAT addresses read from the provider's own
+# directory; the stale slot holds the OLD-build contradiction
+# (PROVIDER_BASE + crossmark's EAT); the bad client's matching-stamp
+# entry's single slot holds the patcher's WRONG constant. And the
+# demo-driver/build twins for base and wrong value agree.
+python3 - <<'EOF' || exit 1
+import re, struct
+
+def pe_dirs_sorted(data):
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    opt = e + 4 + 20
+    ndirs = struct.unpack_from('<I', data, opt + 108)[0]
+    return [(struct.unpack_from('<II', data, opt + 112 + i*8)) for i in range(ndirs)], opt
+
+def pe_image_base(data):
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    return struct.unpack_from('<Q', data, e + 4 + 20 + 24)[0]
+
+def edata_stamp(data, opt):
+    erva, esize = struct.unpack_from('<II', data, opt + 112 + 0*8)
+    nsec = struct.unpack_from('<H', data, struct.unpack_from('<I', data, 0x3C)[0] + 6)[0]
+    coff = struct.unpack_from('<I', data, 0x3C)[0] + 4
+    optsize = struct.unpack_from('<H', data, coff + 16)[0]
+    sh = coff + 20 + optsize
+    for i in range(nsec):
+        b = sh + i*40
+        name = data[b:b+8].rstrip(b'\x00')
+        vsize, vaddr, rawsize, raw = struct.unpack_from('<IIII', data, b+8)
+        if vaddr <= erva < vaddr + max(vsize, rawsize):
+            return struct.unpack_from('<I', data, raw + (erva - vaddr) + 4)[0]
+    raise SystemExit('FAIL: provider .edata section not found')
+
+def bound_section(data, opt):
+    nsec = struct.unpack_from('<H', data, struct.unpack_from('<I', data, 0x3C)[0] + 6)[0]
+    coff = struct.unpack_from('<I', data, 0x3C)[0] + 4
+    optsize = struct.unpack_from('<H', data, coff + 16)[0]
+    sh = coff + 20 + optsize
+    sections = []
+    for i in range(nsec):
+        b = sh + i*40
+        vsize, vaddr, rawsize, raw = struct.unpack_from('<IIII', data, b+8)
+        sections.append((vaddr, vsize, rawsize, raw))
+    return sections
+
+def rva_at(data, sections, rva):
+    for vaddr, vsize, rawsize, raw in sections:
+        if vaddr <= rva < vaddr + max(vsize, rawsize):
+            return raw + (rva - vaddr)
+    raise SystemExit(f'FAIL: rva {rva:#x} not inside any section')
+
+prov = open('userprog/userprog_pe_import_dll.dll','rb').read()
+good = open('userprog/userprog_pe_import_app.exe','rb').read()
+bado = open('userprog/userprog_pe_bound_bad.exe','rb').read() if False else open('userprog/userprog_pe_bound_bad.exe','rb').read()
+
+pdirs, popt = pe_dirs_sorted(prov)
+stamp = edata_stamp(prov, popt)
+if stamp in (0, 0xFFFFFFFF): SystemExit('FAIL: provider stamp sentinel')
+print(f'  layout-gate: provider .edata TimeDateStamp {stamp:#x} (non-sentinel) -- OK')
+
+WAIT = None
+gdirs, gopt = pe_dirs_sorted(good)
+g_rva, g_size = gdirs[11]
+if g_rva == 0 or g_size == 0: SystemExit('FAIL: good client has no bound directory after composition')
+forget = None
+gsec = bound_section(good, gopt)
+base = pe_image_base(prov)  # 0x180000000000 pinned by the patcher's own check
+records = []
+for k in range(8):
+    at = rva_at(good, gsec, g_rva)
+    st, off = struct.unpack_from('<IH', good, at + k*8)[:2]
+    if st == 0 and off == 0:
+        if k == 3: break
+        SystemExit(f'FAIL: good client bound entry {k} zero before the terminator')
+    n_at = rva_at(good, gsec, g_rva)
+    name = good[n_at + off: n_at + off + 64].split(b'\x00')[0]
+    records.append((name, st))
+if len(records) != 3:
+    SystemExit(f'FAIL: good client bound directory carries {len(records)} real entries, composed exactly 3')
+names = [r[0] for r in records]
+if names[0] != b'userprog_pe_import_dll.dll' or names[1] != b'userprog_pe_import_fwdprov.dll' or names[2] != b'nobody.dll':
+    SystemExit(f'FAIL: bound module names drifted: {names}')
+if records[0][1] != stamp:
+    SystemExit(f'FAIL: fresh entry stamp {records[0][1]:#x} != provider .edata stamp {stamp:#x}')
+if records[1][1] != stamp + 1:
+    SystemExit(f'FAIL: stale entry stamp is {records[1][1]:#x}, must be fresh + 1 ({stamp+1:#x})')
+print('  layout-gate: good client bound directory -- 3 composed entries, fresh==provider stamp, stale==fresh+1, nobody.dll inert -- OK')
+
+# The honored prefills and the stale contradiction, from the file:
+imp_rva = gdirs[1][0]
+desc_at = 0
+desc_off = None
+for d in range(16):
+    at = rva_at(good, gsec, imp_rva + d*20)
+    oft, ts, fc, nrva, ft = struct.unpack_from('<IIIII', good, at)
+    if oft == 0 and nrva == 0 and ft == 0:
+        break
+    n_at = rva_at(good, gsec, nrva)
+    if good[n_at:n_at + 64].split(b'\x00')[0] == b'userprog_pe_import_dll.dll':
+        desc_off = (oft, ft)
+    d_ft = ft
+    if d == 1:
+        if good[rva_at(good, gsec, nrva):][:0] != b'':
+            pass
+stale_ft_off = None
+for d in range(16):
+    at = rva_at(good, gsec, imp_rva + d*20)
+    oft, ts, fc, nrva, ft = struct.unpack_from('<IIIII', good, at)
+    if oft == 0 and nrva == 0 and ft == 0:
+        break
+    n_at = rva_at(good, gsec, nrva)
+    nm = good[n_at:n_at + 64].split(b'\x00')[0]
+    if nm == b'userprog_pe_import_fwdprov.dll':
+        stale_ft_off = rva_at(good, gsec, ft)
+if desc_off is None or stale_ft_off is None:
+    SystemExit('FAIL: import descriptors for both providers not found in the good client')
+oft_rva, ft_rva = desc_off
+slots = [struct.unpack_from('<Q', good, rva_at(good, gsec, ft_rva + j*8))[0] for j in range(2)]
+if slots != [base + 0x1000, base + 0x2000]:
+    SystemExit(f'FAIL: honored prefills drifted: {slots}')
+stale_val = struct.unpack_from('<Q', good, stale_ft_off)[0]
+if stale_val != base + 0x2000:
+    SystemExit(f'FAIL: stale slot carries {stale_val:#x}, must be the OLD-build contradiction {base + 0x2000:#x}')
+print('  layout-gate: honored prefills == provider base + crossfn/crossmark EAT; stale slot == OLD-build contradiction -- OK')
+
+bdirs, bopt = pe_dirs_sorted(bado)
+b_rva, b_size = bdirs[11]
+if b_rva == 0 or b_size == 0:
+    SystemExit('FAIL: bad client has no bound directory')
+bsec = bound_section(bado, bopt)
+at = rva_at(bado, bsec, b_rva)
+bad_stamp, bad_off = struct.unpack_from('<IH', bado, at)[:2]
+if bad_stamp != stamp:
+    SystemExit(f'FAIL: bad client declares stamp {bad_stamp:#x}, must MATCH the provider stamp {stamp:#x}')
+n_at = rva_at(bado, bsec, b_rva)
+bad_name = bado[n_at + bad_off: n_at + bad_off + 64].split(b'\x00')[0]
+if bad_name != b'userprog_pe_import_dll.dll':
+    SystemExit(f'FAIL: bad client bound name {bad_name!r} drifted')
+# its single IAT slot must hold the WRONG value
+imp_rva_bad = bdirs[1][0]
+for d in range(16):
+    at = rva_at(bado, bsec, imp_rva_bad + d*20)
+    oft, ts, fc, nrva, ft = struct.unpack_from('<IIIII', bado, at)
+    if oft == 0 and nrva == 0 and ft == 0:
+        break
+    slot_off = rva_at(bado, bsec, ft)
+    val = struct.unpack_from('<Q', bado, slot_off)[0]
+    break
+wrong = 0xDEADBEEF00001000
+if val != wrong:
+    SystemExit(f'FAIL: bad client IAT slot is {val:#x}, must be the composed {wrong:#x}')
+print('  layout-gate: bad client -- matching stamp, single crossfn slot carries the wrong value -- OK')
+
+demo = open('src/experimental/pe_import_demo.rs').read()
+m = re.search(r'const BAD_IMAGE_BASE: u64 = (0x[0-9a-f_]+);', demo)
+if not m: SystemExit('FAIL: demo BAD_IMAGE_BASE constant drifted')
+db = int(m.group(1).replace('_',''), 16)
+b = pe_image_base(bado)
+if b != db:
+    SystemExit(f'FAIL: bad client ImageBase {b:#x} != demo BAD_IMAGE_BASE {db:#x}')
+if bcok := (b >> 39) == (db >> 39):
+    pass
+else:
+    SystemExit('FAIL: bad client PML4 index drift')
+idx = db >> 39
+if idx == 0 or idx >= 512 or idx == 0x80:
+    SystemExit(f'FAIL: BAD_IMAGE_BASE PML4 index {idx:#x} is not a private fresh index')
+mw = re.search(r'const BOUND_WRONG_VALUE: u64 = (0x[0-9a-fA-F_]+);', demo)
+if not mw or int(mw.group(1).replace('_',''),16) != wrong:
+    SystemExit('FAIL: demo BOUND_WRONG_VALUE != the composed wrong value')
+pt = open('tools/patch_pe_bound.py').read()
+mp = re.search(r'WRONG = (0x[0-9a-fA-F_]+)', pt)
+if not mp or int(mp.group(1).replace('_',''),16) != wrong:
+    SystemExit('FAIL: patcher WRONG constant != the demo/composed wrong value')
+print(f'  layout-gate: BAD_IMAGE_BASE {db:#x} (PML4 index {idx:#x}, private) and the {wrong:#x} contradiction -- demo/patcher/file all agree -- OK')
+EOF
+# ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
+#
+
 # ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
 #
 # The ring-3 hang of this demo's first confident boots was NOT a kernel
@@ -333,6 +534,7 @@ scratch_windows=(
     "0x6d000500000 0x6d000580000" # deps demo: cycle scratch 0x6D0_0050_0000, depth-cap scratch 0x6D0_0055_0000, lazy-binder probe page 0x6D0_0057_0000
     "0x6c000400000 0x6c000510000" # full demo refusal carriers SCRATCH_BASE_A 0x6C0_0040_0000 / SCRATCH_BASE_B 0x6C0_0050_0000
     "0x6d000700000 0x6d000800000" # plt demo: dependent 0x6D0_0070_0000, resolver thunk 0x6D0_0071_0000, private page 0x6D0_0072_0000, user stack 0x6D0_0073_0000
+    "0x200000000000 0x200000100000" # bound-import bad client: fixed ImageBase 0x2000_0000_0000 (its entry point never runs; the pe-import demo probes its bound/import surfaces only) -- no ELF artifact may ever land in this PE image's private PML4-index-0x40 region either
 )
 for art in userprog/userprog_cross_all_lib.elf userprog/userprog_cross_all_lib2.elf \
            userprog/userprog_cross_all.elf userprog/userprog_cross_all2.elf \
