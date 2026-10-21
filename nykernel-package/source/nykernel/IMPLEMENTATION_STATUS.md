@@ -1384,7 +1384,15 @@ contradiction refused with its own typed name.
   composition itself is generalized to N descriptors / N thunks, with
   the single-descriptor layout byte-identical to what the earlier seven
   carriers were built with (verified: all seven rebuilt files are
-  byte-for-byte what they were before the generalization).
+  byte-for-byte what they were before the generalization). **The
+  extension's checks were probe-verified, not asserted** (both probes on
+  throwaway copies): appending 32 unexplained bytes after the COFF
+  symbol table makes the patcher exit 1 with `FAIL: delay composition:
+  bytes [0xea3..0xec3) after the COFF symbol table are unexplained --
+  refusing to extend over them`, and bending one section header to claim
+  raw bytes after `.idata` makes it exit 1 with `FAIL: delay
+  composition: section '.text' holds raw bytes AFTER .idata -- extending
+  .idata's raw span would overwrite them`.
 - **The cap boundary is a boot fact on BOTH sides** (controls 16-18,
   own non-inlined frame): control 16 matches `MalformedDelayImport(
   "delay descriptor array unbounded")` AND proves how far the walk got
