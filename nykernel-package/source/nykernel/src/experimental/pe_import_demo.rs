@@ -38,9 +38,21 @@
 //!   FILE, not whatever printed name a session may register under it.
 //!   The per-symbol refusal carries the per-file ruling, and real
 //!   resolution still runs afterward, clean.
-//! Deliberate scope (same honest posture as `pe.rs`'s doc): no
-//! delay-load, no Win32 API surface. Forwarded exports, ordinal
-//! imports, and BOUND IMPORTS were all in this list and are closed
+//! The delay-load directory has its own three families (controls 9-18,
+//! each in a non-inlined frame): the EAGER resolution ruling with its
+//! two typed refusals, the structural refusals (unknown `grAttrs`,
+//! broken `INT == IAT`, pre-VC7 VA form below the base, and a genuine
+//! VA-form descriptor in a relocated image), and the two EXCLUSIVE
+//! caps -- a 17-descriptor table and a 65-entry thunk array refused
+//! with their exact payloads while every entry within the cap is
+//! already resolved, plus the legal maxima at once (16 descriptors,
+//! 64 thunks in the first) ACCEPTED and resolved completely. The
+//! carriers are composed by `tools/patch_pe_delay.py` and re-parsed
+//! before the build is allowed to continue.
+//!
+//! Deliberate scope (same honest posture as `pe.rs`'s doc): no Win32
+//! API surface. Forwarded exports, ordinal imports, DELAY-LOAD
+//! IMPORTS and BOUND IMPORTS were all in this list and are closed
 //! now -- the bound halves get their own round: the honor path (a
 //! fresh-stamp entry whose pre-filled IAT values are verified against
 //! a fresh resolution and then left UN-written), the stale-discard
@@ -156,6 +168,22 @@ static DELAY_VA_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay
 /// loaded at a BIAS, where every baked VA is stale by construction: the
 /// one case the descriptor-level relocated-image ruling exists for.
 static DELAY_VABIAS_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_vabias.exe");
+/// The CAP-BOUNDARY carriers: the walk's descriptor-array (16) and
+/// thunk-array (64) caps are EXCLUSIVE -- the zero terminator is read
+/// BEFORE the cap is consulted, so the legal maxima must be ACCEPTED
+/// and only a real 17th descriptor / 65th thunk entry refused. Both
+/// sides get a file, because a refusal alone cannot be distinguished
+/// from a cap checked before the terminator read (which would refuse
+/// the 17th identically while wrongly refusing a legal 16). `MANY`
+/// carries 17 descriptors, `THUNKS` one descriptor with 65 entries,
+/// `FULL` the two legal maxima at once (16 descriptors, the first with
+/// exactly 64 thunks). Their compositions need more room than
+/// `.idata`'s FileAlignment-bounded padding, so
+/// `tools/patch_pe_delay.py` extends the section's raw span under
+/// checks it re-parses.
+static DELAY_MANY_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_many.exe");
+static DELAY_THUNKS_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_thunks.exe");
+static DELAY_FULL_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_full.exe");
 
 /// The files' own fixed `ImageBase`s, pinned by the layout gate AND by
 /// the build (--image-base on both links). Both bases sit in private
@@ -212,6 +240,12 @@ const DELAYVABIAS_IMAGE_BASE: u64 = 0x4600_0000_0000;
 /// 0x40_0000. It is never loaded there (PML4 index 0 is the shared
 /// identity subtree); it exists so the descriptor's VA fields fit.
 const DELAYVABIAS_FILE_BASE: u64 = 0x0040_0000;
+/// The cap-boundary carriers' own fixed ImageBases (--image-base on
+/// each link; private PML4 indexes 0x8E, 0x90, 0x92 -- canonical, same
+/// rule as every other PE base).
+const DELAYMANY_IMAGE_BASE: u64 = 0x4700_0000_0000;
+const DELAYTHUNKS_IMAGE_BASE: u64 = 0x4800_0000_0000;
+const DELAYFULL_IMAGE_BASE: u64 = 0x4900_0000_0000;
 /// The WRONG bound value `tools/patch_pe_bound.py` composes into the
 /// bad client's single IAT slot (the patcher's WRONG constant,
 /// mirrored here; its own re-parse guards the file side, and the
@@ -456,6 +490,221 @@ unsafe fn run_delay_structural_controls(
             other.err()
         ),
     }
+}
+
+/// Reads a u32 from a carrier's MAPPED image (headers included). Used
+/// only by the cap-boundary controls, whose slot-state proof is derived
+/// from the image's OWN descriptor table -- the same bytes the walk
+/// read -- rather than from a composed-layout constant the patcher
+/// could drift away from.
+#[inline(always)]
+unsafe fn image_u32(load_base: u64, rva: u64) -> u32 {
+    core::ptr::read_unaligned((load_base + rva) as *const u32)
+}
+
+/// The image's `DataDirectory[13]` (delay-load) RVA, from the mapped
+/// header page.
+#[inline(always)]
+unsafe fn image_delay_dir_rva(load_base: u64) -> u64 {
+    let e_lfanew = image_u32(load_base, 0x3c) as u64;
+    image_u32(load_base, e_lfanew + 4 + 20 + 112 + 13 * 8) as u64
+}
+
+/// One DWORD field (`field` 0..8) of descriptor `i` in the mapped delay
+/// directory: 1 = rvaDLLName, 2 = rvaHmod, 3 = rvaIAT, 4 = rvaINT.
+#[inline(always)]
+unsafe fn image_delay_field(load_base: u64, dir_rva: u64, i: u64, field: u64) -> u64 {
+    image_u32(load_base, dir_rva + i * 32 + field * 4) as u64
+}
+
+/// An IAT (`which` = 3) or INT (`which` = 4) entry `j` of descriptor
+/// `i`, read from the mapped image.
+#[inline(always)]
+unsafe fn image_thunk(load_base: u64, dir_rva: u64, i: u64, which: u64, j: u64) -> u64 {
+    let arr = image_delay_field(load_base, dir_rva, i, which);
+    core::ptr::read_unaligned((load_base + arr + j * 8) as *const u64)
+}
+
+/// The delay directory's CAP-BOUNDARY controls (16-18), in their own
+/// non-inlined frame for the same kernel-stack reason as the other
+/// delay families: three more mapped images' locals must not touch the
+/// boot frame's detected peak.
+///
+/// Controls 16 and 17 match the exact over-cap refusal AND prove how far
+/// the walk got before refusing: every descriptor / thunk entry within
+/// the cap has been resolved (its IAT slot holds the provider's mapped
+/// crossfn, its handle slot the provider's base), while the entry past
+/// the cap still holds its composed unbound thunk and an untouched
+/// handle slot. That is what makes the cap EXCLUSIVE as a boot fact
+/// rather than an assertion about the code: the legal maximum is
+/// resolved IN FULL and only the entry beyond it is refused.
+///
+/// Control 18 is the other side of the same claim -- exactly 16
+/// descriptors, the first carrying exactly 64 thunk entries -- which
+/// the walk must ACCEPT and resolve completely (79 imports).
+#[inline(never)]
+unsafe fn run_delay_cap_controls(
+    mapper: &mut x86_64::structures::paging::OffsetPageTable<'static>,
+    fa: &mut crate::memory::frame_allocator::BumpFrameAllocator,
+    reg: &pe::DllRegistry,
+) {
+    let dmany = pe::load(DELAY_MANY_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the 17-descriptor delay carrier: {:?}", e));
+    match pe::resolve_delay_imports(DELAYMANY_IMAGE_BASE, mapper, dmany.image_max_rva, reg) {
+        Err(pe::PeError::MalformedDelayImport(
+            "delay descriptor array unbounded",
+        )) => {}
+        other => panic!(
+            "negative control 16 failed: expected the typed 17th-descriptor refusal, got {:?}",
+            other.err()
+        ),
+    }
+    let drva = image_delay_dir_rva(DELAYMANY_IMAGE_BASE);
+    let mut i = 0u64;
+    while i < 16 {
+        let slot = core::ptr::read_unaligned(
+            (DELAYMANY_IMAGE_BASE + image_delay_field(DELAYMANY_IMAGE_BASE, drva, i, 3)) as *const u64,
+        );
+        assert_eq!(
+            slot,
+            PROVIDER_IMAGE_BASE + FN_RVA,
+            "descriptor {} is within the cap, so its IAT slot must already be resolved",
+            i
+        );
+        let handle = core::ptr::read_unaligned(
+            (DELAYMANY_IMAGE_BASE + image_delay_field(DELAYMANY_IMAGE_BASE, drva, i, 2)) as *const u64,
+        );
+        assert_eq!(
+            handle,
+            PROVIDER_IMAGE_BASE,
+            "descriptor {} is within the cap, so its handle slot must already carry the provider's base",
+            i
+        );
+        i += 1;
+    }
+    assert_eq!(
+        image_delay_field(DELAYMANY_IMAGE_BASE, drva, 16, 0),
+        1,
+        "the 17th descriptor must EXIST and be RVA-form -- that is what the cap refused"
+    );
+    let prior = core::ptr::read_unaligned(
+        (DELAYMANY_IMAGE_BASE + image_delay_field(DELAYMANY_IMAGE_BASE, drva, 16, 3)) as *const u64,
+    );
+    assert_eq!(
+        prior,
+        image_thunk(DELAYMANY_IMAGE_BASE, drva, 16, 4, 0),
+        "the 17th descriptor's IAT slot must still equal its composed INT entry: the walk never wrote it"
+    );
+    assert_ne!(prior, PROVIDER_IMAGE_BASE + FN_RVA, "the 17th slot must be unwritten");
+    assert!(
+        prior < dmany.image_max_rva,
+        "the unwritten slot still holds a hint/name RVA, not an absolute pointer"
+    );
+    let past_handle = core::ptr::read_unaligned(
+        (DELAYMANY_IMAGE_BASE + image_delay_field(DELAYMANY_IMAGE_BASE, drva, 16, 2)) as *const u64,
+    );
+    assert_eq!(past_handle, 0, "the 17th descriptor's handle slot must be untouched");
+    serial_println!(
+        "  experimental pe-import-demo: negative control 16 -- the DELAYMANY carrier's 17th descriptor refused with the typed MalformedDelayImport; descriptors 0-15 are FULLY resolved (their IAT slots hold the provider's crossfn {:#x}, their handle slots the provider's mapped base), while the 17th's slot still holds its composed unbound thunk {:#x} and its handle slot is untouched -- OK, the 16-descriptor cap is EXCLUSIVE: the legal maximum is resolved in full and only the entry past it is refused",
+        PROVIDER_IMAGE_BASE + FN_RVA, prior
+    );
+
+    let dthunks = pe::load(DELAY_THUNKS_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the 65-thunk delay carrier: {:?}", e));
+    match pe::resolve_delay_imports(DELAYTHUNKS_IMAGE_BASE, mapper, dthunks.image_max_rva, reg) {
+        Err(pe::PeError::MalformedDelayImport(
+            "delay thunk array unbounded",
+        )) => {}
+        other => panic!(
+            "negative control 17 failed: expected the typed 65th-thunk refusal, got {:?}",
+            other.err()
+        ),
+    }
+    let tdrva = image_delay_dir_rva(DELAYTHUNKS_IMAGE_BASE);
+    let tiat = image_delay_field(DELAYTHUNKS_IMAGE_BASE, tdrva, 0, 3);
+    let mut j = 0u64;
+    while j < 64 {
+        let slot = core::ptr::read_unaligned(
+            (DELAYTHUNKS_IMAGE_BASE + tiat + j * 8) as *const u64,
+        );
+        assert_eq!(
+            slot,
+            PROVIDER_IMAGE_BASE + FN_RVA,
+            "thunk entry {} is within the cap, so its IAT slot must already be resolved",
+            j
+        );
+        j += 1;
+    }
+    let tprior = core::ptr::read_unaligned(
+        (DELAYTHUNKS_IMAGE_BASE + tiat + 64 * 8) as *const u64,
+    );
+    assert_eq!(
+        tprior,
+        image_thunk(DELAYTHUNKS_IMAGE_BASE, tdrva, 0, 4, 64),
+        "the 65th entry's IAT slot must still equal its composed INT entry: the walk never wrote it"
+    );
+    assert_ne!(tprior, PROVIDER_IMAGE_BASE + FN_RVA, "the 65th slot must be unwritten");
+    serial_println!(
+        "  experimental pe-import-demo: negative control 17 -- the DELAYTHUNKS carrier's 65th thunk entry refused with the typed MalformedDelayImport; entries 0-63 are FULLY resolved (all 64 IAT slots hold the provider's crossfn {:#x}) while entry 64 still holds its composed unbound thunk {:#x} -- OK, the 64-entry thunk cap is EXCLUSIVE for the same reason, and one descriptor's INT/IAT pair was walked end to end before the refusal",
+        PROVIDER_IMAGE_BASE + FN_RVA, tprior
+    );
+
+    let dfull = pe::load(DELAY_FULL_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the legal-maxima delay carrier: {:?}", e));
+    let fres = pe::resolve_delay_imports(DELAYFULL_IMAGE_BASE, mapper, dfull.image_max_rva, reg)
+        .unwrap_or_else(|e| panic!(
+            "negative control 18 failed: the legal 16-descriptor / 64-thunk maximum must be ACCEPTED, got {:?}",
+            e
+        ));
+    assert_eq!(
+        fres.modules.len(),
+        16,
+        "the legal-maxima carrier declares exactly 16 descriptors (the cap's legal maximum)"
+    );
+    assert_eq!(
+        fres.facts.len(),
+        79,
+        "64 thunk entries in the first descriptor + 15 in the rest = 79 resolved imports"
+    );
+    for f in fres.facts.iter() {
+        assert_eq!(f.value, PROVIDER_IMAGE_BASE + FN_RVA, "every legal-maxima import resolves to the provider's crossfn");
+        assert!(
+            matches!(f.origin, pe::ImportOrigin::DelayResolved),
+            "every legal-maxima fact must carry the DelayResolved origin"
+        );
+        assert_eq!(
+            core::ptr::read_unaligned(f.slot as *const u64),
+            f.value,
+            "legal-maxima slot readback mismatch"
+        );
+    }
+    for m in fres.modules.iter() {
+        assert_eq!(m.0.as_slice(), b"userprog_pe_import_dll.dll");
+        assert_eq!(m.1, 0, "every legal-maxima descriptor is unbound (dwTimeStamp 0)");
+    }
+    let fdrva = image_delay_dir_rva(DELAYFULL_IMAGE_BASE);
+    let fiat = image_delay_field(DELAYFULL_IMAGE_BASE, fdrva, 0, 3);
+    assert_eq!(
+        core::ptr::read_unaligned((DELAYFULL_IMAGE_BASE + fiat + 63 * 8) as *const u64),
+        PROVIDER_IMAGE_BASE + FN_RVA,
+        "the 64th thunk entry (index 63) is inside the cap and must be resolved"
+    );
+    assert_eq!(
+        core::ptr::read_unaligned((DELAYFULL_IMAGE_BASE + fiat + 64 * 8) as *const u64),
+        0,
+        "the composed IAT terminator right AFTER the 64th entry is what makes 64 legal -- it must be the zero the walk stopped at"
+    );
+    assert_eq!(
+        core::ptr::read_unaligned(
+            (DELAYFULL_IMAGE_BASE + image_delay_field(DELAYFULL_IMAGE_BASE, fdrva, 15, 2)) as *const u64
+        ),
+        PROVIDER_IMAGE_BASE,
+        "the 16th descriptor (index 15) is inside the cap and its handle slot must be written"
+    );
+    serial_println!(
+        "  experimental pe-import-demo: negative control 18 -- the DELAYFULL carrier (EXACTLY 16 descriptors, the FIRST carrying EXACTLY 64 thunk entries, 79 imports) ACCEPTED and resolved completely: every slot holds the provider's crossfn {:#x}, all 16 handle slots the provider's base, and the IAT terminator right after the 64th entry stopped the walk cleanly -- OK, both caps are exclusive bounds: the legal maxima are accepted, one past them is refused",
+        PROVIDER_IMAGE_BASE + FN_RVA
+    );
 }
 
 /// Builds an address space, loads provider + client, drives the typed
@@ -890,6 +1139,7 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     // with the SAME stack pointer every time.
     run_delay_controls(&mut mapper, fa, &reg);
     run_delay_structural_controls(&mut mapper, fa, &reg);
+    run_delay_cap_controls(&mut mapper, fa, &reg);
 
     // --- the client's ordinals and forwarders come through the walk
     // with the SAME positive facts the named path gets ---

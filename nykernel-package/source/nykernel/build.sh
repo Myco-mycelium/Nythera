@@ -180,7 +180,7 @@ as --64 userprog/prog_pe_bound_ref2stale.s -o userprog/prog_pe_bound_ref2stale.o
 ld -m i386pep --subsystem native -e _start --image-base=0x600000000000 -o userprog/userprog_pe_bound_ref2stale.exe userprog/prog_pe_bound_ref2stale.o userprog/userprog_pe_import_fwdprov.dll
 python3 tools/patch_pe_bound.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_fwdprov.dll userprog/userprog_pe_import_app.exe userprog/userprog_pe_bound_bad.exe userprog/userprog_pe_bound_refstale.exe userprog/userprog_pe_bound_ref2bad.exe userprog/userprog_pe_bound_ref2stale.exe
 
-echo "==> link userprog pe-delay CARRIERS (seven no-import, toolchain-raw PE32+ clients; the DELAY-LOAD increment probes their composed IMAGE_DELAYLOAD_DESCRIPTOR surfaces: eager-resolve, MissingDelayDllImport refusal, dwTimeStamp!=0 refusal, and the STRUCTURAL refusals -- unknown grAttrs, broken INT==IAT, pre-VC7 VA form fields below the base, and a REAL VA-form descriptor loaded away from its preferred base)"
+echo "==> link userprog pe-delay CARRIERS (ten no-import, toolchain-raw PE32+ clients; the DELAY-LOAD increment probes their composed IMAGE_DELAYLOAD_DESCRIPTOR surfaces: eager-resolve, MissingDelayDllImport refusal, dwTimeStamp!=0 refusal, the STRUCTURAL refusals -- unknown grAttrs, broken INT==IAT, pre-VC7 VA form fields below the base, and a REAL VA-form descriptor loaded away from its preferred base -- and the CAP-BOUNDARY pair: a 17-descriptor table and a 65-thunk array the walk must refuse, plus the LEGAL maxima at once (exactly 16 descriptors whose first carries exactly 64 thunks), which it must ACCEPT, so 'exclusive cap' is a fact and not an assertion)"
 as --64 userprog/prog_pe_delay.s -o userprog/prog_pe_delay.o
 ld -m i386pep --subsystem native -e _start --image-base=0x700000000000 -o userprog/userprog_pe_delay_good.exe userprog/prog_pe_delay.o
 ld -m i386pep --subsystem native -e _start --image-base=0x410000000000 -o userprog/userprog_pe_delay_bad.exe userprog/prog_pe_delay.o
@@ -198,7 +198,17 @@ ld -m i386pep --subsystem native -e _start --image-base=0x450000000000 -o userpr
 # index 0, the shared identity subtree); the demo loads it at a bias,
 # which is exactly the case the descriptor's staleness ruling covers.
 ld -m i386pep --subsystem native -e _start --image-base=0x400000 -o userprog/userprog_pe_delay_vabias.exe userprog/prog_pe_delay.o
-python3 tools/patch_pe_delay.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_delay_good.exe userprog/userprog_pe_delay_bad.exe userprog/userprog_pe_delay_mut.exe userprog/userprog_pe_delay_attrs.exe userprog/userprog_pe_delay_mis.exe userprog/userprog_pe_delay_va.exe userprog/userprog_pe_delay_vabias.exe
+# The CAP-BOUNDARY carriers: the descriptor-array (16) and thunk-array
+# (64) caps are EXCLUSIVE -- the terminator is read before the cap, so
+# the legal maxima must be accepted and only a real 17th descriptor /
+# 65th entry refused. delaymany/delaythunks prove the refusal side;
+# delayfull (16 descriptors, the first with 64 thunks) proves the legal
+# side, which a refusal alone cannot distinguish from a cap checked
+# before the terminator.
+ld -m i386pep --subsystem native -e _start --image-base=0x470000000000 -o userprog/userprog_pe_delay_many.exe userprog/prog_pe_delay.o
+ld -m i386pep --subsystem native -e _start --image-base=0x480000000000 -o userprog/userprog_pe_delay_thunks.exe userprog/prog_pe_delay.o
+ld -m i386pep --subsystem native -e _start --image-base=0x490000000000 -o userprog/userprog_pe_delay_full.exe userprog/prog_pe_delay.o
+python3 tools/patch_pe_delay.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_delay_good.exe userprog/userprog_pe_delay_bad.exe userprog/userprog_pe_delay_mut.exe userprog/userprog_pe_delay_attrs.exe userprog/userprog_pe_delay_mis.exe userprog/userprog_pe_delay_va.exe userprog/userprog_pe_delay_vabias.exe userprog/userprog_pe_delay_many.exe userprog/userprog_pe_delay_thunks.exe userprog/userprog_pe_delay_full.exe
 
 echo "==> readelf LAYOUT GATE: every embedded userprog artifact is fact-checked (SONAMEs, version tables, NEEDED chains, PLT/JUMP_SLOT, WEAK dynsym, PE edata/idata) BEFORE kernel code ever sees them"
 ./tools/verify_prog_layout.sh

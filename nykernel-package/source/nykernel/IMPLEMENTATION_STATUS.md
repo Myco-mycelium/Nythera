@@ -1287,12 +1287,13 @@ contradiction refused with its own typed name.
 - **The carriers are composed, checked, and re-parsed**
   (`tools/patch_pe_delay.py` + `userprog/prog_pe_delay.s`, the same
   discipline `patch_pe_bound.py`/`patch_pe_forwarders.py`/
-  `patch_weak_verneed.py` established): SEVEN toolchain-raw
+  `patch_weak_verneed.py` established): TEN toolchain-raw
   no-import PE32+ clients get their `IMAGE_DELAYLOAD_DESCRIPTOR`
   surfaces composed into the `.idata` section's own in-block padding
-  (VirtualSize grows, SizeOfRawData stays), then the result is
-  re-parsed and the build is refused unless the on-disk bytes are the
-  composed bytes -- `delaygood` (named `crossfn` + ordinal-form
+  (VirtualSize grows, SizeOfRawData stays; the three cap-boundary
+  carriers instead grow SizeOfRawData under the checked extension
+  described below), then the result is re-parsed and the build is
+  refused unless the on-disk bytes are the composed bytes -- `delaygood` (named `crossfn` + ordinal-form
   `crossmark`, both descriptors fresh, dwTimeStamp 0), `delaybad`
   (module `nowhere.dll`), `delaymut` (the provider's name with
   `dwTimeStamp = provider .edata stamp + 1`) -- plus the three
@@ -1316,10 +1317,11 @@ contradiction refused with its own typed name.
   contradiction pinned per carrier (the gate asserts `delaymis`'s IAT
   IS the ordinal thunk and its INT IS the named blob, so that file
   can never start refusing for a different reason).
-- **Seven boot controls through the real bytes** (`pe_import_demo`,
-  in two non-inlined frames -- the structural family got its own so
-  three more mapped images' locals never touch the boot frame's
-  measured peak): control 9 is the positive
+- **The first seven boot controls through the real bytes**
+  (`pe_import_demo`, in two of its three non-inlined frames -- each
+  family got its own so its mapped images' locals never touch the boot
+  frame's measured peak; the cap family is the third, below): control
+  9 is the positive
   half -- both delay imports eagerly resolved to the provider's own
   `crossfn`/`crossmark` addresses, the priors read back as the
   composed UNBOUND thunks (the ordinal slot's prior is
@@ -1360,10 +1362,44 @@ contradiction refused with its own typed name.
   it) rather than trusting the link line, and the gate pins both bases
   plus the fact that all four address fields really are VAs of the low
   base.
-- **What is still code-verified, stated plainly:** only the
-  descriptor-array (16) and thunk-array (64) caps have no composed
-  carrier -- an unbounded surface is a shape no small fixture can
-  honestly express without a 16-descriptor file.
+- **The caps are EXCLUSIVE, and both sides are composed files now**
+  (`delaymany`, `delaythunks`, `delayfull`): the walk reads a
+  descriptor's / thunk's zero terminator BEFORE it consults the cap, so
+  exactly 16 descriptors and exactly 64 thunk entries are the LEGAL
+  maxima. That ordering is what makes the caps exclusive rather than
+  merely bounded -- and it is a property a refusal CANNOT evidence on
+  its own, because a cap checked before the terminator read would
+  refuse the 17th descriptor identically while wrongly refusing a
+  legal 16. So both sides are composed: `delaymany` carries 17
+  descriptors (each naming the provider with one import),
+  `delaythunks` one descriptor with 65 thunk entries, and `delayfull`
+  the two legal maxima AT ONCE -- exactly 16 descriptors whose FIRST
+  carries exactly 64 entries (79 imports) -- which the walk must
+  ACCEPT. The three need more room than `.idata`'s FileAlignment-bound
+  padding can hold, so `patch_pe_delay.py` EXTENDS the section's raw
+  span under checks: `.idata` must be the last section by raw
+  placement, every trailing byte must be exactly the COFF symbol table
+  `ld` appended (stripped explicitly -- pointer and count zeroed -- not
+  silently overwritten), and the new span is FileAlignment-aligned. The
+  composition itself is generalized to N descriptors / N thunks, with
+  the single-descriptor layout byte-identical to what the earlier seven
+  carriers were built with (verified: all seven rebuilt files are
+  byte-for-byte what they were before the generalization).
+- **The cap boundary is a boot fact on BOTH sides** (controls 16-18,
+  own non-inlined frame): control 16 matches `MalformedDelayImport(
+  "delay descriptor array unbounded")` AND proves how far the walk got
+  -- descriptors 0-15 are fully resolved (their IAT slots hold the
+  provider's mapped `crossfn`, their handle slots the provider's base)
+  while the 17th descriptor's slot still equals its composed INT entry
+  and its handle slot is untouched; control 17 does the same for the
+  65th thunk of a one-descriptor carrier (64 slots resolved, entry 64
+  still the unbound thunk); control 18 is the legal side -- exactly 16
+  descriptors with 64 thunks in the first are ACCEPTED, 79 facts
+  resolved, every slot and all 16 handle slots read back, and the
+  composed IAT terminator right after the 64th entry is what stopped
+  the walk. The slot-state reads are derived from the MAPPED image's
+  own descriptor table (dir[13], then each descriptor's `rvaIAT`),
+  never from a hardcoded composed offset.
 - **Two real bugs, both fixed at cause.** (1) The delay section's
   locals pushed the boot function's kernel-frame peak past the guard
   page, and the first boots double-faulted SEVERAL CONTROLS EARLIER
@@ -1393,11 +1429,11 @@ contradiction refused with its own typed name.
   reverted to the committed state and the build + boot re-run green,
   so the gate is proven to REFUSE the class it exists for rather than
   merely to pass the good files.
-- **Verified:** `./build.sh` exit 0 (all sixteen PE link products + the
-  delay-composition block for seven carriers + the canonical-base
+- **Verified:** `./build.sh` exit 0 (all nineteen PE link products + the
+  delay-composition block for ten carriers + the canonical-base
   rule), `tools/qemu_boot_test.sh` exit 0 (`PASS: kernel reached
-  BootPhase::Ready and exited cleanly`), controls 1-15 all `OK` in
-  three consecutive boots (269 OK lines each), and zero
+  BootPhase::Ready and exited cleanly`), controls 1-18 all `OK` in
+  three consecutive boots (276 OK lines each), and zero
   `[dbg`/`TEMP BISECT` residue in `src/`.
 
 ## What does NOT exist yet (do not assume otherwise)

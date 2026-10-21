@@ -1004,8 +1004,20 @@ pub unsafe fn resolve_imports(
 ///
 /// Bounded and typed everywhere: descriptor array capped at 16, each
 /// IAT/INT thunk array capped at 64, names through the 64-byte-cap
-/// reader; unknown `grAttrs` bits are refused (the Windows helper
-/// treats bad attributes as unrecoverable too); a pre-VC7 VA-form
+/// reader. Both caps are EXCLUSIVE and are checked AFTER the entry's
+/// zero terminator is read: a table of exactly 16 descriptors, and a
+/// thunk array of exactly 64 entries, are the legal maxima a real
+/// directory can carry, so refusing them as "unbounded" would be
+/// both the wrong answer and the wrong reason. The 17th descriptor
+/// and the 65th thunk entry -- never the terminator -- are what the
+/// caps refuse. Both sides are boot-controlled, because a refusal
+/// alone cannot distinguish "checked after the terminator" from
+/// "checked before it": composed carriers drive the two over-cap
+/// refusals (with every entry INSIDE the cap demonstrably resolved
+/// first) and the legal maxima -- exactly 16 descriptors, exactly 64
+/// thunks -- being accepted and resolved in full. Unknown `grAttrs`
+/// bits are refused (the Windows helper treats bad attributes as
+/// unrecoverable too); a pre-VC7 VA-form
 /// descriptor is decoded as `VA - preferred ImageBase` and REFUSED in
 /// a relocated image (the baked VAs would be stale); the INT is the
 /// name source when present and every INT entry must equal its IAT
@@ -1050,11 +1062,6 @@ pub unsafe fn resolve_delay_imports(
     let mut modules: Vec<(NameBuf, u32, u64)> = Vec::new();
     let mut d: u64 = 0;
     loop {
-        if d >= DELAY_MAX_DESCRIPTORS {
-            return Err(PeError::MalformedDelayImport(
-                "delay descriptor array unbounded",
-            ));
-        }
         let desc_rva = dir_rva as u64 + d * 32;
         if desc_rva + 32 > dir_end {
             return Err(PeError::MalformedDelayImport(
@@ -1069,6 +1076,17 @@ pub unsafe fn resolve_delay_imports(
         }
         if f.iter().all(|&v| v == 0) {
             break; // the delay directory's all-zero terminator
+        }
+        // The cap is EXCLUSIVE and comes AFTER the terminator read: a
+        // directory carrying exactly DELAY_MAX_DESCRIPTORS entries plus
+        // the null terminator is the legal maximum, and checking the
+        // counter first would have refused that legal table as
+        // "unbounded" -- wrong answer, wrong reason. Only a real 17th
+        // descriptor reaches this refusal.
+        if d >= DELAY_MAX_DESCRIPTORS {
+            return Err(PeError::MalformedDelayImport(
+                "delay descriptor array unbounded",
+            ));
         }
         let attrs = f[0];
         if attrs & !ATTRS_RVA_FORM != 0 {
@@ -1148,11 +1166,6 @@ pub unsafe fn resolve_delay_imports(
         // decides about).
         let mut j: u64 = 0;
         loop {
-            if j >= DELAY_MAX_THUNKS {
-                return Err(PeError::MalformedDelayImport(
-                    "delay thunk array unbounded",
-                ));
-            }
             let int_thunk = read_u64_at(
                 load_base,
                 (if int_rva != 0 { int_rva } else { iat_rva }) + j * 8,
@@ -1166,6 +1179,15 @@ pub unsafe fn resolve_delay_imports(
                     ));
                 }
                 break; // both arrays end together
+            }
+            // Same exclusive-cap rule as the descriptor array: the
+            // terminator is read FIRST, so an array of exactly
+            // DELAY_MAX_THUNKS entries is legal and only a real 65th
+            // entry is refused.
+            if j >= DELAY_MAX_THUNKS {
+                return Err(PeError::MalformedDelayImport(
+                    "delay thunk array unbounded",
+                ));
             }
             let iat_thunk = read_u64_at(load_base, iat_rva + j * 8, max_rva)?;
             if iat_thunk != int_thunk {

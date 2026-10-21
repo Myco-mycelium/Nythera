@@ -825,6 +825,89 @@ lpidx = want_load >> 39
 if lpidx == 0 or lpidx >= 512 or lpidx == 0x80:
     raise SystemExit(f'FAIL: delayvabias LOAD base PML4 index {lpidx:#x} is not a private fresh index')
 print(f"  layout-gate: delayvabias -- dir[13] {vdsize} bytes, grAttrs=0x0 (pre-VC7 VA form), all four address fields are VAs of the file base {vbase:#x} (never loadable there: PML4 index 0), IAT==INT, dwTimeStamp 0; LOADED at demo base {want_load:#x} (PML4 index {lpidx:#x}, private) -- relocated VA-form refusal surface -- OK")
+
+# ---- PE DELAY CAP-BOUNDARY carriers: the 17-descriptor table, the
+# 65-thunk array, and the LEGAL maxima at once (16 descriptors whose
+# first carries 64 thunks). The kernel's two caps are EXCLUSIVE -- the
+# terminator is read before the cap is consulted -- and the two refusal
+# carriers alone cannot evidence that (a cap checked BEFORE the
+# terminator read refuses the 17th identically while wrongly refusing a
+# legal 16). So the gate pins the exact composed COUNTS on both sides,
+# the all-zero terminator right after the last composed descriptor, and
+# every IAT/INT pair with its own hint/name blob.
+#
+# These three are also the only delay carriers whose composition needed
+# the checked raw extension, so the extension's own shape is a pinned
+# fact here: .idata's SizeOfRawData exceeds its VirtualSize, .idata is
+# the LAST raw span in the file (nothing follows it), the COFF symbol
+# table the linker appended is GONE (pointer and count zeroed -- it was
+# stripped, not overwritten), and the directory still fills the
+# section's virtual tail exactly.
+def cap_carrier(path, label, want_descs, thunks_of, dll=b'userprog_pe_import_dll.dll'):
+    data = open(path, 'rb').read()
+    dirs, _opt = pe_dirs_sorted(data)
+    secs = sections_of(data)
+    drva, dsize = dirs[13]
+    if drva == 0 or dsize == 0:
+        raise SystemExit(f'FAIL: {label} has no delay directory')
+    idata = [s for s in secs if s[0] == b'.idata']
+    if len(idata) != 1:
+        raise SystemExit(f'FAIL: {label} must carry exactly one .idata section')
+    _in, idv, idvs, idrs, idro = idata[0]
+    if idrs <= idvs:
+        raise SystemExit(f'FAIL: {label} .idata raw span {idrs:#x} does not exceed its virtual span {idvs:#x}: the checked raw extension is absent, so the file layout drifted')
+    if idro + idrs != len(data):
+        raise SystemExit(f'FAIL: {label} carries {len(data) - (idro + idrs):#x} bytes after .idata (an overlay or a symbol table the extension was supposed to strip)')
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    sym, nsym = struct.unpack_from('<II', data, e + 4 + 8)
+    if sym != 0 or nsym != 0:
+        raise SystemExit(f'FAIL: {label} still declares a COFF symbol table at {sym:#x} ({nsym} symbols): the raw extension must strip it')
+    if drva + dsize != idv + idvs:
+        raise SystemExit(f'FAIL: {label} dir[13] ends at {drva + dsize:#x}, .idata virtual end is {idv + idvs:#x}: the composition must fill the section tail exactly')
+    total = 0
+    for i in range(want_descs):
+        f = struct.unpack_from('<8I', data, rva_at(secs, drva + i * 32))
+        if not any(f):
+            raise SystemExit(f'FAIL: {label} descriptor {i} of {want_descs} is the all-zero terminator -- the composed count is short')
+        if f[0] != 1:
+            raise SystemExit(f'FAIL: {label} descriptor {i} grAttrs is {f[0]:#x}, composed 0x1 (dlattrRva)')
+        if f[5] != 0 or f[6] != 0 or f[7] != 0:
+            raise SystemExit(f'FAIL: {label} descriptor {i} bound/unload RVA or dwTimeStamp not zero')
+        nat = rva_at(secs, f[1])
+        got = data[nat:nat + 64].split(b'\x00')[0]
+        if got != dll:
+            raise SystemExit(f'FAIL: {label} descriptor {i} module name {got!r} drifted')
+        iat = rva_at(secs, f[3])
+        intt = rva_at(secs, f[4])
+        n = 0
+        while True:
+            (a,) = struct.unpack_from('<Q', data, iat + n * 8)
+            (b,) = struct.unpack_from('<Q', data, intt + n * 8)
+            if a == 0 or b == 0:
+                if a != 0 or b != 0:
+                    raise SystemExit(f'FAIL: {label} descriptor {i} IAT terminator and INT terminator disagree at entry {n}')
+                break
+            if a != b:
+                raise SystemExit(f'FAIL: {label} descriptor {i} INT entry {n} != its IAT entry (IAT==INT is the composed pre-state)')
+            bat = rva_at(secs, b)
+            (hint,) = struct.unpack_from('<H', data, bat)
+            symname = data[bat + 2:bat + 2 + 16].split(b'\x00')[0]
+            if hint != 0 or symname != b'crossfn':
+                raise SystemExit(f'FAIL: {label} descriptor {i} thunk {n} is not the named crossfn blob (hint {hint}, sym {symname!r})')
+            n += 1
+        if n != thunks_of(i):
+            raise SystemExit(f'FAIL: {label} descriptor {i} carries {n} thunks, composed exactly {thunks_of(i)}')
+        total += n
+    term = struct.unpack_from('<8I', data, rva_at(secs, drva + want_descs * 32))
+    if any(term):
+        raise SystemExit(f'FAIL: {label} has no all-zero terminator immediately after descriptor {want_descs - 1}: the composed table does not end where the caps are measured')
+    print(f"  layout-gate: {label} -- {want_descs} descriptor(s) with {total} thunk entries, all-zero terminator right after the last one, dir[13] {dsize} bytes filling .idata's virtual tail; SizeOfRawData {idrs:#x} > VirtualSize {idvs:#x} by the checked extension, .idata last in the file, COFF symbol table stripped -- OK")
+    return total
+
+n_many = cap_carrier('userprog/userprog_pe_delay_many.exe', 'delaymany', 17, lambda i: 1)
+n_thunks = cap_carrier('userprog/userprog_pe_delay_thunks.exe', 'delaythunks', 1, lambda i: 65)
+n_full = cap_carrier('userprog/userprog_pe_delay_full.exe', 'delayfull', 16, lambda i: 64 if i == 0 else 1)
+print(f"  layout-gate: delay CAP BOUNDARY -- delaymany carries {n_many} imports in 17 descriptors (the 17th descriptor is over the 16-descriptor cap), delaythunks carries {n_thunks} thunk entries in one descriptor (the 65th is over the 64-cap), delayfull carries {n_full} imports at the EXACT maxima (16 descriptors, 64 thunks in the first) -- the legal side the walk must ACCEPT -- OK")
 EOF
 # ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
 #
@@ -902,6 +985,9 @@ scratch_windows=(
     "0x440000000000 0x440000100000" # delay-load INT!=IAT carrier: fixed ImageBase 0x4400_0000_0000 (PML4 index 0x88)
     "0x450000000000 0x450000100000" # delay-load VA-form carrier: fixed ImageBase 0x4500_0000_0000 (PML4 index 0x8A)
     "0x460000000000 0x460000100000" # delay-load relocated VA-form carrier: LOAD base 0x4600_0000_0000 (PML4 index 0x8C; the file's own base is the low 0x40_0000)
+    "0x470000000000 0x470000100000" # delay-load cap-boundary carrier (17 descriptors): fixed ImageBase 0x4700_0000_0000 (PML4 index 0x8E)
+    "0x480000000000 0x480000100000" # delay-load cap-boundary carrier (65 thunks): fixed ImageBase 0x4800_0000_0000 (PML4 index 0x90)
+    "0x490000000000 0x490000100000" # delay-load legal-maxima carrier (16 descriptors x 64 thunks): fixed ImageBase 0x4900_0000_0000 (PML4 index 0x92)
 )
 for art in userprog/userprog_cross_all_lib.elf userprog/userprog_cross_all_lib2.elf \
            userprog/userprog_cross_all.elf userprog/userprog_cross_all2.elf \
