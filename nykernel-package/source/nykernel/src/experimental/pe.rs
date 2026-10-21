@@ -1091,25 +1091,41 @@ pub unsafe fn resolve_delay_imports(
                 "bound delay-load descriptors (dwTimeStamp != 0) are out of scope -- refused, not ignored",
             ));
         }
-        // Field decode: RVA form is direct; VA form (pre-VC7) is
-        // VA - preferred base, and only decodable in a non-relocated
-        // image (a relocated image's baked VAs are stale):
+        // VA form (pre-VC7) is only decodable in an image loaded AT its
+        // preferred base: a relocated image's baked VAs all address the
+        // ORIGINAL base, so every one of them is stale by the same
+        // delta. That is a property of the DESCRIPTOR, checked once,
+        // before any field is looked at -- which is also why the check
+        // must come first: the fields cannot be judged at all until the
+        // image's placement question is settled.
+        if attrs & ATTRS_RVA_FORM == 0 && load_base != preferred_base {
+            return Err(PeError::MalformedDelayImport(
+                "delay VA-form descriptor in a relocated image",
+            ));
+        }
+        // Field decode: RVA form is direct; VA form is VA - preferred
+        // base, and the RESULT is what must land inside the image's
+        // mapped footprint (the previous form compared the VA itself
+        // against `max_rva`, which no real VA can pass -- it made this
+        // branch dead code and reported "below the preferred image
+        // base" for every field above it).
         let decode = |field: u32| -> Result<u64, PeError> {
             if attrs & ATTRS_RVA_FORM != 0 {
                 return Ok(field as u64);
             }
             let va = field as u64;
-            if va < preferred_base || va > max_rva {
+            if va < preferred_base {
                 return Err(PeError::MalformedDelayImport(
                     "delay VA-form descriptor field below the preferred image base",
                 ));
             }
-            if load_base != preferred_base {
+            let rva = va - preferred_base;
+            if rva > max_rva {
                 return Err(PeError::MalformedDelayImport(
-                    "delay VA-form descriptor in a relocated image",
+                    "delay VA-form descriptor field beyond the image's mapped footprint",
                 ));
             }
-            Ok(va - preferred_base)
+            Ok(rva)
         };
         let name_rva = decode(f[1])?;
         let hmod_rva = decode(f[2])?;

@@ -770,6 +770,61 @@ for base_const, path, label, dll_name, n_imports, dw_ts, first_sym, second_ord, 
     kind = kinds[label]
     pre = ('IAT[0] CONTRADICTS INT[0]' if mismatch else f'IAT==INT ({n_imports} import(s))')
     print(f"  layout-gate: {label} -- dir[13] canonical span {dsize} bytes at the .idata padding, grAttrs={fields[0]:#x}, name {got_name.decode()}, {pre}, dwTimeStamp {fields[7]:#x}, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private) -- {kind} -- OK")
+
+# ---- PE delay VA-FORM carrier: the ONE carrier whose FILE base and LOAD
+# base differ, and therefore the only one that cannot go through the loop
+# above. A descriptor field is 32 bits, so a genuine pre-VC7 VA-form
+# descriptor exists only for an image below 4 GiB: this carrier is linked
+# at the classic 0x40_0000 and LOADED at a bias. Both directions are
+# pinned -- the file's own base is the low one, the fields really are VAs
+# of it, and the demo's load const is a different, canonical, private
+# base -- so the refusal it drives can never degrade into an accident of
+# the link line.
+vd = open('userprog/userprog_pe_delay_vabias.exe', 'rb').read()
+vdirs, _vp = pe_dirs_sorted(vd)
+vsecs = sections_of(vd)
+vrva, vdsize = vdirs[13]
+if vrva == 0 or vdsize == 0:
+    raise SystemExit('FAIL: delayvabias has no delay directory')
+vf = struct.unpack_from('<8I', vd, rva_at(vsecs, vrva))
+vbase = pe_image_base(vd)
+mf = re.search(r'const DELAYVABIAS_FILE_BASE: u64 = (0x[0-9a-fA-F_]+);', demo)
+ml = re.search(r'const DELAYVABIAS_IMAGE_BASE: u64 = (0x[0-9a-fA-F_]+);', demo)
+if not mf or not ml:
+    raise SystemExit('FAIL: demo DELAYVABIAS_FILE_BASE / DELAYVABIAS_IMAGE_BASE drifted')
+want_file = int(mf.group(1).replace('_', ''), 16)
+want_load = int(ml.group(1).replace('_', ''), 16)
+if vbase != want_file or vbase != 0x400000:
+    raise SystemExit(f'FAIL: delayvabias file ImageBase {vbase:#x} != demo DELAYVABIAS_FILE_BASE {want_file:#x} (must be the low 0x400000)')
+if vf[0] != 0:
+    raise SystemExit(f'FAIL: delayvabias grAttrs is {vf[0]:#x}, the VA form is grAttrs 0')
+for k, fname in ((1, 'rvaDLLName'), (2, 'rvaHmod'), (3, 'rvaIAT'), (4, 'rvaINT')):
+    if vf[k] <= vbase:
+        raise SystemExit(f'FAIL: delayvabias {fname} {vf[k]:#x} is not a VA of the file base {vbase:#x}')
+    rva_at(vsecs, vf[k] - vbase)  # must land inside a composed section
+if vf[5] != 0 or vf[6] != 0 or vf[7] != 0:
+    raise SystemExit('FAIL: delayvabias bound/unload RVA or dwTimeStamp not zero')
+vterm = struct.unpack_from('<8I', vd, rva_at(vsecs, vrva) + 32)
+if any(t != 0 for t in vterm):
+    raise SystemExit('FAIL: delayvabias delay terminator is not all-zero')
+vname_off = rva_at(vsecs, vf[1] - vbase)
+if vd[vname_off: vname_off + 64].split(b'\x00')[0] != b'userprog_pe_import_dll.dll':
+    raise SystemExit('FAIL: delayvabias delay module name drifted')
+viat = rva_at(vsecs, vf[3] - vbase)
+vint = rva_at(vsecs, vf[4] - vbase)
+for j in range(3):
+    (a,) = struct.unpack_from('<Q', vd, viat + j*8)
+    (b,) = struct.unpack_from('<Q', vd, vint + j*8)
+    if a != b:
+        raise SystemExit(f'FAIL: delayvabias INT entry {j} != its IAT entry')
+if want_load == want_file:
+    raise SystemExit('FAIL: demo DELAYVABIAS_IMAGE_BASE equals the file base -- the carrier would not be relocated')
+if want_load >= (1 << 47):
+    raise SystemExit(f'FAIL: delayvabias LOAD base {want_load:#x} sits in the 4-level x86-64 NON-CANONICAL hole')
+lpidx = want_load >> 39
+if lpidx == 0 or lpidx >= 512 or lpidx == 0x80:
+    raise SystemExit(f'FAIL: delayvabias LOAD base PML4 index {lpidx:#x} is not a private fresh index')
+print(f"  layout-gate: delayvabias -- dir[13] {vdsize} bytes, grAttrs=0x0 (pre-VC7 VA form), all four address fields are VAs of the file base {vbase:#x} (never loadable there: PML4 index 0), IAT==INT, dwTimeStamp 0; LOADED at demo base {want_load:#x} (PML4 index {lpidx:#x}, private) -- relocated VA-form refusal surface -- OK")
 EOF
 # ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
 #
@@ -846,6 +901,7 @@ scratch_windows=(
     "0x430000000000 0x430000100000" # delay-load unknown-grAttrs carrier: fixed ImageBase 0x4300_0000_0000 (PML4 index 0x86)
     "0x440000000000 0x440000100000" # delay-load INT!=IAT carrier: fixed ImageBase 0x4400_0000_0000 (PML4 index 0x88)
     "0x450000000000 0x450000100000" # delay-load VA-form carrier: fixed ImageBase 0x4500_0000_0000 (PML4 index 0x8A)
+    "0x460000000000 0x460000100000" # delay-load relocated VA-form carrier: LOAD base 0x4600_0000_0000 (PML4 index 0x8C; the file's own base is the low 0x40_0000)
 )
 for art in userprog/userprog_cross_all_lib.elf userprog/userprog_cross_all_lib2.elf \
            userprog/userprog_cross_all.elf userprog/userprog_cross_all2.elf \

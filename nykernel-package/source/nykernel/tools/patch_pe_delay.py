@@ -58,6 +58,14 @@ refusal that is only code-verified is a claim, not a fact):
     computes -- every value is far below the image's own
     ImageBase -> 'delay VA-form descriptor field below the preferred
     image base'.
+  * delayvabias (userprog_pe_delay_vabias.exe): the genuinely VA-form
+    carrier. Its fields are real VAs (preferred ImageBase + rva), so
+    it must be linked at a LOW ImageBase -- a VA has to fit in the
+    descriptor's 32-bit field -- hence 0x0040_0000. Loaded at its own
+    base it would be readable; loaded at a BIAS (the demo's 0x4600...
+    base) the descriptor is refused as stale by construction: every
+    baked VA still addresses the ORIGINAL base. -> 'delay VA-form
+    descriptor in a relocated image'.
 
 The RESULT is re-parsed (exact dir[13] bounds, exact fields at exact
 offsets, exact name strings, exact IAT==INT arrays and terminators)
@@ -172,7 +180,7 @@ def export_index_by_name(data: bytes, sections, px, name: bytes):
 
 
 def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts,
-                      gr_attrs=1, mismatch=False):
+                      gr_attrs=1, mismatch=False, va_form=False):
     """Composes ONE descriptor record (with its marker-free canonical
     layout described in the module docstring) into the .idata in-block
     padding. Returns (base_rva, dir_size)."""
@@ -267,6 +275,23 @@ def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts,
         0,          # rvaUnloadIAT
         dw_ts,      # 0 = not bound; delaymut composes provider stamp + 1
     )
+    if va_form:
+        # The pre-VC7 form: every address field is an ABSOLUTE VA of the
+        # image's own preferred base. Only representable when that base
+        # plus the composed RVAs fits the descriptor's 32-bit fields,
+        # which is exactly why this carrier is linked at 0x40_0000.
+        base = image_base_of(bytes(data))
+        out = [fields[0]]
+        for v in fields[1:]:
+            if v == 0:
+                out.append(0)
+                continue
+            va = base + v
+            if va > 0xFFFFFFFF:
+                die(f"VA {va:#x} does not fit a descriptor's 32-bit field: "
+                    f"the VA-form carrier must be linked below 4 GiB")
+            out.append(va)
+        fields = tuple(out)
     struct.pack_into("<8I", data, desc_foff, *fields)
 
     # dir[13] points here; VirtualSize grows to cover it.
@@ -277,7 +302,7 @@ def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts,
 
 
 def verify_delay_dir(data: bytes, base_rva, dir_size, dll_name, imports, dw_ts,
-                     gr_attrs=1, mismatch=False):
+                     gr_attrs=1, mismatch=False, va_form=False):
     """Re-parse what we wrote: exact dir[13] bounds, exact 8 fields,
     exact name string, exact IAT==INT arrays and terminators, exact
     hint/name blobs."""
@@ -290,6 +315,17 @@ def verify_delay_dir(data: bytes, base_rva, dir_size, dll_name, imports, dw_ts,
     fields = struct.unpack_from("<8I", vdata, foff)
     if fields[0] != gr_attrs:
         die(f"re-parse: grAttrs is {fields[0]:#x}, composed {gr_attrs:#x}")
+    if va_form:
+        # Every non-zero address field must be a VA of THIS image's
+        # preferred base (not a bare RVA), and the values must fit the
+        # 32-bit fields the format gave them.
+        vb = image_base_of(vdata)
+        for k in (1, 2, 3, 4):
+            if fields[k] < vb:
+                die(f"re-parse: field {k} is {fields[k]:#x}, below the preferred base {vb:#x}: not a VA")
+        fields = (fields[0],) + tuple(
+            0 if v == 0 else v - vb for v in fields[1:7]
+        ) + (fields[7],)
     for k, label in ((1, "rvaDLLName"), (2, "rvaHmod"), (3, "rvaIAT")):
         if fields[k] == 0:
             die(f"re-parse: {label} is zero")
@@ -337,11 +373,11 @@ def verify_delay_dir(data: bytes, base_rva, dir_size, dll_name, imports, dw_ts,
 
 
 def main() -> None:
-    if len(sys.argv) != 8:
+    if len(sys.argv) != 9:
         die("usage: patch_pe_delay.py <provider_dll> <delaygood_exe> <delaybad_exe> "
-            "<delaymut_exe> <delayattrs_exe> <delaymis_exe> <delayva_exe>")
+            "<delaymut_exe> <delayattrs_exe> <delaymis_exe> <delayva_exe> <delayvabias_exe>")
     (prov_path, good_path, bad_path, mut_path,
-     attrs_path, mis_path, va_path) = sys.argv[1:8]
+     attrs_path, mis_path, va_path, vabias_path) = sys.argv[1:9]
 
     pdata = open(prov_path, "rb").read()
     pdirs, psecs = parse_headers(pdata)
@@ -357,37 +393,40 @@ def main() -> None:
     crossmark_ordinal = px["ordinal_base"] + crossmark_idx
     print(f"  patcher: provider stamp {stamp:#x}; crossfn ordinal {crossfn_ordinal}, "
           f"crossmark ordinal {crossmark_ordinal} -- OK")
-    all_paths = [good_path, bad_path, mut_path, attrs_path, mis_path, va_path]
-    if len(set(all_paths)) != 6:
-        die("the six carriers must be SEPARATE files")
+    all_paths = [good_path, bad_path, mut_path, attrs_path, mis_path, va_path, vabias_path]
+    if len(set(all_paths)) != 7:
+        die("the seven carriers must be SEPARATE files")
 
-    for label, path, dll_name, imports, dw_ts, gr_attrs, mismatch, expect in (
+    for label, path, dll_name, imports, dw_ts, gr_attrs, mismatch, va_form, expect in (
         ("delaygood", good_path, PROVIDER_NAME,
-         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 1, False,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 1, False, False,
          "EAGER-RESOLVE expected"),
-        ("delaybad", bad_path, b"nowhere.dll", [("name", b"crossfn")], 0, 1, False,
+        ("delaybad", bad_path, b"nowhere.dll", [("name", b"crossfn")], 0, 1, False, False,
          "MissingDelayDllImport refusal expected"),
         ("delaymut", mut_path, PROVIDER_NAME,
-         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], stamp + 1, 1, False,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], stamp + 1, 1, False, False,
          "MalformedDelayImport (dwTimeStamp) refusal expected"),
         ("delayattrs", attrs_path, PROVIDER_NAME,
-         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 3, False,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 3, False, False,
          "MalformedDelayImport (grAttrs) refusal expected"),
         ("delaymis", mis_path, PROVIDER_NAME,
-         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 1, True,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 1, True, False,
          "MalformedDelayImport (INT != IAT) refusal expected"),
         ("delayva", va_path, PROVIDER_NAME,
-         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 0, False,
-         "MalformedDelayImport (VA form) refusal expected"),
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 0, False, False,
+         "MalformedDelayImport (VA form, fields below base) refusal expected"),
+        ("delayvabias", vabias_path, PROVIDER_NAME,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 0, False, True,
+         "MalformedDelayImport (VA form, relocated image) refusal expected"),
     ):
         bio = bytearray(open(path, "rb").read())
         bdirs, bsecs = parse_headers(bytes(bio))
         if bdirs[13] != (0, 0):
             die(f"the {label} carrier already carries a delay directory (double patch?)")
         base_rva, dir_size = compose_delay_dir(
-            bio, bsecs, bdirs, dll_name, imports, dw_ts, gr_attrs, mismatch)
+            bio, bsecs, bdirs, dll_name, imports, dw_ts, gr_attrs, mismatch, va_form)
         verify_delay_dir(bytes(bio), base_rva, dir_size, dll_name, imports, dw_ts,
-                         gr_attrs, mismatch)
+                         gr_attrs, mismatch, va_form)
         open(path, "wb").write(bytes(bio))
         print(f"  patcher: {label} composed at rva {base_rva:#x} ({dir_size} bytes): "
               f"{dll_name.decode()} with {len(imports)} import(s), grAttrs {gr_attrs:#x}, "

@@ -150,6 +150,12 @@ static DELAY_MUT_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_dela
 static DELAY_ATTRS_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_attrs.exe");
 static DELAY_MIS_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_mis.exe");
 static DELAY_VA_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_va.exe");
+/// The GENUINELY VA-form carrier: fields composed as absolute VAs of its
+/// own (LOW) preferred ImageBase -- a descriptor field is 32 bits, so
+/// only an image below 4 GiB can carry the pre-VC7 form at all. It is
+/// loaded at a BIAS, where every baked VA is stale by construction: the
+/// one case the descriptor-level relocated-image ruling exists for.
+static DELAY_VABIAS_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_vabias.exe");
 
 /// The files' own fixed `ImageBase`s, pinned by the layout gate AND by
 /// the build (--image-base on both links). Both bases sit in private
@@ -199,6 +205,13 @@ const DELAYMUT_IMAGE_BASE: u64 = 0x4200_0000_0000;
 const DELAYATTRS_IMAGE_BASE: u64 = 0x4300_0000_0000;
 const DELAYMIS_IMAGE_BASE: u64 = 0x4400_0000_0000;
 const DELAYVA_IMAGE_BASE: u64 = 0x4500_0000_0000;
+/// The VA-form carrier's LOAD base (not its preferred base -- see
+/// `DELAYVABIAS_FILE_BASE`): private PML4 index 0x8C, canonical.
+const DELAYVABIAS_IMAGE_BASE: u64 = 0x4600_0000_0000;
+/// Its FILE's own ImageBase, pinned by the gate too: the classic PE base
+/// 0x40_0000. It is never loaded there (PML4 index 0 is the shared
+/// identity subtree); it exists so the descriptor's VA fields fit.
+const DELAYVABIAS_FILE_BASE: u64 = 0x0040_0000;
 /// The WRONG bound value `tools/patch_pe_bound.py` composes into the
 /// bad client's single IAT slot (the patcher's WRONG constant,
 /// mirrored here; its own re-parse guards the file side, and the
@@ -406,6 +419,40 @@ unsafe fn run_delay_structural_controls(
         ),
         other => panic!(
             "negative control 14 failed: expected the typed VA-form refusal, got {:?}",
+            other.err()
+        ),
+    }
+    // Control 15's preconditions are FACTS read from the carrier file, not
+    // assumptions about how build.sh happened to link it: the file's own
+    // ImageBase must be the low one (that is what makes its VA fields
+    // expressible), and the base this control loads it at must differ
+    // from it (that is what makes the descriptor stale).
+    let e_lfanew = u32::from_le_bytes(
+        DELAY_VABIAS_CLIENT[0x3c..0x40].try_into().unwrap(),
+    ) as usize;
+    let file_base_at = e_lfanew + 4 + 20 + 24;
+    let file_base = u64::from_le_bytes(
+        DELAY_VABIAS_CLIENT[file_base_at..file_base_at + 8].try_into().unwrap(),
+    );
+    assert_eq!(
+        file_base, DELAYVABIAS_FILE_BASE,
+        "the VA-form carrier must be linked at its low preferred base"
+    );
+    assert_ne!(
+        file_base, DELAYVABIAS_IMAGE_BASE,
+        "the VA-form carrier must be LOADED away from its preferred base for this control"
+    );
+    let dvabias = pe::load(DELAY_VABIAS_CLIENT, mapper, fa, DELAYVABIAS_IMAGE_BASE)
+        .unwrap_or_else(|e| panic!("failed to load the VA-form carrier at a bias: {:?}", e));
+    match pe::resolve_delay_imports(DELAYVABIAS_IMAGE_BASE, mapper, dvabias.image_max_rva, reg) {
+        Err(pe::PeError::MalformedDelayImport(
+            "delay VA-form descriptor in a relocated image",
+        )) => serial_println!(
+            "  experimental pe-import-demo: negative control 15 -- the DELAYVABIAS carrier (real VA-form descriptor of ImageBase {:#x}, loaded at {:#x}) refused with the typed MalformedDelayImport -- OK, a pre-VC7 descriptor's baked VAs are refused in a relocated image instead of being reinterpreted against the wrong base",
+            file_base, DELAYVABIAS_IMAGE_BASE
+        ),
+        other => panic!(
+            "negative control 15 failed: expected the typed relocated VA-form refusal, got {:?}",
             other.err()
         ),
     }

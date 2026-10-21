@@ -86,7 +86,7 @@ and `qemu-system-x86_64`. On Ubuntu the last three are `apt` packages;
 | Guarded kernel stacks under every live task | `src/memory/kernel_stack.rs`, `experimental/address_space.rs`, `experimental/scheduler.rs` | ✅ NPS-001-grounded |
 | ACPI RSDP validation + reclaimable-memory release | `src/acpi.rs`, `src/memory/frame_allocator.rs` | ✅ NPS-001-grounded |
 | Minimal PE32+ (Windows) loader | `src/experimental/pe.rs`, `pe_demo.rs` | 🔷 first real Phase 5 capability |
-| PE32+ import resolution: GetProcAddress-complete (named/ordinal/forwarded exports) + bound imports (stamp-verified honor / visible stale discard, forwarder refs incl. two-ref chains) + delay-load imports (eager resolve through the same registry, typed refusals of old-BIND descriptors and of structural corruption: unknown grAttrs, broken INT==IAT, pre-VC7 VA form) | `src/experimental/pe_import_demo.rs` | 🔷 Phase 5 increment |
+| PE32+ import resolution: GetProcAddress-complete (named/ordinal/forwarded exports) + bound imports (stamp-verified honor / visible stale discard, forwarder refs incl. two-ref chains) + delay-load imports (eager resolve through the same registry, typed refusals of old-BIND descriptors and of structural corruption: unknown grAttrs, broken INT==IAT, pre-VC7 VA form, and a real VA-form descriptor in a relocated image) | `src/experimental/pe_import_demo.rs` | 🔷 Phase 5 increment |
 | Minimal DEX (Android) parser + checksum/SHA-1 verify | `src/experimental/dex.rs`, `crypto.rs`, `dex_demo.rs` | 🔷 first real Phase 6 capability |
 
 🔶 **"Pre-normative" is a real, repo-enforced distinction, not hedging.**

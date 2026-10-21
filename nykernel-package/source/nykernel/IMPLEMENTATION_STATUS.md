@@ -1287,7 +1287,7 @@ contradiction refused with its own typed name.
 - **The carriers are composed, checked, and re-parsed**
   (`tools/patch_pe_delay.py` + `userprog/prog_pe_delay.s`, the same
   discipline `patch_pe_bound.py`/`patch_pe_forwarders.py`/
-  `patch_weak_verneed.py` established): SIX toolchain-raw
+  `patch_weak_verneed.py` established): SEVEN toolchain-raw
   no-import PE32+ clients get their `IMAGE_DELAYLOAD_DESCRIPTOR`
   surfaces composed into the `.idata` section's own in-block padding
   (VirtualSize grows, SizeOfRawData stays), then the result is
@@ -1302,7 +1302,10 @@ contradiction refused with its own typed name.
   INT[0] names crossfn: the broken unbound pre-state) and `delayva`
   (`grAttrs = 0`, the pre-VC7 VA form, with the fields left as the
   RVAs the canonical layout computes -- every one far below the
-  image's own ImageBase). The layout gate pins
+  image's own ImageBase) -- and a FOURTH, `delayvabias`: the genuine
+  VA-form carrier, linked at `0x40_0000` so its 32-bit VA fields fit,
+  and loaded away from that base (see the relocated branch below). The
+  layout gate pins
   each file's dir[13] independently: the span sits exactly at
   `.idata` vaddr + (grown vsize - dir size), grAttrs is
   `dlattrRva`, bound/unload RVAs are zero, the name is exact, IAT ==
@@ -1313,7 +1316,7 @@ contradiction refused with its own typed name.
   contradiction pinned per carrier (the gate asserts `delaymis`'s IAT
   IS the ordinal thunk and its INT IS the named blob, so that file
   can never start refusing for a different reason).
-- **Six boot controls through the real bytes** (`pe_import_demo`,
+- **Seven boot controls through the real bytes** (`pe_import_demo`,
   in two non-inlined frames -- the structural family got its own so
   three more mapped images' locals never touch the boot frame's
   measured peak): control 9 is the positive
@@ -1338,12 +1341,29 @@ contradiction refused with its own typed name.
   the intended refusal. That distinction is the whole point of the
   family -- these three reasons were code-verified only until a
   composed file made the kernel say them at boot.
-- **The remaining unpinned reason is stated, not hidden:** the
-  VA-form-in-a-RELOCATED-image branch (`load_base != preferred_base`)
-  still has no carrier (it needs an image loaded at a bias while
-  carrying VA-form descriptors); along with the descriptor/thunk
-  array caps it is the last `MalformedDelayImport` surface that is
-  code-verified rather than boot-controlled.
+- **The relocated VA-form branch, and the DEAD CODE the attempt
+  found** (control 15, `delayvabias`): a descriptor field is 32 bits,
+  so a genuine pre-VC7 VA-form descriptor exists only for an image
+  below 4 GiB -- this carrier is linked at the classic `0x40_0000`
+  and LOADED at `0x4600_0000_0000` (never at its own base: index 0 is
+  the shared identity subtree). Composing it exposed a real bug in the
+  walk's VA decode: the bounds test compared the VA ITSELF against
+  `max_rva`, which no real VA can pass, so every VA-form field was
+  refused as "below the preferred image base" and -- worse -- the
+  relocated-image branch BELOW it could never be reached at all. Fixed
+  at cause: relocation is now a DESCRIPTOR-level question, decided once
+  before any field is touched (a relocated image's baked VAs are all
+  stale by the same delta), and the decode checks the DERIVED RVA
+  against the mapped footprint, with its own message ("beyond the
+  image's mapped footprint"). The demo pins the carrier's preconditions
+  from the FILE (its own ImageBase is the low one; the load base is not
+  it) rather than trusting the link line, and the gate pins both bases
+  plus the fact that all four address fields really are VAs of the low
+  base.
+- **What is still code-verified, stated plainly:** only the
+  descriptor-array (16) and thunk-array (64) caps have no composed
+  carrier -- an unbounded surface is a shape no small fixture can
+  honestly express without a 16-descriptor file.
 - **Two real bugs, both fixed at cause.** (1) The delay section's
   locals pushed the boot function's kernel-frame peak past the guard
   page, and the first boots double-faulted SEVERAL CONTROLS EARLIER
@@ -1373,11 +1393,12 @@ contradiction refused with its own typed name.
   reverted to the committed state and the build + boot re-run green,
   so the gate is proven to REFUSE the class it exists for rather than
   merely to pass the good files.
-- **Verified:** `./build.sh` exit 0 (all fifteen PE link products + the
-  delay-composition block for six carriers + the canonical-base
+- **Verified:** `./build.sh` exit 0 (all sixteen PE link products + the
+  delay-composition block for seven carriers + the canonical-base
   rule), `tools/qemu_boot_test.sh` exit 0 (`PASS: kernel reached
-  BootPhase::Ready and exited cleanly`), controls 1-14 all `OK` in
-  one boot, and zero `[dbg`/`TEMP BISECT` residue in `src/`.
+  BootPhase::Ready and exited cleanly`), controls 1-15 all `OK` in
+  three consecutive boots (269 OK lines each), and zero
+  `[dbg`/`TEMP BISECT` residue in `src/`.
 
 ## What does NOT exist yet (do not assume otherwise)
 
