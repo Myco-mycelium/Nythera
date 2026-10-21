@@ -11,6 +11,18 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The PE links' TimeDateStamp is time(2) at link time by default; the
+# bound-import composition reads it back through SEVERAL files' own
+# tables (the provider's .edata, whose stamp the bound/carrier
+# descriptors must equal, and the forwarder host's, whose stamp the
+# ref-aware descriptors declare), so two DLLs linked across a
+# wall-clock second boundary compose into a build-second flake the
+# layout gate (correctly) refuses. binutils' PE linker honors
+# SOURCE_DATE_EPOCH -- a fixed epoch makes every PE link in one build
+# carry the SAME stamp, deterministically. Verified empirically: two
+# links two seconds apart produce identical stamps.
+export SOURCE_DATE_EPOCH=946684800
+
 # The freestanding target spec asks for `rust-lld` by name (linker-flavor
 # gnu-lld). A rustup toolchain ships rust-lld inside its sysroot bin
 # directory, which is NOT on PATH by default, so a bare `./build.sh` would
@@ -167,6 +179,13 @@ ld -m i386pep --subsystem native -e _start --image-base=0x500000000000 -o userpr
 as --64 userprog/prog_pe_bound_ref2stale.s -o userprog/prog_pe_bound_ref2stale.o
 ld -m i386pep --subsystem native -e _start --image-base=0x600000000000 -o userprog/userprog_pe_bound_ref2stale.exe userprog/prog_pe_bound_ref2stale.o userprog/userprog_pe_import_fwdprov.dll
 python3 tools/patch_pe_bound.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_fwdprov.dll userprog/userprog_pe_import_app.exe userprog/userprog_pe_bound_bad.exe userprog/userprog_pe_bound_refstale.exe userprog/userprog_pe_bound_ref2bad.exe userprog/userprog_pe_bound_ref2stale.exe
+
+echo "==> link userprog pe-delay CARRIERS (three no-import, toolchain-raw PE32+ clients; the DELAY-LOAD increment probes their composed IMAGE_DELAYLOAD_DESCRIPTOR surfaces: eager-resolve, MissingDelayDllImport refusal, dwTimeStamp!=0 refusal)"
+as --64 userprog/prog_pe_delay.s -o userprog/prog_pe_delay.o
+ld -m i386pep --subsystem native -e _start --image-base=0x700000000000 -o userprog/userprog_pe_delay_good.exe userprog/prog_pe_delay.o
+ld -m i386pep --subsystem native -e _start --image-base=0x410000000000 -o userprog/userprog_pe_delay_bad.exe userprog/prog_pe_delay.o
+ld -m i386pep --subsystem native -e _start --image-base=0x420000000000 -o userprog/userprog_pe_delay_mut.exe userprog/prog_pe_delay.o
+python3 tools/patch_pe_delay.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_delay_good.exe userprog/userprog_pe_delay_bad.exe userprog/userprog_pe_delay_mut.exe
 
 echo "==> readelf LAYOUT GATE: every embedded userprog artifact is fact-checked (SONAMEs, version tables, NEEDED chains, PLT/JUMP_SLOT, WEAK dynsym, PE edata/idata) BEFORE kernel code ever sees them"
 ./tools/verify_prog_layout.sh

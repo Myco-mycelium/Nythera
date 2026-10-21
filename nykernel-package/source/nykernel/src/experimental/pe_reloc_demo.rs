@@ -60,7 +60,19 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
     let fa = FRAME_ALLOCATOR.as_mut().unwrap();
 
-    let mut space = AddressSpace::new_sharing_kernel(fa)
+    // This stage's kernel stack is sized DELIBERATELY (8 pages, not
+    // the one-size default of 5): the on_trap continuation below
+    // CHAINS into pe_import_demo::start with an ordinary call, so this
+    // stack hosts not only this stage's own body but the whole
+    // pe-import demo's body too -- and that fact family has grown
+    // round by round (imports, forwarders, bounds, forwarder refs,
+    // two-ref chains, delay-loads) until the first delay-load boots
+    // overflowed the default budget loudly at the guard page (a #DF,
+    // zero corruption -- exactly the failure the guard exists to
+    // surface). Per-stage budgeting is the established mechanism: the
+    // accumulated-chain era used 8 pages before the chain partitioned;
+    // this stage's measured need today is the same 8.
+    let mut space = AddressSpace::new_sharing_kernel_with_stack_pages(fa, 8)
         .unwrap_or_else(|_| panic!("failed to build pe_reloc_demo address space"));
     space.activate();
     let mut mapper = space.mapper();

@@ -26,8 +26,16 @@
 //! typed `BoundValueCorrupt` refusal otherwise: stamps are never
 //! trusted blindly); a mismatched (stale) stamp DISCARDS the pre-bound
 //! values and resolves through the registry exactly as if the file
-//! had never been bound. Still deliberately out of scope: delay-load
-//! imports, resources, exception tables, and any Win32 API surface. Base relocations (`.reloc`) ARE supported: loading at a
+//! had never been bound. Delay-load imports ARE supported (2026-10-21
+//! increment): the `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT` walk resolves
+//! every descriptor's IAT EAGERLY at load time through the same
+//! registry (named and ordinal shapes, forwarder chase included) and
+//! stores the provider's mapped base as the module handle -- the
+//! documented kernel divergence, since there is no ring-3
+//! `__delayLoadHelper2` fault protocol to defer to; a `dwTimeStamp !=
+//! 0` (old-BIND) descriptor is REFUSED rather than honored or
+//! silently ignored. Still deliberately out of scope: resources,
+//! exception tables, and any Win32 API surface. Base relocations (`.reloc`) ARE supported: loading at a
 //! `load_bias` other than the file's own `ImageBase` applies every
 //! `IMAGE_REL_BASED_DIR64`/`HIGHLOW` entry, so an ASLR-style binary
 //! runs at the loader-chosen address -- the PE mirror of
@@ -157,6 +165,19 @@ pub enum PeError {
     /// GNU ld artifact leaves `.idata` writable); the loader refuses
     /// rather than grant-write a section the file did not ask for.
     ImportSectionNotWritable,
+    /// The delay-load directory (`IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT`,
+    /// `IMAGE_DELAYLOAD_DESCRIPTOR` per MS `delayimp.h`) is malformed:
+    /// an unbounded descriptor array, a descriptor without a module
+    /// name or IAT, unknown `grAttrs` bits (the Windows helper itself
+    /// treats bad attributes as unrecoverable), a pre-VC7 VA-form
+    /// descriptor in a relocated image, an IAT/INT mismatch, or a
+    /// `dwTimeStamp != 0` (old-BIND) descriptor. Typed refusals,
+    /// never silently degraded.
+    MalformedDelayImport(&'static str),
+    /// A delay-load descriptor's DLL name matched no registered
+    /// provider: typed, distinct from the normal import walk's
+    /// `MissingDllImport` so the refusal names WHICH table failed.
+    MissingDelayDllImport,
 }
 
 pub struct LoadedPe {
@@ -490,6 +511,15 @@ unsafe fn read_u32_at(load_base: u64, rva: u64, max_rva: u64) -> Result<u32, PeE
     Ok(core::ptr::read_unaligned(p))
 }
 
+/// The mapped image's own preferred `ImageBase` (optional-header field),
+/// read from MAPPED bytes -- used only by the delay-load walk's
+/// pre-VC7 VA-form decode (a VA descriptor field minus the preferred
+/// base). Bounded by `max_rva` like every mapped read here.
+unsafe fn read_mapped_image_base(load_base: u64, max_rva: u64) -> Result<u64, PeError> {
+    let e_lfanew = read_u32_at(load_base, 0x3c, max_rva)? as u64;
+    read_u64_at(load_base, e_lfanew + 4 + 20 + 24, max_rva)
+}
+
 /// A data-directory entry from the optional header, bounds-checked
 /// against `NumberOfRvaAndSizes` -- a header that does not even declare
 /// index N answers `DataDirectoryAbsent(N)`.
@@ -573,6 +603,13 @@ pub enum ImportOrigin {
     /// per-descriptor re-snap (ReactOS `LdrpHandleOneNewFormatImport
     /// Descriptor`), not a per-slot carve-out.
     StaleRefDiscarded,
+    /// A DELAY-LOAD import resolved EAGERLY at load time (the
+    /// documented kernel divergence: the kernel has no first-call
+    /// delay-helper fault protocol, so `resolve_delay_imports`
+    /// resolves the delay directory's IAT slots through the same
+    /// registry the normal walk uses; the client's own code then loads
+    /// through them exactly as if it were bound at link time).
+    DelayResolved,
 }
 
 #[derive(Debug)]
@@ -610,6 +647,27 @@ pub struct ImportResolution {
 impl ImportResolution {
     pub fn none() -> ImportResolution {
         ImportResolution { facts: Vec::new(), bound_modules: Vec::new() }
+    }
+}
+
+/// The delay-load directory (`IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT`) as
+/// parsed and resolved: per-descriptor resolution facts in the SAME
+/// shape the normal walk reports (`ResolvedImport` with `origin =
+/// DelayResolved`), plus each descriptor's module name, its declared
+/// `dwTimeStamp` and (absolute) the module-handle slot the ruling
+/// wrote the provider's mapped base into (slot address 0 when the
+/// descriptor carried no `rvaHmod`).
+#[derive(Debug)]
+pub struct DelayImportResolution {
+    pub facts: Vec<ResolvedImport>,
+    /// (module name, declared dwTimeStamp, handle slot address), as
+    /// read, in descriptor order.
+    pub modules: Vec<(NameBuf, u32, u64)>,
+}
+
+impl DelayImportResolution {
+    pub fn none() -> DelayImportResolution {
+        DelayImportResolution { facts: Vec::new(), modules: Vec::new() }
     }
 }
 
@@ -927,6 +985,240 @@ pub unsafe fn resolve_imports(
         i += 1;
     }
     Ok(ImportResolution { facts, bound_modules })
+}
+
+/// Walks a loaded image's `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT` directory
+/// (MS `ImgDelayDescr`, 8 DWORD fields: `grAttrs, rvaDLLName, rvaHmod,
+/// rvaIAT, rvaINT, rvaBoundIAT, rvaUnloadIAT, dwTimeStamp`) and resolves
+/// every delay import EAGERLY at load time -- the documented kernel
+/// divergence: Windows defers the resolution to the client's first call
+/// through the delay helper (`__delayLoadHelper2`), a ring-3 fault
+/// protocol this kernel does not host; the kernel resolves the delay
+/// IAT through the SAME registry the normal walk uses (named and
+/// ordinal shapes, forwarder chase included), writes the resolved
+/// pointer into the delay IAT slot, and stores the provider's mapped
+/// base as the module handle at `rvaHmod` -- after which the client's
+/// own code loads through the slots exactly as if it were bound at
+/// link time. Facts are reported in the standard `ResolvedImport`
+/// shape with `origin = DelayResolved`.
+///
+/// Bounded and typed everywhere: descriptor array capped at 16, each
+/// IAT/INT thunk array capped at 64, names through the 64-byte-cap
+/// reader; unknown `grAttrs` bits are refused (the Windows helper
+/// treats bad attributes as unrecoverable too); a pre-VC7 VA-form
+/// descriptor is decoded as `VA - preferred ImageBase` and REFUSED in
+/// a relocated image (the baked VAs would be stale); the INT is the
+/// name source when present and every INT entry must equal its IAT
+/// entry (the unbound pre-state this walk resolves -- an
+/// already-resolved or altered IAT is a malformed surface, not a
+/// guess); `rvaBoundIAT`/`rvaUnloadIAT` are tolerated (they serve
+/// Windows's unbind/unload bookkeeping, not resolution) but a
+/// nonzero `dwTimeStamp` (old-.BIND) is REFUSED: the kernel does not
+/// honor a binding guarantee it cannot verify, and is not silently
+/// ignored either.
+///
+/// # Safety
+/// `load_base` names a loader-mapped image; the registry lookup may
+/// read provider images the CALLER loaded and registered. Runs with
+/// the image's address space active.
+pub unsafe fn resolve_delay_imports(
+    load_base: u64,
+    mapper: &mut OffsetPageTable<'static>,
+    max_rva: u64,
+    registry: &DllRegistry,
+) -> Result<DelayImportResolution, PeError> {
+    let (dir_rva, dir_size) = read_data_directory_absent_ok(load_base, 13)?;
+    if dir_rva == 0 || dir_size == 0 {
+        return Ok(DelayImportResolution::none());
+    }
+    let dir_end = match (dir_rva as u64).checked_add(dir_size as u64) {
+        None => return Err(PeError::MalformedDelayImport("delay directory overflow")),
+        Some(end) if end > max_rva => {
+            return Err(PeError::MalformedDelayImport("delay directory outside image"))
+        }
+        Some(end) => end,
+    };
+    // The preferred base, mapped-read once: needed only by the VA-form
+    // decode, and used to refuse a VA-form descriptor in a relocated
+    // image.
+    let preferred_base = read_mapped_image_base(load_base, max_rva)?;
+    const ATTRS_RVA_FORM: u32 = 0x1; // dlattrRva -- the ONLY documented attribute
+    const DELAY_MAX_DESCRIPTORS: u64 = 16;
+    const DELAY_MAX_THUNKS: u64 = 64;
+
+    let mut facts: Vec<ResolvedImport> = Vec::new();
+    let mut modules: Vec<(NameBuf, u32, u64)> = Vec::new();
+    let mut d: u64 = 0;
+    loop {
+        if d >= DELAY_MAX_DESCRIPTORS {
+            return Err(PeError::MalformedDelayImport(
+                "delay descriptor array unbounded",
+            ));
+        }
+        let desc_rva = dir_rva as u64 + d * 32;
+        if desc_rva + 32 > dir_end {
+            return Err(PeError::MalformedDelayImport(
+                "a delay descriptor runs past the directory's declared span",
+            ));
+        }
+        let mut f = [0u32; 8];
+        let mut k = 0usize;
+        while k < 8 {
+            f[k] = read_u32_at(load_base, desc_rva + (k as u64) * 4, max_rva)?;
+            k += 1;
+        }
+        if f.iter().all(|&v| v == 0) {
+            break; // the delay directory's all-zero terminator
+        }
+        let attrs = f[0];
+        if attrs & !ATTRS_RVA_FORM != 0 {
+            return Err(PeError::MalformedDelayImport(
+                "unknown delay descriptor grAttrs bits",
+            ));
+        }
+        if f[1] == 0 {
+            return Err(PeError::MalformedDelayImport(
+                "delay descriptor without a module name",
+            ));
+        }
+        if f[3] == 0 {
+            return Err(PeError::MalformedDelayImport(
+                "delay descriptor without an IAT",
+            ));
+        }
+        if f[7] != 0 {
+            return Err(PeError::MalformedDelayImport(
+                "bound delay-load descriptors (dwTimeStamp != 0) are out of scope -- refused, not ignored",
+            ));
+        }
+        // Field decode: RVA form is direct; VA form (pre-VC7) is
+        // VA - preferred base, and only decodable in a non-relocated
+        // image (a relocated image's baked VAs are stale):
+        let decode = |field: u32| -> Result<u64, PeError> {
+            if attrs & ATTRS_RVA_FORM != 0 {
+                return Ok(field as u64);
+            }
+            let va = field as u64;
+            if va < preferred_base || va > max_rva {
+                return Err(PeError::MalformedDelayImport(
+                    "delay VA-form descriptor field below the preferred image base",
+                ));
+            }
+            if load_base != preferred_base {
+                return Err(PeError::MalformedDelayImport(
+                    "delay VA-form descriptor in a relocated image",
+                ));
+            }
+            Ok(va - preferred_base)
+        };
+        let name_rva = decode(f[1])?;
+        let hmod_rva = decode(f[2])?;
+        let iat_rva = decode(f[3])?;
+        let int_rva = decode(f[4])?;
+        let dll_name = read_image_name(load_base, name_rva, max_rva)?;
+        let provider = match registry.find(dll_name.as_slice()) {
+            Some(t) => t,
+            None => return Err(PeError::MissingDelayDllImport),
+        };
+        modules.push((
+            dll_name.clone(),
+            f[7],
+            if hmod_rva != 0 { load_base.wrapping_add(hmod_rva) } else { 0 },
+        ));
+
+        // The thunk walk: INT is the name source when present; the
+        // unbound pre-state requires INT == IAT entry-for-entry (an
+        // already-resolved or altered IAT is not what this walk
+        // decides about).
+        let mut j: u64 = 0;
+        loop {
+            if j >= DELAY_MAX_THUNKS {
+                return Err(PeError::MalformedDelayImport(
+                    "delay thunk array unbounded",
+                ));
+            }
+            let int_thunk = read_u64_at(
+                load_base,
+                (if int_rva != 0 { int_rva } else { iat_rva }) + j * 8,
+                max_rva,
+            )?;
+            if int_thunk == 0 {
+                let iat_thunk = read_u64_at(load_base, iat_rva + j * 8, max_rva)?;
+                if iat_thunk != 0 {
+                    return Err(PeError::MalformedDelayImport(
+                        "delay INT terminator ahead of its IAT terminator",
+                    ));
+                }
+                break; // both arrays end together
+            }
+            let iat_thunk = read_u64_at(load_base, iat_rva + j * 8, max_rva)?;
+            if iat_thunk != int_thunk {
+                return Err(PeError::MalformedDelayImport(
+                    "delay INT entry does not match its IAT entry",
+                ));
+            }
+            // The SAME two import shapes the normal walk speaks,
+            // resolved through the SAME registry path (both chase
+            // forwarded exports identically):
+            let (sym, addr) = if int_thunk & (1 << 63) != 0 {
+                let ordinal = int_thunk & !(1u64 << 63);
+                let addr = match registry.resolve_in(provider, None, Some(ordinal))? {
+                    Some(a) => a,
+                    None => return Err(PeError::MissingImport),
+                };
+                (ordinal_label(ordinal), addr)
+            } else {
+                let sym = read_image_name(load_base, thunk_name_rva(int_thunk)?, max_rva)?;
+                let addr = match registry.resolve_in(provider, Some(sym.as_slice()), None)? {
+                    Some(a) => a,
+                    None => return Err(PeError::MissingImport),
+                };
+                (sym, addr)
+            };
+            let slot = load_base
+                .wrapping_add(iat_rva)
+                .wrapping_add(j * 8);
+            let prior = core::ptr::read_unaligned(slot as *const u64);
+            let flags = crate::memory::paging::page_flags_of(
+                mapper,
+                VirtAddr::new(slot),
+            )
+            .ok_or(PeError::ImportSectionNotWritable)?;
+            let flags = flags.map_err(|()| PeError::ImportSectionNotWritable)?;
+            if !flags.contains(x86_64::structures::paging::PageTableFlags::WRITABLE) {
+                return Err(PeError::ImportSectionNotWritable);
+            }
+            core::ptr::write_unaligned(slot as *mut u64, addr);
+            facts.push(ResolvedImport {
+                dll: dll_name.clone(),
+                symbol: sym,
+                slot,
+                value: addr,
+                origin: ImportOrigin::DelayResolved,
+                prior,
+            });
+            j += 1;
+        }
+        // The module handle (`rvaHmod`): the kernel's answer to the
+        // "which module did this resolve against" question is the
+        // provider's mapped base -- written where the client's own
+        // helper protocol would store it.
+        if hmod_rva != 0 {
+            let handle_slot = load_base.wrapping_add(hmod_rva);
+            let flags = crate::memory::paging::page_flags_of(
+                mapper,
+                VirtAddr::new(handle_slot),
+            )
+            .ok_or(PeError::ImportSectionNotWritable)?;
+            let flags = flags.map_err(|()| PeError::ImportSectionNotWritable)?;
+            if !flags.contains(x86_64::structures::paging::PageTableFlags::WRITABLE) {
+                return Err(PeError::ImportSectionNotWritable);
+            }
+            core::ptr::write_unaligned(handle_slot as *mut u64, provider.load_base);
+        }
+        d += 1;
+    }
+    Ok(DelayImportResolution { facts, modules })
 }
 
 /// Reads the bound-import directory's module name at `rva`: a

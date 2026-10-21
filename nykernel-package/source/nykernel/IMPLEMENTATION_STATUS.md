@@ -873,7 +873,9 @@ real `ld -m i386pep` pair built by `build.sh`:
   import-directory resolution, and the faithful IAT consumption.
 
 Deliberate scope (same honest posture as `pe.rs` itself): no delay-load,
-no bound imports, and no Win32 API surface. Two items WRITTEN into this
+no bound imports, and no Win32 API surface. (Both import items WERE in
+this list and are closed by the 2026-10-20 and 2026-10-21 increments
+below.) Two items WRITTEN into this
 list when the increment landed -- "no forwarding exports (the export
 walk refuses an EAT entry pointing back inside the directory rather
 than mis-resolving it)" and "ordinal imports typed
@@ -986,7 +988,9 @@ imports, resources, exception tables, and any Win32 API surface. What
 this is: a real Windows-format import resolver that answers named,
 ordinal, and forwarded exports the way GetProcAddress would. What this
 is not: Windows applications. (Bound imports WERE in this list and are
-closed by the 2026-10-20 increment below.)
+closed by the 2026-10-20 increment below; delay-load imports were in
+it too and are closed by the 2026-10-21 increment at the end of this
+family.)
 
 ## Gap-closure increment (2026-10-20): bound imports -- the stamp is honored exactly as far as it can be VERIFIED
 
@@ -1116,7 +1120,9 @@ this is: a bound-import walk that honors a stamp exactly as far as the
 stamp can be verified and discards it visibly otherwise. (The bound
 descriptors' FORWARDER-REF half -- the per-descriptor
 `NumberOfModuleForwarderRefs` sub-descriptors -- is now its own
-increment, below.) Not Windows either.
+increment, below.) Not Windows either. (Delay-load imports were still
+in the out-of-scope list here and are closed by the 2026-10-21
+increment below.)
 
 ## Gap-closure increment (2026-10-20, second of the day): bound FORWARDER-REFs -- the gate sees THROUGH the composed ref list
 
@@ -1228,7 +1234,111 @@ consumes any number, but no carrier composes three), structural
 `MalformedBoundImport` variants are code-verified but not
 boot-controlled, and Win32 API. The one-ref round's ruling stands
 unchanged for single-ref descriptors; every existing fact, gate
-line, and carrier composes identically.
+line, and carrier composes identically. (Delay-load imports WERE in
+this "still deliberately out" list and are closed by the 2026-10-21
+increment immediately below.)
+
+## Gap-closure increment (2026-10-21): delay-load imports -- resolved EAGERLY, because there is no helper to defer to
+
+`pe.rs`'s last listed import gap (every earlier increment's
+"still deliberately out: delay-load imports") is closed with the
+same posture as the rest of the file: the real directory, walked
+strictly, resolved through the SAME registry, and every
+contradiction refused with its own typed name.
+
+- **The walk** (`pe::resolve_delay_imports`, `DelayImportResolution`):
+  `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT` (dir[13], absent-OK like the
+  other optional directories), descriptors of the genuine 8-DWORD
+  `ImgDelayDescr` (`grAttrs, rvaDLLName, rvaHmod, rvaIAT, rvaINT,
+  rvaBoundIAT, rvaUnloadIAT, dwTimeStamp`), all-zero terminator, the
+  descriptor array capped at 16 and each IAT/INT array at 64 -- an
+  unbounded surface is a `MalformedDelayImport`, never a longer
+  loop. `grAttrs` must be `dlattrRva` (0x1, the only documented
+  attribute); any other bit is refused, as the Windows helper itself
+  treats bad attributes as unrecoverable. Name and IAT are required.
+  The pre-VC7 VA-form descriptor is decoded as `VA - preferred
+  ImageBase` and REFUSED in a relocated image (its baked VAs are
+  stale). The INT is the name source when present and must equal the
+  IAT entry-for-entry through both terminators: the unbound pre-state
+  is what this walk resolves, so an already-resolved or altered IAT
+  is a malformed surface, not a thing to guess about.
+- **The eager-resolution ruling, stated as the divergence it is:**
+  Windows defers each delay import to the client's first call through
+  `__delayLoadHelper2` -- a ring-3 fault protocol this kernel does not
+  host. So the kernel resolves the delay IAT AT LOAD TIME through the
+  same registry the ordinary walk uses (named and ordinal shapes,
+  forwarder chase included), WRITES each slot (an eager resolve is a
+  fresh resolution, never a bound honor), and stores the provider's
+  MAPPED base as the module handle at `rvaHmod` -- after which the
+  client's own code loads through the slots exactly as if it had been
+  bound at link time. Facts surface in the standard `ResolvedImport`
+  shape with a new `ImportOrigin::DelayResolved`, so the demo can pin
+  the origin as well as the values. `rvaBoundIAT`/`rvaUnloadIAT` are
+  tolerated (Windows unbind/unload bookkeeping, not resolution); a
+  nonzero `dwTimeStamp` (the old-.BIND marker) is REFUSED -- a
+  binding guarantee the kernel cannot verify is neither honored nor
+  silently ignored.
+- **Two typed refusals, not one:** a delay descriptor naming an
+  unregistered DLL is `MissingDelayDllImport` (deliberately distinct
+  from the ordinary walk's `MissingDllImport`, so the refusal names
+  WHICH table failed), and every structural violation is
+  `MalformedDelayImport(&'static str)` with the reason in the
+  payload.
+- **The carriers are composed, checked, and re-parsed**
+  (`tools/patch_pe_delay.py` + `userprog/prog_pe_delay.s`, the same
+  discipline `patch_pe_bound.py`/`patch_pe_forwarders.py`/
+  `patch_weak_verneed.py` established): three toolchain-raw
+  no-import PE32+ clients get their `IMAGE_DELAYLOAD_DESCRIPTOR`
+  surfaces composed into the `.idata` section's own in-block padding
+  (VirtualSize grows, SizeOfRawData stays), then the result is
+  re-parsed and the build is refused unless the on-disk bytes are the
+  composed bytes -- `delaygood` (named `crossfn` + ordinal-form
+  `crossmark`, both descriptors fresh, dwTimeStamp 0), `delaybad`
+  (module `nowhere.dll`), `delaymut` (the provider's name with
+  `dwTimeStamp = provider .edata stamp + 1`). The layout gate pins
+  each file's dir[13] independently: the span sits exactly at
+  `.idata` vaddr + (grown vsize - dir size), grAttrs is
+  `dlattrRva`, bound/unload RVAs are zero, the name is exact, IAT ==
+  INT entry-for-entry with both terminators, `dwTimeStamp` is the
+  exact composed value, the span equals the closed-form composed
+  length, and the file's ImageBase equals the demo's constant at a
+  private PML4 index.
+- **Three boot controls through the real bytes** (`pe_import_demo`,
+  in its own `#[inline(never)]` frame): control 9 is the positive
+  half -- both delay imports eagerly resolved to the provider's own
+  `crossfn`/`crossmark` addresses, the priors read back as the
+  composed UNBOUND thunks (the ordinal slot's prior is
+  `ORDINAL_FLAG64 | ord2`, the named slot's a hint/name RVA, never an
+  absolute pointer), both slots WRITTEN and read back, and the module
+  handle == the provider's mapped base -- the eager ruling's answers
+  are the SAME answers the normal walk gives. Controls 10 and 11 are
+  the refusals: `nowhere.dll` -> `MissingDelayDllImport`, and
+  `dwTimeStamp = stamp + 1` -> the typed
+  `MalformedDelayImport("bound delay-load descriptors (dwTimeStamp !=
+  0) are out of scope -- refused, not ignored")`.
+- **Two real bugs, both fixed at cause.** (1) The delay section's
+  locals pushed the boot function's kernel-frame peak past the guard
+  page, and the first boots double-faulted SEVERAL CONTROLS EARLIER
+  than the delay code runs with the same stack pointer every time --
+  the fix is the chain's established rule, non-overlapping locals in
+  their own non-inlined frame, not a bigger stack. (2) The
+  BAD/MUT carriers were first linked at `0x8000_0000_0000` -- **bit
+  47 exactly**, i.e. in 4-level x86-64's NON-CANONICAL hole (bit 47
+  set, bits 63:48 clear), so every byte read of those images #GP(0)'d
+  and the boot hung before control 10's refusal could print. The
+  prove-it step that named the cause in one boot was QEMU's CR2,
+  `0xffff800000000000`: the tentatively-canonical pointer the #GP's
+  own side effect canonicalizes to. The carriers now link at
+  `0x4100_0000_0000` / `0x4200_0000_0000` (free, private, canonical
+  subtrees), and the rule is a GATE rule rather than a comment: every
+  PE carrier's ImageBase is refused at build time unless it is below
+  `2^47` -- a load image may never be linked into the canonical hole
+  again.
+- **Verified:** `./build.sh` exit 0 (all nine PE artifacts + the
+  delay-composition block + the canonical-base rule),
+  `tools/qemu_boot_test.sh` exit 0 (`PASS: kernel reached
+  BootPhase::Ready and exited cleanly`), controls 1-11 all `OK` in
+  one boot, and zero `[dbg`/`TEMP BISECT` residue in `src/`.
 
 ## What does NOT exist yet (do not assume otherwise)
 

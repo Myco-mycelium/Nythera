@@ -559,6 +559,8 @@ if b != db:
 if (b >> 39) != (db >> 39):
     raise SystemExit('FAIL: bad client PML4 index drift')
 idx = db >> 39
+if db >= (1 << 47):
+    raise SystemExit(f'FAIL: BAD_IMAGE_BASE {db:#x} sits in the 4-level x86-64 NON-CANONICAL hole (bit 47 set) -- every access #GP(0)s')
 if idx == 0 or idx >= 512 or idx == 0x80:
     raise SystemExit(f'FAIL: BAD_IMAGE_BASE PML4 index {idx:#x} is not a private fresh index')
 mw = re.search(r'const BOUND_WRONG_VALUE: u64 = (0x[0-9a-fA-F_]+);', demo)
@@ -587,9 +589,162 @@ for base_const, path, label in (
     if got_base != want_base:
         raise SystemExit(f'FAIL: {label} ImageBase {got_base:#x} != demo {base_const} {want_base:#x}')
     pidx = want_base >> 39
+    if want_base >= (1 << 47):
+        raise SystemExit(f'FAIL: {label} ImageBase {want_base:#x} sits in the 4-level x86-64 NON-CANONICAL hole (bit 47 set, bits 63:48 clear) -- every access to the image #GP(0)s; link it below 2^47')
     if pidx == 0 or pidx >= 512 or pidx == 0x80:
         raise SystemExit(f'FAIL: {label} PML4 index {pidx:#x} is not a private fresh index')
-    print(f'  layout-gate: {label} ImageBase {want_base:#x} (PML4 index {pidx:#x}, private) -- OK')
+    print(f'  layout-gate: {label} ImageBase {want_base:#x} (PML4 index {pidx:#x}, private, below 2^47) -- OK')
+EOF
+
+# ---- PE DELAY-LOAD composition: the three carriers' [13] facts, from
+# the FILES: dir[13] present with a canonical composed span, no
+# ordinary import directory at all (toolchain-raw no-import clients),
+# grAttrs = dlattrRva (the only documented attribute), zero bound and
+# unload RVAs, exact names, exact IAT == INT arrays (entry-for-entry,
+# terminator included), the exact composed dwTimeStamp, and the exact
+# private PML4-index ImageBases the demo consts declare.
+python3 - <<'EOF' || exit 1
+import re, struct
+
+def pe_dirs_sorted(data):
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    opt = e + 4 + 20
+    ndirs = struct.unpack_from('<I', data, opt + 108)[0]
+    return [(struct.unpack_from('<II', data, opt + 112 + i*8)) for i in range(ndirs)], opt
+
+def pe_image_base(data):
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    return struct.unpack_from('<Q', data, e + 4 + 20 + 24)[0]
+
+def edata_stamp(data, opt):
+    erva, esize = struct.unpack_from('<II', data, opt + 112 + 0*8)
+    nsec = struct.unpack_from('<H', data, struct.unpack_from('<I', data, 0x3C)[0] + 6)[0]
+    coff = struct.unpack_from('<I', data, 0x3C)[0] + 4
+    optsize = struct.unpack_from('<H', data, coff + 16)[0]
+    sh = coff + 20 + optsize
+    for i in range(nsec):
+        b = sh + i*40
+        vsize, vaddr, rawsize, raw = struct.unpack_from('<IIII', data, b+8)
+        if vaddr <= erva < vaddr + max(vsize, rawsize):
+            return struct.unpack_from('<I', data, raw + (erva - vaddr) + 4)[0]
+    raise SystemExit('FAIL: provider .edata section not found')
+
+def sections_of(data):
+    nsec = struct.unpack_from('<H', data, struct.unpack_from('<I', data, 0x3C)[0] + 6)[0]
+    coff = struct.unpack_from('<I', data, 0x3C)[0] + 4
+    optsize = struct.unpack_from('<H', data, coff + 16)[0]
+    sh = coff + 20 + optsize
+    out = []
+    for i in range(nsec):
+        b = sh + i*40
+        name = data[b:b+8].rstrip(b'\x00')
+        vsize, vaddr, rawsize, raw = struct.unpack_from('<IIII', data, b+8)
+        out.append((name, vaddr, vsize, rawsize, raw))
+    return out
+
+def rva_at(sections, rva):
+    for name, vaddr, vsize, rawsize, raw in sections:
+        if vaddr <= rva < vaddr + max(vsize, rawsize):
+            return raw + (rva - vaddr)
+    raise SystemExit(f'FAIL: delay rva {rva:#x} not inside any section')
+
+prov = open('userprog/userprog_pe_import_dll.dll','rb').read()
+pdirs, popt = pe_dirs_sorted(prov)
+stamp = edata_stamp(prov, popt)
+demo = open('src/experimental/pe_import_demo.rs').read()
+ord_mark = 1 << 63 | 2
+for base_const, path, label, dll_name, n_imports, dw_ts, first_sym, second_ord in (
+    ('DELAYGOOD_IMAGE_BASE', 'userprog/userprog_pe_delay_good.exe', 'delaygood', b'userprog_pe_import_dll.dll', 2, 0, b'crossfn', ord_mark),
+    ('DELAYBAD_IMAGE_BASE', 'userprog/userprog_pe_delay_bad.exe', 'delaybad', b'nowhere.dll', 1, 0, b'crossfn', None),
+    ('DELAYMUT_IMAGE_BASE', 'userprog/userprog_pe_delay_mut.exe', 'delaymut', b'userprog_pe_import_dll.dll', 2, stamp + 1, b'crossfn', ord_mark),
+):
+    data = open(path, 'rb').read()
+    dirs, _opt = pe_dirs_sorted(data)
+    secs = sections_of(data)
+    # The carrier must be toolchain-raw with NO import: GNU ld still
+    # declares dir[1] for the file (an empty .idata), so the pin is
+    # the stronger, factual form: whatever dir[1] declares, its
+    # descriptor array must be the ALL-ZERO terminator -- a declared
+    # but EMPTY import table, never a descriptor.
+    i_rva, i_size = dirs[1]
+    if i_rva != 0:
+        iat_desc = struct.unpack_from('<IIIII', data, rva_at(secs, i_rva))
+        if any(t != 0 for t in iat_desc):
+            raise SystemExit(f'FAIL: {label} carries a REAL import descriptor (the carrier must be toolchain-raw, no imports)')
+    elif i_size != 0:
+        raise SystemExit(f'FAIL: {label} dir[1] has a size without an rva')
+    drva, dsize = dirs[13]
+    if drva == 0 or dsize == 0:
+        raise SystemExit(f'FAIL: {label} has no delay directory')
+    idata = [s for s in secs if s[0] == b'.idata']
+    if len(idata) != 1:
+        raise SystemExit(f'FAIL: {label} must carry exactly one .idata section')
+    id_vaddr, id_vsize = idata[0][1], idata[0][2]
+    if drva != id_vaddr + id_vsize - dsize:
+        raise SystemExit(f'FAIL: {label} delay dir at {drva:#x}, must sit exactly at .idata vaddr + (grown vsize - dir size) {id_vaddr + id_vsize - dsize:#x}')
+    at = rva_at(secs, drva)
+    fields = struct.unpack_from('<8I', data, at)
+    if fields[0] != 1:
+        raise SystemExit(f'FAIL: {label} grAttrs is {fields[0]:#x}, must be dlattrRva (0x1)')
+    if fields[5] != 0 or fields[6] != 0:
+        raise SystemExit(f'FAIL: {label} rvaBoundIAT/rvaUnloadIAT not zero')
+    if fields[7] != dw_ts:
+        raise SystemExit(f'FAIL: {label} dwTimeStamp is {fields[7]:#x}, composed exactly {dw_ts:#x}')
+    term = struct.unpack_from('<8I', data, at + 32)
+    if any(t != 0 for t in term):
+        raise SystemExit(f'FAIL: {label} delay directory terminator is not the all-zero descriptor')
+    n_at = rva_at(secs, fields[1])
+    got_name = data[n_at: n_at + 64].split(b'\x00')[0]
+    if got_name != dll_name:
+        raise SystemExit(f'FAIL: {label} delay module name {got_name!r} drifted')
+    # The canonical composed span: descriptor(32) + terminator(32) +
+    # name + hmod qword + (n+1)*8 twice (IAT, INT) + ONE hint/name
+    # blob PER NAMED import (the ordinal import composes no blob):
+    blob_len = 2 + len(first_sym) + 1
+    want = 64 + len(dll_name) + 1 + 8 + 2 * (n_imports + 1) * 8 + blob_len
+    if dsize != want:
+        raise SystemExit(f'FAIL: {label} dir[13] size {dsize}, composed exactly {want}')
+    iat_off = rva_at(secs, fields[3])
+    int_off = rva_at(secs, fields[4])
+    for j in range(n_imports + 1):
+        (it,) = struct.unpack_from('<Q', data, iat_off + j*8)
+        (nt,) = struct.unpack_from('<Q', data, int_off + j*8)
+        if it != nt:
+            raise SystemExit(f'FAIL: {label} INT entry {j} != its IAT entry (IAT==INT is the composed pre-state)')
+        if j == n_imports:
+            if it != 0:
+                raise SystemExit(f'FAIL: {label} delay IAT terminator is {it:#x}')
+        elif j == 0:
+            b_at = rva_at(secs, it)
+            (hint,) = struct.unpack_from('<H', data, b_at)
+            sym = data[b_at + 2: b_at + 2 + 16].split(b'\x00')[0]
+            if hint != 0 or sym != first_sym:
+                raise SystemExit(f'FAIL: {label} first named import drifted: hint {hint}, sym {sym!r}')
+        elif second_ord is None:
+            raise SystemExit(f'FAIL: {label} composed exactly {n_imports} imports (extra entry {j})')
+        elif it != second_ord:
+            raise SystemExit(f'FAIL: {label} ordinal import {j} is {it:#x}, composed {second_ord:#x}')
+    mc = re.search(r'const ' + base_const + r': u64 = (0x[0-9a-fA-F_]+);', demo)
+    if not mc:
+        raise SystemExit(f'FAIL: demo {base_const} constant drifted')
+    want_base = int(mc.group(1).replace('_', ''), 16)
+    got_base = pe_image_base(data)
+    if got_base != want_base:
+        raise SystemExit(f'FAIL: {label} ImageBase {got_base:#x} != demo {base_const} {want_base:#x}')
+    pidx = want_base >> 39
+    # The delay-load round's cause-shaped rule: BAD/MUT were first
+    # linked at 0x8000_0000_0000 -- bit 47 EXACTLY, so the base sits in
+    # 4-level x86-64's non-canonical hole and the boot #GP(0)'d on the
+    # very first byte read (QEMU's CR2, 0xffff800000000000, named the
+    # tentatively-canonical pointer). No load image may ever be linked
+    # there again, in any increment.
+    if want_base >= (1 << 47):
+        raise SystemExit(f'FAIL: {label} ImageBase {want_base:#x} sits in the 4-level x86-64 NON-CANONICAL hole (bit 47 set, bits 63:48 clear) -- every access to the image #GP(0)s; link it below 2^47')
+    if pidx == 0 or pidx >= 512 or pidx == 0x80:
+        raise SystemExit(f'FAIL: {label} PML4 index {pidx:#x} is not a private fresh index')
+    kind = ('EAGER-RESOLVE surface' if label == 'delaygood' else
+            ('MissingDelayDllImport surface' if label == 'delaybad' else 'dwTimeStamp!=0 refusal surface'))
+    print(f"  layout-gate: {label} -- dir[13] canonical span {dsize} bytes at the .idata padding, grAttrs=dlattrRva, name {got_name.decode()}, IAT==INT ({n_imports} import(s)), dwTimeStamp {fields[7]:#x}, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private) -- {kind} -- OK")
 EOF
 # ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
 #
@@ -660,6 +815,9 @@ scratch_windows=(
     "0x300000000000 0x300000100000" # bound-import refstale carrier: fixed ImageBase 0x3000_0000_0000 (same never-executed probe-only rule; PML4 index 0x60)
     "0x500000000000 0x500000100000" # two-ref bound-import refusal carrier: fixed ImageBase 0x5000_0000_0000 (PML4 index 0xA0)
     "0x600000000000 0x600000100000" # two-ref bound-import stale carrier: fixed ImageBase 0x6000_0000_0000 (PML4 index 0xC0)
+    "0x700000000000 0x700000100000" # delay-load good carrier: fixed ImageBase 0x7000_0000_0000 (PML4 index 0xE0)
+    "0x410000000000 0x410000100000" # delay-load missing-DLL carrier: fixed ImageBase 0x4100_0000_0000 -- a canonical private subtree (the first failed boot proved 0x8000_0000_0000 is NON-canonical in 4-level x86-64: bit 47 set, upper bits clear, so every read of the image #GP(0)s; QEMU's CR2 showed 0xffff800000000000)
+    "0x420000000000 0x420000100000" # delay-load bound-marker carrier: fixed ImageBase 0x4200_0000_0000 (canonical private subtree, same below-bit-47 rule)
 )
 for art in userprog/userprog_cross_all_lib.elf userprog/userprog_cross_all_lib2.elf \
            userprog/userprog_cross_all.elf userprog/userprog_cross_all2.elf \

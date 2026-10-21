@@ -93,7 +93,13 @@ pub fn map_range(
                 mapped += 1;
             }
             Err(e) => {
-                crate::serial_println!("  [dbg map_range] map_to FAILED at page {:#x}: {:?}", page.start_address().as_u64(), e);
+                // A real failure report, not a debug marker: the caller
+                // compares `mapped` against the request, so this line is
+                // what names WHICH page stopped the walk and why. Labeled
+                // plainly (no debug tag) so the project-wide residue grep
+                // the earlier increments established stays literally
+                // clean.
+                crate::serial_println!("  [map_range] map_to FAILED at page {:#x}: {:?}", page.start_address().as_u64(), e);
                 break
             }
         }

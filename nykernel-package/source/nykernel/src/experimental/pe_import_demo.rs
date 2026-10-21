@@ -126,6 +126,19 @@ static BOUND_REF2BAD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_
 /// ref stamp byte decides refuse-vs-discard across a TWO-ref chain.
 /// See `userprog/prog_pe_bound_ref2stale.s`.
 static BOUND_REF2STALE_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_bound_ref2stale.exe");
+/// The DELAY-LOAD carriers (patch_pe_delay.py): ordinary toolchain-raw
+/// no-import PE32+ clients whose composed `IMAGE_DELAYLOAD_DESCRIPTOR`
+/// surfaces are probed by `pe::resolve_delay_imports` at every boot:
+/// the GOOD carrier eagerly resolves both its delay imports (named
+/// crossfn, ordinal crossmark) through the same registry the normal
+/// walk uses; the BAD carrier declares `nowhere.dll` (typed
+/// MissingDelayDllImport refusal); the MUT carrier declares the
+/// provider with dwTimeStamp = provider stamp + 1 (the old-BIND
+/// marker -> typed MalformedDelayImport refusal). See
+/// `userprog/prog_pe_delay.s`.
+static DELAY_GOOD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_good.exe");
+static DELAY_BAD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_bad.exe");
+static DELAY_MUT_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_mut.exe");
 
 /// The files' own fixed `ImageBase`s, pinned by the layout gate AND by
 /// the build (--image-base on both links). Both bases sit in private
@@ -157,6 +170,18 @@ const REF2BAD_IMAGE_BASE: u64 = 0x5000_0000_0000;
 /// its link; PML4 index 0xC0, a private fresh subtree, same rule as
 /// every other PE base).
 const REF2STALE_IMAGE_BASE: u64 = 0x6000_0000_0000;
+/// The DELAY-LOAD carriers' own fixed ImageBases (--image-base on
+/// each link; private fresh subtrees, same rule as every other PE
+/// base). BAD and MUT are pinned BELOW bit 47 deliberately: the first
+/// failed control-10 boot proved a load image at 0x8000_0000_0000 is
+/// NON-CANONICAL in 4-level x86-64 (bit 47 set, bits 63:48 clear) --
+/// every byte read of it #GP(0)s, and QEMU's CR2 (0xffff800000000000)
+/// named the tentatively-canonical pointer the #GP's UB side effect
+/// canonicalizes to. A load base in the canonical hole is not a
+/// corner case to tolerate; no image may ever be linked there.
+const DELAYGOOD_IMAGE_BASE: u64 = 0x7000_0000_0000;
+const DELAYBAD_IMAGE_BASE: u64 = 0x4100_0000_0000;
+const DELAYMUT_IMAGE_BASE: u64 = 0x4200_0000_0000;
 /// The WRONG bound value `tools/patch_pe_bound.py` composes into the
 /// bad client's single IAT slot (the patcher's WRONG constant,
 /// mirrored here; its own re-parse guards the file side, and the
@@ -188,6 +213,129 @@ const USER_STACK_ADDR: u64 = 0x4000_0001_0000;
 
 static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 
+/// The DELAY-LOAD control family, in its OWN `#[inline(never)]` frame:
+/// the boot function's kernel-stack budget was sized by five rounds of
+/// in-body facts, and the delay section's locals pushed the peak past
+/// the guard page -- the first boots double-faulted several controls
+/// EARLIER than the delay code runs, with the SAME stack pointer every
+/// time. Non-overlapping locals get their own frame: the cause-shaped
+/// fix, not a larger stack.
+///
+/// Control 9 is the eager-resolution ruling's positive half -- both
+/// delay imports resolve through the same registry the normal walk
+/// uses, the slots are WRITTEN (an eager resolve is a fresh
+/// resolution, not a bound honor), and the provider's mapped base is
+/// written as the module handle where the descriptor pointed;
+/// controls 10 and 11 are the refusal half.
+#[inline(never)]
+unsafe fn run_delay_controls(
+    mapper: &mut x86_64::structures::paging::OffsetPageTable<'static>,
+    fa: &mut crate::memory::frame_allocator::BumpFrameAllocator,
+    reg: &pe::DllRegistry,
+) {
+    let dgood = pe::load(DELAY_GOOD_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the delay-load resolution PE: {:?}", e));
+    let dbad = pe::load(DELAY_BAD_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the delay-load missing PE: {:?}", e));
+    let dmut = pe::load(DELAY_MUT_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the delay-load bound PE: {:?}", e));
+    let dres = pe::resolve_delay_imports(
+        DELAYGOOD_IMAGE_BASE,
+        mapper,
+        dgood.image_max_rva,
+        reg,
+    )
+    .unwrap_or_else(|e| panic!("delay-load resolution failed: {:?}", e));
+    assert_eq!(dres.facts.len(), 2, "the delaygood carrier declares exactly two delay imports");
+    let d_fn = dres
+        .facts
+        .iter()
+        .find(|f| f.symbol.as_slice() == b"crossfn")
+        .expect("the named crossfn delay fact must be present");
+    let d_ord = dres
+        .facts
+        .iter()
+        .find(|f| f.symbol.as_slice() == b"ord2")
+        .expect("the ordinal-form crossmark delay fact (ord2) must be present");
+    assert_eq!(d_fn.dll.as_slice(), b"userprog_pe_import_dll.dll", "the delay facts must name the provider");
+    assert_eq!(d_ord.dll.as_slice(), b"userprog_pe_import_dll.dll");
+    assert!(
+        matches!(d_fn.origin, pe::ImportOrigin::DelayResolved)
+            && matches!(d_ord.origin, pe::ImportOrigin::DelayResolved),
+        "every delay fact must carry the DelayResolved origin"
+    );
+    assert_eq!(
+        d_fn.value,
+        PROVIDER_IMAGE_BASE + FN_RVA,
+        "the named delay import must resolve to the provider's crossfn (same registry path as the normal walk)"
+    );
+    assert_eq!(
+        d_ord.value,
+        PROVIDER_IMAGE_BASE + MARK_RVA,
+        "the ordinal delay import must resolve to the provider's crossmark"
+    );
+    assert_eq!(
+        d_ord.prior,
+        0x8000_0000_0000_0002,
+        "the ordinal slot's prior is the composed UNBOUND thunk (ORDINAL_FLAG64 | the provider's own EAT-derived ordinal)"
+    );
+    assert!(
+        d_fn.prior != 0 && d_fn.prior < 0x1_0000 && d_fn.prior != d_fn.value,
+        "the named slot's prior is the composed unbound hint/name RVA (never an absolute pointer)"
+    );
+    for f in dres.facts.iter() {
+        // UNALIGNED read, exactly the resolve walk's own access
+        // discipline: the patcher composes the delay blobs in section
+        // padding with no 8-byte-alignment guarantee (the handle slot
+        // sits at name_foff + len(dll_name), whichever byte that
+        // lands on); a read_volatile here is a false UB alarm, not a
+        // real invariant.
+        let readback = core::ptr::read_unaligned(f.slot as *const u64);
+        assert_eq!(readback, f.value, "delay IAT slot readback mismatch");
+    }
+    assert_eq!(dres.modules.len(), 1, "exactly one delay descriptor parses");
+    assert_eq!(
+        dres.modules[0].0.as_slice(),
+        b"userprog_pe_import_dll.dll",
+        "the delay descriptor must name the provider"
+    );
+    assert_eq!(dres.modules[0].1, 0, "the delaygood descriptor's dwTimeStamp is the composed 0 (not bound)");
+    assert!(dres.modules[0].2 != 0, "the composed rvaHmod names a handle slot");
+    // Same unaligned discipline as the slot readbacks above: the
+    // composed hmod slot's address is load_base + whatever RVA the
+    // patcher's blob arithmetic produced.
+    let handle = core::ptr::read_unaligned(dres.modules[0].2 as *const u64);
+    assert_eq!(
+        handle,
+        PROVIDER_IMAGE_BASE,
+        "the module handle the ruling wrote where the descriptor pointed is the provider's MAPPED base"
+    );
+    serial_println!(
+        "  experimental pe-import-demo: negative control 9 (positive half) -- the DELAYGOOD carrier's two delay imports eagerly resolved through the same registry (named crossfn -> {:#x}, ordinal crossmark -> {:#x}; prior contents were the composed unbound thunks, both slots WRITTEN and read back) and the module handle {:#x} was written where the descriptor pointed -- OK, the eager delay ruling matches the normal walk's answers",
+        d_fn.value, d_ord.value, handle
+    );
+    match pe::resolve_delay_imports(DELAYBAD_IMAGE_BASE, mapper, dbad.image_max_rva, reg) {
+        Err(pe::PeError::MissingDelayDllImport) => serial_println!(
+            "  experimental pe-import-demo: negative control 10 -- the DELAYBAD carrier's delay descriptor naming 'nowhere.dll' refused with the typed MissingDelayDllImport -- OK, the name-vs-file ruling applies to delay descriptors with their OWN flavor"
+        ),
+        other => panic!(
+            "negative control 10 failed: expected MissingDelayDllImport, got {:?}",
+            other.err()
+        ),
+    }
+    match pe::resolve_delay_imports(DELAYMUT_IMAGE_BASE, mapper, dmut.image_max_rva, reg) {
+        Err(pe::PeError::MalformedDelayImport(
+            "bound delay-load descriptors (dwTimeStamp != 0) are out of scope -- refused, not ignored",
+        )) => serial_println!(
+            "  experimental pe-import-demo: negative control 11 -- the DELAYMUT carrier (dwTimeStamp = provider stamp + 1, the OLD-BIND marker) refused with the typed MalformedDelayImport -- OK, a binding guarantee the kernel cannot verify is NEVER silently honored and never silently ignored"
+        ),
+        other => panic!(
+            "negative control 11 failed: expected the typed dwTimeStamp refusal, got {:?}",
+            other.err()
+        ),
+    }
+}
+
 /// Builds an address space, loads provider + client, drives the typed
 /// negative controls, resolves the client's imports for real, states
 /// the structural facts, and enters ring 3 at the client's entry
@@ -207,6 +355,11 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
     let fa = FRAME_ALLOCATOR.as_mut().unwrap();
 
+    // This space's guarded stack keeps the one-size default: the demo
+    // BODY does not run on it (the chain enters this stage through
+    // pe_reloc_demo::on_trap with an ordinary call, so the body lives
+    // on THAT stage's deliberately-sized stack); this space's stack
+    // serves this space's own machine state, like every demo space.
     let mut space = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build pe-import-demo address space"));
     space.activate();
@@ -606,6 +759,14 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
             other.err()
         ),
     }
+
+    // The DELAY-LOAD control family lives in its own non-inlined
+    // frame (see run_delay_controls): the boot function's kernel-stack
+    // budget was sized by five rounds of in-body facts, and the delay
+    // locals pushed the peak past the guard page -- the first boots
+    // double-faulted many controls EARLIER than the delay code runs,
+    // with the SAME stack pointer every time.
+    run_delay_controls(&mut mapper, fa, &reg);
 
     // --- the client's ordinals and forwarders come through the walk
     // with the SAME positive facts the named path gets ---
