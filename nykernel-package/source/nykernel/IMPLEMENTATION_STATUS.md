@@ -1334,6 +1334,17 @@ contradiction refused with its own typed name.
   PE carrier's ImageBase is refused at build time unless it is below
   `2^47` -- a load image may never be linked into the canonical hole
   again.
+- **The new rule was probe-verified, not asserted:** re-linking the
+  `delaybad` carrier at `--image-base=0x800000000000` WITH the demo's
+  `DELAYBAD_IMAGE_BASE` const moved to the same value (so the
+  const-vs-file equality check passes and only the canonicality
+  question is left) makes `./build.sh` exit 1 with
+  `FAIL: delaybad ImageBase 0x800000000000 sits in the 4-level x86-64
+  NON-CANONICAL hole (bit 47 set, bits 63:48 clear) -- every access
+  to the image #GP(0)s; link it below 2^47`. Both edits were then
+  reverted to the committed state and the build + boot re-run green,
+  so the gate is proven to REFUSE the class it exists for rather than
+  merely to pass the good files.
 - **Verified:** `./build.sh` exit 0 (all nine PE artifacts + the
   delay-composition block + the canonical-base rule),
   `tools/qemu_boot_test.sh` exit 0 (`PASS: kernel reached
