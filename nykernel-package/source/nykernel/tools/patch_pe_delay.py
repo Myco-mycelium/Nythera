@@ -41,6 +41,24 @@ CARRIERS:
     old-BIND marker: a binding guarantee the kernel does not honor
     and never silently ignores -> typed MalformedDelayImport refusal.
 
+The three STRUCTURAL carriers (same composition machinery, one
+composed property broken each, so the kernel's other
+MalformedDelayImport reasons get boot-controlled surfaces too -- a
+refusal that is only code-verified is a claim, not a fact):
+  * delayattrs (userprog_pe_delay_attrs.exe): grAttrs = 0x3 -- the
+    documented dlattrRva bit PLUS an undefined one, which the Windows
+    helper itself treats as unrecoverable -> 'unknown delay descriptor
+    grAttrs bits'.
+  * delaymis   (userprog_pe_delay_mis.exe): INT[0] is the named
+    crossfn hint/name RVA while IAT[0] carries an ORDINAL thunk --
+    the unbound pre-state the walk requires (INT == IAT) is broken
+    -> 'delay INT entry does not match its IAT entry'.
+  * delayva    (userprog_pe_delay_va.exe): grAttrs = 0 (the pre-VC7
+    VA form) with the fields left as the RVAs the canonical layout
+    computes -- every value is far below the image's own
+    ImageBase -> 'delay VA-form descriptor field below the preferred
+    image base'.
+
 The RESULT is re-parsed (exact dir[13] bounds, exact fields at exact
 offsets, exact name strings, exact IAT==INT arrays and terminators)
 and the build is refused unless the on-disk state IS the composed
@@ -153,7 +171,8 @@ def export_index_by_name(data: bytes, sections, px, name: bytes):
     die(f"export name {name!r} is absent from the provider's directory")
 
 
-def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts):
+def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts,
+                      gr_attrs=1, mismatch=False):
     """Composes ONE descriptor record (with its marker-free canonical
     layout described in the module docstring) into the .idata in-block
     padding. Returns (base_rva, dir_size)."""
@@ -208,7 +227,9 @@ def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts)
     # writes the provider's mapped base here; the pre-state fact is
     # 'no handle yet'):
     struct.pack_into("<Q", data, hmod_foff, 0)
-    # The arrays: IAT and INT hold the SAME entries, entry-for-entry:
+    # The arrays: IAT and INT hold the SAME entries, entry-for-entry --
+    # except delaymis, whose ONE deliberate difference is the broken
+    # pre-state the kernel's walk must refuse:
     hnl_cursor = 0
     for j, (kind, payload) in enumerate(imports):
         if kind == "name":
@@ -217,7 +238,14 @@ def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts)
             th = hn_rva
         else:
             th = ORDINAL_FLAG64 | payload
-        struct.pack_into("<Q", data, iat_foff + j * 8, th)
+        iat_th = th
+        if mismatch and j == 0:
+            # ONE composed contradiction: the IAT claims an ordinal thunk
+            # while the INT names a symbol. Any value that is NOT the INT
+            # entry would do; a well-formed-looking ordinal is the least
+            # artificial (it is what a half-resolved import looks like).
+            iat_th = ORDINAL_FLAG64 | 1
+        struct.pack_into("<Q", data, iat_foff + j * 8, iat_th)
         struct.pack_into("<Q", data, int_foff + j * 8, th)
     struct.pack_into("<Q", data, iat_foff + n * 8, 0)
     struct.pack_into("<Q", data, int_foff + n * 8, 0)
@@ -230,7 +258,7 @@ def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts)
     iat_rva = base_rva + (iat_foff - base_foff)
     int_rva = base_rva + (int_foff - base_foff)
     fields = (
-        1,          # grAttrs: dlattrRva, the only documented attribute
+        gr_attrs,   # grAttrs: dlattrRva normally; delayattrs/delayva vary it
         name_rva,   # rvaDLLName
         hmod_rva,   # rvaHmod
         iat_rva,    # rvaIAT
@@ -248,7 +276,8 @@ def compose_delay_dir(data: bytearray, sections, dirs, dll_name, imports, dw_ts)
     return base_rva, dir_size
 
 
-def verify_delay_dir(data: bytes, base_rva, dir_size, dll_name, imports, dw_ts):
+def verify_delay_dir(data: bytes, base_rva, dir_size, dll_name, imports, dw_ts,
+                     gr_attrs=1, mismatch=False):
     """Re-parse what we wrote: exact dir[13] bounds, exact 8 fields,
     exact name string, exact IAT==INT arrays and terminators, exact
     hint/name blobs."""
@@ -259,8 +288,8 @@ def verify_delay_dir(data: bytes, base_rva, dir_size, dll_name, imports, dw_ts):
         die(f"re-parse: dir[13] is ({got_rva:#x},{got_size:#x}), composed was ({base_rva:#x},{dir_size:#x})")
     foff, s = rva_to_file(sec2, base_rva)
     fields = struct.unpack_from("<8I", vdata, foff)
-    if fields[0] != 1:
-        die("re-parse: grAttrs is not dlattrRva")
+    if fields[0] != gr_attrs:
+        die(f"re-parse: grAttrs is {fields[0]:#x}, composed {gr_attrs:#x}")
     for k, label in ((1, "rvaDLLName"), (2, "rvaHmod"), (3, "rvaIAT")):
         if fields[k] == 0:
             die(f"re-parse: {label} is zero")
@@ -279,6 +308,13 @@ def verify_delay_dir(data: bytes, base_rva, dir_size, dll_name, imports, dw_ts):
     for j in range(n + 1):
         (it,) = struct.unpack_from("<Q", vdata, iat_foff + j * 8)
         (nt,) = struct.unpack_from("<Q", vdata, int_foff + j * 8)
+        if mismatch and j == 0:
+            # The composed-in contradiction must be EXACTLY there, and
+            # nowhere else: an accidental second one would make the
+            # kernel's refusal ambiguous about which entry it saw.
+            if it == nt:
+                die("re-parse: delaymis's composed IAT/INT difference is gone")
+            continue
         if it != nt:
             die(f"re-parse: INT entry {j} does not equal its IAT entry ({it:#x} vs {nt:#x})")
         if j == n:
@@ -301,9 +337,11 @@ def verify_delay_dir(data: bytes, base_rva, dir_size, dll_name, imports, dw_ts):
 
 
 def main() -> None:
-    if len(sys.argv) != 5:
-        die("usage: patch_pe_delay.py <provider_dll> <delaygood_exe> <delaybad_exe> <delaymut_exe>")
-    prov_path, good_path, bad_path, mut_path = sys.argv[1:5]
+    if len(sys.argv) != 8:
+        die("usage: patch_pe_delay.py <provider_dll> <delaygood_exe> <delaybad_exe> "
+            "<delaymut_exe> <delayattrs_exe> <delaymis_exe> <delayva_exe>")
+    (prov_path, good_path, bad_path, mut_path,
+     attrs_path, mis_path, va_path) = sys.argv[1:8]
 
     pdata = open(prov_path, "rb").read()
     pdirs, psecs = parse_headers(pdata)
@@ -319,27 +357,41 @@ def main() -> None:
     crossmark_ordinal = px["ordinal_base"] + crossmark_idx
     print(f"  patcher: provider stamp {stamp:#x}; crossfn ordinal {crossfn_ordinal}, "
           f"crossmark ordinal {crossmark_ordinal} -- OK")
-    if len({good_path, bad_path, mut_path}) != 3:
-        die("the three carriers must be SEPARATE files")
+    all_paths = [good_path, bad_path, mut_path, attrs_path, mis_path, va_path]
+    if len(set(all_paths)) != 6:
+        die("the six carriers must be SEPARATE files")
 
-    for label, path, dll_name, imports, dw_ts, expect in (
+    for label, path, dll_name, imports, dw_ts, gr_attrs, mismatch, expect in (
         ("delaygood", good_path, PROVIDER_NAME,
-         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, "EAGER-RESOLVE expected"),
-        ("delaybad", bad_path, b"nowhere.dll", [("name", b"crossfn")], 0,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 1, False,
+         "EAGER-RESOLVE expected"),
+        ("delaybad", bad_path, b"nowhere.dll", [("name", b"crossfn")], 0, 1, False,
          "MissingDelayDllImport refusal expected"),
         ("delaymut", mut_path, PROVIDER_NAME,
-         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], stamp + 1,
-         "MalformedDelayImport refusal expected"),
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], stamp + 1, 1, False,
+         "MalformedDelayImport (dwTimeStamp) refusal expected"),
+        ("delayattrs", attrs_path, PROVIDER_NAME,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 3, False,
+         "MalformedDelayImport (grAttrs) refusal expected"),
+        ("delaymis", mis_path, PROVIDER_NAME,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 1, True,
+         "MalformedDelayImport (INT != IAT) refusal expected"),
+        ("delayva", va_path, PROVIDER_NAME,
+         [("name", b"crossfn"), ("ordinal", crossmark_ordinal)], 0, 0, False,
+         "MalformedDelayImport (VA form) refusal expected"),
     ):
         bio = bytearray(open(path, "rb").read())
         bdirs, bsecs = parse_headers(bytes(bio))
         if bdirs[13] != (0, 0):
             die(f"the {label} carrier already carries a delay directory (double patch?)")
-        base_rva, dir_size = compose_delay_dir(bio, bsecs, bdirs, dll_name, imports, dw_ts)
-        verify_delay_dir(bytes(bio), base_rva, dir_size, dll_name, imports, dw_ts)
+        base_rva, dir_size = compose_delay_dir(
+            bio, bsecs, bdirs, dll_name, imports, dw_ts, gr_attrs, mismatch)
+        verify_delay_dir(bytes(bio), base_rva, dir_size, dll_name, imports, dw_ts,
+                         gr_attrs, mismatch)
         open(path, "wb").write(bytes(bio))
         print(f"  patcher: {label} composed at rva {base_rva:#x} ({dir_size} bytes): "
-              f"{dll_name.decode()} with {len(imports)} import(s), dwTimeStamp {dw_ts:#x} -> {expect}")
+              f"{dll_name.decode()} with {len(imports)} import(s), grAttrs {gr_attrs:#x}, "
+              f"dwTimeStamp {dw_ts:#x} -> {expect}")
 
 
 if __name__ == "__main__":

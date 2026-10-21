@@ -653,10 +653,14 @@ pdirs, popt = pe_dirs_sorted(prov)
 stamp = edata_stamp(prov, popt)
 demo = open('src/experimental/pe_import_demo.rs').read()
 ord_mark = 1 << 63 | 2
-for base_const, path, label, dll_name, n_imports, dw_ts, first_sym, second_ord in (
-    ('DELAYGOOD_IMAGE_BASE', 'userprog/userprog_pe_delay_good.exe', 'delaygood', b'userprog_pe_import_dll.dll', 2, 0, b'crossfn', ord_mark),
-    ('DELAYBAD_IMAGE_BASE', 'userprog/userprog_pe_delay_bad.exe', 'delaybad', b'nowhere.dll', 1, 0, b'crossfn', None),
-    ('DELAYMUT_IMAGE_BASE', 'userprog/userprog_pe_delay_mut.exe', 'delaymut', b'userprog_pe_import_dll.dll', 2, stamp + 1, b'crossfn', ord_mark),
+mis_ord = 1 << 63 | 1
+for base_const, path, label, dll_name, n_imports, dw_ts, first_sym, second_ord, gr_attrs, mismatch in (
+    ('DELAYGOOD_IMAGE_BASE', 'userprog/userprog_pe_delay_good.exe', 'delaygood', b'userprog_pe_import_dll.dll', 2, 0, b'crossfn', ord_mark, 1, False),
+    ('DELAYBAD_IMAGE_BASE', 'userprog/userprog_pe_delay_bad.exe', 'delaybad', b'nowhere.dll', 1, 0, b'crossfn', None, 1, False),
+    ('DELAYMUT_IMAGE_BASE', 'userprog/userprog_pe_delay_mut.exe', 'delaymut', b'userprog_pe_import_dll.dll', 2, stamp + 1, b'crossfn', ord_mark, 1, False),
+    ('DELAYATTRS_IMAGE_BASE', 'userprog/userprog_pe_delay_attrs.exe', 'delayattrs', b'userprog_pe_import_dll.dll', 2, 0, b'crossfn', ord_mark, 3, False),
+    ('DELAYMIS_IMAGE_BASE', 'userprog/userprog_pe_delay_mis.exe', 'delaymis', b'userprog_pe_import_dll.dll', 2, 0, b'crossfn', ord_mark, 1, True),
+    ('DELAYVA_IMAGE_BASE', 'userprog/userprog_pe_delay_va.exe', 'delayva', b'userprog_pe_import_dll.dll', 2, 0, b'crossfn', ord_mark, 0, False),
 ):
     data = open(path, 'rb').read()
     dirs, _opt = pe_dirs_sorted(data)
@@ -684,8 +688,8 @@ for base_const, path, label, dll_name, n_imports, dw_ts, first_sym, second_ord i
         raise SystemExit(f'FAIL: {label} delay dir at {drva:#x}, must sit exactly at .idata vaddr + (grown vsize - dir size) {id_vaddr + id_vsize - dsize:#x}')
     at = rva_at(secs, drva)
     fields = struct.unpack_from('<8I', data, at)
-    if fields[0] != 1:
-        raise SystemExit(f'FAIL: {label} grAttrs is {fields[0]:#x}, must be dlattrRva (0x1)')
+    if fields[0] != gr_attrs:
+        raise SystemExit(f'FAIL: {label} grAttrs is {fields[0]:#x}, composed exactly {gr_attrs:#x}')
     if fields[5] != 0 or fields[6] != 0:
         raise SystemExit(f'FAIL: {label} rvaBoundIAT/rvaUnloadIAT not zero')
     if fields[7] != dw_ts:
@@ -709,6 +713,19 @@ for base_const, path, label, dll_name, n_imports, dw_ts, first_sym, second_ord i
     for j in range(n_imports + 1):
         (it,) = struct.unpack_from('<Q', data, iat_off + j*8)
         (nt,) = struct.unpack_from('<Q', data, int_off + j*8)
+        if mismatch and j == 0:
+            # delaymis's single composed contradiction: the INT names
+            # crossfn while the IAT carries an ordinal thunk. Both sides
+            # are pinned, so neither can drift into something the
+            # kernel would refuse for a DIFFERENT reason.
+            if it != mis_ord:
+                raise SystemExit(f'FAIL: {label} composed IAT entry is {it:#x}, must be the ordinal thunk {mis_ord:#x}')
+            b_at = rva_at(secs, nt)
+            (hint,) = struct.unpack_from('<H', data, b_at)
+            sym = data[b_at + 2: b_at + 2 + 16].split(b'\x00')[0]
+            if hint != 0 or sym != first_sym:
+                raise SystemExit(f'FAIL: {label} composed INT entry is not the named blob: hint {hint}, sym {sym!r}')
+            continue
         if it != nt:
             raise SystemExit(f'FAIL: {label} INT entry {j} != its IAT entry (IAT==INT is the composed pre-state)')
         if j == n_imports:
@@ -742,9 +759,17 @@ for base_const, path, label, dll_name, n_imports, dw_ts, first_sym, second_ord i
         raise SystemExit(f'FAIL: {label} ImageBase {want_base:#x} sits in the 4-level x86-64 NON-CANONICAL hole (bit 47 set, bits 63:48 clear) -- every access to the image #GP(0)s; link it below 2^47')
     if pidx == 0 or pidx >= 512 or pidx == 0x80:
         raise SystemExit(f'FAIL: {label} PML4 index {pidx:#x} is not a private fresh index')
-    kind = ('EAGER-RESOLVE surface' if label == 'delaygood' else
-            ('MissingDelayDllImport surface' if label == 'delaybad' else 'dwTimeStamp!=0 refusal surface'))
-    print(f"  layout-gate: {label} -- dir[13] canonical span {dsize} bytes at the .idata padding, grAttrs=dlattrRva, name {got_name.decode()}, IAT==INT ({n_imports} import(s)), dwTimeStamp {fields[7]:#x}, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private) -- {kind} -- OK")
+    kinds = {
+        'delaygood': 'EAGER-RESOLVE surface',
+        'delaybad': 'MissingDelayDllImport surface',
+        'delaymut': 'dwTimeStamp!=0 refusal surface',
+        'delayattrs': 'unknown-grAttrs refusal surface',
+        'delaymis': 'INT!=IAT refusal surface',
+        'delayva': 'VA-form refusal surface',
+    }
+    kind = kinds[label]
+    pre = ('IAT[0] CONTRADICTS INT[0]' if mismatch else f'IAT==INT ({n_imports} import(s))')
+    print(f"  layout-gate: {label} -- dir[13] canonical span {dsize} bytes at the .idata padding, grAttrs={fields[0]:#x}, name {got_name.decode()}, {pre}, dwTimeStamp {fields[7]:#x}, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private) -- {kind} -- OK")
 EOF
 # ---- PE import pair: slot-constant cross-check (the digit-class rule) ----
 #
@@ -818,6 +843,9 @@ scratch_windows=(
     "0x700000000000 0x700000100000" # delay-load good carrier: fixed ImageBase 0x7000_0000_0000 (PML4 index 0xE0)
     "0x410000000000 0x410000100000" # delay-load missing-DLL carrier: fixed ImageBase 0x4100_0000_0000 -- a canonical private subtree (the first failed boot proved 0x8000_0000_0000 is NON-canonical in 4-level x86-64: bit 47 set, upper bits clear, so every read of the image #GP(0)s; QEMU's CR2 showed 0xffff800000000000)
     "0x420000000000 0x420000100000" # delay-load bound-marker carrier: fixed ImageBase 0x4200_0000_0000 (canonical private subtree, same below-bit-47 rule)
+    "0x430000000000 0x430000100000" # delay-load unknown-grAttrs carrier: fixed ImageBase 0x4300_0000_0000 (PML4 index 0x86)
+    "0x440000000000 0x440000100000" # delay-load INT!=IAT carrier: fixed ImageBase 0x4400_0000_0000 (PML4 index 0x88)
+    "0x450000000000 0x450000100000" # delay-load VA-form carrier: fixed ImageBase 0x4500_0000_0000 (PML4 index 0x8A)
 )
 for art in userprog/userprog_cross_all_lib.elf userprog/userprog_cross_all_lib2.elf \
            userprog/userprog_cross_all.elf userprog/userprog_cross_all2.elf \

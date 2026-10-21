@@ -1287,7 +1287,7 @@ contradiction refused with its own typed name.
 - **The carriers are composed, checked, and re-parsed**
   (`tools/patch_pe_delay.py` + `userprog/prog_pe_delay.s`, the same
   discipline `patch_pe_bound.py`/`patch_pe_forwarders.py`/
-  `patch_weak_verneed.py` established): three toolchain-raw
+  `patch_weak_verneed.py` established): SIX toolchain-raw
   no-import PE32+ clients get their `IMAGE_DELAYLOAD_DESCRIPTOR`
   surfaces composed into the `.idata` section's own in-block padding
   (VirtualSize grows, SizeOfRawData stays), then the result is
@@ -1295,16 +1295,28 @@ contradiction refused with its own typed name.
   composed bytes -- `delaygood` (named `crossfn` + ordinal-form
   `crossmark`, both descriptors fresh, dwTimeStamp 0), `delaybad`
   (module `nowhere.dll`), `delaymut` (the provider's name with
-  `dwTimeStamp = provider .edata stamp + 1`). The layout gate pins
+  `dwTimeStamp = provider .edata stamp + 1`) -- plus the three
+  STRUCTURAL carriers, each the canonical composition with exactly one
+  property broken: `delayattrs` (`grAttrs = 0x3`, dlattrRva plus an
+  undefined bit), `delaymis` (IAT[0] carries an ordinal thunk while
+  INT[0] names crossfn: the broken unbound pre-state) and `delayva`
+  (`grAttrs = 0`, the pre-VC7 VA form, with the fields left as the
+  RVAs the canonical layout computes -- every one far below the
+  image's own ImageBase). The layout gate pins
   each file's dir[13] independently: the span sits exactly at
   `.idata` vaddr + (grown vsize - dir size), grAttrs is
   `dlattrRva`, bound/unload RVAs are zero, the name is exact, IAT ==
   INT entry-for-entry with both terminators, `dwTimeStamp` is the
   exact composed value, the span equals the closed-form composed
   length, and the file's ImageBase equals the demo's constant at a
-  private PML4 index.
-- **Three boot controls through the real bytes** (`pe_import_demo`,
-  in its own `#[inline(never)]` frame): control 9 is the positive
+  private PML4 index -- with `grAttrs` and the one composed
+  contradiction pinned per carrier (the gate asserts `delaymis`'s IAT
+  IS the ordinal thunk and its INT IS the named blob, so that file
+  can never start refusing for a different reason).
+- **Six boot controls through the real bytes** (`pe_import_demo`,
+  in two non-inlined frames -- the structural family got its own so
+  three more mapped images' locals never touch the boot frame's
+  measured peak): control 9 is the positive
   half -- both delay imports eagerly resolved to the provider's own
   `crossfn`/`crossmark` addresses, the priors read back as the
   composed UNBOUND thunks (the ordinal slot's prior is
@@ -1316,6 +1328,22 @@ contradiction refused with its own typed name.
   `dwTimeStamp = stamp + 1` -> the typed
   `MalformedDelayImport("bound delay-load descriptors (dwTimeStamp !=
   0) are out of scope -- refused, not ignored")`.
+- **The STRUCTURAL refusals are boot facts too, not code claims**
+  (controls 12-14): `delayattrs` -> "unknown delay descriptor grAttrs
+  bits"; `delaymis` -> "delay INT entry does not match its IAT
+  entry"; `delayva` -> "delay VA-form descriptor field below the
+  preferred image base". Each arm matches the EXACT payload string,
+  not merely `Err(MalformedDelayImport(_))`: a carrier that broke for
+  an earlier, different reason fails the boot instead of passing as
+  the intended refusal. That distinction is the whole point of the
+  family -- these three reasons were code-verified only until a
+  composed file made the kernel say them at boot.
+- **The remaining unpinned reason is stated, not hidden:** the
+  VA-form-in-a-RELOCATED-image branch (`load_base != preferred_base`)
+  still has no carrier (it needs an image loaded at a bias while
+  carrying VA-form descriptors); along with the descriptor/thunk
+  array caps it is the last `MalformedDelayImport` surface that is
+  code-verified rather than boot-controlled.
 - **Two real bugs, both fixed at cause.** (1) The delay section's
   locals pushed the boot function's kernel-frame peak past the guard
   page, and the first boots double-faulted SEVERAL CONTROLS EARLIER
@@ -1345,10 +1373,10 @@ contradiction refused with its own typed name.
   reverted to the committed state and the build + boot re-run green,
   so the gate is proven to REFUSE the class it exists for rather than
   merely to pass the good files.
-- **Verified:** `./build.sh` exit 0 (all nine PE artifacts + the
-  delay-composition block + the canonical-base rule),
-  `tools/qemu_boot_test.sh` exit 0 (`PASS: kernel reached
-  BootPhase::Ready and exited cleanly`), controls 1-11 all `OK` in
+- **Verified:** `./build.sh` exit 0 (all fifteen PE link products + the
+  delay-composition block for six carriers + the canonical-base
+  rule), `tools/qemu_boot_test.sh` exit 0 (`PASS: kernel reached
+  BootPhase::Ready and exited cleanly`), controls 1-14 all `OK` in
   one boot, and zero `[dbg`/`TEMP BISECT` residue in `src/`.
 
 ## What does NOT exist yet (do not assume otherwise)

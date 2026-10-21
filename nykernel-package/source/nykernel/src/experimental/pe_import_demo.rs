@@ -139,6 +139,17 @@ static BOUND_REF2STALE_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_p
 static DELAY_GOOD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_good.exe");
 static DELAY_BAD_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_bad.exe");
 static DELAY_MUT_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_mut.exe");
+/// The three STRUCTURAL-refusal carriers, each the canonical composition
+/// with exactly ONE property broken: ATTRS carries `grAttrs = 0x3` (an
+/// undefined bit next to dlattrRva), MIS carries an IAT[0] that
+/// contradicts its INT[0] (broken unbound pre-state), VA carries
+/// `grAttrs = 0` (pre-VC7 VA form) with the fields left as RVAs, which
+/// are far below the image's own preferred base. Each drives one
+/// `MalformedDelayImport` reason the kernel reports -- code-verified
+/// reasons are claims until a composed file makes the boot refuse them.
+static DELAY_ATTRS_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_attrs.exe");
+static DELAY_MIS_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_mis.exe");
+static DELAY_VA_CLIENT: &[u8] = include_bytes!("../../userprog/userprog_pe_delay_va.exe");
 
 /// The files' own fixed `ImageBase`s, pinned by the layout gate AND by
 /// the build (--image-base on both links). Both bases sit in private
@@ -182,6 +193,12 @@ const REF2STALE_IMAGE_BASE: u64 = 0x6000_0000_0000;
 const DELAYGOOD_IMAGE_BASE: u64 = 0x7000_0000_0000;
 const DELAYBAD_IMAGE_BASE: u64 = 0x4100_0000_0000;
 const DELAYMUT_IMAGE_BASE: u64 = 0x4200_0000_0000;
+/// The structural-refusal carriers' bases: private PML4 indexes 0x86,
+/// 0x88, 0x8A -- canonical (below 2^47) like every load image the gate
+/// admits.
+const DELAYATTRS_IMAGE_BASE: u64 = 0x4300_0000_0000;
+const DELAYMIS_IMAGE_BASE: u64 = 0x4400_0000_0000;
+const DELAYVA_IMAGE_BASE: u64 = 0x4500_0000_0000;
 /// The WRONG bound value `tools/patch_pe_bound.py` composes into the
 /// bad client's single IAT slot (the patcher's WRONG constant,
 /// mirrored here; its own re-parse guards the file side, and the
@@ -331,6 +348,64 @@ unsafe fn run_delay_controls(
         ),
         other => panic!(
             "negative control 11 failed: expected the typed dwTimeStamp refusal, got {:?}",
+            other.err()
+        ),
+    }
+}
+
+/// The delay directory's STRUCTURAL refusals, each on its own composed
+/// carrier (controls 12-14). Separate `#[inline(never)]` frame for the
+/// same reason `run_delay_controls` has one: three more mapped images'
+/// worth of locals must not touch the boot frame's detected peak.
+///
+/// What is being proven is not "a panic happened": each arm matches the
+/// EXACT `MalformedDelayImport` payload the walk reports, so a carrier
+/// that broke for a different reason (an earlier bounds check, a
+/// missing DLL) fails the boot instead of passing as the intended
+/// refusal.
+#[inline(never)]
+unsafe fn run_delay_structural_controls(
+    mapper: &mut x86_64::structures::paging::OffsetPageTable<'static>,
+    fa: &mut crate::memory::frame_allocator::BumpFrameAllocator,
+    reg: &pe::DllRegistry,
+) {
+    let dattrs = pe::load(DELAY_ATTRS_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the delay grAttrs carrier: {:?}", e));
+    let dmis = pe::load(DELAY_MIS_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the delay INT!=IAT carrier: {:?}", e));
+    let dva = pe::load(DELAY_VA_CLIENT, mapper, fa, 0)
+        .unwrap_or_else(|e| panic!("failed to load the delay VA-form carrier: {:?}", e));
+
+    match pe::resolve_delay_imports(DELAYATTRS_IMAGE_BASE, mapper, dattrs.image_max_rva, reg) {
+        Err(pe::PeError::MalformedDelayImport(
+            "unknown delay descriptor grAttrs bits",
+        )) => serial_println!(
+            "  experimental pe-import-demo: negative control 12 -- the DELAYATTRS carrier (grAttrs = 0x3, dlattrRva plus an UNDEFINED bit) refused with the typed MalformedDelayImport -- OK, an attribute set the Windows helper itself cannot interpret is refused before any table is trusted"
+        ),
+        other => panic!(
+            "negative control 12 failed: expected the typed grAttrs refusal, got {:?}",
+            other.err()
+        ),
+    }
+    match pe::resolve_delay_imports(DELAYMIS_IMAGE_BASE, mapper, dmis.image_max_rva, reg) {
+        Err(pe::PeError::MalformedDelayImport(
+            "delay INT entry does not match its IAT entry",
+        )) => serial_println!(
+            "  experimental pe-import-demo: negative control 13 -- the DELAYMIS carrier (INT[0] names crossfn while IAT[0] carries an ordinal thunk) refused with the typed MalformedDelayImport -- OK, the unbound pre-state the walk resolves is checked entry-for-entry, never assumed"
+        ),
+        other => panic!(
+            "negative control 13 failed: expected the typed INT!=IAT refusal, got {:?}",
+            other.err()
+        ),
+    }
+    match pe::resolve_delay_imports(DELAYVA_IMAGE_BASE, mapper, dva.image_max_rva, reg) {
+        Err(pe::PeError::MalformedDelayImport(
+            "delay VA-form descriptor field below the preferred image base",
+        )) => serial_println!(
+            "  experimental pe-import-demo: negative control 14 -- the DELAYVA carrier (grAttrs = 0, the pre-VC7 VA form, with RVA-sized fields) refused with the typed MalformedDelayImport -- OK, a VA-form field that cannot be a VA of this image is refused, not reinterpreted"
+        ),
+        other => panic!(
+            "negative control 14 failed: expected the typed VA-form refusal, got {:?}",
             other.err()
         ),
     }
@@ -767,6 +842,7 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     // double-faulted many controls EARLIER than the delay code runs,
     // with the SAME stack pointer every time.
     run_delay_controls(&mut mapper, fa, &reg);
+    run_delay_structural_controls(&mut mapper, fa, &reg);
 
     // --- the client's ordinals and forwarders come through the walk
     // with the SAME positive facts the named path gets ---
