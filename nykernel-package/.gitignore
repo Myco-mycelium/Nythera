@@ -10,3 +10,13 @@ source/nykernel/userprog/*.dll
 # Rust build output (also matched by the repo-root `target/` rule; kept
 # here so the kernel tree is self-describing if ever split out).
 source/nykernel/target/
+
+# minus the UEFI stub's generated state (same policy as the kernel
+# target/ rule): cargo output, the assembled ESP image / VARS store, and
+# the EDK2 OVMF .fd firmware blobs (external x86-64 firmware binaries,
+# not project sources -- obtain them from an EDK2/edk2-ovmf release;
+# every boot transcript in IMPLEMENTATION_STATUS.md names the exact
+# file names the uefi/tools/ directory needs).
+source/nykernel/uefi/target/
+source/nykernel/uefi/dist/
+source/nykernel/uefi/tools/

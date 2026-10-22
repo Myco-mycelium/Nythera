@@ -126,6 +126,13 @@ pub enum PeError {
     MappingFailed,
     BadRelocationBlock,
     UnsupportedRelocationType(u16),
+    /// A load-time write grant could not be revoked back to the
+    /// file-requested read-only state (headers, or a section without
+    /// IMAGE_SCN_MEM_WRITE; see the grant/revoke note at the mapping
+    /// sites). Same posture as the loader's other permission errors:
+    /// a page left writable on failure would silently discard the
+    /// W^X property the file declared, so this is a refused load.
+    SectionProtectFailed,
 
     // -- the import/export halves --
     /// A `DataDirectory` the optional header does not even declare
@@ -358,7 +365,13 @@ fn load_callers(
     }
     if header_span > 0 {
         let pages = (header_span / 4096) as u64;
-        let hdr_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
+        let hdr_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE
+            // Writable-while-loading (revoke-to-read-only after the
+            // copy below): the loader itself zero-fills and writes these
+            // header pages, and relying on CR0.WP == 0 masking supervisor
+            // writes is not a load contract (OVMF hands over with WP
+            // set, and the same write faults as PROTECTION_VIOLATION).
+            | PageTableFlags::WRITABLE;
         let hdr_start = VirtAddr::new(load_base).align_down(4096u64);
         let hdr_mapped = paging::map_range(mapper, frame_allocator, hdr_start, pages, hdr_flags);
         if hdr_mapped != pages {
@@ -369,9 +382,24 @@ fn load_callers(
             let n = (headers_file_end as usize).min(data.len());
             core::ptr::copy_nonoverlapping(data.as_ptr(), hdr_start.as_mut_ptr::<u8>(), n);
         }
+        // Headers are always loader-internal: revoke the grant so the
+        // mapped image's header pages end read-only + non-executable,
+        // exactly the pre-grant flag set.
+        if !crate::experimental::elf::update_page_flags_range(
+            mapper,
+            hdr_start.as_u64(),
+            pages,
+            |f| f & !PageTableFlags::WRITABLE,
+        ) {
+            return Err(PeError::SectionProtectFailed);
+        }
     }
 
     let mut max_rva: u64 = 0;
+    // Read-only sections mapped writable for the load itself (see the
+    // header grant note above), owing the revoke-to-read-only applied
+    // after every section is placed: (seg_start, page_count) pairs.
+    let mut ro_sections_to_revoke: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
     for i in 0..number_of_sections {
         let off = section_table_off + i * SECTION_HEADER_SIZE;
         let sh = parse_section_header(data, off).ok_or(PeError::SectionHeaderOutOfBounds)?;
@@ -398,9 +426,8 @@ fn load_callers(
         }
 
         let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-        if sh.characteristics & IMAGE_SCN_MEM_WRITE != 0 {
-            flags |= PageTableFlags::WRITABLE;
-        }
+        let writable_requested = sh.characteristics & IMAGE_SCN_MEM_WRITE != 0;
+        flags |= PageTableFlags::WRITABLE;
         // Same W^X enforcement as experimental::elf: a section without
         // IMAGE_SCN_MEM_EXECUTE gets NO_EXECUTE, meaningfully enforced
         // since memory::paging::enable_nx runs before any loader does.
@@ -412,6 +439,9 @@ fn load_callers(
         if mapped != page_count {
             return Err(PeError::MappingFailed);
         }
+        if !writable_requested {
+            ro_sections_to_revoke.push((seg_start.as_u64(), page_count));
+        }
 
         unsafe {
             core::ptr::write_bytes(seg_start.as_mut_ptr::<u8>(), 0, page_count as usize * 4096);
@@ -419,6 +449,22 @@ fn load_callers(
                 let dest = VirtAddr::new(runtime_vaddr).as_mut_ptr::<u8>();
                 core::ptr::copy_nonoverlapping(data.as_ptr().add(file_start), dest, sh.size_of_raw_data as usize);
             }
+        }
+    }
+
+    // Revoke the load-time write grant now that every section is
+    // placed: pages of sections the file did not declare writable go
+    // back exactly to the pre-grant flag set. Relocations below write
+    // only declared-writable targets (the reloc write pass refuses
+    // read-only slots like everything else).
+    for (seg_start, page_count) in ro_sections_to_revoke.iter() {
+        if !crate::experimental::elf::update_page_flags_range(
+            mapper,
+            *seg_start,
+            *page_count,
+            |f| f & !PageTableFlags::WRITABLE,
+        ) {
+            return Err(PeError::SectionProtectFailed);
         }
     }
 

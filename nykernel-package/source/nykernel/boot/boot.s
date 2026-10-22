@@ -222,3 +222,43 @@ long_mode_start:
     # kernel_main is `-> !` and must not return; this is a safety net only.
 2:  hlt
     jmp 2b
+
+/*
+ * uefi_entry -- Phase 10's native UEFI handoff (boot/uefi/ stub).
+ *
+ * The Multiboot2 path above enters at 32 bits and BUILDS long mode;
+ * UEFI firmware hands control to the stub in long mode already, with
+ * the stub's own identity page tables active and ExitBootServices
+ * completed. The stub parses the embedded kernel image, then jumps
+ * HERE with the same SysV register contract kernel_main has always had:
+ *   RDI = Multiboot2 boot-loader magic (0x36d76289 -- the stub passes
+ *         the boot-loader magic the spec puts in EAX, not a stub magic;
+ *         its synthesized info IS a Multiboot2 info structure),
+ *   RSI = the synthesized MBI's physical (== identity) address.
+ * Mechanical setup mirrors long_mode_start above: early-boot stack,
+ * zero rbp, straight into kernel_main. "cli" is not needed: the UEFI
+ * spec guarantees interrupts are disabled when ExitBootServices
+ * completes, and no service call happens after that point.
+ */
+.global uefi_entry
+uefi_entry:
+    # The firmware's segment registers are still live here (SS/DS/ES =
+    # 0x30, FS/GS = 0x38 under OVMF). Long mode ignores most of them,
+    # but every IRET the kernel's exception handlers execute re-validates
+    # SS against the kernel's own GDT (which kernel_main rebinds), where
+    # selector 0x30 is the TSS descriptor -- a General Protection Fault
+    # per interrupt return. Load null data selectors first.
+    mov $0, %ax
+    mov %ax, %ss
+    mov %ax, %ds
+    mov %ax, %es
+    mov %ax, %fs
+    mov %ax, %gs
+
+    mov $stack_top, %rsp
+    mov $0, %rbp
+    call kernel_main
+
+    # kernel_main is `-> !`; safety net only.
+2:  hlt
+    jmp 2b

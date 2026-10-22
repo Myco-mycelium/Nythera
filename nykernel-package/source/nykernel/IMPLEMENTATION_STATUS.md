@@ -22,7 +22,15 @@ wired under *every* live kernel stack (ring-3 RSP0 and ring-0 scheduler
 task stacks, all from `memory::kernel_stack`), verified every boot,
 and timer-driven (preemptive) ring-3 task switching -- previously
 cooperative-only -- proven by two ring-3 tasks that never trap being
-round-robined purely by the timer interrupt (IRQ0).**
+round-robined purely by the timer interrupt (IRQ0). As of
+2026-10-22, the whole demo chain also boots natively through the
+Phase 10 UEFI stub (OVMF, GRUB nowhere in the path) with an identical
+per-boot transcript to the Multiboot2/BIOS path, and
+`experimental::elf`/`experimental::pe` follow an explicit
+CR0.WP-independent loader write contract (map writable only for the
+load/emit window, revoke to the file-requested flags) enforced by the
+kernel's own boot-time CR0.WP setting -- see the 2026-10-22 increment
+below for the boot-environment divergences this exposed.**
 
 For a short, scannable summary of everything below, see `README.md`
 (this directory) -- this file is the detailed, evidence-heavy log
@@ -1443,6 +1451,88 @@ contradiction refused with its own typed name.
   BootPhase::Ready and exited cleanly`), controls 1-18 all `OK` in
   three consecutive boots (276 OK lines each), and zero
   `[dbg`/`TEMP BISECT` residue in `src/`.
+
+## Gap-closure increment (2026-10-22): the native UEFI boot path boots the FULL chain end-to-end, and the loader write contract is now CR0.WP-proof
+
+The Phase 10 UEFI stub (`uefi/`) is no longer a bring-up scaffold: a
+kernel booted natively through OVMF (GRUB never involved) now prints
+the same complete demo-chain transcript as the Multiboot2/BIOS boot --
+identical `OK` counts (244) in both boots, same final
+`phase 1+2+3+4+ring3-elf-isolation-poc+guard-pages complete` banner,
+zero faults. Getting there surfaced (and fixed) real divergences
+between the two boot environments; four are worth their bullets:
+
+- **Every boot path now ends in the SAME CPU state the loader assumes.**
+  boot.s's `uefi_entry` loads null data selectors before calling
+  `kernel_main`: OVMF leaves SS/DS/ES selector 0x30 live, which -- after
+  the kernel's own GDT is loaded (where 0x30 is the TSS descriptor) --
+  general-protects on every IRET the exception handlers execute, i.e.
+  the whole self-test chain, at the first interrupt return. The BIOS
+  path never built segments at all, so the same latent bug was
+  invisible there.
+- **The record-to-memory boot handoff is spec-complete:** the stub
+  synthesizes a Multiboot2 info structure (memory map, vendor tag,
+  ACPI RSDP copied from the EFI configuration table) and passes the
+  boot-loader magic the spec fixes, so `src/multiboot.rs` runs unmodified
+  on both paths. The bugs this exposed, each in the stub, in order:
+  the ACPI-20 configuration-table GUID constant was typed wrong (the
+  kernel's RSDP validation then correctly rejected everything;
+  the constant now matches the spec value `8868e871-e4f1-11d3-bc22-0080c73c8881`
+  and the copy path additionally validates the `RSD PTR ` signature
+  before comitting), EDK2 returns `desc_size = 48` for every
+  `EFI_MEMORY_DESCRIPTOR` (spec minimum 40 -- striding by 40 silently
+  deserialized garbage from the second entry on), the pre-EBS
+  `GetMemoryMap` refetch legitimately returns `EFI_BUFFER_TOO_SMALL`
+  (the stub's own pool allocations grow the map between acquire and
+  refetch; the retry now re-grows the buffer instead of assuming a
+  fixed capacity), and the stub's OWN boot pages (its page tables, the
+  handoff page, the loaded kernel image, the synthesized MBI) were
+  EfiLoaderData i.e. "conventional" in the synthesized map -- the
+  kernel's frame allocator handed out its own page-table pages as data
+  frames and tore the identity mapping down mid-bring-up. Those pages
+  are carved out as explicit reserved entries before synthesis now.
+- **THE CR0.WP BOOT-ENVIRONMENT FINDING (the reason this increment
+  touches the loaders too):** a legacy BIOS boot leaves CR0.WP CLEAR
+  (boot.s only sets PG; GRUB does not set it either), while OVMF hands
+  over with WP SET (verified at fault time: CR0 = `0x80010033`). With
+  WP clear, a RING-0 write into a read-only PTE silently SUCCEEDS; with
+  WP set it protection-faults. Every loader in this kernel mapped its
+  segments honoring the file's W permission, then wrote into them
+  anyway (zero-fill + copy for `p_memsz` pages, stub byte emission into
+  the lazy trampoline/thunk pages, header pages) -- so every boot on
+  BIOS was silently over-claiming a read-only mapping's protection.
+  The first UEFI boot surfaced this as a cascade of
+  `PROTECTION_VIOLATION|CAUSED_BY_WRITE` faults at exactly those writes
+  (yield-program text page; then, one fixed, the full-demo's lazy
+  trampoline page, and so on down the chain).
+- **The loaders' contract is now explicit and WP-independent, the way
+  real loaders work: map writable for the load/emit window, then
+  revoke to exactly the file-requested flags.** `experimental::elf` maps
+  every PT_LOAD with the write grant, zero-fills/copies, and then
+  removes WRITABLE from every segment the file did not declare
+  PF_W (`SegmentProtectFailed` on a failed revoke -- a read-only
+  segment left writable is a refused load, the same posture as the
+  RELRO machinery); the synthetic lazy trampoline page and the
+  own-.plt thunk page get the same grant/revoke around their emission.
+  `experimental::pe` does the same for the header pages (always
+  loader-internal) and for sections without `IMAGE_SCN_MEM_WRITE`
+  (`SectionProtectFailed`). Final page states are byte-for-byte what
+  the files request, so every pre-existing enforcement self-test (RELRO
+  read-only checks, `ImportSectionNotWritable` refusals, W^X controls)
+  is unchanged and still green on BOTH paths.
+- **The kernel sets CR0.WP ITSELF as a documented boot contract** (right
+  after `paging::init`, read back asserted -- see `kernel_main`'s
+  `paging:` serial lines): no boot path"s firmware state decides
+  whether supervisor writes honor PTE RO. A future caller that skips
+  the loaders' grant window now faults loudly on BIOS too, instead of
+  the two boot paths diverging in behaviour again.
+- **Verified:** `./build.sh` exit 0; the GRUB/Multiboot2 dev boot and
+  the native OVMF/UEFI boot each print 244 `OK` lines with zero
+  `FAILED`/`EXCEPTION`/panic and the same final banner;
+  `tools/qemu_boot_test.sh` exit 0 (`PASS: kernel reached
+  BootPhase::Ready and exited cleanly`) -- run after the WP positive
+  control was added, so the enforcement contract is itself part of what
+  the boot tests prove.
 
 ## What does NOT exist yet (do not assume otherwise)
 

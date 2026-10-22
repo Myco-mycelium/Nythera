@@ -163,6 +163,12 @@ pub enum ElfError {
     /// exists for, so a failed update is a refused load, not a
     /// shrug.
     RelroPermissionUpdateFailed,
+    /// A load-time write grant could not be revoked back to the
+    /// file-requested read-only state (see the grant/revoke note at
+    /// the PT_LOAD mapping). Same posture as the RELRO variant: a
+    /// code segment left writable on failure would silently discard
+    /// the W^X property the file declared, so this is a refused load.
+    SegmentProtectFailed,
     /// A symbol-resolved relocation whose symbol is UNDEFINED in this
     /// object (SHN_UNDEF). This loader resolves within-object only --
     /// a genuinely undefined symbol needs cross-object resolution
@@ -1242,6 +1248,11 @@ pub fn load(
     }
 
     let mut load_segments_found = 0u32;
+    // Read-only segments mapped writable for the load itself, owing the
+    // revoke (see the grant note in the mapping below): (seg_start,
+    // page_count) pairs, revoked read-only after every segment is in
+    // place.
+    let mut ro_segments_to_revoke: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
     let mut dynamic_segment: Option<(u64, u64)> = None; // (p_vaddr, p_filesz), pre-bias
     let mut relro_segment: Option<(u64, u64)> = None; // (p_vaddr, p_memsz), pre-bias
     let mut dt = DynTables::new();
@@ -1287,9 +1298,18 @@ pub fn load(
         let page_count = (seg_end.as_u64() - seg_start.as_u64()) / 4096;
 
         let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-        if ph.p_flags & PF_W != 0 {
-            flags |= PageTableFlags::WRITABLE;
-        }
+        // Writable-while-loading: the loader itself zero-fills and copies
+        // every mapped page (below), INCLUDING pages of segments the file
+        // declared read-only, so the mapping must be writable for the
+        // duration of the load. Relying on CR0.WP == 0 masking supervisor
+        // writes (the legacy BIOS state boot.s leaves) is NOT a load
+        // contract: boot firms like OVMF hand over with CR0.WP == 1, and
+        // this write then faults as PROTECTION_VIOLATION. The file-
+        // requested final permission set is restored after the copy pass
+        // (the revoke below), which is also exactly what `page_flags_of`
+        // observers and the RELRO grant/revoke machinery see.
+        let writable_requested = ph.p_flags & PF_W != 0;
+        flags |= PageTableFlags::WRITABLE;
         // Real W^X enforcement: a segment without PF_X gets
         // NO_EXECUTE, meaning the CPU will refuse to fetch
         // instructions from it once EFER.NXE is enabled (see
@@ -1318,6 +1338,9 @@ pub fn load(
             if mapped != page_count {
                 return Err(ElfError::MappingFailed);
             }
+            if !writable_requested {
+                ro_segments_to_revoke.push((seg_start.as_u64(), page_count));
+            }
 
             unsafe {
                 // Zero the whole mapped range first -- this is what makes
@@ -1333,6 +1356,18 @@ pub fn load(
 
     if load_segments_found == 0 {
         return Err(ElfError::NoLoadSegments);
+    }
+
+    // Revoke the load-time write grant now that every segment is placed:
+    // pages of segments the file declared read-only go back exactly to
+    // the pre-grant flag set. Runs BEFORE relocations, whose own RELRO
+    // grant/revoke cycle then handles any region that needs write
+    // access for GOT/pointer updates. The early return keeps a failed
+    // revoke a hard load failure rather than a silently-wider image.
+    for (seg_start, page_count) in ro_segments_to_revoke.iter() {
+        if !update_page_flags_range(mapper, *seg_start, *page_count, |f| f & !PageTableFlags::WRITABLE) {
+            return Err(ElfError::SegmentProtectFailed);
+        }
     }
 
     // One parse of the (now-mapped) PT_DYNAMIC segment, shared by the
@@ -1554,9 +1589,17 @@ pub fn load(
                 return Err(ElfError::UnsupportedRelocationEntrySize); // trampoline page capacity
             }
             let page = ctx.lazy_plt_page.unwrap();
-            // Executable + user-accessible, non-writable: emitted
-            // before any user code can run, never rewritten after.
-            let stub_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+            // Executable + user-accessible, non-writable *at rest*: emitted
+            // before any user code can run, never rewritten after. The
+            // mapping carries the load-time WRITABLE grant (the emit
+            // pass below writes every stub byte) -- same reasoning as the
+            // PT_LOAD grant/revoke above: WP is NOT zero when a boot firm
+            // like OVMF handed over, so a read-only mapping cannot be
+            // kernel-written. The grant is revoked right after the emit
+            // loop, before anything can execute.
+            let stub_flags = PageTableFlags::PRESENT
+                | PageTableFlags::USER_ACCESSIBLE
+                | PageTableFlags::WRITABLE;
             if paging::map_range(mapper, frame_allocator, page, 1, stub_flags) != 1 {
                 return Err(ElfError::MappingFailed);
             }
@@ -1599,6 +1642,12 @@ pub fn load(
                 unsafe {
                     core::ptr::write_volatile(slot as *mut u64, stub);
                 }
+            }
+            // Revoke the emit-window grant: byte-for-byte the designed
+            // final state (read-only + executable) before user code can
+            // ever see this page.
+            if !update_page_flags_range(mapper, page.as_u64(), 1, |f| f & !PageTableFlags::WRITABLE) {
+                return Err(ElfError::SegmentProtectFailed);
             }
         }
     }
@@ -1653,10 +1702,14 @@ unsafe fn arm_own_plt(
 ) -> Result<OwnPltArming, ElfError> {
     let pltgot_vaddr = dt.pltgot_vaddr.ok_or(ElfError::MalformedDynamicTables)?;
     let pltgot = load_bias.wrapping_add(pltgot_vaddr);
-    // Executable + user-accessible, non-writable: written by this
-    // pass only, before any user code can run -- mirrors the synthetic
-    // trampoline page's exact discipline.
-    let thunk_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    // Executable + user-accessible, non-writable *at rest*: written by
+    // this pass only, before any user code can run -- mirrors the synthetic
+    // trampoline page's exact discipline. WRITABLE is part of the mapping
+    // for the emit window below only (the revoke lands right after the
+    // 4 stub bytes; the same WP-not-zero reasoning applies).
+    let thunk_flags = PageTableFlags::PRESENT
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::WRITABLE;
     if paging::map_range(mapper, frame_allocator, thunk_page, 1, thunk_flags) != 1 {
         return Err(ElfError::MappingFailed);
     }
@@ -1673,6 +1726,11 @@ unsafe fn arm_own_plt(
         unsafe {
             core::ptr::write_volatile((thunk + k as u64) as *mut u8, *b);
         }
+    }
+    // Revoke the emit-window grant immediately: the thunk page's final
+    // state is read-only + executable, byte-for-byte the design.
+    if !update_page_flags_range(mapper, thunk, 1, |f| f & !PageTableFlags::WRITABLE) {
+        return Err(ElfError::SegmentProtectFailed);
     }
     let lm_id = crate::experimental::lazy_binder::allocate_lm_id();
     // SAFETY: .got.plt is mapped RW in the active space on both arming
@@ -1870,7 +1928,7 @@ struct RelroPlanningOutcome {
 /// would leave `ld -shared` GOT pages (which sit inside the GNU_RELRO
 /// region here) kernel-only, faulting the very ring-3 GOT reads the
 /// loaded code performs. Grant/revoke must change exactly one bit.
-fn update_page_flags_range(
+pub(crate) fn update_page_flags_range(
     mapper: &mut OffsetPageTable<'static>,
     start: u64,
     pages: u64,

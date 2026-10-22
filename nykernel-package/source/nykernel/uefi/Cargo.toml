@@ -1,0 +1,34 @@
+[package]
+name = "nyrqis-uefi-stub"
+version = "0.1.0"
+edition = "2021"
+description = "Phase 10 UEFI-native boot stub (no crate deps: the EFI surface is hand-rolled)"
+
+# A standalone crate, deliberately NOT a workspace member of the kernel
+# build: the kernel builds against its own freestanding target
+# (x86_64-nyrqis-kernel.json), the stub builds against the built-in
+# x86_64-unknown-uefi target, and the two cargo command lines (custom
+# target + -Z build-std, RUSTC_BOOTSTRAP, ...) do not mix. build.sh
+# invokes this crate explicitly after the kernel .elf is linked, both
+# as a build-order requirement (the stub embeds the kernel image bytes)
+# and so a stub-side failure can never be mistaken for a kernel-side
+# one.
+
+[[bin]]
+name = "nyrqis_uefi_stub"
+path = "src/main.rs"
+
+# Freestanding: alloc is used (heap via the UEFI boot-services pool
+# allocator before ExitBootServices), std never exists on this target.
+# No [dependencies] by design: every EFI structure this stub touches is
+# hand-rolled in src/efi.rs, at the exact layout the UEFI specification
+# fixes for x86_64 (Microsoft x64 calling convention, 8-byte aligned
+# C structs), so the firmware interface stays visible in-tree instead
+# of inside a dependency.
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2

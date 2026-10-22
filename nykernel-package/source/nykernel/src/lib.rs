@@ -161,6 +161,28 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
 
     let mut mapper = unsafe { memory::paging::init() };
     unsafe { memory::paging::enable_nx() };
+    // Boot contract the kernel establishes ITSELF, never inherited from
+    // the boot environment: CR0.WP = 1. Legacy BIOS boot leaves WP CLEAR
+    // (boot.s only sets PG), while UEFI firmware hands over with WP SET --
+    // so any supervisor write into a read-only PTE would silently succeed
+    // on BIOS but fault on UEFI: two boot paths, two behaviour sets, the
+    // worst kind of divergence. Setting WP here makes supervisor write
+    // protection uniform, and the loaders (experimental::elf,
+    // experimental::pe) are written to that contract: they map pages
+    // writable only for the load/emit window and revoke to the
+    // file-requested flags afterwards, so a future caller that skips the
+    // grant faults loudly on BOTH boot paths instead of this kernel
+    // silently over-claiming a read-only mapping's protection.
+    unsafe {
+        let mut cr0 = x86_64::registers::control::Cr0::read();
+        cr0.insert(x86_64::registers::control::Cr0Flags::WRITE_PROTECT);
+        x86_64::registers::control::Cr0::write(cr0);
+    }
+    assert!(
+        x86_64::registers::control::Cr0::read().contains(x86_64::registers::control::Cr0Flags::WRITE_PROTECT),
+        "CR0.WP positive control failed: the write did not stick"
+    );
+    serial_println!("  paging: CR0.WP set by the kernel (supervisor writes honor PTE RO on both boot paths -- documented boot contract, not firmware state)");
     serial_println!("  paging: dynamic mapper live (CR3 read back, OffsetPageTable constructed), NX enabled (EFER.NXE)");
 
     unsafe { memory::heap::init(&mut mapper, &mut frame_allocator) }
