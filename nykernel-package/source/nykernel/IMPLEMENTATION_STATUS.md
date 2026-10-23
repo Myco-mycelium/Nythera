@@ -1534,6 +1534,795 @@ between the two boot environments; four are worth their bullets:
   control was added, so the enforcement contract is itself part of what
   the boot tests prove.
 
+## Gap-closure increment (2026-10-23): both boot gates are CI scripts, and their first back-to-back run is recorded below with BOTH transcripts
+
+The 2026-10-22 increment's boots were verified interactively. This
+increment turns both boot contracts into what CI runs, then executes
+them back-to-back on one machine state and records the full guest
+transcripts at the bottom of this section, so the "same chain on both
+paths" claim is checkable line-for-line rather than asserted.
+
+- **`tools/qemu_uefi_boot_test.sh` got a CI home** (`.github/workflows/ci.yml`,
+  new `kernel-boot` job): the job installs the boot-emulation toolchain
+  (qemu, mtools, grub-pc-bin+xorriso, the distro `ovmf` package --
+  firmware the repo deliberately does NOT track, see .gitignore), feeds
+  `uefi/tools/` from `/usr/share/OVMF/*_4M.fd`, and runs BOTH gates:
+  `qemu_boot_test.sh` (GRUB/Multiboot2 BIOS) then
+  `qemu_uefi_boot_test.sh` (native OVMF stub handoff). Each gate's only
+  pass condition is the isa-debug-exit contract: the guest reaches its
+  final state and exits with host status 33; 124 is printed-labelled
+  timeout, anything else a loud FAIL with the guest serial log printed.
+- **The back-to-back run (record):** BIOS gate first, UEFI gate
+  immediately after, same workspace, nothing rebuilt between except by
+  the scripts themselves. Both exits 0. The gate wrappers are excluded
+  from the blocks below (only guest serial output is quoted);
+  OVMF's console-reset ANSI escape sequences are elided from the UEFI
+  block -- every kernel line is verbatim otherwise.
+
+| Gate | Contract proven | Guest lines | `-- OK` fact lines | Exit |
+|---|---|---|---|---|
+| `qemu_boot_test.sh` (BIOS) | boots through GRUB/Multiboot2, full demo chain, final banner, clean walk-off exit | 355 | 242 | 33 -> 0 PASS |
+| `qemu_uefi_boot_test.sh` (UEFI) | same contract with GRUB imagined OUT: OVMF boots `BOOTX64.EFI`, the stub loads the kernel, synthesizes MBI, EBS, CR3 switch, `uefi_entry` | 369 | 241 | 33 -> 0 PASS |
+
+- **What the two transcripts do and do not share (from the actual
+  diff, catalogued once):** the UEFI transcript has, above the kernel's
+  first line, the OVMF boot-choice lines and the stub's own 14 lines
+  (SecureBoot=absent, kernel image loaded from the stub's own bytes,
+  memory map acquired, RSDP rev=2.0, Multiboot2 info synthesized with
+  the vendor tag, ACPI-reclaim carve-out check, EBS, CR3 switched,
+  `uefi_entry` jumped). The kernel-side differences are exactly the
+  boot-environment facts each transcript HONESTLY reports: the memory
+  map's usable-frame count (GRUB reports 127 MiB usable; the UEFI map
+  243 MiB), ACPI (RSDP v0/RSDT root, 4 tables under BIOS; RSDP v2/XSDT
+  root, 6 tables under OVMF, WITH a real ACPI-reclaimable region that
+  the reclaim check then actually releases -- under BIOS the same
+  probe reports no such region and proves the release contract with
+  its synthetic control instead), the ATA self-test (a disk sits on
+  the BIOS run's secondary channel; none under this OVMF run), and
+  nondeterminism that is nondeterminism by design (RTC wall-clock
+  seconds, RTC/timer tick counts, ring-3 preemption spin counters).
+  Everything else -- the whole scheduler/IPC/lifecycle/isolation/DEX/
+  teardown/ring-3/dyn-linker/PE chain, all 242 vs 241 `-- OK`
+  fact lines, zero FAULT/FAILED/panic except the guard-demo's intended
+  overflow catch and the deps-demo line about demonstrating the panic
+  path -- is line-identical between the two boot paths, ending in the
+  same `nyrqis kernel: phase 1+2+3+4+ring3-elf-isolation-poc+guard-pages
+  complete` banner. Two different firmware worlds, one transcript.
+- The full transcripts follow. First the BIOS gate's guest output:
+
+```
+nyrqis kernel: phase 1 bring-up
+  gdt: loaded (kernel code segment + tss)
+  idt: loaded (divide-error, invalid-opcode, gpf, page-fault, double-fault)
+  double-fault ist stack: index 0
+  multiboot: memory map parsed, 32639 usable 4KiB frames (127 MiB)
+  acpi: RSDP v0 validated (RSDT root table), 4 tables enumerated and checksum-verified
+  acpi reclaim: platform reports no AcpiReclaimable region; synthetic control on reserved 0xf0000..0x100000: usable before=false (expected false), after release=true (expected true), after restoring=false (expected false) -- OK
+  paging: CR0.WP set by the kernel (supervisor writes honor PTE RO on both boot paths -- documented boot contract, not firmware state)
+  paging: dynamic mapper live (CR3 read back, OffsetPageTable constructed), NX enabled (EFER.NXE)
+  heap: mapped 256 pages (1024 KiB) at 0x10000000000, global allocator live
+  heap self-test: Vec<u32> of 100 elements allocated and summed correctly (5050)
+  frames allocated so far: 259
+  memory tlb-demo: mapped (frame Some(PhysAddr(0x33d000))), unmapped (translate -> None), remapped (frame Some(PhysAddr(0x341000))); re-read 0xbbbbbbbbbbbbbbbb (expected 0xbbbbbbbbbbbbbbbb)
+  memory tlb-demo self-test: present->absent->present OK, backing frame genuinely changed OK, remap read back new bytes OK -- OK
+  pic: remapped (IRQ0-7 -> 0x20-0x27, IRQ8-15 -> 0x28-0x2F), timer unmasked
+  rtc: periodic interrupt armed at 1024 Hz, IRQ8 + cascade IRQ2 unmasked
+  keyboard: 8042 keyboard interrupt (IRQ1, master PIC) enabled and unmasked
+  interrupts: enabled (sti)
+  timer self-test: 20 real hardware timer interrupts observed and handled
+  rtc self-test: 4 additional RTC periodic interrupts observed and handled after a snapshot (1092 total; IRQ8, via the slave-PIC cascade)
+  rtc wall-clock self-test: first read Ok(RtcTime { second: 0, minute: 8, hour: 7 }) (decoded via the hardware's actual mode bits, fields in valid ranges) -- OK
+  rtc wall-clock self-test: bounded-UIP second read Ok(RtcTime { second: 0, minute: 8, hour: 7 }) completed without hanging -- OK
+  rtc wall-clock self-test: second read does not move the clock backwards beyond a tolerated skew -- OK
+  rtc wall-clock self-test: 8 periodic tick(s) observed between the two wall-clock reads (the periodic line and the wall-clock registers are both alive) -- OK
+  rtc wall-clock self-test: wall-clock reads decode via the hardware's reported modes and order monotonically -- OK
+  keyboard self-test: injected scancode 0x1e via the 8042 output-buffer command (0xD2), 1 interrupt(s) handled, handler read back 0x1e -- OK
+  ata self-test: secondary channel master detected, IDENTIFY (0xa1) completed with status 0x58 after 2 interrupt(s) on IRQ15 -- OK, data-ready
+nyrqis kernel: phase 1+2+3-prep complete, boot phase = 7 (Ready)
+  experimental scheduler: 4 tasks registered (lifecycle-enforcing, NPS-002 §5)
+  experimental ipc: 4 mailboxes initialized (arbiter-checked, NPS-003 §5.4)
+    [experimental task A] activation 1: sent IPC message to task B
+    [experimental task B] activation 1: received IPC message {sender: 1, seq: 1} -- OK
+    [experimental task J] activation 1: terminating per NPS-002 §5.5/§5.6 (RUNNING -> TERMINATING -> TERMINATED, then dispatch away)
+    [experimental task A] activation 2: sent IPC message to task B
+    [experimental task B] activation 2: received IPC message {sender: 1, seq: 2} -- OK
+    [experimental task A] activation 3: sent IPC message to task B
+    [experimental task B] activation 3: received IPC message {sender: 1, seq: 3} -- OK
+    [experimental task A] activation 4: sent IPC message to task B
+    [experimental task B] activation 4: received IPC message {sender: 1, seq: 4} -- OK
+    [experimental task A] activation 5: sent IPC message to task B
+    [experimental task B] activation 5: received IPC message {sender: 1, seq: 5} -- OK
+    [experimental task A] activation 6: sent IPC message to task B
+    [experimental task B] activation 6: received IPC message {sender: 1, seq: 6} -- OK
+  experimental scheduler termination proof: task J walked RUNNING -> TERMINATING -> TERMINATED and was never re-dispatched (ran exactly 1 time) -- OK
+  experimental scheduler self-test: 6 round trips completed, task A ran 6 times, task B ran 6 times
+  experimental ipc self-test: 6 messages sent task A -> task B and received correctly, 0 mismatches
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Created matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Ready matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Running matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Blocked matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Terminating matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Terminated matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: 36/36 from-to pairs verified (9 legal accepts, 27 illegal refusals, counter ticked exactly once per refusal) -- OK
+  experimental scheduler termination self-test: 1 terminated task(s) (reached via the legal path), TERMINATED unreachable directly from CREATED/READY, remaining tasks active -- OK
+  experimental ipc arbiter self-test: honest send from the running task -- OK (queued)
+  experimental ipc arbiter self-test: forged sender (claims 1, running 0) refused with NotRunningTask -- OK
+  experimental ipc revocation self-test: revoke_sender(scratch, 0) newly-revoked -- OK
+  experimental ipc revocation self-test: send after revocation refused with Revoked -- OK
+  experimental ipc revocation self-test: message queued before revocation still receivable after it -- OK
+  experimental ipc revocation self-test: re-revoking an already-revoked sender is a no-op returning false -- OK
+    [experimental task A] activation 7: sent IPC message to task B
+    [experimental task B] activation 7: received IPC message {sender: 1, seq: 7} -- OK
+    [experimental task A] activation 8: sent IPC message to task B
+    [experimental task B] activation 8: received IPC message {sender: 1, seq: 8} -- OK
+  experimental ipc blocking-receive self-test: bounded receive on an empty mailbox returned ReceiveTimedOut (typed, never an indefinite block) -- OK
+  experimental ipc blocking-receive self-test: bounded receive delivered the message sent before it (Ok(IpcMessage { sender: 0, seq: 7 })) -- OK
+  experimental ipc self-test: arbiter + revocation + blocking-receive contract checks -- OK
+  experimental isolated-tasks: 6 total tasks in round-robin (main, A, B, C[own cr3 0x350000], D[own cr3 0x35a000])
+    [experimental task A] activation 9: sent IPC message to task B
+    [experimental task B] activation 9: received IPC message {sender: 1, seq: 9} -- OK
+    [experimental task A] activation 10: sent IPC message to task B
+    [experimental task B] activation 10: received IPC message {sender: 1, seq: 10} -- OK
+    [experimental task A] activation 11: sent IPC message to task B
+    [experimental task B] activation 11: received IPC message {sender: 1, seq: 11} -- OK
+    [experimental task A] activation 12: sent IPC message to task B
+    [experimental task B] activation 12: received IPC message {sender: 1, seq: 12} -- OK
+    [experimental task A] activation 13: sent IPC message to task B
+    [experimental task B] activation 13: received IPC message {sender: 1, seq: 13} -- OK
+    [experimental task A] activation 14: sent IPC message to task B
+    [experimental task B] activation 14: received IPC message {sender: 1, seq: 14} -- OK
+    [experimental task A] activation 15: sent IPC message to task B
+    [experimental task B] activation 15: received IPC message {sender: 1, seq: 15} -- OK
+    [experimental task A] activation 16: sent IPC message to task B
+    [experimental task B] activation 16: received IPC message {sender: 1, seq: 16} -- OK
+    [experimental task A] activation 17: sent IPC message to task B
+    [experimental task B] activation 17: received IPC message {sender: 1, seq: 17} -- OK
+    [experimental task A] activation 18: sent IPC message to task B
+    [experimental task B] activation 18: received IPC message {sender: 1, seq: 18} -- OK
+    [experimental task A] activation 19: sent IPC message to task B
+    [experimental task B] activation 19: received IPC message {sender: 1, seq: 19} -- OK
+    [experimental task A] activation 20: sent IPC message to task B
+    [experimental task B] activation 20: received IPC message {sender: 1, seq: 20} -- OK
+    [experimental task A] activation 21: sent IPC message to task B
+    [experimental task B] activation 21: received IPC message {sender: 1, seq: 21} -- OK
+    [experimental task A] activation 22: sent IPC message to task B
+    [experimental task B] activation 22: received IPC message {sender: 1, seq: 22} -- OK
+    [experimental task A] activation 23: sent IPC message to task B
+    [experimental task B] activation 23: received IPC message {sender: 1, seq: 23} -- OK
+    [experimental task A] activation 24: sent IPC message to task B
+    [experimental task B] activation 24: received IPC message {sender: 1, seq: 24} -- OK
+    [experimental task A] activation 25: sent IPC message to task B
+    [experimental task B] activation 25: received IPC message {sender: 1, seq: 25} -- OK
+    [experimental task A] activation 26: sent IPC message to task B
+    [experimental task B] activation 26: received IPC message {sender: 1, seq: 26} -- OK
+    [experimental task A] activation 27: sent IPC message to task B
+    [experimental task B] activation 27: received IPC message {sender: 1, seq: 27} -- OK
+    [experimental task A] activation 28: sent IPC message to task B
+    [experimental task B] activation 28: received IPC message {sender: 1, seq: 28} -- OK
+    [experimental task A] activation 29: sent IPC message to task B
+    [experimental task B] activation 29: received IPC message {sender: 1, seq: 29} -- OK
+    [experimental task A] activation 30: sent IPC message to task B
+    [experimental task B] activation 30: received IPC message {sender: 1, seq: 30} -- OK
+    [experimental task A] activation 31: sent IPC message to task B
+    [experimental task B] activation 31: received IPC message {sender: 1, seq: 31} -- OK
+    [experimental task A] activation 32: sent IPC message to task B
+    [experimental task B] activation 32: received IPC message {sender: 1, seq: 32} -- OK
+    [experimental task A] activation 33: sent IPC message to task B
+    [experimental task B] activation 33: received IPC message {sender: 1, seq: 33} -- OK
+    [experimental task A] activation 34: sent IPC message to task B
+    [experimental task B] activation 34: received IPC message {sender: 1, seq: 34} -- OK
+    [experimental task A] activation 35: sent IPC message to task B
+    [experimental task B] activation 35: received IPC message {sender: 1, seq: 35} -- OK
+    [experimental task A] activation 36: sent IPC message to task B
+    [experimental task B] activation 36: received IPC message {sender: 1, seq: 36} -- OK
+    [experimental task A] activation 37: sent IPC message to task B
+    [experimental task B] activation 37: received IPC message {sender: 1, seq: 37} -- OK
+    [experimental task A] activation 38: sent IPC message to task B
+    [experimental task B] activation 38: received IPC message {sender: 1, seq: 38} -- OK
+    [experimental task A] activation 39: sent IPC message to task B
+    [experimental task B] activation 39: received IPC message {sender: 1, seq: 39} -- OK
+    [experimental task A] activation 40: sent IPC message to task B
+    [experimental task B] activation 40: received IPC message {sender: 1, seq: 40} -- OK
+    [experimental task A] activation 41: sent IPC message to task B
+    [experimental task B] activation 41: received IPC message {sender: 1, seq: 41} -- OK
+    [experimental task A] activation 42: sent IPC message to task B
+    [experimental task B] activation 42: received IPC message {sender: 1, seq: 42} -- OK
+    [experimental task A] activation 43: sent IPC message to task B
+    [experimental task B] activation 43: received IPC message {sender: 1, seq: 43} -- OK
+    [experimental task A] activation 44: sent IPC message to task B
+    [experimental task B] activation 44: received IPC message {sender: 1, seq: 44} -- OK
+    [experimental task A] activation 45: sent IPC message to task B
+    [experimental task B] activation 45: received IPC message {sender: 1, seq: 45} -- OK
+    [experimental task A] activation 46: sent IPC message to task B
+    [experimental task B] activation 46: received IPC message {sender: 1, seq: 46} -- OK
+    [experimental task A] activation 47: sent IPC message to task B
+    [experimental task B] activation 47: received IPC message {sender: 1, seq: 47} -- OK
+    [experimental task A] activation 48: sent IPC message to task B
+    [experimental task B] activation 48: received IPC message {sender: 1, seq: 48} -- OK
+    [experimental task A] activation 49: sent IPC message to task B
+    [experimental task B] activation 49: received IPC message {sender: 1, seq: 49} -- OK
+    [experimental task A] activation 50: sent IPC message to task B
+    [experimental task B] activation 50: received IPC message {sender: 1, seq: 50} -- OK
+    [experimental task A] activation 51: sent IPC message to task B
+    [experimental task B] activation 51: received IPC message {sender: 1, seq: 51} -- OK
+    [experimental task A] activation 52: sent IPC message to task B
+    [experimental task B] activation 52: received IPC message {sender: 1, seq: 52} -- OK
+    [experimental task A] activation 53: sent IPC message to task B
+    [experimental task B] activation 53: received IPC message {sender: 1, seq: 53} -- OK
+    [experimental task A] activation 54: sent IPC message to task B
+    [experimental task B] activation 54: received IPC message {sender: 1, seq: 54} -- OK
+    [experimental task A] activation 55: sent IPC message to task B
+    [experimental task B] activation 55: received IPC message {sender: 1, seq: 55} -- OK
+    [experimental task A] activation 56: sent IPC message to task B
+    [experimental task B] activation 56: received IPC message {sender: 1, seq: 56} -- OK
+    [experimental task A] activation 57: sent IPC message to task B
+    [experimental task B] activation 57: received IPC message {sender: 1, seq: 57} -- OK
+    [experimental task A] activation 58: sent IPC message to task B
+    [experimental task B] activation 58: received IPC message {sender: 1, seq: 58} -- OK
+    [experimental task A] activation 59: sent IPC message to task B
+    [experimental task B] activation 59: received IPC message {sender: 1, seq: 59} -- OK
+    [experimental task A] activation 60: sent IPC message to task B
+    [experimental task B] activation 60: received IPC message {sender: 1, seq: 60} -- OK
+    [experimental task A] activation 61: sent IPC message to task B
+    [experimental task B] activation 61: received IPC message {sender: 1, seq: 61} -- OK
+    [experimental task A] activation 62: sent IPC message to task B
+    [experimental task B] activation 62: received IPC message {sender: 1, seq: 62} -- OK
+    [experimental task A] activation 63: sent IPC message to task B
+    [experimental task B] activation 63: received IPC message {sender: 1, seq: 63} -- OK
+    [experimental task A] activation 64: sent IPC message to task B
+    [experimental task B] activation 64: received IPC message {sender: 1, seq: 64} -- OK
+    [experimental task A] activation 65: sent IPC message to task B
+    [experimental task B] activation 65: received IPC message {sender: 1, seq: 65} -- OK
+    [experimental task A] activation 66: sent IPC message to task B
+    [experimental task B] activation 66: received IPC message {sender: 1, seq: 66} -- OK
+    [experimental task A] activation 67: sent IPC message to task B
+    [experimental task B] activation 67: received IPC message {sender: 1, seq: 67} -- OK
+    [experimental task A] activation 68: sent IPC message to task B
+    [experimental task B] activation 68: received IPC message {sender: 1, seq: 68} -- OK
+  experimental isolated-tasks self-test: C 60 ok / 0 failed, D 60 ok / 0 failed (across 60 switches each, repeated CR3 reload)
+  experimental scheduler: task 1 kernel stack 0x14000001000..0x14000005000 (4 pages) has guard page 0x14000000000 unmapped -- OK
+  experimental scheduler: task 2 kernel stack 0x14000006000..0x1400000a000 (4 pages) has guard page 0x14000005000 unmapped -- OK
+  experimental scheduler: task 3 kernel stack 0x1400000b000..0x1400000f000 (4 pages) has guard page 0x1400000a000 unmapped -- OK
+  experimental scheduler: task 4 kernel stack 0x1400001c000..0x14000020000 (4 pages) has guard page 0x1400001b000 unmapped -- OK
+  experimental scheduler: task 5 kernel stack 0x14000021000..0x14000025000 (4 pages) has guard page 0x14000020000 unmapped -- OK
+  experimental scheduler self-test: all 5 task kernel stacks carry a genuinely unmapped guard page directly below them -- OK
+  experimental dex-demo: crypto known-answer -- Adler-32("Wikipedia")=0x11e60398 (expected 0x11e60398) OK, SHA-1("abc") 20-byte digest OK
+  experimental dex-demo: parsed a real DEX file (file_size=128, map_entry_count=1, all section counts zero as constructed) -- OK
+  experimental dex-demo: Adler-32 checksum + SHA-1 signature verified in-kernel -- OK
+  experimental dex-demo: corrupted magic -- parse result Some(BadMagic), correctly rejected: true
+  experimental dex-demo: corrupted map self-reference -- parse result Some(NoMapListEntry), correctly rejected: true
+  experimental dex-demo: corrupted checksum field -- verify result Some(BadChecksum), correctly rejected: true
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK -- OK
+  experimental teardown-demo: space X used (wrote+read 0xdeadc0dedeadc0de -- OK), 10 frames reclaimed on destroy (316 -> 306 in-use, baseline 306) -- fully reclaimed
+  experimental teardown-demo: space Y's PML4 (0x36c000) == space X's just-freed PML4 (0x36c000) -- OK, frame genuinely reused
+  experimental ring3-scheduler: 3 tasks built (E entry 0x50000000000; F, G pre-loaded with initial trap blobs), target 21 total yields (7 per task)
+  experimental ring3-scheduler: task E kernel RSP0 stack 0x1400002c000..0x14000031000 (5 pages) has guard page 0x1400002b000 unmapped -- OK
+  experimental ring3-scheduler: task F kernel RSP0 stack 0x14000032000..0x14000037000 (5 pages) has guard page 0x14000031000 unmapped -- OK
+  experimental ring3-scheduler: task G kernel RSP0 stack 0x14000038000..0x1400003d000 (5 pages) has guard page 0x14000037000 unmapped -- OK
+  experimental ring3-scheduler self-test: all 3 live task kernel stacks carry a genuinely unmapped guard page directly below them -- OK
+  experimental ring3-scheduler self-test: task E counter=7 (expected 7) -- OK
+  experimental ring3-scheduler self-test: task F counter=7 (expected 7) -- OK
+  experimental ring3-scheduler self-test: task G counter=7 (expected 7) -- OK
+  experimental ring3-scheduler self-test: 21 real trap-based yields processed, all 3 tasks' full register + address-space state correctly suspended and resumed -- OK
+  experimental ring3-scheduler teardown: task F's address space (pml4 0x381000, active for its own 7 trap-based yields) destroyed after suspension -- 15 frames reclaimed (357 -> 342 in use) -- OK
+  experimental ring3-scheduler teardown: LIVE slot hand-back -- destroyed task F's RSP0 slot (base 0x14000032000, guard 0x14000031000) re-handed out byte-identically as task H's live RSP0 stack, re-verified through H's page tables; task I bumped a fresh slot instead -- OK, the teardown path feeds the exact-count pool
+  experimental ring3-scheduler: task H kernel RSP0 stack 0x14000032000..0x14000037000 (5 pages) has guard page 0x14000031000 unmapped -- OK
+  experimental ring3-scheduler: task I kernel RSP0 stack 0x1400003e000..0x14000043000 (5 pages) has guard page 0x1400003d000 unmapped -- OK
+  experimental ring3-scheduler self-test: all 2 preemption-proof task kernel stacks carry a genuinely unmapped guard page directly below them -- OK
+  experimental ring3-scheduler: timer preemption armed -- entering task H, whose program never traps; IRQ0 is the only reschedule point from here (target 6 switches)
+  experimental ring3-scheduler preemption self-test: task H counter=24146012 (>0 required -- its program contains no trap instruction, so only a timer switch could ever let it run) -- OK
+  experimental ring3-scheduler preemption self-test: task I counter=30824029 (>0 required -- its program contains no trap instruction, so only a timer switch could ever let it run) -- OK
+  experimental ring3-scheduler preemption self-test: task H force-switched off the CPU 3 times, task I 3 times (6 timer-driven switches, target 6; 0 cooperative yields during the phase) -- OK
+  experimental ring3-scheduler preemption self-test: two non-yielding ring-3 tasks round-robined purely by IRQ0 -- timer-driven preemption, not cooperative-only -- OK
+  experimental pie-demo: GNU_RELRO region 0x60000002ef0..0x60000003000 is back to read-only after relocation (loader grant/revoke cycle completed) -- OK
+  experimental pie-demo: ET_DYN loaded at base 0x60000000000, entry 0x60000001000 (bias correctly applied by the loader, not baked into the file)
+  experimental pie-demo self-test: relocated pointer dereferenced to 0xfeedface12345678 (expected 0xfeedface12345678) -- OK, relocation correctly applied
+  experimental pie-demo relro check: page 0x60000002ef0 PTE flags writable=false -- OK
+  experimental pie-demo self-test: all 1 GNU_RELRO page(s) verified read-only in the live page tables after relocation -- OK
+  experimental elf-dyn-demo: GNU_RELRO region 0x64000002ef0..0x64000003000 revoked read-only after grant/relocate (the GRANT half ran for the first time) -- OK
+  experimental elf-dyn-demo: resolved by name via the DT_HASH walk -- dyn_payload 0x64000001000, dyn_value 0x64000003000, dyn_timestamp 0x64000003010 -- OK
+  experimental elf-dyn-demo: absent-name lookup returned the typed SymbolNotFound (not a parse error) -- OK
+  experimental elf-dyn-demo: GLOB_DAT slot 0x64000002fe0 (in-RELRO .got) == 0x64000003000 (resolved dyn_value) -- OK, symbol-resolved relocation applied correctly
+  experimental elf-dyn-demo: R_X86_64_64 slot 0x64000003008 (writable .data) == 0x64000003000 (resolved dyn_value) -- OK, symbol-resolved relocation applied correctly
+  experimental elf-dyn-demo: RELRO page 0x64000002000 is read-only and user-readable after the grant/revoke cycle -- OK
+  experimental elf-dyn-demo: GLOB_DAT slot residency check: 0x64000002fe0 inside RELRO region 0x64000002ef0..0x64000003000 = true (true expected -- ld placed .got in the GNU_RELRO region; reads are legal, writes protected) -- OK
+  experimental elf-dyn-demo: wrote 0x5eed0001 through resolved dyn_timestamp (0x64000003010) and read it back -- OK, a resolved runtime address is a real mapped address
+  experimental elf-dyn-demo: kernel-side proof complete; entering dyn_payload (ring 3) which dereferences its own resolved GOT slot
+  experimental elf-dyn-demo self-test: the .so's own code read 0xd1ce00f00d through its resolved GOT slot (expected 0xd1ce00f00d) -- OK
+  experimental cross-demo: provider's GNU_RELRO region 0x6c000001f40..0x6c000002000 revoked read-only (revoke-only; its layout has no in-region relocations) -- OK
+  experimental cross-demo: provider registered (registry 1 object(s)); cross_value 0x6c000002000, dup_symbol 0x6c000002008 resolve from the provider's own tables -- OK
+  experimental cross-demo: dependent's GNU_RELRO region 0x6c000042ee8..0x6c000043000 revoked read-only; the grant half ran for both in-region GLOB_DAT slots (one UNDEF-but-resolved) -- OK
+  experimental cross-demo: the app's own by-name lookup of cross_value refused with UndefinedSymbol -- OK, the app genuinely does not define it
+  experimental cross-demo: app's UNDEF GLOB_DAT slot 0x6c000042fe0 == 0x6c000002000 (the PROVIDER's cross_value, via the registry) -- OK, cross-object relocation applied correctly
+  experimental cross-demo: app's duplicate-name GLOB_DAT slot 0x6c000042fd8 == 0x6c000043000 (ITS OWN dup_symbol) -- OK, self-priority: the app's OWN dynsym entry won, not the registry's earlier same-named entry
+  experimental cross-demo: registry search order decides -- [app,lib] -> 0x6c000043000 (app), [lib] -> 0x6c000002008 (lib) -- OK, first DEFINED match in order wins
+  experimental cross-demo: absent-name registry lookup returned Ok(None) (typed absent, no parse error) -- OK
+  experimental cross-demo: the same dependent WITHOUT a resolver refused with Ok(relro = Denied) -- the caller must refuse -- OK, the refusal is NOT gone now that resolution exists
+  experimental cross-demo: kernel-side proof complete; entering cross_payload (ring 3), which dereferences its registry-resolved GOT slot
+  experimental cross-demo self-test: the dependent's own code read 0xace5f00dd1ce5eed through its cross-resolved GOT slot (expected 0xace5f00dd1ce5eed, the provider's cross_value) -- OK
+  experimental full-demo: provider loaded; DT_SONAME fact (crosslib.so.1) validated -- OK
+  experimental full-demo: same-SONAME V2 provider refuses the VERS_1.0 requirement with VersionNotProvided -- OK, version matching is enforced; the name alone is NOT enough
+  experimental full-demo: dependent's GNU_RELRO region 0x6c000202e68..0x6c000203000 revoked read-only after the version-checked grant/relocate -- OK
+  experimental full-demo: dependent's versioned GLOB_DAT slot 0x6c000202fe0 == 0x6c000003000 (provider's cross_value, version-checked) -- OK
+  experimental full-demo: dependent's duplicate-name slot 0x6c000202fd8 == 0x6c000203008 (its OWN dup_symbol) -- OK, self-priority held under the versioned provider too
+  experimental full-demo: lazy JUMP_SLOT slot 0x6c000203000 == 0x6c000210000 (trap stub armed; NOT eagerly resolved) -- OK
+  experimental full-demo: empty-registry dependent refused with MissingDependency -- OK, the declared dependency contract is enforced
+  experimental full-demo: V2-registry dependent refused (denied region or typed version error) -- OK, the version contract refuses end to end
+  experimental full-demo: lazy-bind service probe of 0x6c000210000 while the registry was EMPTY refused with the typed ServiceEmpty -- OK, the empty branch proven kernel-side before the chain's first registration
+  experimental full-demo self-test: cross_value via versioned slot = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental full-demo self-test: cross_fn results (eax) 0xfa571ae5 / 0xfa571ae5 (expected 0xfa571ae5 both; first via lazy bind, later direct) -- OK
+  experimental full-demo self-test: lazy-bind trap fired 1 time(s) across 3 calls (exactly 1 required) -- OK, binding is lazy; later calls are direct
+  experimental full-demo: shared lazy-bind service: 1 object(s) registered so far, 1 bind(s) served through ONE vector (0x88) this boot -- OK, this dependent binds through the service, not a demo static
+  experimental deps-demo: GNU walk of a name in NEITHER of A's tables refused with SymbolNotFound -- OK (absent, not malformed: GNU-absent is typed as absent)
+  experimental deps-demo: provider A carries BOTH hash tables (DT_HASH authority + DT_GNU_HASH); GNU walk == SysV walk on cross_value (0x6d000003000) -- OK, the GNU mechanism's answer matches the SysV mechanism's
+  experimental deps-demo: provider A loaded (crosslib.so.1) -- OK
+  experimental deps-demo: pre-overlay lookup of interp_mark = absent (provider A does not define it) -- OK, absent before the overlay exists
+  experimental deps-demo: after interpose(overlay), lookup of interp_mark = 0x6d000103000 (data 0x1111222233334444, the overlay's value) -- OK, interposition overrides load order
+  experimental deps-demo: looping catalog refused with DependencyCycle -- OK, a file can never load itself to satisfy itself
+  experimental deps-demo: DT_NEEDED CHAIN (dependent -> crosslib2.so.1 -> crosslib3.so.1 -> crosslib4.so.1 -> crosslib.so.1) satisfied dependency-first; 3 catalog object(s) auto-loaded -- OK, the DEPTH-3 chain (B, C and D) loaded from the catalog; A was already in scope
+  experimental deps-demo: depth-3 chain under a catalog whose cap is 2 refused with DependencyDepthExceeded (at the D hop, B and C mapped, A never reached) -- OK
+  experimental deps-demo: 3 auto-loaded chain providers carry their DISTINCT marker immediates at their own bases (3/3 symbols found, contents == the source constants) -- OK, the right file loaded at the right base, per object
+  experimental deps-demo: dependent's GNU_RELRO revokes read-only WITH an unresolved WEAK entry in-region (weak != denial) -- OK
+  experimental deps-demo: dependent's versioned GLOB_DAT slot 0x6d000302fe0 == 0x6d000003000 (provider's cross_value as resolved BY THE CATALOG CHAIN) -- OK
+  experimental deps-demo: dependent's interp_mark slot 0x6d000302fd8 == 0x6d000103000 (the INTERPOSITION overlay's address, not that of anything provider A defines) -- OK
+  experimental deps-demo: WEAK UNDEF ghost_fn@VERS_1.0 slot 0x6d000302fd0 == 0x0 (the NULL slot; unresolved weak stays non-fatal) -- OK
+  experimental deps-demo: lazy JUMP_SLOT slot 0x6d000303000 == 0x6d000310000 (trap stub armed on THIS object's own trampoline page; NOT eagerly resolved) -- OK
+  experimental deps-demo: WEAK version-flag artifact resolves cross_value@VERS_1.0 against the providing scope (weak relaxes only the UNRESOLVED case) -- OK
+  experimental deps-demo: GNU walk of the weak artifact's UNDEF cross_value reports ABSENT (SymbolNotFound) while the SysV walk reports UndefinedSymbol -- OK (GNU excludes UNDEF entries from its buckets; DT_HASH chains them; the asymmetry is typed)
+  experimental deps-demo: WEAK version-flag requirement with unmet VERS_1.0 takes the NULL slot (0), load proceeds, relro read-only -- OK (a STRONG requirement is the typed VersionNotProvided refusal in the same position)
+  experimental deps-demo: lazy-bind service refuses an UNREGISTERED trampoline page (0x6d000570000) with the typed UnregisteredTrampoline carrying that page; registry size 1 -> 1 and binds 1 -> 1 unchanged -- OK (the handler's panic path is demonstrated, not assumed)
+  experimental deps-demo self-test: cross_value = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental deps-demo self-test: interp_mark = 0x1111222233334444 (expected 0x1111222233334444, the overlay's value read through ring 3) -- OK
+  experimental deps-demo: lazy-bind service fired 1 time(s) across 3 calls (exactly 1 required) -- OK, binding is lazy; calls 2-3 are direct
+  experimental deps-demo: shared lazy-bind service: 2 independent object(s) registered, 2 bind(s) served through ONE vector (0x88) this boot -- OK, the vector is a SERVICE, not a demo
+  experimental plt-demo: provider3 loaded at 0x6d000770000: DT_SONAME pltprov.so.1 AND its prov_marker data reads back 0xe11cede1e1e1e1e -- OK, the RIGHT file at the RIGHT base
+  experimental plt-demo: registry probe of link-map id 0xbeefc0de (no GNU object registered yet) refused with the typed UnregisteredLinkMap carrying THAT id -- OK, an unregistered cookie is refused, never guessed
+  experimental plt-demo: instance 1 own-.plt armed on THE OBJECT's own .got.plt (0x6d000702fe8): GOT[1] = link-map id 0x1, GOT[2] = resolver thunk 0x6d000710000 (1 .rela.plt entries) -- OK, the GNU resolver pointers are in place (JUMP_SLOT slots touched only by the GNU lazy bias relocation)
+  experimental plt-demo: instance 1 JUMP_SLOT idx 0 slot 0x6d000703000 == 0x6d000701016 pre-run (the LINKER's own plt+6 initial value with the GNU lazy relocation bias applied; not resolved; expected live value 0x6d000661000) -- OK
+  experimental plt-demo: instance 1 registered under link-map id 0x1; the shared service now holds 3 object(s) -- OK, the GNU path lives in the SAME registry the trap-stub path uses
+  experimental plt-demo self-test: instance 1 -- cross_value = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental plt-demo self-test: instance 1 -- cross_fn results (eax) 0xfa571ae5 / 0xfa571ae5 / 0xfa571ae5 (expected 0xfa571ae5 all; call 1 entered the callee DIRECTLY via the resolver's guided return) -- OK
+  experimental plt-demo self-test: instance 1 -- its REAL .got.plt slot 0x6d000703000 patched to the resolved cross_fn (0x6d000661000) -- OK
+  experimental plt-demo self-test: instance 1 -- first-use binds for ITS OWN cookie 0x1: 1 across 3 calls (exactly 1 required) -- OK, GNU lazy semantics on THIS object's own .plt machinery
+  experimental plt-demo: instance 2 own-.plt armed on THE OBJECT's own .got.plt (0x6d000742fe8): GOT[1] = link-map id 0x2, GOT[2] = resolver thunk 0x6d000750000 (1 .rela.plt entries) -- OK, the GNU resolver pointers are in place (JUMP_SLOT slots touched only by the GNU lazy bias relocation)
+  experimental plt-demo: instance 2 JUMP_SLOT idx 0 slot 0x6d000743000 == 0x6d000741016 pre-run (the LINKER's own plt+6 initial value with the GNU lazy relocation bias applied; not resolved; expected live value 0x6d000661000) -- OK
+  experimental plt-demo: instance 2 registered under link-map id 0x2; the shared service now holds 4 object(s) -- OK, the GNU path lives in the SAME registry the trap-stub path uses
+  experimental plt-demo self-test: instance 2 -- cross_value = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental plt-demo self-test: instance 2 -- cross_fn results (eax) 0xfa571ae5 / 0xfa571ae5 / 0xfa571ae5 (expected 0xfa571ae5 all; call 1 entered the callee DIRECTLY via the resolver's guided return) -- OK
+  experimental plt-demo self-test: instance 2 -- its REAL .got.plt slot 0x6d000743000 patched to the resolved cross_fn (0x6d000661000) -- OK
+  experimental plt-demo self-test: instance 2 -- first-use binds for ITS OWN cookie 0x2: 1 across 3 calls (exactly 1 required) -- OK, GNU lazy semantics on THIS object's own .plt machinery
+  experimental plt-demo: instance 3 own-.plt armed on THE OBJECT's own .got.plt (0x6d000782fe8): GOT[1] = link-map id 0x3, GOT[2] = resolver thunk 0x6d000790000 (2 .rela.plt entries) -- OK, the GNU resolver pointers are in place (JUMP_SLOT slots touched only by the GNU lazy bias relocation)
+  experimental plt-demo: instance 3 JUMP_SLOT idx 0 slot 0x6d000783000 == 0x6d000781016 pre-run (the LINKER's own plt+6 initial value with the GNU lazy relocation bias applied; not resolved; expected live value 0x6d000771010) -- OK
+  experimental plt-demo: instance 3 JUMP_SLOT idx 1 slot 0x6d000783008 == 0x6d000781026 pre-run (the LINKER's own plt+6 initial value with the GNU lazy relocation bias applied; not resolved; expected live value 0x6d000771000) -- OK
+  experimental plt-demo: instance 3 registered under link-map id 0x3; the shared service now holds 5 object(s) -- OK, the GNU path lives in the SAME registry the trap-stub path uses
+  experimental plt-demo self-test: instance 3 (multi-entry) -- fn_a = 0xa11ce0de (expected 0xa11ce0de), fn_b = 0xbb0b5e11 (expected 0xbb0b5e11, TWO calls, second direct) -- OK
+  experimental plt-demo self-test: instance 3 -- .rela.plt idx 0 slot 0x6d000783000 patched to 0x6d000771010 (expected 0x6d000771010, ITS OWN index) -- OK
+  experimental plt-demo self-test: instance 3 -- .rela.plt idx 1 slot 0x6d000783008 patched to 0x6d000771000 (expected 0x6d000771000, ITS OWN index) -- OK
+  experimental plt-demo self-test: MULTI-ENTRY artifact cookie 0x3: 2 first-use binds (EXACTLY 2 -- one per .rela.plt entry, one cookie); shared service now 5 object(s) / 6 bind(s) across both gates (0x88 trap stubs + 0x8B GNU own-.plt) -- OK, one registry serves a MULTI-ENTRY GNU object AND the single-entry AND trap-stub paths
+  experimental plt-demo: GNU OWN-.plt mode requested on the PLT-LESS artifact REFUSED with the typed MalformedDynamicTables (no .got.plt machinery to arm) -- OK, the protocol refuses cleanly where its machinery does not exist
+  experimental plt-demo: the SAME PLT-LESS artifact loads eagerly: its GLOB_DAT slot 0x6d0007b2fe0 == provider A's cross_value (0x6d000663000) resolved AT LOAD, relro revoked read-only, NO GNU arming side effects (registry 5 -> 5, binds 6 -> 6) -- OK, the GNU protocol is opt-in per load; eager stays the default for PLT-less objects
+  experimental pe-demo: PE32+ loaded at its own ImageBase (no relocation), entry 0x140001000
+  experimental pe-demo self-test: PE entry point wrote 0xfeedc0defeedc0de (expected 0xfeedc0defeedc0de) -- OK, a genuine Windows-format (PE32+) executable's own code ran in ring 3
+  experimental pe-reloc-demo: PE32+ loaded at 0x90000000000 (its ImageBase is 0x140000000); .data pointer relocated to 0x90000002008 (expected 0x90000002008)
+  experimental pe-reloc-demo self-test: relocated pointer wrote 0xfeedfacecafebeef (expected 0xfeedfacecafebeef) -- OK, a relocatable PE32+ binary ran correctly at a loader-chosen address
+  experimental pe-import-demo: provider loaded at its own ImageBase 0x180000000000; its export table declares "userprog_pe_import_dll.dll"
+  experimental pe-import-demo: export table facts -- 2 name(s), lookup(crossfn) = provider+0x1000, lookup(crossmark) = provider+0x2000
+  experimental pe-import-demo: provider export lookup self-test: crossfn 0x180000001000, crossmark 0x180000002000, absent symbol None -- OK
+  experimental pe-import-demo: forwarder host loaded at its own ImageBase 0x1c0000000000; its export table declares "userprog_pe_import_fwdprov.dll" with 3 name(s), every EAT entry a directory-internal forwarder -- OK
+  experimental pe-import-demo: negative control 1 -- EMPTY registry refused the import walk with the typed MissingDllImport -- OK
+  experimental pe-import-demo: negative control 2 -- the DLL name bound to the WRONG FILE's empty export table refused with the typed MissingImport -- OK, the registry identity is the file, not the name
+  experimental pe-import-demo: negative control 3 -- a SELF-CYCLING forwarded export refused at the depth cap with the typed ForwarderDepthExceeded -- OK
+  experimental pe-import-demo: negative control 4 -- a forwarded export naming an UNREGISTERED DLL refused with the typed MissingDllImport -- OK
+  experimental pe-import-demo: ordinal out-of-range / empty-table probes answer typed-None, never a guess -- OK
+  experimental pe-import-demo: negative control 5 -- a fresh-stamped descriptor with an ALL-FRESH forwarder ref whose IAT slot contradicts the chased answer refused with the typed BoundValueCorrupt (0xdeadbeef00001000 != 0x180000001000) -- OK, stamps are verified THROUGH the forwarder chains too, never trusted blindly
+  experimental pe-import-demo: negative control 6 -- the REFSTALE carrier (one ref stamp byte beyond the bad client's) DISCARDED the same wrong slot (0xdeadbeef00001000) and resolved it fresh through the same chase (0x180000001000); the descriptor's own stamp stayed fresh (0x386d4380) and the ref declared 0x386d4381 -- OK, one ref stamp byte decides refuse-vs-discard
+  experimental pe-import-demo: negative control 7 -- the REF2BAD carrier (TWO refs, BOTH FRESH) refused through the two-ref chain with the typed BoundValueCorrupt (0xdeadbeef00001000 != 0x180000001000) -- OK, the count made the walk unambiguous and the fresh surface still verified the slot THROUGH both refs
+  experimental pe-import-demo: negative control 8 -- the REF2STALE carrier (same two refs, only the SECOND's stamp moved to 0x386d4381) DISCARDED the same wrong slot (0xdeadbeef00001000) and resolved fresh through the same chase (0x180000001000); the first ref stayed fresh (0x386d4380) -- OK, a LATER ref stamp byte decides refuse-vs-discard across a TWO-ref chain
+  experimental pe-import-demo: negative control 9 (positive half) -- the DELAYGOOD carrier's two delay imports eagerly resolved through the same registry (named crossfn -> 0x180000001000, ordinal crossmark -> 0x180000002000; prior contents were the composed unbound thunks, both slots WRITTEN and read back) and the module handle 0x180000000000 was written where the descriptor pointed -- OK, the eager delay ruling matches the normal walk's answers
+  experimental pe-import-demo: negative control 10 -- the DELAYBAD carrier's delay descriptor naming 'nowhere.dll' refused with the typed MissingDelayDllImport -- OK, the name-vs-file ruling applies to delay descriptors with their OWN flavor
+  experimental pe-import-demo: negative control 11 -- the DELAYMUT carrier (dwTimeStamp = provider stamp + 1, the OLD-BIND marker) refused with the typed MalformedDelayImport -- OK, a binding guarantee the kernel cannot verify is NEVER silently honored and never silently ignored
+  experimental pe-import-demo: negative control 12 -- the DELAYATTRS carrier (grAttrs = 0x3, dlattrRva plus an UNDEFINED bit) refused with the typed MalformedDelayImport -- OK, an attribute set the Windows helper itself cannot interpret is refused before any table is trusted
+  experimental pe-import-demo: negative control 13 -- the DELAYMIS carrier (INT[0] names crossfn while IAT[0] carries an ordinal thunk) refused with the typed MalformedDelayImport -- OK, the unbound pre-state the walk resolves is checked entry-for-entry, never assumed
+  experimental pe-import-demo: negative control 14 -- the DELAYVA carrier (grAttrs = 0, the pre-VC7 VA form, with RVA-sized fields) refused with the typed MalformedDelayImport -- OK, a VA-form field that cannot be a VA of this image is refused, not reinterpreted
+  experimental pe-import-demo: negative control 15 -- the DELAYVABIAS carrier (real VA-form descriptor of ImageBase 0x400000, loaded at 0x460000000000) refused with the typed MalformedDelayImport -- OK, a pre-VC7 descriptor's baked VAs are refused in a relocated image instead of being reinterpreted against the wrong base
+  experimental pe-import-demo: negative control 16 -- the DELAYMANY carrier's 17th descriptor refused with the typed MalformedDelayImport; descriptors 0-15 are FULLY resolved (their IAT slots hold the provider's crossfn 0x180000001000, their handle slots the provider's mapped base), while the 17th's slot still holds its composed unbound thunk 0x276b and its handle slot is untouched -- OK, the 16-descriptor cap is EXCLUSIVE: the legal maximum is resolved in full and only the entry past it is refused
+  experimental pe-import-demo: negative control 17 -- the DELAYTHUNKS carrier's 65th thunk entry refused with the typed MalformedDelayImport; entries 0-63 are FULLY resolved (all 64 IAT slots hold the provider's crossfn 0x180000001000) while entry 64 still holds its composed unbound thunk 0x271b -- OK, the 64-entry thunk cap is EXCLUSIVE for the same reason, and one descriptor's INT/IAT pair was walked end to end before the refusal
+  experimental pe-import-demo: negative control 18 -- the DELAYFULL carrier (EXACTLY 16 descriptors, the FIRST carrying EXACTLY 64 thunk entries, 79 imports) ACCEPTED and resolved completely: every slot holds the provider's crossfn 0x180000001000, all 16 handle slots the provider's base, and the IAT terminator right after the 64th entry stopped the walk cleanly -- OK, both caps are exclusive bounds: the legal maxima are accepted, one past them is refused
+  experimental pe-import-demo: BOUND-IMPORT facts -- provider's fresh-stamp entry: 2 slot(s) HONORED (prefills verified == fresh resolution, slots left un-written); the stale entry (stamp = provider's + 1, a stamp no file carries): its pre-bound contradiction 0x180000002000 DISCARDED and resolved fresh to 0x180000001000; nobody.dll's inert entry parsed and ignored -- OK
+  experimental pe-import-demo: resolved 3 import(s) through the REAL import directories -- OK: named crossfn -> 0x180000001000 and ordinal-form crossmark (`ord2`) -> 0x180000002000 both HONORED by stamp (verified prefills, left un-written); forwarder crossfn_fwd -> 0x180000001000 (the PROVIDER's .text, chased through the forwarder host's export entry after its stale pre-binding was DISCARDED); every slot reads back its (verified or written) value
+  experimental pe-import-demo: IAT slots -- crossfn 0x180000001000, ordinal crossmark 0x180000002000, forwarder crossfn_fwd 0x180000001000 (slot 21990232563816; slot 21990232563824; slot 21990232563840) -- OK
+  experimental pe-import-demo: resolved crossmark address dereferences to 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed, the provider's own .data immediate) -- OK
+  experimental pe-import-demo: kernel-side proof complete; entering the imported client (ring 3) which dereferences crossmark through its resolved IAT slot and calls crossfn through its own
+  experimental pe-import-demo self-test: imported data read 0xace5f00dd1ce5eed through the resolved IAT slot (expected 0xace5f00dd1ce5eed); imported function returned 0xfa571ae5 (expected 0xfa571ae5); forwarder-resolved import returned 0xfa571ae5 (expected 0xfa571ae5, the PROVIDER's own code executed through the forwarder host's export entry) -- OK, a real Windows-format executable's own imports -- named, ordinal, and forwarder-chased -- all resolved through real Windows-format export tables (GetProcAddress semantics), and its own code used them in ring 3
+  experimental isolation: address space A built (pml4 0x4fd000), program A loaded, entry 0x20000000000
+  experimental isolation: trap from process A (cpl=3), read 0xc0ffee (expected 0xc0ffee) -- OK
+  experimental isolation: address space B built (pml4 0x508000), program B loaded, entry 0x20000000000 -- switched active, A is now inactive but preserved
+  experimental isolation: trap from process B (cpl=3), read 0xbbbbbbbb (expected 0xbbbbbbbb) -- OK
+  experimental isolation: switched back to process A's address space, re-read 0xc0ffee (expected 0xc0ffee, unchanged since A ran) -- OK, ISOLATED
+  experimental isolation self-test: two independent address spaces verified mutually isolated -- OK
+  memory stack-reuse self-test: released 2-page slot re-handed out byte-identically (base 0x14000092000, guard 0x14000091000, top 0x14000094000) fully re-verified with its guard unmapped; an 8-page release absorbed WHOLE by 3-page and by 2-page requests (same guard/top, descriptor stays 8 pages, zero splits); a bigger request never touched a smaller pooled slot -- OK, exact-match preferred, whole-slot absorption bounded, no rewind
+  memory guard-demo: stack mapped at 0x1400009e000..0x140000a2000 (4 pages); bottom present OK, top present OK, guard page 0x1400009d000 absent OK, page above 0x140000a2000 absent OK
+  memory guard-demo self-test: guarded stack correctly built (4 usable pages, page below genuinely unmapped, page above genuinely unmapped) -- OK
+  memory guard-demo: arming terminal overflow probe -- writing one qword at the guard page 0x1400009d000 (expect a PROTECTION_VIOLATION page fault)
+  memory guard-demo self-test: overflow write to guard page 0x1400009d000 faulted exactly as required (accessed 0x1400009d000, error code PageFaultErrorCode(CAUSED_BY_WRITE)) -- OK, a stack overflow is caught deterministically instead of corrupting memory below it
+nyrqis kernel: phase 1+2+3+4+ring3-elf-isolation-poc+guard-pages complete
+```
+
+- And the UEFI gate's guest output (its first 14 non-kernel lines are
+  the OVMF/stub handoff section catalogued above):
+
+```
+BdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+
+nyrqis ubld: stub alive under UEFI; SecureBoot=absent
+nyrqis ubld: kernel image loaded from the stub's own bytes; uefi_entry resolved
+nyrqis ubld: memory map acquired
+nyrqis ubld: rsdp found (acpi config table, rev=2.0)
+nyrqis ubld: Multiboot2 info synthesized (map entries + rsdp + vendor tag)
+acpi-reclaim region: base=0xf76d000 pages=0x12
+0x6:0xc70 0x7d1:0x12 0xf:0x2c 0x0:0x8 
+
+[s] entering EBS
+[s] EBS ok
+[s] cr3 switched; jumping uefi_entry
+nyrqis kernel: phase 1 bring-up
+  gdt: loaded (kernel code segment + tss)
+  idt: loaded (divide-error, invalid-opcode, gpf, page-fault, double-fault)
+  double-fault ist stack: index 0
+  multiboot: memory map parsed, 62247 usable 4KiB frames (243 MiB)
+  acpi: RSDP v2 validated (XSDT root table), 6 tables enumerated and checksum-verified
+  acpi reclaim: representative frame 0xf76d000 usable before=false (expected false), 1 reclaimable region(s) released, usable after=true (expected true) -- OK
+  paging: CR0.WP set by the kernel (supervisor writes honor PTE RO on both boot paths -- documented boot contract, not firmware state)
+  paging: dynamic mapper live (CR3 read back, OffsetPageTable constructed), NX enabled (EFER.NXE)
+  heap: mapped 256 pages (1024 KiB) at 0x10000000000, global allocator live
+  heap self-test: Vec<u32> of 100 elements allocated and summed correctly (5050)
+  frames allocated so far: 259
+  memory tlb-demo: mapped (frame Some(PhysAddr(0x33d000))), unmapped (translate -> None), remapped (frame Some(PhysAddr(0x341000))); re-read 0xbbbbbbbbbbbbbbbb (expected 0xbbbbbbbbbbbbbbbb)
+  memory tlb-demo self-test: present->absent->present OK, backing frame genuinely changed OK, remap read back new bytes OK -- OK
+  pic: remapped (IRQ0-7 -> 0x20-0x27, IRQ8-15 -> 0x28-0x2F), timer unmasked
+  rtc: periodic interrupt armed at 1024 Hz, IRQ8 + cascade IRQ2 unmasked
+  keyboard: 8042 keyboard interrupt (IRQ1, master PIC) enabled and unmasked
+  interrupts: enabled (sti)
+  timer self-test: 20 real hardware timer interrupts observed and handled
+  rtc self-test: 4 additional RTC periodic interrupts observed and handled after a snapshot (1063 total; IRQ8, via the slave-PIC cascade)
+  rtc wall-clock self-test: first read Ok(RtcTime { second: 14, minute: 8, hour: 7 }) (decoded via the hardware's actual mode bits, fields in valid ranges) -- OK
+  rtc wall-clock self-test: bounded-UIP second read Ok(RtcTime { second: 14, minute: 8, hour: 7 }) completed without hanging -- OK
+  rtc wall-clock self-test: second read does not move the clock backwards beyond a tolerated skew -- OK
+  rtc wall-clock self-test: 6 periodic tick(s) observed between the two wall-clock reads (the periodic line and the wall-clock registers are both alive) -- OK
+  rtc wall-clock self-test: wall-clock reads decode via the hardware's reported modes and order monotonically -- OK
+  keyboard self-test: injected scancode 0x1e via the 8042 output-buffer command (0xD2), 1 interrupt(s) handled, handler read back 0x1e -- OK
+  ata: no IDE device on either channel -- IRQ14/IRQ15 handlers installed but left masked (nothing to prove)
+nyrqis kernel: phase 1+2+3-prep complete, boot phase = 7 (Ready)
+  experimental scheduler: 4 tasks registered (lifecycle-enforcing, NPS-002 §5)
+  experimental ipc: 4 mailboxes initialized (arbiter-checked, NPS-003 §5.4)
+    [experimental task A] activation 1: sent IPC message to task B
+    [experimental task B] activation 1: received IPC message {sender: 1, seq: 1} -- OK
+    [experimental task J] activation 1: terminating per NPS-002 §5.5/§5.6 (RUNNING -> TERMINATING -> TERMINATED, then dispatch away)
+    [experimental task A] activation 2: sent IPC message to task B
+    [experimental task B] activation 2: received IPC message {sender: 1, seq: 2} -- OK
+    [experimental task A] activation 3: sent IPC message to task B
+    [experimental task B] activation 3: received IPC message {sender: 1, seq: 3} -- OK
+    [experimental task A] activation 4: sent IPC message to task B
+    [experimental task B] activation 4: received IPC message {sender: 1, seq: 4} -- OK
+    [experimental task A] activation 5: sent IPC message to task B
+    [experimental task B] activation 5: received IPC message {sender: 1, seq: 5} -- OK
+    [experimental task A] activation 6: sent IPC message to task B
+    [experimental task B] activation 6: received IPC message {sender: 1, seq: 6} -- OK
+  experimental scheduler termination proof: task J walked RUNNING -> TERMINATING -> TERMINATED and was never re-dispatched (ran exactly 1 time) -- OK
+  experimental scheduler self-test: 6 round trips completed, task A ran 6 times, task B ran 6 times
+  experimental ipc self-test: 6 messages sent task A -> task B and received correctly, 0 mismatches
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Created matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Ready matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Running matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Blocked matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Terminating matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: all 6 transitions attempted from Terminated matched the edge table (accepted iff legal) -- OK
+  experimental scheduler lifecycle self-test: 36/36 from-to pairs verified (9 legal accepts, 27 illegal refusals, counter ticked exactly once per refusal) -- OK
+  experimental scheduler termination self-test: 1 terminated task(s) (reached via the legal path), TERMINATED unreachable directly from CREATED/READY, remaining tasks active -- OK
+  experimental ipc arbiter self-test: honest send from the running task -- OK (queued)
+  experimental ipc arbiter self-test: forged sender (claims 1, running 0) refused with NotRunningTask -- OK
+  experimental ipc revocation self-test: revoke_sender(scratch, 0) newly-revoked -- OK
+  experimental ipc revocation self-test: send after revocation refused with Revoked -- OK
+  experimental ipc revocation self-test: message queued before revocation still receivable after it -- OK
+  experimental ipc revocation self-test: re-revoking an already-revoked sender is a no-op returning false -- OK
+    [experimental task A] activation 7: sent IPC message to task B
+    [experimental task B] activation 7: received IPC message {sender: 1, seq: 7} -- OK
+    [experimental task A] activation 8: sent IPC message to task B
+    [experimental task B] activation 8: received IPC message {sender: 1, seq: 8} -- OK
+  experimental ipc blocking-receive self-test: bounded receive on an empty mailbox returned ReceiveTimedOut (typed, never an indefinite block) -- OK
+  experimental ipc blocking-receive self-test: bounded receive delivered the message sent before it (Ok(IpcMessage { sender: 0, seq: 7 })) -- OK
+  experimental ipc self-test: arbiter + revocation + blocking-receive contract checks -- OK
+  experimental isolated-tasks: 6 total tasks in round-robin (main, A, B, C[own cr3 0x350000], D[own cr3 0x35a000])
+    [experimental task A] activation 9: sent IPC message to task B
+    [experimental task B] activation 9: received IPC message {sender: 1, seq: 9} -- OK
+    [experimental task A] activation 10: sent IPC message to task B
+    [experimental task B] activation 10: received IPC message {sender: 1, seq: 10} -- OK
+    [experimental task A] activation 11: sent IPC message to task B
+    [experimental task B] activation 11: received IPC message {sender: 1, seq: 11} -- OK
+    [experimental task A] activation 12: sent IPC message to task B
+    [experimental task B] activation 12: received IPC message {sender: 1, seq: 12} -- OK
+    [experimental task A] activation 13: sent IPC message to task B
+    [experimental task B] activation 13: received IPC message {sender: 1, seq: 13} -- OK
+    [experimental task A] activation 14: sent IPC message to task B
+    [experimental task B] activation 14: received IPC message {sender: 1, seq: 14} -- OK
+    [experimental task A] activation 15: sent IPC message to task B
+    [experimental task B] activation 15: received IPC message {sender: 1, seq: 15} -- OK
+    [experimental task A] activation 16: sent IPC message to task B
+    [experimental task B] activation 16: received IPC message {sender: 1, seq: 16} -- OK
+    [experimental task A] activation 17: sent IPC message to task B
+    [experimental task B] activation 17: received IPC message {sender: 1, seq: 17} -- OK
+    [experimental task A] activation 18: sent IPC message to task B
+    [experimental task B] activation 18: received IPC message {sender: 1, seq: 18} -- OK
+    [experimental task A] activation 19: sent IPC message to task B
+    [experimental task B] activation 19: received IPC message {sender: 1, seq: 19} -- OK
+    [experimental task A] activation 20: sent IPC message to task B
+    [experimental task B] activation 20: received IPC message {sender: 1, seq: 20} -- OK
+    [experimental task A] activation 21: sent IPC message to task B
+    [experimental task B] activation 21: received IPC message {sender: 1, seq: 21} -- OK
+    [experimental task A] activation 22: sent IPC message to task B
+    [experimental task B] activation 22: received IPC message {sender: 1, seq: 22} -- OK
+    [experimental task A] activation 23: sent IPC message to task B
+    [experimental task B] activation 23: received IPC message {sender: 1, seq: 23} -- OK
+    [experimental task A] activation 24: sent IPC message to task B
+    [experimental task B] activation 24: received IPC message {sender: 1, seq: 24} -- OK
+    [experimental task A] activation 25: sent IPC message to task B
+    [experimental task B] activation 25: received IPC message {sender: 1, seq: 25} -- OK
+    [experimental task A] activation 26: sent IPC message to task B
+    [experimental task B] activation 26: received IPC message {sender: 1, seq: 26} -- OK
+    [experimental task A] activation 27: sent IPC message to task B
+    [experimental task B] activation 27: received IPC message {sender: 1, seq: 27} -- OK
+    [experimental task A] activation 28: sent IPC message to task B
+    [experimental task B] activation 28: received IPC message {sender: 1, seq: 28} -- OK
+    [experimental task A] activation 29: sent IPC message to task B
+    [experimental task B] activation 29: received IPC message {sender: 1, seq: 29} -- OK
+    [experimental task A] activation 30: sent IPC message to task B
+    [experimental task B] activation 30: received IPC message {sender: 1, seq: 30} -- OK
+    [experimental task A] activation 31: sent IPC message to task B
+    [experimental task B] activation 31: received IPC message {sender: 1, seq: 31} -- OK
+    [experimental task A] activation 32: sent IPC message to task B
+    [experimental task B] activation 32: received IPC message {sender: 1, seq: 32} -- OK
+    [experimental task A] activation 33: sent IPC message to task B
+    [experimental task B] activation 33: received IPC message {sender: 1, seq: 33} -- OK
+    [experimental task A] activation 34: sent IPC message to task B
+    [experimental task B] activation 34: received IPC message {sender: 1, seq: 34} -- OK
+    [experimental task A] activation 35: sent IPC message to task B
+    [experimental task B] activation 35: received IPC message {sender: 1, seq: 35} -- OK
+    [experimental task A] activation 36: sent IPC message to task B
+    [experimental task B] activation 36: received IPC message {sender: 1, seq: 36} -- OK
+    [experimental task A] activation 37: sent IPC message to task B
+    [experimental task B] activation 37: received IPC message {sender: 1, seq: 37} -- OK
+    [experimental task A] activation 38: sent IPC message to task B
+    [experimental task B] activation 38: received IPC message {sender: 1, seq: 38} -- OK
+    [experimental task A] activation 39: sent IPC message to task B
+    [experimental task B] activation 39: received IPC message {sender: 1, seq: 39} -- OK
+    [experimental task A] activation 40: sent IPC message to task B
+    [experimental task B] activation 40: received IPC message {sender: 1, seq: 40} -- OK
+    [experimental task A] activation 41: sent IPC message to task B
+    [experimental task B] activation 41: received IPC message {sender: 1, seq: 41} -- OK
+    [experimental task A] activation 42: sent IPC message to task B
+    [experimental task B] activation 42: received IPC message {sender: 1, seq: 42} -- OK
+    [experimental task A] activation 43: sent IPC message to task B
+    [experimental task B] activation 43: received IPC message {sender: 1, seq: 43} -- OK
+    [experimental task A] activation 44: sent IPC message to task B
+    [experimental task B] activation 44: received IPC message {sender: 1, seq: 44} -- OK
+    [experimental task A] activation 45: sent IPC message to task B
+    [experimental task B] activation 45: received IPC message {sender: 1, seq: 45} -- OK
+    [experimental task A] activation 46: sent IPC message to task B
+    [experimental task B] activation 46: received IPC message {sender: 1, seq: 46} -- OK
+    [experimental task A] activation 47: sent IPC message to task B
+    [experimental task B] activation 47: received IPC message {sender: 1, seq: 47} -- OK
+    [experimental task A] activation 48: sent IPC message to task B
+    [experimental task B] activation 48: received IPC message {sender: 1, seq: 48} -- OK
+    [experimental task A] activation 49: sent IPC message to task B
+    [experimental task B] activation 49: received IPC message {sender: 1, seq: 49} -- OK
+    [experimental task A] activation 50: sent IPC message to task B
+    [experimental task B] activation 50: received IPC message {sender: 1, seq: 50} -- OK
+    [experimental task A] activation 51: sent IPC message to task B
+    [experimental task B] activation 51: received IPC message {sender: 1, seq: 51} -- OK
+    [experimental task A] activation 52: sent IPC message to task B
+    [experimental task B] activation 52: received IPC message {sender: 1, seq: 52} -- OK
+    [experimental task A] activation 53: sent IPC message to task B
+    [experimental task B] activation 53: received IPC message {sender: 1, seq: 53} -- OK
+    [experimental task A] activation 54: sent IPC message to task B
+    [experimental task B] activation 54: received IPC message {sender: 1, seq: 54} -- OK
+    [experimental task A] activation 55: sent IPC message to task B
+    [experimental task B] activation 55: received IPC message {sender: 1, seq: 55} -- OK
+    [experimental task A] activation 56: sent IPC message to task B
+    [experimental task B] activation 56: received IPC message {sender: 1, seq: 56} -- OK
+    [experimental task A] activation 57: sent IPC message to task B
+    [experimental task B] activation 57: received IPC message {sender: 1, seq: 57} -- OK
+    [experimental task A] activation 58: sent IPC message to task B
+    [experimental task B] activation 58: received IPC message {sender: 1, seq: 58} -- OK
+    [experimental task A] activation 59: sent IPC message to task B
+    [experimental task B] activation 59: received IPC message {sender: 1, seq: 59} -- OK
+    [experimental task A] activation 60: sent IPC message to task B
+    [experimental task B] activation 60: received IPC message {sender: 1, seq: 60} -- OK
+    [experimental task A] activation 61: sent IPC message to task B
+    [experimental task B] activation 61: received IPC message {sender: 1, seq: 61} -- OK
+    [experimental task A] activation 62: sent IPC message to task B
+    [experimental task B] activation 62: received IPC message {sender: 1, seq: 62} -- OK
+    [experimental task A] activation 63: sent IPC message to task B
+    [experimental task B] activation 63: received IPC message {sender: 1, seq: 63} -- OK
+    [experimental task A] activation 64: sent IPC message to task B
+    [experimental task B] activation 64: received IPC message {sender: 1, seq: 64} -- OK
+    [experimental task A] activation 65: sent IPC message to task B
+    [experimental task B] activation 65: received IPC message {sender: 1, seq: 65} -- OK
+    [experimental task A] activation 66: sent IPC message to task B
+    [experimental task B] activation 66: received IPC message {sender: 1, seq: 66} -- OK
+    [experimental task A] activation 67: sent IPC message to task B
+    [experimental task B] activation 67: received IPC message {sender: 1, seq: 67} -- OK
+    [experimental task A] activation 68: sent IPC message to task B
+    [experimental task B] activation 68: received IPC message {sender: 1, seq: 68} -- OK
+  experimental isolated-tasks self-test: C 60 ok / 0 failed, D 60 ok / 0 failed (across 60 switches each, repeated CR3 reload)
+  experimental scheduler: task 1 kernel stack 0x14000001000..0x14000005000 (4 pages) has guard page 0x14000000000 unmapped -- OK
+  experimental scheduler: task 2 kernel stack 0x14000006000..0x1400000a000 (4 pages) has guard page 0x14000005000 unmapped -- OK
+  experimental scheduler: task 3 kernel stack 0x1400000b000..0x1400000f000 (4 pages) has guard page 0x1400000a000 unmapped -- OK
+  experimental scheduler: task 4 kernel stack 0x1400001c000..0x14000020000 (4 pages) has guard page 0x1400001b000 unmapped -- OK
+  experimental scheduler: task 5 kernel stack 0x14000021000..0x14000025000 (4 pages) has guard page 0x14000020000 unmapped -- OK
+  experimental scheduler self-test: all 5 task kernel stacks carry a genuinely unmapped guard page directly below them -- OK
+  experimental dex-demo: crypto known-answer -- Adler-32("Wikipedia")=0x11e60398 (expected 0x11e60398) OK, SHA-1("abc") 20-byte digest OK
+  experimental dex-demo: parsed a real DEX file (file_size=128, map_entry_count=1, all section counts zero as constructed) -- OK
+  experimental dex-demo: Adler-32 checksum + SHA-1 signature verified in-kernel -- OK
+  experimental dex-demo: corrupted magic -- parse result Some(BadMagic), correctly rejected: true
+  experimental dex-demo: corrupted map self-reference -- parse result Some(NoMapListEntry), correctly rejected: true
+  experimental dex-demo: corrupted checksum field -- verify result Some(BadChecksum), correctly rejected: true
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK -- OK
+  experimental teardown-demo: space X used (wrote+read 0xdeadc0dedeadc0de -- OK), 10 frames reclaimed on destroy (316 -> 306 in-use, baseline 306) -- fully reclaimed
+  experimental teardown-demo: space Y's PML4 (0x36c000) == space X's just-freed PML4 (0x36c000) -- OK, frame genuinely reused
+  experimental ring3-scheduler: 3 tasks built (E entry 0x50000000000; F, G pre-loaded with initial trap blobs), target 21 total yields (7 per task)
+  experimental ring3-scheduler: task E kernel RSP0 stack 0x1400002c000..0x14000031000 (5 pages) has guard page 0x1400002b000 unmapped -- OK
+  experimental ring3-scheduler: task F kernel RSP0 stack 0x14000032000..0x14000037000 (5 pages) has guard page 0x14000031000 unmapped -- OK
+  experimental ring3-scheduler: task G kernel RSP0 stack 0x14000038000..0x1400003d000 (5 pages) has guard page 0x14000037000 unmapped -- OK
+  experimental ring3-scheduler self-test: all 3 live task kernel stacks carry a genuinely unmapped guard page directly below them -- OK
+  experimental ring3-scheduler self-test: task E counter=7 (expected 7) -- OK
+  experimental ring3-scheduler self-test: task F counter=7 (expected 7) -- OK
+  experimental ring3-scheduler self-test: task G counter=7 (expected 7) -- OK
+  experimental ring3-scheduler self-test: 21 real trap-based yields processed, all 3 tasks' full register + address-space state correctly suspended and resumed -- OK
+  experimental ring3-scheduler teardown: task F's address space (pml4 0x381000, active for its own 7 trap-based yields) destroyed after suspension -- 15 frames reclaimed (357 -> 342 in use) -- OK
+  experimental ring3-scheduler teardown: LIVE slot hand-back -- destroyed task F's RSP0 slot (base 0x14000032000, guard 0x14000031000) re-handed out byte-identically as task H's live RSP0 stack, re-verified through H's page tables; task I bumped a fresh slot instead -- OK, the teardown path feeds the exact-count pool
+  experimental ring3-scheduler: task H kernel RSP0 stack 0x14000032000..0x14000037000 (5 pages) has guard page 0x14000031000 unmapped -- OK
+  experimental ring3-scheduler: task I kernel RSP0 stack 0x1400003e000..0x14000043000 (5 pages) has guard page 0x1400003d000 unmapped -- OK
+  experimental ring3-scheduler self-test: all 2 preemption-proof task kernel stacks carry a genuinely unmapped guard page directly below them -- OK
+  experimental ring3-scheduler: timer preemption armed -- entering task H, whose program never traps; IRQ0 is the only reschedule point from here (target 6 switches)
+  experimental ring3-scheduler preemption self-test: task H counter=25109592 (>0 required -- its program contains no trap instruction, so only a timer switch could ever let it run) -- OK
+  experimental ring3-scheduler preemption self-test: task I counter=35367765 (>0 required -- its program contains no trap instruction, so only a timer switch could ever let it run) -- OK
+  experimental ring3-scheduler preemption self-test: task H force-switched off the CPU 3 times, task I 3 times (6 timer-driven switches, target 6; 0 cooperative yields during the phase) -- OK
+  experimental ring3-scheduler preemption self-test: two non-yielding ring-3 tasks round-robined purely by IRQ0 -- timer-driven preemption, not cooperative-only -- OK
+  experimental pie-demo: GNU_RELRO region 0x60000002ef0..0x60000003000 is back to read-only after relocation (loader grant/revoke cycle completed) -- OK
+  experimental pie-demo: ET_DYN loaded at base 0x60000000000, entry 0x60000001000 (bias correctly applied by the loader, not baked into the file)
+  experimental pie-demo self-test: relocated pointer dereferenced to 0xfeedface12345678 (expected 0xfeedface12345678) -- OK, relocation correctly applied
+  experimental pie-demo relro check: page 0x60000002ef0 PTE flags writable=false -- OK
+  experimental pie-demo self-test: all 1 GNU_RELRO page(s) verified read-only in the live page tables after relocation -- OK
+  experimental elf-dyn-demo: GNU_RELRO region 0x64000002ef0..0x64000003000 revoked read-only after grant/relocate (the GRANT half ran for the first time) -- OK
+  experimental elf-dyn-demo: resolved by name via the DT_HASH walk -- dyn_payload 0x64000001000, dyn_value 0x64000003000, dyn_timestamp 0x64000003010 -- OK
+  experimental elf-dyn-demo: absent-name lookup returned the typed SymbolNotFound (not a parse error) -- OK
+  experimental elf-dyn-demo: GLOB_DAT slot 0x64000002fe0 (in-RELRO .got) == 0x64000003000 (resolved dyn_value) -- OK, symbol-resolved relocation applied correctly
+  experimental elf-dyn-demo: R_X86_64_64 slot 0x64000003008 (writable .data) == 0x64000003000 (resolved dyn_value) -- OK, symbol-resolved relocation applied correctly
+  experimental elf-dyn-demo: RELRO page 0x64000002000 is read-only and user-readable after the grant/revoke cycle -- OK
+  experimental elf-dyn-demo: GLOB_DAT slot residency check: 0x64000002fe0 inside RELRO region 0x64000002ef0..0x64000003000 = true (true expected -- ld placed .got in the GNU_RELRO region; reads are legal, writes protected) -- OK
+  experimental elf-dyn-demo: wrote 0x5eed0001 through resolved dyn_timestamp (0x64000003010) and read it back -- OK, a resolved runtime address is a real mapped address
+  experimental elf-dyn-demo: kernel-side proof complete; entering dyn_payload (ring 3) which dereferences its own resolved GOT slot
+  experimental elf-dyn-demo self-test: the .so's own code read 0xd1ce00f00d through its resolved GOT slot (expected 0xd1ce00f00d) -- OK
+  experimental cross-demo: provider's GNU_RELRO region 0x6c000001f40..0x6c000002000 revoked read-only (revoke-only; its layout has no in-region relocations) -- OK
+  experimental cross-demo: provider registered (registry 1 object(s)); cross_value 0x6c000002000, dup_symbol 0x6c000002008 resolve from the provider's own tables -- OK
+  experimental cross-demo: dependent's GNU_RELRO region 0x6c000042ee8..0x6c000043000 revoked read-only; the grant half ran for both in-region GLOB_DAT slots (one UNDEF-but-resolved) -- OK
+  experimental cross-demo: the app's own by-name lookup of cross_value refused with UndefinedSymbol -- OK, the app genuinely does not define it
+  experimental cross-demo: app's UNDEF GLOB_DAT slot 0x6c000042fe0 == 0x6c000002000 (the PROVIDER's cross_value, via the registry) -- OK, cross-object relocation applied correctly
+  experimental cross-demo: app's duplicate-name GLOB_DAT slot 0x6c000042fd8 == 0x6c000043000 (ITS OWN dup_symbol) -- OK, self-priority: the app's OWN dynsym entry won, not the registry's earlier same-named entry
+  experimental cross-demo: registry search order decides -- [app,lib] -> 0x6c000043000 (app), [lib] -> 0x6c000002008 (lib) -- OK, first DEFINED match in order wins
+  experimental cross-demo: absent-name registry lookup returned Ok(None) (typed absent, no parse error) -- OK
+  experimental cross-demo: the same dependent WITHOUT a resolver refused with Ok(relro = Denied) -- the caller must refuse -- OK, the refusal is NOT gone now that resolution exists
+  experimental cross-demo: kernel-side proof complete; entering cross_payload (ring 3), which dereferences its registry-resolved GOT slot
+  experimental cross-demo self-test: the dependent's own code read 0xace5f00dd1ce5eed through its cross-resolved GOT slot (expected 0xace5f00dd1ce5eed, the provider's cross_value) -- OK
+  experimental full-demo: provider loaded; DT_SONAME fact (crosslib.so.1) validated -- OK
+  experimental full-demo: same-SONAME V2 provider refuses the VERS_1.0 requirement with VersionNotProvided -- OK, version matching is enforced; the name alone is NOT enough
+  experimental full-demo: dependent's GNU_RELRO region 0x6c000202e68..0x6c000203000 revoked read-only after the version-checked grant/relocate -- OK
+  experimental full-demo: dependent's versioned GLOB_DAT slot 0x6c000202fe0 == 0x6c000003000 (provider's cross_value, version-checked) -- OK
+  experimental full-demo: dependent's duplicate-name slot 0x6c000202fd8 == 0x6c000203008 (its OWN dup_symbol) -- OK, self-priority held under the versioned provider too
+  experimental full-demo: lazy JUMP_SLOT slot 0x6c000203000 == 0x6c000210000 (trap stub armed; NOT eagerly resolved) -- OK
+  experimental full-demo: empty-registry dependent refused with MissingDependency -- OK, the declared dependency contract is enforced
+  experimental full-demo: V2-registry dependent refused (denied region or typed version error) -- OK, the version contract refuses end to end
+  experimental full-demo: lazy-bind service probe of 0x6c000210000 while the registry was EMPTY refused with the typed ServiceEmpty -- OK, the empty branch proven kernel-side before the chain's first registration
+  experimental full-demo self-test: cross_value via versioned slot = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental full-demo self-test: cross_fn results (eax) 0xfa571ae5 / 0xfa571ae5 (expected 0xfa571ae5 both; first via lazy bind, later direct) -- OK
+  experimental full-demo self-test: lazy-bind trap fired 1 time(s) across 3 calls (exactly 1 required) -- OK, binding is lazy; later calls are direct
+  experimental full-demo: shared lazy-bind service: 1 object(s) registered so far, 1 bind(s) served through ONE vector (0x88) this boot -- OK, this dependent binds through the service, not a demo static
+  experimental deps-demo: GNU walk of a name in NEITHER of A's tables refused with SymbolNotFound -- OK (absent, not malformed: GNU-absent is typed as absent)
+  experimental deps-demo: provider A carries BOTH hash tables (DT_HASH authority + DT_GNU_HASH); GNU walk == SysV walk on cross_value (0x6d000003000) -- OK, the GNU mechanism's answer matches the SysV mechanism's
+  experimental deps-demo: provider A loaded (crosslib.so.1) -- OK
+  experimental deps-demo: pre-overlay lookup of interp_mark = absent (provider A does not define it) -- OK, absent before the overlay exists
+  experimental deps-demo: after interpose(overlay), lookup of interp_mark = 0x6d000103000 (data 0x1111222233334444, the overlay's value) -- OK, interposition overrides load order
+  experimental deps-demo: looping catalog refused with DependencyCycle -- OK, a file can never load itself to satisfy itself
+  experimental deps-demo: DT_NEEDED CHAIN (dependent -> crosslib2.so.1 -> crosslib3.so.1 -> crosslib4.so.1 -> crosslib.so.1) satisfied dependency-first; 3 catalog object(s) auto-loaded -- OK, the DEPTH-3 chain (B, C and D) loaded from the catalog; A was already in scope
+  experimental deps-demo: depth-3 chain under a catalog whose cap is 2 refused with DependencyDepthExceeded (at the D hop, B and C mapped, A never reached) -- OK
+  experimental deps-demo: 3 auto-loaded chain providers carry their DISTINCT marker immediates at their own bases (3/3 symbols found, contents == the source constants) -- OK, the right file loaded at the right base, per object
+  experimental deps-demo: dependent's GNU_RELRO revokes read-only WITH an unresolved WEAK entry in-region (weak != denial) -- OK
+  experimental deps-demo: dependent's versioned GLOB_DAT slot 0x6d000302fe0 == 0x6d000003000 (provider's cross_value as resolved BY THE CATALOG CHAIN) -- OK
+  experimental deps-demo: dependent's interp_mark slot 0x6d000302fd8 == 0x6d000103000 (the INTERPOSITION overlay's address, not that of anything provider A defines) -- OK
+  experimental deps-demo: WEAK UNDEF ghost_fn@VERS_1.0 slot 0x6d000302fd0 == 0x0 (the NULL slot; unresolved weak stays non-fatal) -- OK
+  experimental deps-demo: lazy JUMP_SLOT slot 0x6d000303000 == 0x6d000310000 (trap stub armed on THIS object's own trampoline page; NOT eagerly resolved) -- OK
+  experimental deps-demo: WEAK version-flag artifact resolves cross_value@VERS_1.0 against the providing scope (weak relaxes only the UNRESOLVED case) -- OK
+  experimental deps-demo: GNU walk of the weak artifact's UNDEF cross_value reports ABSENT (SymbolNotFound) while the SysV walk reports UndefinedSymbol -- OK (GNU excludes UNDEF entries from its buckets; DT_HASH chains them; the asymmetry is typed)
+  experimental deps-demo: WEAK version-flag requirement with unmet VERS_1.0 takes the NULL slot (0), load proceeds, relro read-only -- OK (a STRONG requirement is the typed VersionNotProvided refusal in the same position)
+  experimental deps-demo: lazy-bind service refuses an UNREGISTERED trampoline page (0x6d000570000) with the typed UnregisteredTrampoline carrying that page; registry size 1 -> 1 and binds 1 -> 1 unchanged -- OK (the handler's panic path is demonstrated, not assumed)
+  experimental deps-demo self-test: cross_value = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental deps-demo self-test: interp_mark = 0x1111222233334444 (expected 0x1111222233334444, the overlay's value read through ring 3) -- OK
+  experimental deps-demo: lazy-bind service fired 1 time(s) across 3 calls (exactly 1 required) -- OK, binding is lazy; calls 2-3 are direct
+  experimental deps-demo: shared lazy-bind service: 2 independent object(s) registered, 2 bind(s) served through ONE vector (0x88) this boot -- OK, the vector is a SERVICE, not a demo
+  experimental plt-demo: provider3 loaded at 0x6d000770000: DT_SONAME pltprov.so.1 AND its prov_marker data reads back 0xe11cede1e1e1e1e -- OK, the RIGHT file at the RIGHT base
+  experimental plt-demo: registry probe of link-map id 0xbeefc0de (no GNU object registered yet) refused with the typed UnregisteredLinkMap carrying THAT id -- OK, an unregistered cookie is refused, never guessed
+  experimental plt-demo: instance 1 own-.plt armed on THE OBJECT's own .got.plt (0x6d000702fe8): GOT[1] = link-map id 0x1, GOT[2] = resolver thunk 0x6d000710000 (1 .rela.plt entries) -- OK, the GNU resolver pointers are in place (JUMP_SLOT slots touched only by the GNU lazy bias relocation)
+  experimental plt-demo: instance 1 JUMP_SLOT idx 0 slot 0x6d000703000 == 0x6d000701016 pre-run (the LINKER's own plt+6 initial value with the GNU lazy relocation bias applied; not resolved; expected live value 0x6d000661000) -- OK
+  experimental plt-demo: instance 1 registered under link-map id 0x1; the shared service now holds 3 object(s) -- OK, the GNU path lives in the SAME registry the trap-stub path uses
+  experimental plt-demo self-test: instance 1 -- cross_value = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental plt-demo self-test: instance 1 -- cross_fn results (eax) 0xfa571ae5 / 0xfa571ae5 / 0xfa571ae5 (expected 0xfa571ae5 all; call 1 entered the callee DIRECTLY via the resolver's guided return) -- OK
+  experimental plt-demo self-test: instance 1 -- its REAL .got.plt slot 0x6d000703000 patched to the resolved cross_fn (0x6d000661000) -- OK
+  experimental plt-demo self-test: instance 1 -- first-use binds for ITS OWN cookie 0x1: 1 across 3 calls (exactly 1 required) -- OK, GNU lazy semantics on THIS object's own .plt machinery
+  experimental plt-demo: instance 2 own-.plt armed on THE OBJECT's own .got.plt (0x6d000742fe8): GOT[1] = link-map id 0x2, GOT[2] = resolver thunk 0x6d000750000 (1 .rela.plt entries) -- OK, the GNU resolver pointers are in place (JUMP_SLOT slots touched only by the GNU lazy bias relocation)
+  experimental plt-demo: instance 2 JUMP_SLOT idx 0 slot 0x6d000743000 == 0x6d000741016 pre-run (the LINKER's own plt+6 initial value with the GNU lazy relocation bias applied; not resolved; expected live value 0x6d000661000) -- OK
+  experimental plt-demo: instance 2 registered under link-map id 0x2; the shared service now holds 4 object(s) -- OK, the GNU path lives in the SAME registry the trap-stub path uses
+  experimental plt-demo self-test: instance 2 -- cross_value = 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed) -- OK
+  experimental plt-demo self-test: instance 2 -- cross_fn results (eax) 0xfa571ae5 / 0xfa571ae5 / 0xfa571ae5 (expected 0xfa571ae5 all; call 1 entered the callee DIRECTLY via the resolver's guided return) -- OK
+  experimental plt-demo self-test: instance 2 -- its REAL .got.plt slot 0x6d000743000 patched to the resolved cross_fn (0x6d000661000) -- OK
+  experimental plt-demo self-test: instance 2 -- first-use binds for ITS OWN cookie 0x2: 1 across 3 calls (exactly 1 required) -- OK, GNU lazy semantics on THIS object's own .plt machinery
+  experimental plt-demo: instance 3 own-.plt armed on THE OBJECT's own .got.plt (0x6d000782fe8): GOT[1] = link-map id 0x3, GOT[2] = resolver thunk 0x6d000790000 (2 .rela.plt entries) -- OK, the GNU resolver pointers are in place (JUMP_SLOT slots touched only by the GNU lazy bias relocation)
+  experimental plt-demo: instance 3 JUMP_SLOT idx 0 slot 0x6d000783000 == 0x6d000781016 pre-run (the LINKER's own plt+6 initial value with the GNU lazy relocation bias applied; not resolved; expected live value 0x6d000771010) -- OK
+  experimental plt-demo: instance 3 JUMP_SLOT idx 1 slot 0x6d000783008 == 0x6d000781026 pre-run (the LINKER's own plt+6 initial value with the GNU lazy relocation bias applied; not resolved; expected live value 0x6d000771000) -- OK
+  experimental plt-demo: instance 3 registered under link-map id 0x3; the shared service now holds 5 object(s) -- OK, the GNU path lives in the SAME registry the trap-stub path uses
+  experimental plt-demo self-test: instance 3 (multi-entry) -- fn_a = 0xa11ce0de (expected 0xa11ce0de), fn_b = 0xbb0b5e11 (expected 0xbb0b5e11, TWO calls, second direct) -- OK
+  experimental plt-demo self-test: instance 3 -- .rela.plt idx 0 slot 0x6d000783000 patched to 0x6d000771010 (expected 0x6d000771010, ITS OWN index) -- OK
+  experimental plt-demo self-test: instance 3 -- .rela.plt idx 1 slot 0x6d000783008 patched to 0x6d000771000 (expected 0x6d000771000, ITS OWN index) -- OK
+  experimental plt-demo self-test: MULTI-ENTRY artifact cookie 0x3: 2 first-use binds (EXACTLY 2 -- one per .rela.plt entry, one cookie); shared service now 5 object(s) / 6 bind(s) across both gates (0x88 trap stubs + 0x8B GNU own-.plt) -- OK, one registry serves a MULTI-ENTRY GNU object AND the single-entry AND trap-stub paths
+  experimental plt-demo: GNU OWN-.plt mode requested on the PLT-LESS artifact REFUSED with the typed MalformedDynamicTables (no .got.plt machinery to arm) -- OK, the protocol refuses cleanly where its machinery does not exist
+  experimental plt-demo: the SAME PLT-LESS artifact loads eagerly: its GLOB_DAT slot 0x6d0007b2fe0 == provider A's cross_value (0x6d000663000) resolved AT LOAD, relro revoked read-only, NO GNU arming side effects (registry 5 -> 5, binds 6 -> 6) -- OK, the GNU protocol is opt-in per load; eager stays the default for PLT-less objects
+  experimental pe-demo: PE32+ loaded at its own ImageBase (no relocation), entry 0x140001000
+  experimental pe-demo self-test: PE entry point wrote 0xfeedc0defeedc0de (expected 0xfeedc0defeedc0de) -- OK, a genuine Windows-format (PE32+) executable's own code ran in ring 3
+  experimental pe-reloc-demo: PE32+ loaded at 0x90000000000 (its ImageBase is 0x140000000); .data pointer relocated to 0x90000002008 (expected 0x90000002008)
+  experimental pe-reloc-demo self-test: relocated pointer wrote 0xfeedfacecafebeef (expected 0xfeedfacecafebeef) -- OK, a relocatable PE32+ binary ran correctly at a loader-chosen address
+  experimental pe-import-demo: provider loaded at its own ImageBase 0x180000000000; its export table declares "userprog_pe_import_dll.dll"
+  experimental pe-import-demo: export table facts -- 2 name(s), lookup(crossfn) = provider+0x1000, lookup(crossmark) = provider+0x2000
+  experimental pe-import-demo: provider export lookup self-test: crossfn 0x180000001000, crossmark 0x180000002000, absent symbol None -- OK
+  experimental pe-import-demo: forwarder host loaded at its own ImageBase 0x1c0000000000; its export table declares "userprog_pe_import_fwdprov.dll" with 3 name(s), every EAT entry a directory-internal forwarder -- OK
+  experimental pe-import-demo: negative control 1 -- EMPTY registry refused the import walk with the typed MissingDllImport -- OK
+  experimental pe-import-demo: negative control 2 -- the DLL name bound to the WRONG FILE's empty export table refused with the typed MissingImport -- OK, the registry identity is the file, not the name
+  experimental pe-import-demo: negative control 3 -- a SELF-CYCLING forwarded export refused at the depth cap with the typed ForwarderDepthExceeded -- OK
+  experimental pe-import-demo: negative control 4 -- a forwarded export naming an UNREGISTERED DLL refused with the typed MissingDllImport -- OK
+  experimental pe-import-demo: ordinal out-of-range / empty-table probes answer typed-None, never a guess -- OK
+  experimental pe-import-demo: negative control 5 -- a fresh-stamped descriptor with an ALL-FRESH forwarder ref whose IAT slot contradicts the chased answer refused with the typed BoundValueCorrupt (0xdeadbeef00001000 != 0x180000001000) -- OK, stamps are verified THROUGH the forwarder chains too, never trusted blindly
+  experimental pe-import-demo: negative control 6 -- the REFSTALE carrier (one ref stamp byte beyond the bad client's) DISCARDED the same wrong slot (0xdeadbeef00001000) and resolved it fresh through the same chase (0x180000001000); the descriptor's own stamp stayed fresh (0x386d4380) and the ref declared 0x386d4381 -- OK, one ref stamp byte decides refuse-vs-discard
+  experimental pe-import-demo: negative control 7 -- the REF2BAD carrier (TWO refs, BOTH FRESH) refused through the two-ref chain with the typed BoundValueCorrupt (0xdeadbeef00001000 != 0x180000001000) -- OK, the count made the walk unambiguous and the fresh surface still verified the slot THROUGH both refs
+  experimental pe-import-demo: negative control 8 -- the REF2STALE carrier (same two refs, only the SECOND's stamp moved to 0x386d4381) DISCARDED the same wrong slot (0xdeadbeef00001000) and resolved fresh through the same chase (0x180000001000); the first ref stayed fresh (0x386d4380) -- OK, a LATER ref stamp byte decides refuse-vs-discard across a TWO-ref chain
+  experimental pe-import-demo: negative control 9 (positive half) -- the DELAYGOOD carrier's two delay imports eagerly resolved through the same registry (named crossfn -> 0x180000001000, ordinal crossmark -> 0x180000002000; prior contents were the composed unbound thunks, both slots WRITTEN and read back) and the module handle 0x180000000000 was written where the descriptor pointed -- OK, the eager delay ruling matches the normal walk's answers
+  experimental pe-import-demo: negative control 10 -- the DELAYBAD carrier's delay descriptor naming 'nowhere.dll' refused with the typed MissingDelayDllImport -- OK, the name-vs-file ruling applies to delay descriptors with their OWN flavor
+  experimental pe-import-demo: negative control 11 -- the DELAYMUT carrier (dwTimeStamp = provider stamp + 1, the OLD-BIND marker) refused with the typed MalformedDelayImport -- OK, a binding guarantee the kernel cannot verify is NEVER silently honored and never silently ignored
+  experimental pe-import-demo: negative control 12 -- the DELAYATTRS carrier (grAttrs = 0x3, dlattrRva plus an UNDEFINED bit) refused with the typed MalformedDelayImport -- OK, an attribute set the Windows helper itself cannot interpret is refused before any table is trusted
+  experimental pe-import-demo: negative control 13 -- the DELAYMIS carrier (INT[0] names crossfn while IAT[0] carries an ordinal thunk) refused with the typed MalformedDelayImport -- OK, the unbound pre-state the walk resolves is checked entry-for-entry, never assumed
+  experimental pe-import-demo: negative control 14 -- the DELAYVA carrier (grAttrs = 0, the pre-VC7 VA form, with RVA-sized fields) refused with the typed MalformedDelayImport -- OK, a VA-form field that cannot be a VA of this image is refused, not reinterpreted
+  experimental pe-import-demo: negative control 15 -- the DELAYVABIAS carrier (real VA-form descriptor of ImageBase 0x400000, loaded at 0x460000000000) refused with the typed MalformedDelayImport -- OK, a pre-VC7 descriptor's baked VAs are refused in a relocated image instead of being reinterpreted against the wrong base
+  experimental pe-import-demo: negative control 16 -- the DELAYMANY carrier's 17th descriptor refused with the typed MalformedDelayImport; descriptors 0-15 are FULLY resolved (their IAT slots hold the provider's crossfn 0x180000001000, their handle slots the provider's mapped base), while the 17th's slot still holds its composed unbound thunk 0x276b and its handle slot is untouched -- OK, the 16-descriptor cap is EXCLUSIVE: the legal maximum is resolved in full and only the entry past it is refused
+  experimental pe-import-demo: negative control 17 -- the DELAYTHUNKS carrier's 65th thunk entry refused with the typed MalformedDelayImport; entries 0-63 are FULLY resolved (all 64 IAT slots hold the provider's crossfn 0x180000001000) while entry 64 still holds its composed unbound thunk 0x271b -- OK, the 64-entry thunk cap is EXCLUSIVE for the same reason, and one descriptor's INT/IAT pair was walked end to end before the refusal
+  experimental pe-import-demo: negative control 18 -- the DELAYFULL carrier (EXACTLY 16 descriptors, the FIRST carrying EXACTLY 64 thunk entries, 79 imports) ACCEPTED and resolved completely: every slot holds the provider's crossfn 0x180000001000, all 16 handle slots the provider's base, and the IAT terminator right after the 64th entry stopped the walk cleanly -- OK, both caps are exclusive bounds: the legal maxima are accepted, one past them is refused
+  experimental pe-import-demo: BOUND-IMPORT facts -- provider's fresh-stamp entry: 2 slot(s) HONORED (prefills verified == fresh resolution, slots left un-written); the stale entry (stamp = provider's + 1, a stamp no file carries): its pre-bound contradiction 0x180000002000 DISCARDED and resolved fresh to 0x180000001000; nobody.dll's inert entry parsed and ignored -- OK
+  experimental pe-import-demo: resolved 3 import(s) through the REAL import directories -- OK: named crossfn -> 0x180000001000 and ordinal-form crossmark (`ord2`) -> 0x180000002000 both HONORED by stamp (verified prefills, left un-written); forwarder crossfn_fwd -> 0x180000001000 (the PROVIDER's .text, chased through the forwarder host's export entry after its stale pre-binding was DISCARDED); every slot reads back its (verified or written) value
+  experimental pe-import-demo: IAT slots -- crossfn 0x180000001000, ordinal crossmark 0x180000002000, forwarder crossfn_fwd 0x180000001000 (slot 21990232563816; slot 21990232563824; slot 21990232563840) -- OK
+  experimental pe-import-demo: resolved crossmark address dereferences to 0xace5f00dd1ce5eed (expected 0xace5f00dd1ce5eed, the provider's own .data immediate) -- OK
+  experimental pe-import-demo: kernel-side proof complete; entering the imported client (ring 3) which dereferences crossmark through its resolved IAT slot and calls crossfn through its own
+  experimental pe-import-demo self-test: imported data read 0xace5f00dd1ce5eed through the resolved IAT slot (expected 0xace5f00dd1ce5eed); imported function returned 0xfa571ae5 (expected 0xfa571ae5); forwarder-resolved import returned 0xfa571ae5 (expected 0xfa571ae5, the PROVIDER's own code executed through the forwarder host's export entry) -- OK, a real Windows-format executable's own imports -- named, ordinal, and forwarder-chased -- all resolved through real Windows-format export tables (GetProcAddress semantics), and its own code used them in ring 3
+  experimental isolation: address space A built (pml4 0x4fd000), program A loaded, entry 0x20000000000
+  experimental isolation: trap from process A (cpl=3), read 0xc0ffee (expected 0xc0ffee) -- OK
+  experimental isolation: address space B built (pml4 0x508000), program B loaded, entry 0x20000000000 -- switched active, A is now inactive but preserved
+  experimental isolation: trap from process B (cpl=3), read 0xbbbbbbbb (expected 0xbbbbbbbb) -- OK
+  experimental isolation: switched back to process A's address space, re-read 0xc0ffee (expected 0xc0ffee, unchanged since A ran) -- OK, ISOLATED
+  experimental isolation self-test: two independent address spaces verified mutually isolated -- OK
+  memory stack-reuse self-test: released 2-page slot re-handed out byte-identically (base 0x14000092000, guard 0x14000091000, top 0x14000094000) fully re-verified with its guard unmapped; an 8-page release absorbed WHOLE by 3-page and by 2-page requests (same guard/top, descriptor stays 8 pages, zero splits); a bigger request never touched a smaller pooled slot -- OK, exact-match preferred, whole-slot absorption bounded, no rewind
+  memory guard-demo: stack mapped at 0x1400009e000..0x140000a2000 (4 pages); bottom present OK, top present OK, guard page 0x1400009d000 absent OK, page above 0x140000a2000 absent OK
+  memory guard-demo self-test: guarded stack correctly built (4 usable pages, page below genuinely unmapped, page above genuinely unmapped) -- OK
+  memory guard-demo: arming terminal overflow probe -- writing one qword at the guard page 0x1400009d000 (expect a PROTECTION_VIOLATION page fault)
+  memory guard-demo self-test: overflow write to guard page 0x1400009d000 faulted exactly as required (accessed 0x1400009d000, error code PageFaultErrorCode(CAUSED_BY_WRITE)) -- OK, a stack overflow is caught deterministically instead of corrupting memory below it
+nyrqis kernel: phase 1+2+3+4+ring3-elf-isolation-poc+guard-pages complete
+```
+
 ## What does NOT exist yet (do not assume otherwise)
 
 **2026-10-15 (eighth round) — the GNU hash table as a REAL second mechanism, per-stage stack ownership, a depth-2 dependency chain, and the weak VERNEED flag proven on a real artifact:**
