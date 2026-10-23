@@ -631,11 +631,22 @@ jobs:
       - name: Real clients drive the full stack, zero protocol errors
         working-directory: source/nyhal-linux-backend
         run: |
+          set +e
           python3 -B -m unittest \
             tests.test_wayland_client_compat \
             tests.test_weston_simple_shm \
             tests.test_weston_terminal \
-            tests.test_weston -v
+            tests.test_weston -v > wayland-unittest.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            . /etc/os-release
+            echo "::error::Waylandgate env: $PRETTY_NAME / $(weston --version 2>&1 | head -1)"
+            tail -c 27000 wayland-unittest.log \
+              | tr -d '\r' \
+              | fold -s -w 3600 \
+              | awk '{printf "::error::Waylandgate[%d] %s\n", NR, $0}'
+          fi
+          exit $S
 
   backend:
     name: Python backend tests
@@ -758,9 +769,36 @@ jobs:
           cp /usr/share/OVMF/OVMF_CODE_4M.fd uefi/tools/
           cp /usr/share/OVMF/OVMF_VARS_4M.fd uefi/tools/
       - name: BIOS gate (GRUB/Multiboot2 reach BootPhase::Ready, exit 33)
-        run: ./tools/qemu_boot_test.sh
+        run: |
+          set +e
+          ./tools/qemu_boot_test.sh > target/bios-gate.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            . /etc/os-release
+            echo "::error::BIOSgate env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1) / $(grub-mkrescue --version 2>&1 | head -1) / rustc $(rustc -vV | sed -n 's/^release: //p')"
+            ./tools/ci_emit_annotations.sh target/bios-gate.log BIOSgate
+          fi
+          exit $S
       - name: UEFI gate (OVMF boots the stub natively, same exit contract)
-        run: ./tools/qemu_uefi_boot_test.sh
+        run: |
+          set +e
+          ./tools/qemu_uefi_boot_test.sh > target/uefi-gate.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            . /etc/os-release
+            echo "::error::UEFIgate env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1) / rustc $(rustc -vV | sed -n 's/^release: //p')"
+            ./tools/ci_emit_annotations.sh target/uefi-gate.log UEFIgate
+          fi
+          exit $S
       - name: Transcript parity (BIOS and UEFI demo chains line-identical)
-        run: ./tools/qemu_boot_parity_diff.sh
+        run: |
+          set +e
+          ./tools/qemu_boot_parity_diff.sh > target/parity-gate.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            . /etc/os-release
+            echo "::error::Paritygate env: $PRETTY_NAME / rustc $(rustc -vV | sed -n 's/^release: //p')"
+            ./tools/ci_emit_annotations.sh target/parity-gate.log Paritygate
+          fi
+          exit $S
 
