@@ -731,7 +731,15 @@ jobs:
       # build-std (compiled from source, see the kernel's
       # .cargo/config.toml) needs the rust-src component; rust-lld comes
       # inside the toolchain sysroot and build.sh' PATH fallback finds it.
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, not @stable: the kernel's Toolchain notes declare
+      # rustup stable 1.97.1 + rust-src the tested toolchain, and the
+      # pinned x86_64 =0.14.13 crate's core::iter::Step impl matches
+      # THAT rustc's trait shape — current stable (1.99.x) adds
+      # required forward_overflowing/backward_overflowing items, so a
+      # floating @stable once broke every kernel-boot gate with E0046
+      # during -Z build-std while the dev host (1.97.1) kept passing.
+      # Raising the pin = the documented 1.75->1.97-style migration.
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rust-src
       - name: Install the boot-emulation toolchain

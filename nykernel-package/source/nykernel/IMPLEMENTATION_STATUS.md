@@ -3158,6 +3158,28 @@ and 0.14.11 -- current stable expects the new form (the mirror image of
 bug 1 in the Phase 1 log below, which pinned 0.14.10 for the *old*
 form).
 
+### CI toolchain pin (2026-10-23): `rust-toolchain@1.97.1`, not `@stable`
+
+The new `kernel-boot` CI job's first run failed exactly where this
+contract says it would if left floating: `dtolnay/rust-toolchain
+@stable` drifted to stable 1.99.1 (released 2026-10-13), and 1.99
+tightened `core::iter::Step` by requiring the new
+`forward_overflowing`/`backward_overflowing` trait items -- which the
+pinned `x86_64 =0.14.13` crate does not implement -- so the
+`-Z build-std` rebuild of `core` died with the crate's `E0046` errors
+(cargo exit 101) on the runner, while the dev host -- still on 1.97.1
+-- kept passing. Reproduced locally by installing 1.99.1 and rerunning
+`./build.sh --qemu-test` under it: the identical E0046 pair on
+`x86_64-0.14.13/src/addr.rs` and `.../structures/paging/page.rs`,
+confirming the drift diagnosis rather than a guess. The CI job now
+pins `rust-toolchain@1.97.1` (+ `rust-src`). This pin is not an
+accident: it IS the toolchain contract above (rustup stable 1.97.1 +
+`rust-src`). Raising it is THIS DOCUMENTED KIND OF WORK: the next
+migration must extend the five-point walk (the 1.75 -> 1.97 one
+below) with the new `Step`-shape as a sixth point, bump `x86_64` to
+the version implementing it, and re-verify both boot gates -- not
+happen unannounced by an `@stable` float.
+
 After the migration the kernel **builds clean (debug + release) and the
 full `qemu_boot_test.sh` chain passes** -- every prior demo's self-test
 is unchanged, so the migration introduced no behavioral regression. The
