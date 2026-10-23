@@ -2,6 +2,11 @@
 name = "nykernel"
 version = "0.1.0"
 edition = "2021"
+# The verified floor, not a guess: x86_64 =0.15.5's `core::iter::Step`
+# impls require the post-1.99 trait shape (E0407 under <=1.97), and
+# 1.99.1 is what both boot gates plus the parity gate were re-run
+# under after the 2026-10-23 migration (IMPLEMENTATION_STATUS.md).
+rust-version = "1.99.1"
 description = "Nyrqis kernel bring-up (NPS-001 / NPS-017 / ADR-0006 / ADR-0012 / ADR-0020) -- Phase 1: boot to a running kernel"
 
 [lib]
@@ -20,16 +25,18 @@ crate-type = ["staticlib"]
 #              strictly easier to get subtly wrong (e.g. a malformed
 #              GDT entry that works by accident on one QEMU version).
 [dependencies]
-# Pinned (not "0.14") to =0.14.13. The `x86_64` crate's `Step` impls
-# track rustc's `core::iter::Step::steps_between` signature, which has
-# changed twice: 0.14.10 used the old `Option<usize>` form (compatible
-# with the apt rustc 1.75.0 originally documented in
-# IMPLEMENTATION_STATUS.md), and 0.14.11+ moved to the `(usize,
-# Option<usize>)` form that current stable rustc now expects (see
-# E0053 in that document's build log). 0.14.13 is the newest 0.14.x, so
-# it is the smallest bump that builds on a modern toolchain while
-# staying within the API surface this kernel was written against.
-x86_64 = "=0.14.13"
+# Pinned to =0.15.5. The `x86_64` crate's `Step` impls track rustc's
+# UNSTABLE `core::iter::Step` trait, whose required-item set has now
+# changed three times: 0.14.10 used the old `steps_between: Option<usize>`
+# form (apt rustc 1.75.0), 0.14.13 moved to the `(usize, Option<usize>)`
+# form (rustc 1.97's shape, see E0053/E0046 in IMPLEMENTATION_STATUS.md),
+# and rustc 1.99 ADDED required `forward_overflowing`/`backward_overflowing`
+# items -- x86_64 0.14.x implements none of that shape, so the pin moved
+# to 0.15.5 (the newest release; 0.15.3+ tracks the post-1.99 Step
+# surface and is the smallest bump that builds on 1.99). Behavior, not
+# just shape: 0.15.5 vs 0.14.13 is a MINOR-version move, and both boot
+# gates plus the transcript-parity cross-check gate it.
+x86_64 = "=0.15.5"
 # spin -- a no_std spinlock/Mutex. Needed because core/alloc alone
 # provide no synchronization primitive, and this kernel is single-core
 # for Phase 1 but still needs *some* interior-mutability discipline

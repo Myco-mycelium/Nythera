@@ -61,17 +61,17 @@ pub fn init() {
         TSS.privilege_stack_table[0] = priv_stack_end;
 
         let mut gdt = GlobalDescriptorTable::new();
-        let code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+        let code_selector = gdt.append(Descriptor::kernel_code_segment());
         // x86_64's Descriptor::user_data_segment()/user_code_segment()
         // return DPL=3 descriptors. GDT ordering matters on real x86_64
         // hardware for the SYSRET-style "STAR MSR" convention, but since
         // this kernel enters ring 3 via IRETQ (not SYSCALL/SYSRET), the
         // specific slot order doesn't matter here -- only that both
         // exist and are readable segment selectors with RPL 3.
-        let user_data_selector = gdt.add_entry(Descriptor::user_data_segment());
-        let user_code_selector = gdt.add_entry(Descriptor::user_code_segment());
+        let user_data_selector = gdt.append(Descriptor::user_data_segment());
+        let user_code_selector = gdt.append(Descriptor::user_code_segment());
         let tss_ptr = core::ptr::addr_of!(TSS);
-        let tss_selector = gdt.add_entry(Descriptor::tss_segment(&*tss_ptr));
+        let tss_selector = gdt.append(Descriptor::tss_segment(&*tss_ptr));
         GDT = Some((
             gdt,
             Selectors {

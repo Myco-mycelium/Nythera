@@ -3097,10 +3097,15 @@ yet" above and the 2026-10-09 increment.)*
 
 ## Toolchain notes (read before touching the build)
 
-**Current setup: rustup stable (rustc 1.97.1) + `rust-src`.** The build
-needs the standard `rustc`/`cargo`, the `rust-src` component (so
-`-Z build-std` can rebuild `core`/`alloc` for the freestanding target),
-and a `rust-lld`. `../../setup.sh` installs all of that on a fresh
+**Current setup: rustup stable (rustc 1.99.1) + `rust-src`, with the
+`x86_64` crate pinned `=0.15.5` and `rust-version = "1.99.1"` recorded
+in `Cargo.toml`.** The rustc/crate pairing is part of the contract, not
+two independent pins: the crate's `core::iter::Step` impls tracks
+rustc's UNSTABLE trait shape, which has now changed three times (see
+`Cargo.toml`'s dependency comment and the migration record below), so
+neither half floats. The build needs the standard `rustc`/`cargo`, the
+`rust-src` component (so `-Z build-std` can rebuild `core`/`alloc` for
+the freestanding target), and a `rust-lld`. `../../setup.sh` installs all of that on a fresh
 Debian/Ubuntu host (idempotent; `SUDO_PASSWORD` for non-interactive
 sudo) and then runs the two commands below; manually it is:
 
@@ -3158,27 +3163,90 @@ and 0.14.11 -- current stable expects the new form (the mirror image of
 bug 1 in the Phase 1 log below, which pinned 0.14.10 for the *old*
 form).
 
-### CI toolchain pin (2026-10-23): `rust-toolchain@1.97.1`, not `@stable`
+### Migration (2026-10-23): rustc 1.97.1 -> 1.99.1, `x86_64` =0.14.13 -> `=0.15.5`
+
+Same-day follow-up to the CI-pin section below: rather than leaving
+the toolchain contract frozen at the aging 1.97.1, the sixth point it
+called for was EXECUTED. First, the boundary was established from
+both sides rather than assumed: under 1.99.1, `=0.14.13` dies in
+`-Z build-std` with the known `E0046` pair (the new
+`forward_overflowing`/`backward_overflowing` required items it does
+not implement), and under 1.97.1, `=0.15.5` dies with `E0407`
+(`method forward_overflowing is not a member of trait Step` -- the
+crate implements exactly the post-1.99 shape, whose older traits
+carry those as provided-free items that rustc now REMOVED). No crate
+version satisfies both rustc shapes, so the migration is upgrade-only
+by construction and the verified floor moves to 1.99.1 -- recorded as
+cargo's `rust-version` in `Cargo.toml`, so an older toolchain now
+fails at configure time with a plain message instead of a cryptic
+error inside a registry crate. The `=` pin survives: `=0.15.5` is
+exact (the newest release; 0.15.3+ is the smallest line tracking the
+post-1.99 `Step` surface).
+
+The kernel-side fallout was contained to four API areas, each fixed
+at its cause:
+
+1. **IDT entries index by `u8`.** 0.14's index-into-the-table sites
+   took the vector consts as they happened to be typed; 0.15's
+   `InterruptDescriptorTable` indexing and `set_handler_fn` plumbing
+   are `u8`-shaped. The five vector consts (`TIMER_VECTOR`,
+   `RTC_VECTOR`, `KEYBOARD_VECTOR`, `ATA_PRIMARY_VECTOR`,
+   `ATA_SECONDARY_VECTOR`) became `u8`-typed and every
+   `as usize]`-cast index site in `src/idt.rs` was updated to match
+   (twelve sites).
+2. **`GDT::add_entry` is `GDT::append` now** (the new name states the
+   slot-ordering invariant the old name left implicit):
+   `src/gdt.rs`, four call sites.
+3. **`SegmentSelector` construction changed shape** (the 0.15 API
+   builds rpl/bits through typed methods instead of raw bit twiddling):
+   `src/gdt.rs` and `src/experimental/ring3_scheduler.rs`.
+4. **`Cr2::read` returns `Result<VirtAddr, VirtAddrNotValid>`, not a
+   bare `VirtAddr`** -- a CR2 read can carry a non-canonical address,
+   and the type now makes the caller decide. The page-fault handler
+   in `src/idt.rs` unwraps with `expect`: an invalid CR2 while
+   REPORTING a page fault is itself a fatal machine state, so the
+   honest handling is to panic loudly rather than guess at an address.
+
+Verified end to end: clean kernel build under 1.99.1 (debug), then
+BOTH boot gates plus the transcript-parity gate through `build.sh`
+-- all three PASS, guest transcripts byte-identical to the 2026-10-23
+records above, because the migration touched names and types, not
+behavior. The `E0407` under 1.97.1 is recorded as the boundary
+evidence, not a bug; the floor (`rust-version`) is the artifact that
+keeps future contributors out of it.
+
+### CI toolchain pin (2026-10-23, twice): `@1.97.1` first, then `@1.99.1` after the same-day migration
 
 The new `kernel-boot` CI job's first run failed exactly where this
 contract says it would if left floating: `dtolnay/rust-toolchain
 @stable` drifted to stable 1.99.1 (released 2026-10-13), and 1.99
 tightened `core::iter::Step` by requiring the new
 `forward_overflowing`/`backward_overflowing` trait items -- which the
-pinned `x86_64 =0.14.13` crate does not implement -- so the
+then-pinned `x86_64 =0.14.13` crate does not implement -- so the
 `-Z build-std` rebuild of `core` died with the crate's `E0046` errors
 (cargo exit 101) on the runner, while the dev host -- still on 1.97.1
 -- kept passing. Reproduced locally by installing 1.99.1 and rerunning
 `./build.sh --qemu-test` under it: the identical E0046 pair on
 `x86_64-0.14.13/src/addr.rs` and `.../structures/paging/page.rs`,
-confirming the drift diagnosis rather than a guess. The CI job now
-pins `rust-toolchain@1.97.1` (+ `rust-src`). This pin is not an
-accident: it IS the toolchain contract above (rustup stable 1.97.1 +
-`rust-src`). Raising it is THIS DOCUMENTED KIND OF WORK: the next
-migration must extend the five-point walk (the 1.75 -> 1.97 one
-below) with the new `Step`-shape as a sixth point, bump `x86_64` to
-the version implementing it, and re-verify both boot gates -- not
-happen unannounced by an `@stable` float.
+confirming the drift diagnosis rather than a guess. The first fix was
+a pin to `rust-toolchain@1.97.1` (+ `rust-src`), matching the
+then-current contract.
+
+The same-day migration below (0.14.13 -> `=0.15.5`, 1.97.1 -> 1.99.1)
+then made that pin obsolete and it was raised: CI now runs
+`rust-toolchain@1.99.1` (+ `rust-src`), the exact pairing re-verified
+end to end near the top of this section. A pin survives, because the
+failure mode it guards is real in BOTH directions: a floating `@stable`
+quietly E0046'd the gates the morning stable hit 1.99.1 against
+0.14.13, and `=0.15.5` E0407's under everything before 1.99 -- so a
+drifted pairing fails cryptically inside a registry crate instead of
+loudly at a documented contract, and cargo's `rust-version = "1.99.1"`
+floor now turns the known-unsupported direction into a clear message
+at configure time. Raising the pin again is THIS DOCUMENTED KIND OF
+WORK: extend this section's walk (1.75 -> 1.97 -> 1.99), bump `x86_64`
+to the version implementing the next `Step` shape, re-verify both boot
+gates plus the parity gate under the new pairing, and land pin, floor,
+and record together -- not let an `@stable` float do it unannounced.
 
 After the migration the kernel **builds clean (debug + release) and the
 full `qemu_boot_test.sh` chain passes** -- every prior demo's self-test

@@ -28,7 +28,10 @@
 # identical on both paths or this gate rings.
 #
 # Lines were catalogued once from the recorded 2026-10-23 back-to-back
-# run (IMPLEMENTATION_STATUS.md); the diff there is exactly this set.
+# run -- the "Gap-closure increment (2026-10-23)" record in
+# IMPLEMENTATION_STATUS.md, which quotes both full transcripts and
+# whose allowlist bullet is this list with its rationale; the diff
+# recorded there is exactly this set.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

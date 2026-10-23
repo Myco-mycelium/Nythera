@@ -731,15 +731,17 @@ jobs:
       # build-std (compiled from source, see the kernel's
       # .cargo/config.toml) needs the rust-src component; rust-lld comes
       # inside the toolchain sysroot and build.sh' PATH fallback finds it.
-      # Pinned, not @stable: the kernel's Toolchain notes declare
-      # rustup stable 1.97.1 + rust-src the tested toolchain, and the
-      # pinned x86_64 =0.14.13 crate's core::iter::Step impl matches
-      # THAT rustc's trait shape — current stable (1.99.x) adds
-      # required forward_overflowing/backward_overflowing items, so a
-      # floating @stable once broke every kernel-boot gate with E0046
-      # during -Z build-std while the dev host (1.97.1) kept passing.
-      # Raising the pin = the documented 1.75->1.97-style migration.
-      - uses: dtolnay/rust-toolchain@1.97.1
+      # Pinned, not @stable: the kernel's Toolchain notes pin the exact
+      # rustc/x86_64-crate pairing, and that pairing is load-bearing in
+      # BOTH directions because the crate's core::iter::Step impls
+      # track rustc's UNSTABLE trait shape, which has now changed three
+      # times (0.14.10/rustc 1.75, 0.14.13/rustc 1.97, 0.15.5/rustc
+      # 1.99): a floating @stable E0046'd the gates the morning stable
+      # hit 1.99.1 against 0.14.13, and 0.15.5 E0407's under everything
+      # before 1.99. The rust-version = "1.99.1" floor in the kernel's
+      # Cargo.toml is the in-repo half of this contract; raising the
+      # pin = the documented 1.75->1.97->1.99-style migration walk.
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rust-src
       - name: Install the boot-emulation toolchain

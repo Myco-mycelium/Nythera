@@ -1,0 +1,18 @@
+# Directory-level toolchain pin for the nykernel tree: the exact rustc
+# side of the contract recorded in IMPLEMENTATION_STATUS.md's
+# "Toolchain notes" (rustc 1.99.1 + x86_64 =0.15.5 + rust-src), which
+# this tree's rust-version floor in Cargo.toml expresses only as a
+# minimum. This file makes the SUPPORTED pairing the default for every
+# cargo invocation under this directory instead of relying on the
+# caller's environment: a host's `stable` alias can lag crates.io
+# stable by months (it did here -- the alias still resolved to 1.97.1
+# while crates.io stable was 1.99.1, and only the rust-version floor
+# turned that into the honest configure-time refusal rather than the
+# old E0046/E0407 crate-internal errors). Raising both halves together
+# (this pin + the floor + the dependency pin in Cargo.toml) is the
+# documented migration walk; an RUSTUP_TOOLCHAIN env override still
+# wins over this file for experiments, and CI's pinned
+# dtolnay/rust-toolchain action supplies the same version anyway.
+[toolchain]
+channel = "1.99.1"
+components = ["rust-src"]

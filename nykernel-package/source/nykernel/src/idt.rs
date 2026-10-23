@@ -76,7 +76,9 @@ pub fn init() {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
         }
-        let timer_vector = (pic::PIC1_OFFSET + pic::IRQ_TIMER) as usize;
+        // x86_64 0.15 removed Index<usize> from the IDT; vector numbers
+        // index with u8 now.
+        let timer_vector = (pic::PIC1_OFFSET + pic::IRQ_TIMER) as u8;
         // The timer (IRQ0, vector 0x20) is this kernel's one interrupt
         // handler that is NOT `extern "x86-interrupt"`: preempting a
         // ring-3 task mid-instruction means saving and later restoring
@@ -100,13 +102,13 @@ pub fn init() {
         // The RTC's periodic interrupt (IRQ8, slave PIC) -- the
         // kernel's second real hardware IRQ line, proven by
         // `crate::rtc`'s self-test. Vector 0x28 (PIC2_OFFSET + 0).
-        let rtc_vector = (pic::PIC2_OFFSET + (crate::rtc::IRQ_RTC - 8)) as usize;
+        let rtc_vector = (pic::PIC2_OFFSET + (crate::rtc::IRQ_RTC - 8)) as u8;
         idt[rtc_vector].set_handler_fn(rtc_interrupt_handler);
 
         // The PS/2 keyboard (IRQ1, master PIC) -- a real input IRQ line
         // with a real handler, proven input-free by `crate::keyboard`'s
         // 8042 output-buffer injection self-test. Vector 0x21.
-        let keyboard_vector = (pic::PIC1_OFFSET + crate::keyboard::IRQ_KEYBOARD) as usize;
+        let keyboard_vector = (pic::PIC1_OFFSET + crate::keyboard::IRQ_KEYBOARD) as u8;
         idt[keyboard_vector].set_handler_fn(keyboard_interrupt_handler);
 
         // The ATA/ATAPI IDE channels (IRQ14 primary, IRQ15 secondary,
@@ -115,10 +117,10 @@ pub fn init() {
         // unmasks a line; it unmasks only the channel that actually has
         // a device.
         let ata_primary_vector =
-            (pic::PIC2_OFFSET + (crate::ata::IRQ_ATA_PRIMARY - 8)) as usize;
+            (pic::PIC2_OFFSET + (crate::ata::IRQ_ATA_PRIMARY - 8)) as u8;
         idt[ata_primary_vector].set_handler_fn(ata_primary_interrupt_handler);
         let ata_secondary_vector =
-            (pic::PIC2_OFFSET + (crate::ata::IRQ_ATA_SECONDARY - 8)) as usize;
+            (pic::PIC2_OFFSET + (crate::ata::IRQ_ATA_SECONDARY - 8)) as u8;
         idt[ata_secondary_vector].set_handler_fn(ata_secondary_interrupt_handler);
 
         // Ring 3 code must be explicitly permitted to `int 0x80` -- an
@@ -127,7 +129,7 @@ pub fn init() {
         // *gate's* privilege level against CPL, not just whether a
         // handler exists). This is the one interrupt vector in this
         // kernel a ring-3 program is allowed to invoke directly.
-        idt[SYSCALL_VECTOR as usize]
+        idt[SYSCALL_VECTOR as u8]
             .set_handler_fn(syscall_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
@@ -148,7 +150,7 @@ pub fn init() {
         // SYSCALL_VECTOR, not ring3_scheduler's raw handler), since
         // this demo only needs to report a result once, not save full
         // register state for a later resume.
-        idt[crate::experimental::pie_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::pie_demo::TRAP_VECTOR as u8]
             .set_handler_fn(pie_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
@@ -156,7 +158,7 @@ pub fn init() {
         // experimental::pe_demo -- the first genuine Windows-format
         // (PE32+) loading proof, same simple report-once ABI as
         // pie_trap_handler.
-        idt[crate::experimental::pe_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::pe_demo::TRAP_VECTOR as u8]
             .set_handler_fn(pe_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
@@ -164,7 +166,7 @@ pub fn init() {
         // experimental::pe_reloc_demo -- proves PE base relocations by
         // loading a relocatable PE32+ binary at a loader-chosen
         // address, same simple report-once ABI as the others.
-        idt[crate::experimental::pe_reloc_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::pe_reloc_demo::TRAP_VECTOR as u8]
             .set_handler_fn(pe_reloc_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
@@ -172,7 +174,7 @@ pub fn init() {
         // experimental::elf_dyn_demo -- the first shared-object
         // (real `ld -shared` .so) loading proof with symbol-resolved
         // relocations, same simple report-once ABI as the others.
-        idt[crate::experimental::elf_dyn_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::elf_dyn_demo::TRAP_VECTOR as u8]
             .set_handler_fn(elf_dyn_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
@@ -180,7 +182,7 @@ pub fn init() {
         // experimental::elf_dyn_cross_demo -- the cross-object
         // symbol-resolution proof (a dependent .so whose UNDEF
         // GLOB_DAT resolves against the registry-held provider .so).
-        idt[crate::experimental::elf_dyn_cross_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::elf_dyn_cross_demo::TRAP_VECTOR as u8]
             .set_handler_fn(elf_dyn_cross_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
@@ -191,7 +193,7 @@ pub fn init() {
         // EVERY lazy-armed dependent in a boot binds through this one
         // gate. Resolves through the same registry + version contract
         // and PATCHES the slot, then returns (it does not chain).
-        idt[crate::experimental::elf::LAZY_BIND_VECTOR as usize]
+        idt[crate::experimental::elf::LAZY_BIND_VECTOR as u8]
             .set_handler_fn(elf_lazy_bind_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
@@ -207,7 +209,7 @@ pub fn init() {
         // _dl_runtime_resolve's shape, implemented in
         // experimental::lazy_binder::plt_resolver_raw.
         unsafe {
-            idt[crate::experimental::elf::PLT_RESOLVE_VECTOR as usize]
+            idt[crate::experimental::elf::PLT_RESOLVE_VECTOR as u8]
                 .set_handler_addr(VirtAddr::new(
                     crate::experimental::lazy_binder::plt_resolver_raw as *const () as u64,
                 ))
@@ -217,21 +219,21 @@ pub fn init() {
         // A ninth ring-3-callable vector, dedicated to
         // experimental::elf_dyn_full_demo -- the DT_NEEDED + version
         // contract + lazy-binding proof.
-        idt[crate::experimental::elf_dyn_full_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::elf_dyn_full_demo::TRAP_VECTOR as u8]
             .set_handler_fn(elf_dyn_full_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
         // A tenth ring-3-callable vector, dedicated to
         // experimental::elf_dyn_deps_demo -- the recursive DT_NEEDED
         // catalog, interposition, and weak-version proof.
-        idt[crate::experimental::elf_dyn_deps_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::elf_dyn_deps_demo::TRAP_VECTOR as u8]
             .set_handler_fn(elf_dyn_deps_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
         // A twelfth ring-3-callable vector, dedicated to
         // experimental::elf_dyn_plt_demo -- the OWN-.plt GNU lazy
         // protocol proof.
-        idt[crate::experimental::elf_dyn_plt_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::elf_dyn_plt_demo::TRAP_VECTOR as u8]
             .set_handler_fn(elf_dyn_plt_demo_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
@@ -242,7 +244,7 @@ pub fn init() {
         // failed boot proved) (a real Windows-format dependent whose real
         // import directory resolves against a real Windows-format
         // DLL's real export directory).
-        idt[crate::experimental::pe_import_demo::TRAP_VECTOR as usize]
+        idt[crate::experimental::pe_import_demo::TRAP_VECTOR as u8]
             .set_handler_fn(pe_import_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
         idt
@@ -277,7 +279,12 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
-    let accessed = Cr2::read();
+    // Cr2::read returns a typed Result since x86_64 0.15 (the error case
+    // is a non-canonical stored CR2). For a delivered page fault the CPU
+    // itself loads CR2, so the Rx path is unreachable in practice --
+    // panic loudly if it ever happens rather than guessing an address.
+    let accessed = Cr2::read()
+        .expect("CR2 delivered a non-canonical faulting address");
 
     // The guard-page overflow proof (`memory::guard_demo::run_and_prove`)
     // deliberately faults as the last act of the boot, so that a guard
@@ -363,7 +370,9 @@ extern "x86-interrupt" fn ata_secondary_interrupt_handler(_stack_frame: Interrup
 /// the two-process isolation sequence) lives in
 /// `experimental::isolation_demo`, which this delegates to entirely.
 extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
-    let cpl = stack_frame.code_segment as u64 & 0x3;
+    // x86_64 0.15 exposes the frame's code segment as a SegmentSelector
+    // instead of a raw u16; the caller's CPL is the selector's RPL field.
+    let cpl = stack_frame.code_segment.rpl() as u64;
     SYSCALL_CALLER_CPL.store(cpl, Ordering::SeqCst);
     SYSCALL_HIT.store(true, Ordering::SeqCst);
 

@@ -162,7 +162,7 @@ static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 /// handlers and the ordinary syscall vector.
 pub fn install(idt: &mut InterruptDescriptorTable) {
     unsafe {
-        idt[YIELD_VECTOR as usize]
+        idt[YIELD_VECTOR as u8]
             .set_handler_addr(VirtAddr::new(ring3_yield_trap_entry as u64))
             .set_privilege_level(PrivilegeLevel::Ring3);
     }
