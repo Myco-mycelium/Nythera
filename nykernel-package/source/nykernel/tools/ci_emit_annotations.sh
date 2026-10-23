@@ -16,10 +16,20 @@
 #
 # Usage: ci_emit_annotations.sh LOGFILE LABEL
 #
+# NOTE on the emitter's shape (load-bearing, caught by a real CI run):
+# `fold` never merges input lines -- it only WRAPS overlong ones -- so a
+# gate log of many short lines stays one line each, and the naive
+# pipeline emits 100+ annotations; GitHub then silently DROPS
+# everything past the cap of ~10 ::error:: annotations per step. The
+# tail is therefore flattened into a single blob (newlines -> '|')
+# FIRST, then hard-wrapped: ~8 numbered chunks ride under that cap on
+# purpose.
 set -euo pipefail
 LOG="$1"
 LABEL="$2"
+echo "::error::$LABEL: gate output follows, most recent last"
 tail -c 27000 "$LOG" \
     | tr -d '\r' \
-    | fold -s -w 3600 \
+    | tr '\n' '|' \
+    | fold -w 3600 \
     | awk -v l="$LABEL" '{printf "::error::%s[%d] %s\n", l, NR, $0}'

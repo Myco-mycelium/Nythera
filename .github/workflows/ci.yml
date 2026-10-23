@@ -641,9 +641,13 @@ jobs:
           if [[ $S -ne 0 ]]; then
             . /etc/os-release
             echo "::error::Waylandgate env: $PRETTY_NAME / $(weston --version 2>&1 | head -1)"
+            # flatten to one blob first: fold never merges lines, so the
+            # naive form would emit 100s of annotations and lose all but
+            # 10 to GitHub's per-step annotation cap
             tail -c 27000 wayland-unittest.log \
               | tr -d '\r' \
-              | fold -s -w 3600 \
+              | tr '\n' '|' \
+              | fold -w 3600 \
               | awk '{printf "::error::Waylandgate[%d] %s\n", NR, $0}'
           fi
           exit $S
