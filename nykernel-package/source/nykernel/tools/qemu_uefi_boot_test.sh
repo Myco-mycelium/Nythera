@@ -42,13 +42,25 @@ if [[ ! -f "$STUB_EFI" ]]; then
     exit 1
 fi
 
-# --- install the stub on the ESP image, at the UEFI fallback boot path ---
-# mcopy's -o overwrites the existing EFI/BOOT/BOOTX64.EFI silently; the
-# image is FAT (mtools made it), no loop mount / root privileges needed.
-# The staged dist/EFI copy is refreshed too so the tree mirrors what
-# actually boots.
-mcopy -o -i uefi/dist/esp.img "$STUB_EFI" ::EFI/BOOT/BOOTX64.EFI
+# --- build a FRESH ESP image, install the stub at the UEFI fallback path ---
+# uefi/dist/ is UNTRACKED by policy (see nykernel-package/.gitignore --
+# it is bring-up-era generated state, not a source), so this script can
+# never depend on it existing: a fresh CI checkout doesn't have it, and
+# the first runner run failed exactly there (mcopy under set -e). The
+# image is generated from scratch with mformat/mmd/mcopy instead: 64 MiB
+# (131072 sectors), FAT, the one fallback-path directory the UEFI boot
+# manager looks for. No loop mounts, no root. The staged dist/EFI tree
+# is refreshed too so any inspected tree mirrors what actually boots.
+rm -f uefi/dist/esp.img
+mkdir -p uefi/dist uefi/dist/EFI/BOOT
+mformat -i uefi/dist/esp.img -C -T 131072
+mmd -i uefi/dist/esp.img ::EFI ::EFI/BOOT
+mcopy -i uefi/dist/esp.img "$STUB_EFI" ::EFI/BOOT/BOOTX64.EFI
 cp "$STUB_EFI" uefi/dist/EFI/BOOT/BOOTX64.EFI
+test -s uefi/dist/esp.img || {
+    echo "FAIL: ESP image generation produced nothing"
+    exit 1
+}
 
 # --- fresh writable OVMF variable store from the shipped template ---
 # pflash writes persist into VARS.fd run to run; starting from the
