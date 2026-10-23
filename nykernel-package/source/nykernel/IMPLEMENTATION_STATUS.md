@@ -1588,6 +1588,19 @@ paths" claim is checkable line-for-line rather than asserted.
   path -- is line-identical between the two boot paths, ending in the
   same `nyrqis kernel: phase 1+2+3+4+ring3-elf-isolation-poc+guard-pages
   complete` banner. Two different firmware worlds, one transcript.
+- **The claim is now MACHINE-CHECKED, not just recorded**
+  (`tools/qemu_boot_parity_diff.sh`, wired as the `kernel-boot` job's
+  third gate): the script re-runs BOTH gates and diffs the two guest
+  transcripts after stripping only a DOCUMENTED allowlist of honest
+  boot-environment lines -- the UEFI stub section, the memory-map
+  usable-frame counts, the ACPI shape lines, the ATA
+  device-presence line, and the by-design nondeterminism (RTC
+  seconds/ticks, ring-3 preemption spin counters). Everything else
+  must be line-identical, and the first local run PASSES exactly so:
+  BIOS 342 chain lines == UEFI 342 chain lines, residual diff empty.
+  A residual delta outside the allowlist is a printed FAIL, so a
+  future loader change that makes the two boot paths diverge
+  ring-the-parity-bell instead of silently re-dividing behaviour.
 - The full transcripts follow. First the BIOS gate's guest output:
 
 ```

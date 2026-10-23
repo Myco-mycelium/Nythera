@@ -82,7 +82,13 @@
 #   not just "it links": tools/qemu_boot_test.sh (GRUB/Multiboot2 BIOS,
 #   kernel reaches BootPhase::Ready and exits via isa-debug-exit ->
 #   status 33) and tools/qemu_uefi_boot_test.sh (the same contract on
-#   the native OVMF/UEFI stub handoff). The UEFI script needs OVMF
+#   the native OVMF/UEFI stub handoff), plus
+#   tools/qemu_boot_parity_diff.sh, which re-runs BOTH gates and then
+#   cross-checks their guest transcripts: the kernel-side demo chain
+#   must be line-identical after removing only a DOCUMENTED allowlist
+#   of honest boot-environment facts (stub section, memory-map counts,
+#   ACPI shape, disk presence, RTC/tick nondeterminism); a residual
+#   delta is a FAIL with the residual printed. The UEFI script needs OVMF
 #   firmware, which the repo deliberately does NOT track (see
 #   nykernel-package/.gitignore), so the job copies the distro's
 #   /usr/share/OVMF/*_4M.fd files into uefi/tools/ first.
@@ -745,4 +751,6 @@ jobs:
         run: ./tools/qemu_boot_test.sh
       - name: UEFI gate (OVMF boots the stub natively, same exit contract)
         run: ./tools/qemu_uefi_boot_test.sh
+      - name: Transcript parity (BIOS and UEFI demo chains line-identical)
+        run: ./tools/qemu_boot_parity_diff.sh
 
