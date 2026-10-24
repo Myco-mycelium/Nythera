@@ -168,9 +168,13 @@ pub enum PeError {
     /// A provider was found for the DLL, but the symbol is not an
     /// export of it.
     MissingImport,
-    /// The IAT slot's page is not writable in its own right (the real
-    /// GNU ld artifact leaves `.idata` writable); the loader refuses
-    /// rather than grant-write a section the file did not ask for.
+    /// The IAT slot's page is not writable in its own right (the
+    /// composed carriers are written to declare `.idata` writable;
+    /// GNU ld <= 2.42 emitted the flag itself, but 2.46's PE linker
+    /// dropped it, so the composition patchers restore it -- an
+    /// artifact that still refuses must not be granted the write by
+    /// the loader); the loader refuses rather than grant-write a
+    /// section the file did not ask for.
     ImportSectionNotWritable,
     /// The delay-load directory (`IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT`,
     /// `IMAGE_DELAYLOAD_DESCRIPTOR` per MS `delayimp.h`) is malformed:

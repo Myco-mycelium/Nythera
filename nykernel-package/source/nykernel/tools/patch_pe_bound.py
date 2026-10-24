@@ -354,6 +354,17 @@ def compose_bound_dir(data: bytearray, sections, dirs, records):
     struct.pack_into("<II", data, dir11_field_off(bytes(data)), base_rva, dir_size)
     new_vsize = max(idata["vsize"], dir_size + (base_rva - idata["vaddr"]))
     struct.pack_into("<I", data, idata["hdr_off"] + 8, new_vsize)
+    # Declare `.idata` writable. The loader's stale-ref discard and
+    # fresh-resolution rulings WRITE the FirstThunk slots, and by
+    # contract the loader refuses an undeclared-writable write -- it
+    # does not grant-write a section the file did not ask for. GNU ld
+    # <= 2.42 emitted IMAGE_SCN_MEM_WRITE on .idata itself; 2.46's PE
+    # linker dropped the flag, so the composition restores the same
+    # declared write this artifact shape always carried (verified by
+    # `verify_bound_dir`'s re-parse below).
+    IMAGE_SCN_MEM_WRITE = 0x80000000
+    (chars,) = struct.unpack_from("<I", data, idata["hdr_off"] + 36)
+    struct.pack_into("<I", data, idata["hdr_off"] + 36, chars | IMAGE_SCN_MEM_WRITE)
     return base_rva, dir_size
 
 
@@ -406,6 +417,10 @@ def verify_bound_dir(data: bytes, base_rva: int, dir_size: int, records):
     (vsize,) = struct.unpack_from("<I", vdata, s["hdr_off"] + 8)
     if base_rva + dir_size > s["vaddr"] + vsize:
         die("re-parse: the composed directory runs past the grown VirtualSize")
+    (chars,) = struct.unpack_from("<I", vdata, s["hdr_off"] + 36)
+    if chars & 0x80000000 == 0:
+        die("re-parse: .idata Characteristics lost IMAGE_SCN_MEM_WRITE -- "
+            "the loader's slot writes would be refused at boot")
 
 
 def prefill_and_verify(data: bytearray, sections, ft_rva, values, labels):

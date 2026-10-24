@@ -426,6 +426,16 @@ def compose_delay_dir(data: bytearray, sections, dirs, descriptors, va_form=Fals
     new_vsize = max(idata["vsize"], need_end)
     struct.pack_into("<I", data, idata["hdr_off"] + 8, new_vsize)
     idata["vsize"] = new_vsize
+    # Declare `.idata` writable: the kernel's eager delay ruling WRITES
+    # the composed IAT slots (and stamps the handle qword), and by
+    # contract the loader refuses an undeclared-writable write. GNU ld
+    # <= 2.42 emitted IMAGE_SCN_MEM_WRITE on .idata itself; 2.46's PE
+    # linker dropped the flag, so the composition restores the same
+    # declared write this artifact shape always carried (verified by
+    # `verify_delay_dir`'s re-parse below).
+    IMAGE_SCN_MEM_WRITE = 0x80000000
+    (chars,) = struct.unpack_from("<I", data, idata["hdr_off"] + 36)
+    struct.pack_into("<I", data, idata["hdr_off"] + 36, chars | IMAGE_SCN_MEM_WRITE)
     # The loader copies SizeOfRawData bytes into the section's mapping,
     # which spans only ceil(VirtualSize / page) pages. That is safe for
     # every carrier here (raw and virtual spans share their last page)
@@ -534,6 +544,10 @@ def verify_delay_dir(data: bytes, base_rva, dir_size, descriptors, va_form=False
                 if vdata[at2 + 2:end2] != payload:
                     die(f"re-parse: {tag} named import {j} is {vdata[at2 + 2:end2]!r}, "
                         f"composed {payload!r}")
+    (chars,) = struct.unpack_from("<I", vdata, s["hdr_off"] + 36)
+    if chars & 0x80000000 == 0:
+        die("re-parse: .idata Characteristics lost IMAGE_SCN_MEM_WRITE -- "
+            "the loader's eager slot writes would be refused at boot")
 
 
 def main() -> None:
