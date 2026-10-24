@@ -3326,6 +3326,41 @@ form the `function_casts_as_integer` message itself asks for.
 
 Both gates plus the parity gate re-verified zero-warning afterwards.
 
+### binutils 2.46 surface catalogued (2026-10-24): kernel-boot un-pinned
+
+The `ubuntu-24.04` runner-image pin on the `kernel-boot` job is LIFTED
+on the strength of a reproduced catalogue, not a hope: the nykernel
+was built END TO END on this host under a real binutils 2.46 ld/as/objdump
+(the ubuntu-26.04 packages, unpacked locally, since no container runtime
+exists here), and `tools/verify_prog_layout.sh` keys every affected
+fact on the `ld` actually in PATH, documented per toolchain line:
+
+- **movement deltas (+0x1000, ld 2.46 vs 2.42/2.43)**: the provider
+DLL's Export Directory 0x3000 → 0x4000; the import client's Import
+Directory 0x2000 → 0x3000; the composed Bound Import Directory
+0x2100 → 0x3100 (it composes at `.idata` vaddr+vsize, which moved with
+the import block -- the PATCHERS themselves re-derive it, so only the
+gate's literals needed keying). Nothing else moved: SizeOfImage,
+entry point, the delay carriers' composed 0x3018, and every unsigned
+fact held at both lines.
+- **format deltas (objdump 2.46 vs 2.42/2.43)**: the Export Address
+Table entries gain `Ordinal  Address  Type` header and zero-pad the
+RVA (`1000 Export RVA` → `00001000`), and the Name Pointer entries
+become `[   0] +base[   1]  0000 crossfn`. `prov_names`' count grep
+accepts both spellings so a re-roll moves pinned RVAs, never counts.
+- **uncatalogued binutils lines refuse loudly**: the gate prints the
+exact FAIL ("no PE-directory catalogue entry for binutils X.Y") plus
+the actual objdump surface to extend the catalogue with -- the
+same documented kind of work as the rustc pin walk.
+
+Regression-verified BOTH directions after the change: the full
+`build.sh` + both boot gates + parity are green at 2.42/2.43 here
+(unchanged), and green at 2.46 (build + layout gate, exit 0,
+zero warnings) -- so the un-pinned job either passes on ubuntu-26 and
+the image roll is finally absorbed, or its failure lands in the
+annotation channel with the QEMU 10.2.1/GRUB 2.14 environment visible
+(root cause rec.typology: boot-side, not layout-side).
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

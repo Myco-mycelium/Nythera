@@ -197,8 +197,8 @@ pafacts() {
     ld_major="${ld_ver%.*}"    # "2.42" -> "2"
     ld_minor="${ld_ver#*.}"    # "2.42" -> "42"
     case "$ld_minor" in
-        42|43) fact_rva=3000 ;;
-        46)    fact_rva=4000 ;;
+        42|43) fact_rva=3000; fact_idir=2000; fact_bound=2100 ;;
+        46)    fact_rva=4000; fact_idir=3000; fact_bound=3100 ;;
         *)     # an uncatalogued binutils line: refuse LOUDLY with the
                # exact evidence to catalogue, per the gate rule.
                echo "FAIL: layout-gate has no PE-directory catalogue entry for binutils ${ld_major:-?}.${ld_minor:-?} -- extend tools/verify_prog_layout.sh's catalogue (the documented 'catalogue the delta' path), citing the actual objdump -p EAT/IDT block positions this toolchain produces" >&2
@@ -208,9 +208,14 @@ pafacts() {
     local out
     out="$($tool "$file" 2>&1)"
     for pat in "$@"; do
-        # Catalogue-keyed facts may reference the ld-line-keyed export
-        # directory RVA via the 3KWY placeholder.
+        # Catalogue-keyed facts reference the ld-line-keyed RVAs via
+        # the placeholders: the provider DLL's export directory (see
+        # its call-site comment) and the client pair's import and
+        # bound-import directories, which hold the documented
+        # +0x1000 of the 2.46 catalogue entry.
         pat="${pat//@@LDPE Export Directory/000000000000${fact_rva}.*Export Directory}"
+        pat="${pat//@@LDID Import Directory/000000000000${fact_idir}}"
+        pat="${pat//@@LDBOUND Bound Import Directory/000000000000${fact_bound}}"
         if ! printf '%s' "$out" | grep -qsE -- "$pat"; then
             echo "FAIL: userprog PE layout fact missing in $file: [$pat] ($desc)" >&2
             echo "     --- actual $(basename "$tool") surface: ---" >&2
@@ -223,22 +228,33 @@ pafacts() {
 
 # The provider DLL: a REAL Export Directory (Entry 0 nonzero), at the
 # pinned ImageBase, exporting exactly the two fixture symbols by name
-# with the pinned EAT RVAs and Ordinal Base 1. The Entry-0 RVA is
-# catalogue-keyed (ld-line dependent, see pafacts: 0x3000 under
-# binutils 2.42/2.43, 0x4000 under 2.46).
+# with the pinned EAT RVAs and Ordinal Base 1. Two facts are
+# catalogue-keyed (not free-form wildcards) per the observed ld/objdump
+# deltas, REPRODUCED locally by re-linking this artifact under the
+# ubuntu-26.04 2.46 ld/objdump:
+#   Entry 0 RVA: 0x3000 under binutils 2.42/2.43, 0x4000 under 2.46
+#     (pafacts keys it on the ld in PATH; uncatalogued lines refuse
+#     loudly);
+#   EAT-entry digit spelling: 2.42/2.43's objdump prints the quotient
+#     ('1000 Export RVA'), 2.46's zero-pads it ('00001000') and adds an
+#     'Ordinal  Address  Type' header line. `0*` accepts both.
 pafacts "PE import provider DLL (real export directory)" userprog/userprog_pe_import_dll.dll \
     "objdump -p" \
     'ImageBase.*0000180000000000' \
     'Entry 0 @@LDPE Export Directory' \
     'Export Address Table -- Ordinal Base 1' \
-    '\[ *0\] \+base\[ *1\] 1000 Export RVA' \
-    '\[ *1\] \+base\[ *2\] 2000 Export RVA' \
+    '\[ *0\] \+base\[ *1\] 0*1000 Export RVA' \
+    '\[ *1\] \+base\[ *2\] 0*2000 Export RVA' \
     'crossfn' \
     'crossmark'
 # ...and exactly two names in its name/ordinal table (NUMBER pinned, not
 # just presence: a third export would change the demo's ==2 assertion's
 # meaning).
-prov_names="$(objdump -p userprog/userprog_pe_import_dll.dll | sed -n '/Ordinal\/Name Pointer/,/^$/p' | grep -cE '\] cross')"
+# The name-table count is pinned, not its objdump spelling: 2.42/2.43
+# print '[   0] crossfn', 2.46 prints '[   0] +base[   1]  0000 crossfn'
+# (an 'Ordinal  Hint  Name' header added). Written to accept both so a
+# toolchain re-roll changes only pinned RVAs, never counts.
+prov_names="$(objdump -p userprog/userprog_pe_import_dll.dll | sed -n '/Ordinal\/Name Pointer/,/^$/p' | grep -cE '\] *([0-9a-f]+ *)?(crossfn|crossmark)')"
 if [ "$prov_names" -ne 2 ]; then
     echo "FAIL: provider DLL exports $prov_names name(s) -- the demo pins exactly 2 (crossfn, crossmark)" >&2
     exit 1
@@ -255,7 +271,7 @@ pafacts "PE import dependent client (real import directory)" userprog/userprog_p
     "objdump -p" \
     'ImageBase.*0000140000000000' \
     'Entry 0 0000000000000000 00000000 Export Directory' \
-    'Entry 1 0000000000002000.*Import Directory'
+    'Entry 1 @@LDID Import Directory'
 pafacts "PE import dependent client (import table contents)" userprog/userprog_pe_import_app.exe \
     "objdump -x" \
     'DLL Name: userprog_pe_import_dll\.dll' \
@@ -308,7 +324,7 @@ echo "  layout-gate: PE forwarder host composition facts verified"
 # as the kernel pins it image-side (two parsers, same file).
 pafacts "PE bound-import good client (composed bounded directory, Entry b)" userprog/userprog_pe_import_app.exe \
     "objdump -x" \
-    'Entry b 0000000000002100 [0-9a-f]{8} Bound Import Directory'
+    'Entry b @@LDBOUND Bound Import Directory'
 pafacts "PE bound-import bad client (its OWN Entry b line -- 16-digit RVA as objdump prints it)" userprog/userprog_pe_bound_bad.exe \
     "objdump -x" \
     'Entry b [0-9a-f]{16} [0-9a-f]{8} Bound Import Directory'

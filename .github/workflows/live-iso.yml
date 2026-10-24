@@ -180,9 +180,11 @@ jobs:
         # the menu-boot failure of 2026-10-24 surfaced invisible
         # without it, plain artifacts can't be queried mid-triage.
         run: |
+          # Same stale-cache guard as the menu-boot step -- this job's
+          # runner is fresh too.
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86
           . /etc/os-release
-          echo "::error::Livesmoke env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1)"
           set +e
           python3 tests/boot_smoke.py dist/nyrqis-live.iso \
             --timeout 780 --keep-logs > /tmp/boot-smoke-step.log 2>&1
@@ -248,6 +250,11 @@ jobs:
         # annotation first so a runner/image drift is visible without
         # the logs (the 2026-10-24 menu-boot red was invisible).
         run: |
+          # update FIRST: a freshly-rolled runner image ships a stale
+          # apt package cache, and a bare install fails with exit 100
+          # before anything diagnostic can run (the 2026-10-24
+          # menu-boot red was exactly this, invisible in annotations).
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86
           . /etc/os-release
           echo "::error::Menuboot env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1)"
