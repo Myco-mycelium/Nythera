@@ -644,10 +644,10 @@ jobs:
             # flatten to one blob first: fold never merges lines, so the
             # naive form would emit 100s of annotations and lose all but
             # 10 to GitHub's per-step annotation cap
-            tail -c 27000 wayland-unittest.log \
+            tail -c 8000 wayland-unittest.log \
               | tr -d '\r' \
               | tr '\n' '|' \
-              | fold -w 3600 \
+              | fold -w 1000 \
               | awk '{printf "::error::Waylandgate[%d] %s\n", NR, $0}'
           fi
           exit $S
