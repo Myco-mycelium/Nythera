@@ -69,7 +69,12 @@ test -s uefi/dist/esp.img || {
 cp uefi/tools/OVMF_VARS_4M.fd uefi/dist/VARS.fd
 
 set +e
-timeout 45 qemu-system-x86_64 \
+# 120 s settle-bound, catalogued: same reasoning as the BIOS gate's
+# cap (tools/qemu_boot_test.sh) -- on the ubuntu-26 CI runners the
+# whole OVMF-spawn + demo chain can exceed the previous 45 s under
+# shared cores; a cap this generous keeps the required gate outside
+# the runner's speed jitter.
+timeout 120 qemu-system-x86_64 \
     -machine q35 \
     -m 256 \
     -drive if=pflash,format=raw,readonly=on,file=uefi/tools/OVMF_CODE_4M.fd \

@@ -28,7 +28,14 @@ EOF
 grub-mkrescue -o target/nyrqis-test.iso "$ISO_DIR" >/dev/null 2>&1
 
 set +e
-timeout 15 qemu-system-x86_64 \
+# 120 s settle-bound, catalogued: the boot under a fast desktop host
+# takes ~5 s, but the ubuntu-26 CI runners (QEMU 10.2 on shared cores)
+# cut the 15 s cap's full demo chain in half mid-run -- the transcript
+# reached the LAST demo (kernel boot-gate run 2026-10-24) before the
+# kill. A required gate should only fail on the kernel's behavior, not
+# on how fast an arbitrary runner image happens to be, so the cap is
+# set wall-clock generously on purpose.
+timeout 120 qemu-system-x86_64 \
     -cdrom target/nyrqis-test.iso \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -serial stdio \
