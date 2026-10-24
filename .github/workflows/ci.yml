@@ -774,6 +774,7 @@ jobs:
           cp /usr/share/OVMF/OVMF_VARS_4M.fd uefi/tools/
       - name: BIOS gate (GRUB/Multiboot2 reach BootPhase::Ready, exit 33)
         run: |
+          mkdir -p target   # fresh checkout has no target/ (gitignored); a redirect into a missing dir would fail the gate before it ever ran
           set +e
           ./tools/qemu_boot_test.sh > target/bios-gate.log 2>&1; S=$?
           set -e
@@ -785,6 +786,7 @@ jobs:
           exit $S
       - name: UEFI gate (OVMF boots the stub natively, same exit contract)
         run: |
+          mkdir -p target
           set +e
           ./tools/qemu_uefi_boot_test.sh > target/uefi-gate.log 2>&1; S=$?
           set -e
@@ -796,6 +798,7 @@ jobs:
           exit $S
       - name: Transcript parity (BIOS and UEFI demo chains line-identical)
         run: |
+          mkdir -p target
           set +e
           ./tools/qemu_boot_parity_diff.sh > target/parity-gate.log 2>&1; S=$?
           set -e
