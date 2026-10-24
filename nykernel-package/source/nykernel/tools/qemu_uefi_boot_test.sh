@@ -74,6 +74,11 @@ set +e
 # whole OVMF-spawn + demo chain can exceed the previous 45 s under
 # shared cores; a cap this generous keeps the required gate outside
 # the runner's speed jitter.
+#
+# -no-shutdown is DROPPED below for the same catalogued QEMU 10.x
+# delta as the BIOS gate: the isa-debug-exit write routes through
+# qemu_system_shutdown_request_with_code(), which -no-shutdown would
+# have kept stopped-not-exited. -no-reboot stays: reboot-loop guard.
 timeout 120 qemu-system-x86_64 \
     -machine q35 \
     -m 256 \
@@ -83,7 +88,7 @@ timeout 120 qemu-system-x86_64 \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -serial stdio \
     -display none \
-    -no-reboot -no-shutdown \
+    -no-reboot \
     > target/qemu-uefi-test-stdout.log 2>&1
 QEMU_STATUS=$?
 set -e

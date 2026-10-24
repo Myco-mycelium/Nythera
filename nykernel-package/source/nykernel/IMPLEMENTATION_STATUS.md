@@ -3353,13 +3353,27 @@ exact FAIL ("no PE-directory catalogue entry for binutils X.Y") plus
 the actual objdump surface to extend the catalogue with -- the
 same documented kind of work as the rustc pin walk.
 
-Regression-verified BOTH directions after the change: the full
-`build.sh` + both boot gates + parity are green at 2.42/2.43 here
-(unchanged), and green at 2.46 (build + layout gate, exit 0,
-zero warnings) -- so the un-pinned job either passes on ubuntu-26 and
-the image roll is finally absorbed, or its failure lands in the
-annotation channel with the QEMU 10.2.1/GRUB 2.14 environment visible
-(root cause rec.typology: boot-side, not layout-side).
+===
+
+### QEMU 10.x exit-contract catalogue (2026-10-24): `-no-shutdown` dropped
+
+The boot-side class above landed exactly as predicted, and the
+annotation channel named it: on the ubuntu-26 runners (QEMU 10.2.1)
+the BIOS transcript reached the chain's LAST line
+("phase 1+2+3+4+ring3-elf-isolation-poc+guard-pages complete") and then
+sat stopped until the timeout kill ("terminating on signal 15")
+-- 15 s first, then a raised 120 s cap proved it was NOT runner
+slowness: the guest printed everything and simply never exited.
+Cause, verified against qemu master's `hw/misc/debugexit.c`: the
+isa-debug-exit write handler no longer calls `exit()` directly -- it
+routes through `qemu_system_shutdown_request_with_code(...`, which
+HONORS `-no-shutdown` by stopping the VM instead of exiting the
+process. Both boot gate scripts carried `-no-shutdown`, inert beside
+8.x's direct `exit()`; 10.x turned that inherited flag into the
+whole failure. The scripts DROP the flag (catalogued in-place;
+`-no-reboot` stays as the reboot-loop guard) -- the exit-code
+contract `(value << 1) | 1` is unchanged, the change re-verified
+locally on QEMU 8.2 both toolchains (exit 33 still produced).
 
 ## Bugs found and fixed during Phase 1 bring-up
 

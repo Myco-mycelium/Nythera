@@ -35,12 +35,26 @@ set +e
 # kill. A required gate should only fail on the kernel's behavior, not
 # on how fast an arbitrary runner image happens to be, so the cap is
 # set wall-clock generously on purpose.
+#
+# -no-shutdown is DROPPED below (catalogued 2026-10-24, live CI
+# catch): QEMU 10.x's isa-debug-exit write no longer calls exit()
+# directly -- it routes through
+# qemu_system_shutdown_request_with_code(), which HONORS -no-shutdown
+# by stopping the VM instead of exiting the process, so the guest sat
+# stopped after the last demo line until the timeout kill
+# ("terminating on signal 15") on the ubuntu-26 runner's QEMU 10.2.1
+# (verified against qemu master's hw/misc/debugexit.c: the write
+# handler is qemu_system_shutdown_request_with_code, not exit()).
+# On 8.x the flag was an inert no-op
+# beside the device's direct exit(), and the exit code contract
+# ((value << 1) | 1) is unchanged, so the removal is safe on both
+# sides. -no-reboot stays: it is the reboot-loop guard.
 timeout 120 qemu-system-x86_64 \
     -cdrom target/nyrqis-test.iso \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -serial stdio \
     -display none \
-    -no-reboot -no-shutdown \
+    -no-reboot \
     > target/qemu-test-stdout.log 2>&1
 QEMU_STATUS=$?
 set -e
