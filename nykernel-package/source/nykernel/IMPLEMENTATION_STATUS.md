@@ -3248,6 +3248,53 @@ to the version implementing the next `Step` shape, re-verify both boot
 gates plus the parity gate under the new pairing, and land pin, floor,
 and record together -- not let an `@stable` float do it unannounced.
 
+### Runner-image pin (2026-10-23): `ubuntu-24.04` for the kernel-boot job
+
+The same day the CI pin above was raised, the `ubuntu-latest` label
+itself began rolling to Ubuntu 26.04.1 (GitHub announced the migration
+beginning 2026-10-19), and this failure arrived through a channel no
+one had pinned. The wrapper diagnostics (`tools/ci_emit_annotations.sh`
+-- job logs are not fetchable through the API without admin rights;
+annotations are) showed the failing run's environment against the
+local one, with the kernel code UNCHANGED between two adjacent runs
+that went green -> red:
+
+- local / QEMU 8.2.2 + GRUB 2.12 + binutils 2.42/2.43: both gates
+pass, and the guest transcripts match the records above line-for-line
+- runner / Ubuntu 26.04.1 + QEMU 10.2.1 + GRUB 2.14 + **binutils
+2.46**: the BIOS gate fails inside the layout-gate's toolchain-pinned
+PE fact for `userprog_pe_import_dll.dll` (`[Entry 0
+0000000000003000.*Export Directory]`) -- under ld 2.46 (its
+`MinorLinkerVersion 46` shows in the emitted PE's own header dump)
+the export directory lands at rva 0x4000 instead, pushed by a
+toolchain-internal layout change, not by anything the kernel sources
+or the patcher scripts do. The kernel side machine-reads the PE data
+directories straight out of the image headers, so nothing in the
+RUNNING kernel depends on the literal 0x3000 -- the pinned fact
+exists to catch UNINVITED layout drift, and it caught exactly that.
+The gate failed BEFORE any guest boot, so the newer QEMU/GRUB are
+catalogued-but-not-yet-implicated territory for the next pass.
+
+Response: the `kernel-boot` job is pinned to `runs-on: ubuntu-24.04`,
+the configuration the entire verification record (both gates, the
+parity transcripts, the line counts above) was built against. Raising
+THAT pin is the same documented kind of work as the rustc one: re-run
+both gates plus parity under the 26.04 tooling, catalogue (or pin
+away) the binutils 2.46 layout delta for the PE artifacts, and land
+record, pin, and gates together -- not drift unannounced.
+
+The diagnosing channel carries two implementation lessons, both proven
+by real runs (each commented at the emitting code): the gate-log tail
+must be flattened to ONE blob before wrapping, because `fold` never
+merges input lines -- the naive form emits hundreds of annotations and
+GitHub silently drops everything past the ~10-per-step cap; and
+~3600-char single-line annotations were dropped server-side, so
+chunks ship at ~1000 chars. The wrapper also needed `mkdir -p target`
+before its redirects: a fresh runner checkout has no gitignored
+target/, and a failing redirect makes `set +e`-captured `$?` fail the
+step BEFORE the gate ever runs (the "BIOS gate failed" that was
+actually bash's redirect error).
+
 After the migration the kernel **builds clean (debug + release) and the
 full `qemu_boot_test.sh` chain passes** -- every prior demo's self-test
 is unchanged, so the migration introduced no behavioral regression. The

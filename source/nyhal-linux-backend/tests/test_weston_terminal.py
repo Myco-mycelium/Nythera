@@ -50,6 +50,17 @@ WESTON_TERMINAL = shutil.which("weston-terminal")
 # enough to keep the suite fast.
 RUN_SECONDS = 5.0
 
+# Bounded settling window AFTER RUN_SECONDS for slower client startup:
+# observed under weston 14 (CI's ubuntu-26 image), weston-terminal still
+# hands its window + cursor pool fds to the compositor, but can take
+# visibly longer to get there than weston 13 did within the fixed
+# 5-second sample (the same image at the same weston version fails one
+# run and passes the next). The contract is NOT weakened: fds_received
+# must still reach 2; only the sample window stops being exactly one
+# fixed length. Sampling continues until the threshold is met or the
+# window closes, so a healthy fast startup is not slowed down.
+FD_SETTLE_SECONDS = 15.0
+
 
 class TestWestonTerminal(unittest.TestCase):
     """The real weston-terminal binary against our compositor."""
@@ -128,12 +139,19 @@ class TestWestonTerminal(unittest.TestCase):
         )
         try:
             time.sleep(RUN_SECONDS)
+            # Bounded settle for the pool fds (see FD_SETTLE_SECONDS):
+            # sample until they have arrived or the window closed, then
+            # let the ORIGINAL assertions below judge the result.
+            settle_deadline = time.monotonic() + FD_SETTLE_SECONDS
+            stats = self.host.get_stats()
+            while stats.fds_received < 2 and time.monotonic() < settle_deadline:
+                time.sleep(0.2)
+                stats = self.host.get_stats()
             self.assertIsNone(
                 proc.poll(),
                 "weston-terminal exited early — likely a protocol "
                 "error on the client side",
             )
-            stats = self.host.get_stats()
             self.assertEqual(stats.engine, "rust")
             self.assertGreater(
                 stats.bytes_from_clients, 0,
