@@ -92,7 +92,7 @@ static mut OBSERVED_VALUE: u64 = 0;
 /// initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     let space = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build elf_dyn_demo address space"));
@@ -108,9 +108,9 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 
 /// The rest of the demo, running on THIS space's own kernel stack.
 unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
-    let space = unsafe { STAGE_SPACE.as_mut().expect("stage space missing") };
+    let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
 
     let loaded = elf::load(
         DYN_PROGRAM_ELF,
@@ -310,6 +310,6 @@ pub unsafe fn on_trap() -> ! {
         observed, EXPECTED_VALUE, if ok { "OK" } else { "MISMATCH" }
     );
 
-    let fa = FRAME_ALLOCATOR.take().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     crate::experimental::elf_dyn_cross_demo::start(fa)
 }

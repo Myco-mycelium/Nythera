@@ -174,10 +174,30 @@ jobs:
         # the 2-core runner boots full userspace 5-15x slower than KVM:
         # 780 s budget + multi-user.target on the kernel cmdline, and
         # the step failure always carries the serial-log tail inline.
+        # On a red the captured output ALSO rides the ::error::
+        # annotation channel (nykernel's ci_emit_annotations.sh): job
+        # logs are not fetchable through the API for non-admin clones,
+        # the menu-boot failure of 2026-10-24 surfaced invisible
+        # without it, plain artifacts can't be queried mid-triage.
         run: |
           sudo apt-get install -y --no-install-recommends qemu-system-x86
+          . /etc/os-release
+          echo "::error::Livesmoke env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1)"
+          set +e
           python3 tests/boot_smoke.py dist/nyrqis-live.iso \
-            --timeout 780 --keep-logs
+            --timeout 780 --keep-logs > /tmp/boot-smoke-step.log 2>&1
+          S=$?
+          set -e
+          tail -30 /tmp/boot-smoke-step.log || true
+          if [[ $S -ne 0 ]]; then
+            LOGFILE=/tmp/boot-smoke-step.log
+            SER="$(ls -t1 /tmp/nyrqis-boot-smoke-*/serial.log 2>/dev/null | head -1 || true)"
+            if [[ -n "$SER" ]]; then
+              { echo "--- serial.log tail $(basename "$(dirname "$SER")") ---"; tail -c 5000 "$SER"; } >> "$LOGFILE"
+            fi
+            nykernel-package/source/nykernel/tools/ci_emit_annotations.sh "$LOGFILE" Livesmoke
+          fi
+          exit $S
         timeout-minutes: 15
 
       - name: Upload boot-smoke serial log
@@ -222,10 +242,30 @@ jobs:
           path: dist
 
       - name: Boot the ISO like a machine (GRUB menu → default entry)
+        # Same diagnostic contract as the first smoke's step: on red,
+        # the captured output rides the ::error:: annotation channel
+        # alongside the inline serial tail, and receives the env
+        # annotation first so a runner/image drift is visible without
+        # the logs (the 2026-10-24 menu-boot red was invisible).
         run: |
           sudo apt-get install -y --no-install-recommends qemu-system-x86
+          . /etc/os-release
+          echo "::error::Menuboot env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1)"
+          set +e
           python3 tests/boot_smoke_menu.py dist/nyrqis-live.iso \
-            --timeout 780 --keep-logs
+            --timeout 780 --keep-logs > /tmp/boot-smoke-menu-step.log 2>&1
+          S=$?
+          set -e
+          tail -30 /tmp/boot-smoke-menu-step.log || true
+          if [[ $S -ne 0 ]]; then
+            LOGFILE=/tmp/boot-smoke-menu-step.log
+            SER="$(ls -t1 /tmp/nyrqis-boot-smoke-menu-*/serial.log 2>/dev/null | head -1 || true)"
+            if [[ -n "$SER" ]]; then
+              { echo "--- serial.log tail $(basename "$(dirname "$SER")") ---"; tail -c 5000 "$SER"; } >> "$LOGFILE"
+            fi
+            nykernel-package/source/nykernel/tools/ci_emit_annotations.sh "$LOGFILE" Menuboot
+          fi
+          exit $S
         timeout-minutes: 15
 
       - name: Upload menu-boot serial log

@@ -3297,11 +3297,34 @@ actually bash's redirect error).
 
 After the migration the kernel **builds clean (debug + release) and the
 full `qemu_boot_test.sh` chain passes** -- every prior demo's self-test
-is unchanged, so the migration introduced no behavioral regression. The
-remaining compiler *warnings* (26 of them, mostly `static mut`
-shared/mutable-reference lints new under Rust 2024's edition-lint set)
-are pre-existing patterns, not errors, and are left as-is rather than
-silently silenced.
+is unchanged, so the migration introduced no behavioral regression. As
+of the same day (2026-10-24), the kernel's warning set is ZERO, cleared
+at cause rather than silenced:
+
+- **83 `static mut` reference sites** (the Rust-2024
+`static_mut_refs` lint) migrated to the `&raw` forms: mutable-taking
+shapes read `(*&raw mut STATIC).method(...)` (or, where `Vec`
+autoref into the deref would itself create a raw-pointer-target
+reference -- a HARD error under 1.99.1, not a lint -- the explicit
+ref the compiler suggests: `(&mut *(&raw mut STATIC))`), const-taking
+shapes read `(*&raw const STATIC).method(...)`. No `#[allow]`s
+anywhere; every demo/registry accesses the same statics through
+pointers the compiler can trace.
+- **one atomic decl converted to its interior-mutability form**:
+`NEXT_LM_ID` was an `AtomicU64` behind `static mut`; fetch-add IS the
+mutability, so it is now a plain `static` and its uses are safe code.
+- **one dead `const` made load-bearing**: the loader's `SHN_UNDEF`
+was never named (sites compared `st_shndx == 0` with a literal);
+all seven comparisons now name the const instead.
+- **one unreachable statement removed**: after `terminate_current()`
+(`-> !`), the belt-and-braces `unreachable!("...")` in
+`experimental_terminating_task` was trivially dead; the tail-diverging
+call REPLACES it (which also type-checks the `-> !` contract).
+- **one deprecated fn-item cast fixed**: `ring3_yield_trap_entry as
+u64` now routes through a raw pointer (`as *const () as u64`), the
+form the `function_casts_as_integer` message itself asks for.
+
+Both gates plus the parity gate re-verified zero-warning afterwards.
 
 ## Bugs found and fixed during Phase 1 bring-up
 

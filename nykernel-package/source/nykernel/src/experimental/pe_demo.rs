@@ -48,7 +48,7 @@ static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 /// initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     let mut space = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build pe_demo address space"));
@@ -98,6 +98,6 @@ pub unsafe fn on_trap() -> ! {
         if ok { "OK, a genuine Windows-format (PE32+) executable's own code ran in ring 3" } else { "MISMATCH" }
     );
 
-    let fa = FRAME_ALLOCATOR.take().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     pe_reloc_demo::start(fa)
 }

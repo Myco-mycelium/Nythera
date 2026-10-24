@@ -112,7 +112,7 @@ static mut LAZY_REGISTRY: Option<elf::SymbolRegistry> = None;
 /// Must be called at most once, with Phases 1-4-prep initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     let space = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build elf_dyn_full_demo address space"));
@@ -128,9 +128,9 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 
 /// The rest of the demo, running on THIS space's own kernel stack.
 unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
-    let space = unsafe { STAGE_SPACE.as_mut().expect("stage space missing") };
+    let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
 
     // ---- provider 1: the loadable, versioned, sonamed object ----
     elf::load(
@@ -406,6 +406,6 @@ pub unsafe fn on_trap() -> ! {
         cross_ok, fn_ok, once
     );
 
-    let fa = FRAME_ALLOCATOR.take().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     crate::experimental::elf_dyn_deps_demo::start(fa)
 }

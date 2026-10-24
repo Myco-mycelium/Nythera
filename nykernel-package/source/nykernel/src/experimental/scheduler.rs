@@ -168,7 +168,7 @@ pub fn current_cr3() -> u64 {
 /// untouched and increments [`LIFECYCLE_REJECTIONS`].
 fn set_state(task_index: usize, to: LifecycleState) -> bool {
     unsafe {
-        let Some(tcb) = TASKS.get_mut(task_index) else {
+        let Some(tcb) = (&mut *(&raw mut TASKS)).get_mut(task_index) else {
             return false;
         };
         let from = tcb.state;
@@ -306,7 +306,7 @@ pub fn self_test_illegal_refusals() -> bool {
 /// in Running (restored by the edge-table self-test), the A/B demo
 /// tasks mid-rotation in Ready.
 pub fn self_test_terminated_consistency() -> bool {
-    let terminated_ids: Vec<usize> = (0..unsafe { TASKS.len() })
+    let terminated_ids: Vec<usize> = (0..unsafe { (*&raw const TASKS).len() })
         .filter(|i| matches!(unsafe { TASKS[*i].state }, Terminated))
         .collect();
     // TERMINATED must be unreachable directly from CREATED/READY.
@@ -316,7 +316,7 @@ pub fn self_test_terminated_consistency() -> bool {
     // could not legally be there). is_terminal() is false for all
     // active states, so this checks no task is stranded somewhere
     // outside the active set without being Terminated.
-    let others_active = (0..unsafe { TASKS.len() })
+    let others_active = (0..unsafe { (*&raw const TASKS).len() })
         .filter(|i| !terminated_ids.contains(i))
         .all(|i| matches!(unsafe { TASKS[i].state }, Running | Ready));
     let ok = unreachable_ok && others_active;
@@ -350,7 +350,7 @@ pub fn init() {
         // a placeholder 0 that's never read before it's written. Its
         // CR3 *is* known up front, though: whatever's active right now,
         // at boot.
-        TASKS.push(TaskControlBlock {
+        (*&raw mut TASKS).push(TaskControlBlock {
             id: 0,
             stack: None,
             saved_rsp: 0,
@@ -430,8 +430,8 @@ pub fn spawn_with_cr3(
     }
 
     unsafe {
-        let id = TASKS.len();
-        TASKS.push(TaskControlBlock {
+        let id = (*&raw const TASKS).len();
+        (*&raw mut TASKS).push(TaskControlBlock {
             id,
             stack: Some(stack),
             saved_rsp: frame_base as u64,
@@ -474,7 +474,7 @@ pub fn verify_guarded_stacks(mapper: &OffsetPageTable<'static>) -> bool {
     let mut checked = 0usize;
     let mut all_ok = true;
     unsafe {
-        for tcb in TASKS.iter() {
+        for tcb in (*&raw const TASKS).iter() {
             let Some(stack) = tcb.stack else { continue };
             let ok = kernel_stack::verify(mapper, &stack);
             all_ok &= ok;
@@ -499,13 +499,13 @@ pub fn verify_guarded_stacks(mapper: &OffsetPageTable<'static>) -> bool {
 }
 
 pub fn task_count() -> usize {
-    unsafe { TASKS.len() }
+    unsafe { (*&raw const TASKS).len() }
 }
 
 /// Read-back of a task's lifecycle state (used by the termination
 /// self-test and by ipc/diagnostics).
 pub fn state_of(id: usize) -> Option<LifecycleState> {
-    unsafe { TASKS.get(id).map(|t| t.state) }
+    unsafe { (&*(&raw const TASKS)).get(id).map(|t| t.state) }
 }
 
 /// NPS-002 §5.5/§5.6: the current task requests termination. Walks its
@@ -554,7 +554,7 @@ pub fn current_task() -> usize {
 /// never selects a task whose lifecycle won't allow dispatch.
 pub fn yield_task() {
     x86_64::instructions::interrupts::without_interrupts(|| unsafe {
-        let task_count = TASKS.len();
+        let task_count = (*&raw const TASKS).len();
         if task_count < 2 {
             return; // nothing to switch to
         }

@@ -1854,7 +1854,7 @@ unsafe fn relro_outcome_planned(
                     Ok(x) => x,
                     Err(_) => return RelroPlanningOutcome { some: false },
                 };
-                if st_shndx == 0 {
+                if st_shndx == SHN_UNDEF {
                     // SHN_UNDEF in the FILE: supportable IFF the
                     // caller's resolver can satisfy it WITH the same
                     // version/SONAME contract the relocation pass
@@ -2062,7 +2062,7 @@ unsafe fn apply_relocations(
                 }
                 let (sym_name, st_value, st_shndx, st_bind) =
                     dt.symbol_at_info(load_bias, sym_idx)?;
-                let s = if st_shndx != 0 {
+                let s = if st_shndx != SHN_UNDEF {
                     // DEFINED in this object: the file's own dynsym
                     // entry wins, always -- this is the self-priority
                     // half of the documented search order (earlier
@@ -2207,7 +2207,7 @@ unsafe fn locate_symbol_in_tables(
         Err(e) => return Err(e),
     };
     let (_nm, st_value, st_shndx) = tables.0.symbol_at(load_bias, idx)?;
-    if st_shndx == 0 {
+    if st_shndx == SHN_UNDEF {
         return Ok(None); // an UNDEF entry is not a definition
     }
     Ok(Some(load_bias.wrapping_add(st_value)))
@@ -2240,7 +2240,7 @@ pub unsafe fn lookup_symbol(
     };
     let (nm, st_value, st_shndx) = tables.0.symbol_at(load_bias, idx)?;
     debug_assert_eq!(nm, name);
-    if st_shndx == 0 {
+    if st_shndx == SHN_UNDEF {
         return Err(ElfError::UndefinedSymbol);
     }
     Ok(load_bias.wrapping_add(st_value))
@@ -2264,7 +2264,7 @@ pub unsafe fn lookup_symbol_sysv(
     let sym_count = tables.0.symbol_count(load_bias)?;
     let idx = tables.0.lookup_hash_walk(load_bias, name, sym_count)?;
     let (_nm, st_value, st_shndx) = tables.0.symbol_at(load_bias, idx)?;
-    if st_shndx == 0 {
+    if st_shndx == SHN_UNDEF {
         return Err(ElfError::UndefinedSymbol);
     }
     Ok(load_bias.wrapping_add(st_value))
@@ -2282,7 +2282,7 @@ pub unsafe fn lookup_symbol_gnu(
     let sym_count = tables.0.symbol_count(load_bias)?;
     let idx = tables.0.lookup_gnu_hash(load_bias, name, sym_count)?;
     let (_nm, st_value, st_shndx) = tables.0.symbol_at(load_bias, idx)?;
-    if st_shndx == 0 {
+    if st_shndx == SHN_UNDEF {
         return Err(ElfError::UndefinedSymbol);
     }
     Ok(load_bias.wrapping_add(st_value))
@@ -2381,7 +2381,7 @@ pub unsafe fn resolve_lazy_entry(
         return Err(ElfError::MalformedDynamicTables);
     }
     let (sym_name, st_value, st_shndx, st_bind) = tables.0.symbol_at_info(load_bias, sym_idx)?;
-    if st_shndx != 0 {
+    if st_shndx != SHN_UNDEF {
         return Ok(load_bias.wrapping_add(st_value));
     }
     // Same weak semantics at first-use binding as at load time: a

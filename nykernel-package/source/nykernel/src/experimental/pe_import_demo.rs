@@ -724,7 +724,7 @@ unsafe fn run_delay_cap_controls(
 /// Must be called at most once, with Phases 1-4-prep already initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     // This space's guarded stack keeps the one-size default: the demo
     // BODY does not run on it (the chain enters this stage through
@@ -1349,6 +1349,6 @@ pub unsafe fn on_trap() -> ! {
         }
     );
 
-    let fa = FRAME_ALLOCATOR.take().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     isolation_demo::start(fa)
 }

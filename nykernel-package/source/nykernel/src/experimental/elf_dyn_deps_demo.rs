@@ -150,7 +150,7 @@ static mut STAGE_SPACE_B: Option<AddressSpace> = None;
 /// Must be called at most once, with Phases 1-4-prep initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     // The chain-partition rule: each demo's kernel-side work runs on
     // ITS OWN fresh guarded RSP0 stack (see pie_demo's stage split).
@@ -185,9 +185,9 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 /// default-sized stack. Phase A ends by stashing the resolver
 /// state phase B needs and jumping to phase B's stack.
 unsafe extern "C" fn stage_a_after_stack_switch() -> ! {
-    let space = unsafe { STAGE_SPACE.as_mut().expect("stage space missing") };
+    let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
 
     // ---- first provider: the catalog's first target ----
     elf::load(
@@ -684,11 +684,11 @@ unsafe extern "C" fn stage_b_after_stack_switch() -> ! {
     // loaded chain live there. `STAGE_SPACE_B`'s stack is already
     // under us at this point (TSS.RSP0 pointed at it at the seam;
     // run_on_fresh_stack jumped onto it).
-    let space = unsafe { STAGE_SPACE.as_mut().expect("stage space missing") };
+    let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
     let dep_tables = unsafe { (*&raw const DEPS_DEP_TABLES).as_ref().expect("dep tables missing") };
-    let _registry = unsafe { DEPS_REGISTRY.as_mut().expect("deps registry missing") };
+    let _registry = unsafe { (*&raw mut DEPS_REGISTRY).as_mut().expect("deps registry missing") };
 
     // ---- behavioral half: enter deps_payload in ring 3 ----
     let data_flags = PageTableFlags::PRESENT
@@ -798,7 +798,7 @@ pub unsafe fn on_trap() -> ! {
         cross_ok, dup_ok, fn_ok, bind_once, service_ok
     );
 
-    let fa = FRAME_ALLOCATOR.take().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     // The GNU OWN-.plt lazy-protocol proof runs between this demo and
     // pe_demo: a real linker .plt + .got.plt dependent, resolved
     // through the registry-owned link-map service rather than a

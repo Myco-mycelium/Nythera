@@ -73,7 +73,7 @@ fn set_stage(s: Stage) {
 /// interrupt infrastructure (Phases 2-4-prep) already initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     let mut space_a = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build address space A"));
@@ -126,7 +126,7 @@ pub unsafe fn on_syscall_trap(cpl: u64) -> bool {
             // tables either way), but building it here keeps this
             // function's control flow linear rather than needing to
             // reactivate A first for no reason.
-            let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+            let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
             let mut space_b = AddressSpace::new_sharing_kernel(fa)
                 .unwrap_or_else(|_| panic!("failed to build address space B"));
             space_b.activate();
@@ -158,7 +158,7 @@ pub unsafe fn on_syscall_trap(cpl: u64) -> bool {
             // A's value, not B's. If A and B had accidentally ended up
             // sharing the same physical frame (the bug this whole demo
             // exists to catch), this would now read MAGIC_B instead.
-            SPACE_A.as_ref().unwrap().activate();
+            (*&raw const SPACE_A).as_ref().unwrap().activate();
             let observed_a_after = core::ptr::read_volatile(usermode::USER_STACK_ADDR as *const u64);
             let isolation_ok = observed_a_after == MAGIC_A;
             serial_println!(
@@ -176,8 +176,8 @@ pub unsafe fn on_syscall_trap(cpl: u64) -> bool {
                 // prints the closing line and exits (success on the
                 // expected fault, failure otherwise). Active space here
                 // is A, so map the probe stack into A's tables.
-                let fa = FRAME_ALLOCATOR.as_mut().unwrap();
-                let mut mapper = SPACE_A.as_mut().unwrap().mapper();
+                let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
+                let mut mapper = (*&raw mut SPACE_A).as_mut().unwrap().mapper();
                 // Immediately before the terminal guard proof: the
                 // guarded-region's slot-reuse mechanism's boot proof
                 // (allocate/release/re-hand-out byte-identically, the

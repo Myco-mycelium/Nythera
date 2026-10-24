@@ -163,7 +163,7 @@ static mut INSTANCE: u8 = 1;
 /// Must be called at most once, with Phases 1-4-prep initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     let space = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build elf_dyn_plt_demo address space"));
@@ -179,9 +179,9 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 
 /// The rest of the demo, running on THIS space's own kernel stack.
 unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
-    let space = unsafe { STAGE_SPACE.as_mut().expect("stage space missing") };
+    let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
 
     // ---- provider A: the versioned, sonamed object (own instance) ----
     elf::load(
@@ -273,7 +273,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
 
     // ---- factor the three instances apart in the demo's own lines ----
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
     unsafe { INSTANCE = 1 };
     arm_and_enter(
         &mut mapper,
@@ -515,9 +515,9 @@ pub unsafe fn on_trap() -> ! {
         // (kernel-side arming inside this handler is the same
         // established chain pattern the other demos use).
         unsafe { INSTANCE = which + 1 };
-        let space = unsafe { STAGE_SPACE.as_mut().expect("stage space missing") };
+        let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
         let mut mapper = space.mapper();
-        let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+        let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
         let reg_static: &'static elf::SymbolRegistry = unsafe {
             (&*(&raw const LAZY_REGISTRY)).as_ref().expect("demo registry missing")
         };
@@ -620,9 +620,9 @@ pub unsafe fn on_trap() -> ! {
     // and the GNU arming leaves NO side effects (no new registry
     // entry, no thunk page, no slot changes): eager stays the
     // default for objects that never had a PLT.
-    let space = unsafe { STAGE_SPACE.as_mut().expect("stage space missing") };
+    let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
     let reg_static: &'static elf::SymbolRegistry = unsafe {
         (&*(&raw const LAZY_REGISTRY)).as_ref().expect("demo registry missing")
     };
@@ -680,6 +680,6 @@ pub unsafe fn on_trap() -> ! {
         boundary1_ok, relro_ok, eager_ok, no_side_effects
     );
 
-    let fa = unsafe { FRAME_ALLOCATOR.take().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).take().unwrap() };
     crate::experimental::pe_demo::start(fa)
 }

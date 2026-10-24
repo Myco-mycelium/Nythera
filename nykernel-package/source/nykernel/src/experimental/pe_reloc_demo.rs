@@ -58,7 +58,7 @@ static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 /// initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     // This stage's kernel stack is sized DELIBERATELY (8 pages, not
     // the one-size default of 5): the on_trap continuation below
@@ -132,6 +132,6 @@ pub unsafe fn on_trap() -> ! {
         }
     );
 
-    let fa = FRAME_ALLOCATOR.take().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     pe_import_demo::start(fa)
 }

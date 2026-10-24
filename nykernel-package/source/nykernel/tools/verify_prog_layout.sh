@@ -183,9 +183,34 @@ pafacts() {
         echo "FAIL: $file does not exist (build.sh order drifted past verify_prog_layout.sh?)"
         exit 1
     fi
+    # The ld layout catalogue: the PE data-directory block for the
+    # auto-import-bearing artifacts moves as a WHOLE between binutils
+    # lines (the 2.46 surface: every declared directory +0x1000 of the
+    # 2.42/2.43 one -- caught live in CI through the annotation
+    # channel, see IMPLEMENTATION_STATUS.md's toolchain-pairing
+    # record). The gate keys the pinned RVA literals on the ACTUAL ld
+    # in PATH so a new toolchain line invites a documented catalogue
+    # entry here (this is the "catalogue the delta" path: extend the
+    # block below with the observed pair) instead of failing
+    # cryptically against another line's facts.
+    ld_ver="$(ld --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+    ld_major="${ld_ver%.*}"    # "2.42" -> "2"
+    ld_minor="${ld_ver#*.}"    # "2.42" -> "42"
+    case "$ld_minor" in
+        42|43) fact_rva=3000 ;;
+        46)    fact_rva=4000 ;;
+        *)     # an uncatalogued binutils line: refuse LOUDLY with the
+               # exact evidence to catalogue, per the gate rule.
+               echo "FAIL: layout-gate has no PE-directory catalogue entry for binutils ${ld_major:-?}.${ld_minor:-?} -- extend tools/verify_prog_layout.sh's catalogue (the documented 'catalogue the delta' path), citing the actual objdump -p EAT/IDT block positions this toolchain produces" >&2
+               objdump -p userprog/userprog_pe_import_dll.dll | sed -n '1,40p' >&2
+               exit 1 ;;
+    esac
     local out
     out="$($tool "$file" 2>&1)"
     for pat in "$@"; do
+        # Catalogue-keyed facts may reference the ld-line-keyed export
+        # directory RVA via the 3KWY placeholder.
+        pat="${pat//@@LDPE Export Directory/000000000000${fact_rva}.*Export Directory}"
         if ! printf '%s' "$out" | grep -qsE -- "$pat"; then
             echo "FAIL: userprog PE layout fact missing in $file: [$pat] ($desc)" >&2
             echo "     --- actual $(basename "$tool") surface: ---" >&2
@@ -198,11 +223,13 @@ pafacts() {
 
 # The provider DLL: a REAL Export Directory (Entry 0 nonzero), at the
 # pinned ImageBase, exporting exactly the two fixture symbols by name
-# with the pinned EAT RVAs and Ordinal Base 1.
+# with the pinned EAT RVAs and Ordinal Base 1. The Entry-0 RVA is
+# catalogue-keyed (ld-line dependent, see pafacts: 0x3000 under
+# binutils 2.42/2.43, 0x4000 under 2.46).
 pafacts "PE import provider DLL (real export directory)" userprog/userprog_pe_import_dll.dll \
     "objdump -p" \
     'ImageBase.*0000180000000000' \
-    'Entry 0 0000000000003000.*Export Directory' \
+    'Entry 0 @@LDPE Export Directory' \
     'Export Address Table -- Ordinal Base 1' \
     '\[ *0\] \+base\[ *1\] 1000 Export RVA' \
     '\[ *1\] \+base\[ *2\] 2000 Export RVA' \

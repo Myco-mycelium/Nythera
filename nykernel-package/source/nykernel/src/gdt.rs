@@ -82,7 +82,7 @@ pub fn init() {
             },
         ));
 
-        let (gdt_ref, selectors) = GDT.as_ref().unwrap();
+        let (gdt_ref, selectors) = (*&raw const GDT).as_ref().unwrap();
         gdt_ref.load();
 
         use x86_64::instructions::segmentation::{Segment, CS};
@@ -96,11 +96,11 @@ pub fn init() {
 /// separated from `init` itself so nothing outside this module ever
 /// needs `unsafe` to read a selector value.
 pub fn user_code_selector() -> SegmentSelector {
-    unsafe { GDT.as_ref().unwrap().1.user_code_selector }
+    unsafe { (*&raw const GDT).as_ref().unwrap().1.user_code_selector }
 }
 
 pub fn user_data_selector() -> SegmentSelector {
-    unsafe { GDT.as_ref().unwrap().1.user_data_selector }
+    unsafe { (*&raw const GDT).as_ref().unwrap().1.user_data_selector }
 }
 
 /// Updates the ring-0 stack the CPU will switch to on the *next*

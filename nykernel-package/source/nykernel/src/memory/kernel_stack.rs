@@ -125,7 +125,7 @@ pub fn allocate(
     // is re-handed out in full (same guard position, same top, fresh
     // mappings for its pages).
     unsafe {
-        if let Some(vec) = FREED_SLOTS.as_mut() {
+        if let Some(vec) = (*&raw mut FREED_SLOTS).as_mut() {
             if let Some(pos) = vec.iter().position(|&(_, p)| p == pages) {
                 let (offset, _) = vec.remove(pos);
                 let slot = map_slot(mapper, frame_allocator, offset, pages)
@@ -222,7 +222,7 @@ pub unsafe fn release(
         }
     }
     unsafe {
-        let vec = FREED_SLOTS.get_or_insert_with(alloc::vec::Vec::new);
+        let vec = (*&raw mut FREED_SLOTS).get_or_insert_with(alloc::vec::Vec::new);
         vec.push((stack.base.as_u64() - REGION_BASE - 4096, stack.pages));
     }
 }

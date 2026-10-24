@@ -163,7 +163,10 @@ static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 pub fn install(idt: &mut InterruptDescriptorTable) {
     unsafe {
         idt[YIELD_VECTOR as u8]
-            .set_handler_addr(VirtAddr::new(ring3_yield_trap_entry as u64))
+            // fn-item -> raw pointer -> integer: `as *const ()` creates
+            // NO integer type confusion for the compiler to mis-decide
+            // about; the direct fn-item->integer cast is deprecated.
+            .set_handler_addr(VirtAddr::new(ring3_yield_trap_entry as *const () as u64))
             .set_privilege_level(PrivilegeLevel::Ring3);
     }
 }
@@ -250,7 +253,7 @@ fn build_initial_blob(kernel_stack_top: u64, entry: u64, user_rsp: u64, user_cs:
 /// `idt::init`).
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     let (task_e, e_entry, e_rsp) = build_ring3_task(fa, 0, true, YIELD_PROGRAM_ELF);
     let (task_f, _, _) = build_ring3_task(fa, 1, false, YIELD_PROGRAM_ELF);
@@ -261,9 +264,9 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         e_entry.unwrap().as_u64(), TARGET_YIELDS, EXPECTED_PER_TASK
     );
 
-    TASKS.push(task_e);
-    TASKS.push(task_f);
-    TASKS.push(task_g);
+    (*&raw mut TASKS).push(task_e);
+    (*&raw mut TASKS).push(task_f);
+    (*&raw mut TASKS).push(task_g);
     CURRENT = 0;
 
     // Structural proof that the guard-page mechanism is now wired under
@@ -321,7 +324,7 @@ extern "C" fn ring3_yield_dispatch(trap_rsp: u64) -> u64 {
             finale(); // diverges
         }
 
-        let next = (current + 1) % TASKS.len();
+        let next = (current + 1) % (*&raw const TASKS).len();
         CURRENT = next;
         TASKS[next].address_space.activate();
         TASKS[next].saved_trap_rsp
@@ -561,7 +564,7 @@ unsafe fn preempt_finale() -> ! {
 /// sequences itself.
 unsafe fn finale() -> ! {
     let mut counts: Vec<u64> = Vec::new();
-    for i in 0..TASKS.len() {
+    for i in 0..(*&raw const TASKS).len() {
         TASKS[i].address_space.activate();
         counts.push(core::ptr::read_volatile(PRIVATE_ADDR as *const u64));
     }
@@ -600,9 +603,9 @@ unsafe fn finale() -> ! {
     let reclaimed_frames;
     let f_stack_desc;
     {
-        let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+        let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
         let before = fa.frames_in_use();
-        let f_task = TASKS.remove(1); // task F (the middle of E, F, G)
+        let f_task = (*&raw mut TASKS).remove(1); // task F (the middle of E, F, G)
         let f_pml4 = crate::experimental::address_space::pml4_phys_addr(&f_task.address_space);
         // F's live RSP0 stack descriptor, captured BEFORE destroy:
         // destroy routes the slot through kernel_stack::release into

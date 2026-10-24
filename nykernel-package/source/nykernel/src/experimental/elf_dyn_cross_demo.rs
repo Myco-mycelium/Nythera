@@ -121,7 +121,7 @@ static mut STAGE_SPACE: Option<AddressSpace> = None;
 /// initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     let space = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build elf_dyn_cross_demo address space"));
@@ -137,9 +137,9 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 
 /// The rest of the demo, running on THIS space's own kernel stack.
 unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
-    let space = unsafe { STAGE_SPACE.as_mut().expect("stage space missing") };
+    let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
 
     // ---- provider: load, report its RELRO disposition, register ----
     // No resolver: the provider defines everything its own file
@@ -410,6 +410,6 @@ pub unsafe fn on_trap() -> ! {
     // Chain into the versioned lazy-binding demo (the next capability
     // class up from this one), whose own completion trap continues
     // into pe_demo.
-    let fa = FRAME_ALLOCATOR.take().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     crate::experimental::elf_dyn_full_demo::start(fa)
 }

@@ -736,20 +736,19 @@ jobs:
 
   kernel-boot:
     name: Kernel boot gates (GRUB/BIOS + native UEFI)
-    # Pinned, not ubuntu-latest: the latter rolled to Ubuntu 26.04
-    # beginning 2026-10-19 and the roll broke the BIOS gate WITHOUT
-    # touching the kernel -- the layout-gate's toolchain-pinned PE fact
-    # for userprog_pe_import_dll.dll (Export Directory at rva 0x3000)
-    # no longer holds under ubuntu-26's binutils 2.46, which places the
-    # export directory at rva 0x4000 (ld's MinorLinkerVersion 46
-    # visible in the emitted PE; annotational evidence from the
-    # 2026-10-23 runs, captured by tools/ci_emit_annotations.sh). The
-    # 24.04 image (QEMU 8.2.2 / GRUB 2.12 / binutils 2.42-2.43) is the
-    # configuration the gates and the whole local-verification record
-    # were built against; the untied kernel code is fine on either.
-    # Adapting the PE layout facts to binutils 2.46 deliberately = the
-    # documented kind of work (not an @stable-style float).
-    runs-on: ubuntu-24.04
+    # Back on ubuntu-latest (2026-10-24): the earlier pin (ubuntu-24.04)
+    # existed because 26.04's binutils 2.46 moved the auto-import
+    # artifacts' Export Directory +0x1000, tripping the layout-gate's
+    # 0x3000 fact without touching any kernel source. The gate now keys
+    # that fact on the ld in PATH (tools/verify_prog_layout.sh's
+    # catalogue: 0x3000 under 2.42/2.43, 0x4000 under 2.46, and an
+    # UNCATALOGUED binutils line refuses loudly with the evidence to
+    # catalogue), so a future runner-image roll delivers a clear
+    # documented message instead of a cryptic PE-fact miss. The QEMU/GRUB
+    # versions on the newer image remain catalogued-not-yet-implicated:
+    # the gates themselves are the experiment, the annotation channel
+    # reports the real env on any red.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
       run:

@@ -534,11 +534,13 @@ extern "C" fn experimental_terminating_task() -> ! {
     // re-enter here and the count assertion would fail loudly.
     TASK_J_RUNS.fetch_add(1, Ordering::Relaxed);
     serial_println!("    [experimental task J] activation 1: terminating per NPS-002 §5.5/§5.6 (RUNNING -> TERMINATING -> TERMINATED, then dispatch away)");
-    experimental::scheduler::terminate_current();
-    // terminate_current is `-> !` -- reaching here means the
-    // terminated task WAS re-dispatched, which the dispatcher's
-    // pick_next_ready(Ready-only) must never do.
-    unreachable!("terminated task re-dispatched");
+    // terminate_current is `-> !`; calling it as this function's TAIL
+    // (no semicolon) carries that divergence into the signature, so
+    // no re-dispatch tripwire is even representable after it. The
+    // count assertion after the round-trip in kernel_main (TASK_J_RUNS
+    // stays 1) is what actually proves the dispatcher invariant at
+    // runtime.
+    experimental::scheduler::terminate_current()
 }
 
 extern "C" fn experimental_task_a() -> ! {

@@ -73,7 +73,7 @@ static mut STAGE_SPACE: Option<AddressSpace> = None;
 /// initialized.
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
-    let fa = FRAME_ALLOCATOR.as_mut().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     let space = AddressSpace::new_sharing_kernel(fa)
         .unwrap_or_else(|_| panic!("failed to build pie_demo address space"));
@@ -95,7 +95,7 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     let space = (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing");
     let mut mapper = space.mapper();
-    let fa = unsafe { FRAME_ALLOCATOR.as_mut().unwrap() };
+    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
 
     let loaded = elf::load(PIE_PROGRAM_ELF, &mut mapper, fa, LOAD_BASE, &elf::LoadContext::none())
         .unwrap_or_else(|e| panic!("failed to load PIE program: {:?}", e));
@@ -224,6 +224,6 @@ pub unsafe fn on_trap() -> ! {
         assert!(all_ok, "GNU_RELRO enforcement failed: a RELRO page is still writable after the loader's revoke pass");
     }
 
-    let fa = FRAME_ALLOCATOR.take().unwrap();
+    let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     crate::experimental::elf_dyn_demo::start(fa)
 }

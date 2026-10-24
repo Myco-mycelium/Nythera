@@ -95,9 +95,9 @@ const DEFAULT_CAPACITY: usize = 4;
 /// live.
 pub fn init(task_count: usize) {
     unsafe {
-        MAILBOXES.clear();
+        (*&raw mut MAILBOXES).clear();
         for _ in 0..task_count {
-            MAILBOXES.push(Mailbox {
+            (*&raw mut MAILBOXES).push(Mailbox {
                 queue: VecDeque::new(),
                 capacity: DEFAULT_CAPACITY,
                 revoked: Vec::new(),
@@ -138,7 +138,7 @@ pub fn send(dest: usize, msg: IpcMessage) -> Result<(), IpcError> {
         if msg.sender != running_task_id() {
             return Err(IpcError::NotRunningTask);
         }
-        let mailbox = MAILBOXES.get_mut(dest).ok_or(IpcError::NoSuchMailbox)?;
+        let mailbox = (&mut *(&raw mut MAILBOXES)).get_mut(dest).ok_or(IpcError::NoSuchMailbox)?;
         if mailbox.revoked.contains(&msg.sender) {
             return Err(IpcError::Revoked);
         }
@@ -160,7 +160,7 @@ pub fn send(dest: usize, msg: IpcMessage) -> Result<(), IpcError> {
 /// reason about.
 pub fn try_receive(dest: usize) -> Option<IpcMessage> {
     interrupts::without_interrupts(|| unsafe {
-        MAILBOXES.get_mut(dest).and_then(|m| m.queue.pop_front())
+        (&mut *(&raw mut MAILBOXES)).get_mut(dest).and_then(|m| m.queue.pop_front())
     })
 }
 
@@ -203,7 +203,7 @@ pub fn receive(dest: usize, max_polls: Option<u32>) -> Result<IpcMessage, IpcErr
 /// for the revoked register -- user-side `send` cannot un-revoke.
 pub fn revoke_sender(dest: usize, sender: usize) -> bool {
     interrupts::without_interrupts(|| unsafe {
-        let Some(mailbox) = MAILBOXES.get_mut(dest) else {
+        let Some(mailbox) = (&mut *(&raw mut MAILBOXES)).get_mut(dest) else {
             return false;
         };
         if mailbox.revoked.contains(&sender) {
@@ -229,9 +229,9 @@ pub fn self_test_arbiter_and_revocation() -> bool {
     // ---- The scratch endpoint: append a fresh mailbox. ----
     // The demo's task 0/A/B mailboxes are indexed 0/1/2 and must be
     // untouched; the scratch endpoint is appended at the end.
-    let scratch_dest = unsafe { MAILBOXES.len() };
+    let scratch_dest = unsafe { (*&raw const MAILBOXES).len() };
     unsafe {
-        MAILBOXES.push(Mailbox {
+        (*&raw mut MAILBOXES).push(Mailbox {
             queue: VecDeque::new(),
             capacity: DEFAULT_CAPACITY,
             revoked: Vec::new(),
@@ -320,9 +320,9 @@ pub fn self_test_arbiter_and_revocation() -> bool {
     // `receive` MUST return the typed ReceiveTimedOut rather than
     // hanging or busy-spinning (each poll yields the core, so a hung
     // test here would show as a boot timeout, caught by the harness).
-    let scratch_dest2 = unsafe { MAILBOXES.len() };
+    let scratch_dest2 = unsafe { (*&raw const MAILBOXES).len() };
     unsafe {
-        MAILBOXES.push(Mailbox {
+        (*&raw mut MAILBOXES).push(Mailbox {
             queue: VecDeque::new(),
             capacity: DEFAULT_CAPACITY,
             revoked: Vec::new(),

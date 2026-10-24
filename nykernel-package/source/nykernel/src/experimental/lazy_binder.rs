@@ -56,7 +56,11 @@ struct LazyEntry {
 }
 
 static mut ENTRIES: Option<alloc::vec::Vec<LazyEntry>> = None;
-static mut NEXT_LM_ID: AtomicU64 = AtomicU64::new(0);
+/// An ATOMIC, not a `static mut` behind `&raw` gymnastics: fetch-add
+/// IS the interior mutability (an `AtomicU64` is `Sync`), so a plain
+/// `static` is both the at-cause form and the automatically
+/// race-free one.
+static NEXT_LM_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Assigns the link-map id an own-`.plt`-armed object's `.got.plt`[1]
 /// carries: strictly monotonically increasing from 1 (0 is the
@@ -68,7 +72,7 @@ static mut NEXT_LM_ID: AtomicU64 = AtomicU64::new(0);
 /// single-load-flow, no user execution interleaved) -- the same
 /// serialization contract the ENTRIES registry itself relies on.
 pub unsafe fn allocate_lm_id() -> u64 {
-    unsafe { NEXT_LM_ID.fetch_add(1, Ordering::SeqCst) + 1 }
+    NEXT_LM_ID.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 /// The service's typed refusals. The trap handler itself still PANICS
@@ -106,7 +110,7 @@ pub unsafe fn register(
     bias: u64,
     resolver: &'static dyn SymbolResolver,
 ) {
-    let vec = ENTRIES.get_or_insert_with(alloc::vec::Vec::new);
+    let vec = (*&raw mut ENTRIES).get_or_insert_with(alloc::vec::Vec::new);
     vec.push(LazyEntry {
         page,
         lm: 0, // trap-stub identity: no link-map cookie
@@ -136,7 +140,7 @@ pub unsafe fn register_lm(
     resolver: &'static dyn SymbolResolver,
 ) {
     assert!(lm_id != 0, "link-map id 0 is reserved (never handed out)");
-    let vec = ENTRIES.get_or_insert_with(alloc::vec::Vec::new);
+    let vec = (*&raw mut ENTRIES).get_or_insert_with(alloc::vec::Vec::new);
     vec.push(LazyEntry {
         page: 0, // own-.plt identity: no kernel-emitted trampoline page
         lm: lm_id,
@@ -153,7 +157,7 @@ pub fn entry_count(page: u64) -> u32 {
     // SAFETY: read-only walk of the registry; register() completed
     // before user execution in every boot path (see `start` arcs).
     unsafe {
-        match ENTRIES.as_ref() {
+        match (*&raw const ENTRIES).as_ref() {
             Some(v) => v
                 .iter()
                 .find(|e| e.page == page)
@@ -165,13 +169,13 @@ pub fn entry_count(page: u64) -> u32 {
 }
 
 pub fn registered_count() -> usize {
-    unsafe { ENTRIES.as_ref().map(|v| v.len()).unwrap_or(0) }
+    unsafe { (*&raw const ENTRIES).as_ref().map(|v| v.len()).unwrap_or(0) }
 }
 
 /// Sum of binds across every registered object: the service-level
 /// fact ("multiple independents through one vector").
 pub fn total_count() -> u32 {
-    unsafe { ENTRIES.as_ref().map(|v| v.iter().map(|e| e.binds.load(Ordering::SeqCst)).sum()).unwrap_or(0) }
+    unsafe { (*&raw const ENTRIES).as_ref().map(|v| v.iter().map(|e| e.binds.load(Ordering::SeqCst)).sum()).unwrap_or(0) }
 }
 
 /// How many first-use binds an OWN-`.plt` object (keyed by its
@@ -180,7 +184,7 @@ pub fn entry_count_by_lm(lm_id: u64) -> u32 {
     // SAFETY: read-only walk of the registry; register_lm() completed
     // before user execution in every boot path.
     unsafe {
-        match ENTRIES.as_ref() {
+        match (*&raw const ENTRIES).as_ref() {
             Some(v) => v
                 .iter()
                 .find(|e| e.lm == lm_id && lm_id != 0)
@@ -202,7 +206,7 @@ pub fn entry_count_by_lm(lm_id: u64) -> u32 {
 unsafe fn identify_by_lm(lm: u64) -> Result<&'static LazyEntry, LazyBindRefusal> {
     // SAFETY: read-only walk of the registry (see the service's note).
     unsafe {
-        let Some(entries) = ENTRIES.as_ref() else {
+        let Some(entries) = (*&raw const ENTRIES).as_ref() else {
             return Err(LazyBindRefusal::ServiceEmpty);
         };
         entries
@@ -248,7 +252,7 @@ pub unsafe fn probe_unregistered_lm(lm: u64) -> Result<(), LazyBindRefusal> {
 unsafe fn identify(page: u64) -> Result<&'static LazyEntry, LazyBindRefusal> {
     // SAFETY: read-only walk of the registry (see the service's note).
     unsafe {
-        let Some(entries) = ENTRIES.as_ref() else {
+        let Some(entries) = (*&raw const ENTRIES).as_ref() else {
             return Err(LazyBindRefusal::ServiceEmpty);
         };
         entries
