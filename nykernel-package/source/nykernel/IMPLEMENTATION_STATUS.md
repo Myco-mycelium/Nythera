@@ -3629,6 +3629,53 @@ end-to-end (the full demo chain now including the pdata/res walks,
 the three+four carrier refusals, and the stub's varchk), differing
 only in the catalogued, keyed layout literals.
 
+## Phase 10 increment (2026-10-25, second): the ADR-0014 chain lands its FIRST link -- the stub verifies the embedded kernel image's SHA-256 against the link-time digest, every boot, and refuses mismatches by name
+
+- **What this is, honestly scoped.** ADR-0014's accepted chain is
+  shim-equivalent + Nyrqis key + optional user MOK. This increment
+  lands the chain's first link: the stub (the shim-equivalent first
+  stage) now hashes EVERY byte of the embedded kernel image with a
+  real SHA-256 and compares against the digest `build.sh` recorded at
+  link time, BEFORE a single kernel byte is copied or one instruction
+  of the kernel runs. It is an INTEGRITY pin, not yet the full
+  authenticated chain: no PK/KEK/db carriers, no Authenticode
+  signature verification, no enrollment UI -- those are the next
+  Phase 10 increments; what this buys right now is that a corrupted
+  or substituted payload CANNOT reach `uefi_entry` silently.
+- **The hash is hand-rolled and STILL not trusted unreviewed**
+  (`uefi/src/sha256.rs`, FIPS 180-4 by the letter, no dependencies):
+  the known-answer vectors (empty input, "abc") are computed at every
+  boot BEFORE the check, and a wrong vector halts the boot -- a
+  mis-implemented hash cannot mis-declare a kernel honest.
+- **The expected digest is a build artifact, not source**:
+  `build.sh` writes `uefi/src/kernel.sha256` (exactly 64 lowercase hex
+  chars -- `tr -d '\n'` strips cut's newline; the first cut shipped 65
+  bytes and the compile itself refused `include_bytes!` into a fixed
+  `[u8; 64]`, which is the right crash) immediately after
+  `target/kernel.elf` links, so the digest and the image are always
+  the same build's. The file is gitignored (same policy as
+  `target/`), and cargo tracks it, so the stub recompiles whenever
+  the kernel does.
+- **The refusal path is proven live at every boot**: alongside the
+  match, a one-bit-flipped COPY of the image is hashed and must
+  produce a DIFFERENT digest -- if it hashed equal, the comparison
+  above would not be a check at all, and the boot dies naming that.
+  Both digests (computed and recorded) travel on the console:
+
+```
+nyrqis ubld: sha256 known-answer vectors OK
+nyrqis ubld: kernel image sha256 computed = 560d51e4699337b452aa45b117bc54d6b0d7b2f71a1b2946a250e9ee241e217f
+nyrqis ubld: kernel image sha256 recorded = 560d51e4699337b452aa45b117bc54d6b0d7b2f71a1b2946a250e9ee241e217f
+nyrqis ubld: integrity control OK -- a one-bit-flipped copy hashes differently, the refusal path is alive
+```
+
+  then the full chain reaches its final banner: the UEFI gate PASSES
+  with the Stage-2 check in it (recorded 2026-10-25; the check sits
+  between the variable-services round trip and `elf::parse`, so a
+  lying-protocol firmware AND a lying payload are both refused before
+  any allocation). The BIOS path is structurally unaffected: GRUB
+  loads the kernel directly and the stub never runs there.
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

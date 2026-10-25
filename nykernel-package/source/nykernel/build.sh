@@ -256,4 +256,12 @@ ld -n --gc-sections -T linker.ld -o target/kernel.elf target/boot.o \
     "${LIBDIR}/libnykernel.a"
 
 echo "==> done: target/kernel.elf"
+# Stage-2 integrity pin (the ADR-0014 chain's first landed link): record
+# the kernel image's SHA-256 as exactly 64 lowercase hex characters so
+# the stub can include_bytes! it and hash the embedded image against it
+# at every boot, refusing a corrupted or mismatched payload by name.
+# tr strips cut's trailing newline: the stub include_bytes!s this as
+# a fixed [u8; 64] and must not get 65 bytes.
+sha256sum target/kernel.elf | cut -d' ' -f1 | tr -d '\n' > uefi/src/kernel.sha256
+echo "==> recorded uefi/src/kernel.sha256 (the stub's Stage-2 expected digest)"
 file target/kernel.elf

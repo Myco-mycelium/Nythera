@@ -1222,9 +1222,14 @@ ExitBootServices + CR3 switch -- the 2026-10-22 and 2026-10-23 cards),
 and the SecureBoot variable read is now VERIFIED rather than assumed:
 every spec answer the read relies on (its query pass, its 1-byte size,
 its exact bytes) is pinned by a stub-owned variable-services round
-trip that runs before anything is trusted -- the 2026-10-25 card. What
-remains in this phase is ADR-0014's actual verification chain
-(shim-equivalent + Nyrqis-key + optional user MOK) and the
-key-management tooling its accepted text names; a current SB-off boot
+trip that runs before anything is trusted -- the 2026-10-25 card), and
+the chain's first link is landed: the stub verifies the embedded
+kernel image's SHA-256 against the link-time digest at every boot,
+refusing a corrupted or substituted payload before `uefi_entry`
+(Stage-2 integrity pin -- the second 2026-10-25 card). What remains in
+this phase is the chain's authenticated half -- the Nyrqis-key and
+optional-user-MOK verification (signature carriers once the key
+store lands) -- and the key-management tooling the ADR's accepted
+text names; a current SB-off boot
 stays legal per that ADR -- the SecureBoot fact is recorded, never
 enforced as policy.

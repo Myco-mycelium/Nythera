@@ -27,6 +27,7 @@ mod boot;
 mod efi;
 mod elf;
 mod mb2;
+mod sha256;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -39,7 +40,79 @@ use efi::*;
 pub const IDENTITY_LIMIT: u64 = 0x4000_0000;
 
 /// The kernel image, embedded at build time.
-fn kernel_elf_bytes() -> &'static [u8] {
+/// The kernel image's expected SHA-256, recorded by build.sh at link
+/// time (exactly 64 lowercase hex characters, no newline).
+const EXPECTED_KERNEL_SHA256_HEX: &[u8; 64] = include_bytes!("kernel.sha256");
+
+const EMPTY_INPUT_SHA256: [u8; 32] = [
+    0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+    0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+];
+const ABC_INPUT_SHA256: [u8; 32] = [
+    0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+    0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+];
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn print_digest(d: &[u8; 32]) {
+    const HEX: &[u8] = b"0123456789abcdef";
+    for b in d {
+        boot::conout(core::str::from_utf8(&[HEX[(b >> 4) as usize], HEX[(b & 0xf) as usize]]).unwrap());
+    }
+}
+
+fn verify_kernel_integrity(kernel: &[u8]) {
+    // Known-answer vectors FIRST: a mis-implemented hash must refuse
+    // loudly here, not mis-declare a kernel honest downstream.
+    if sha256::sha256(&[]) != EMPTY_INPUT_SHA256 {
+        boot::die("sha256 known-answer test FAILED on the empty-input vector");
+    }
+    if sha256::sha256(b"abc") != ABC_INPUT_SHA256 {
+        boot::die("sha256 known-answer test FAILED on the abc vector");
+    }
+    boot::conout("nyrqis ubld: sha256 known-answer vectors OK\r\n");
+
+    let mut expected = [0u8; 32];
+    for (i, byte) in expected.iter_mut().enumerate() {
+        let hi = hex_nibble(EXPECTED_KERNEL_SHA256_HEX[i * 2]);
+        let lo = hex_nibble(EXPECTED_KERNEL_SHA256_HEX[i * 2 + 1]);
+        let (hi, lo) = match (hi, lo) {
+            (Some(hi), Some(lo)) => (hi, lo),
+            _ => boot::die("embedded kernel digest line malformed (not 64 lowercase hex chars)"),
+        };
+        *byte = (hi << 4) | lo;
+    }
+    let computed = sha256::sha256(kernel);
+    boot::conout("nyrqis ubld: kernel image sha256 computed = ");
+    print_digest(&computed);
+    boot::conout("\r\n");
+    boot::conout("nyrqis ubld: kernel image sha256 recorded = ");
+    print_digest(&expected);
+    boot::conout("\r\n");
+    if computed != expected {
+        boot::die("kernel image integrity: computed sha256 != the build-time digest -- refusing to load a tampered or mismatched payload");
+    }
+
+    // Tamper-sensitivity control, every boot: one flipped bit of a copy
+    // must hash to a DIFFERENT digest, or the comparison above is not a
+    // check at all (a hash that ignores its input would "pass" it).
+    let mut tampered = alloc::vec::Vec::with_capacity(kernel.len());
+    tampered.extend_from_slice(kernel);
+    tampered[0] ^= 0x01;
+    if sha256::sha256(&tampered) == computed {
+        boot::die("integrity control FAILED: a one-bit-flipped image hashed to the same digest");
+    }
+    boot::conout("nyrqis ubld: integrity control OK -- a one-bit-flipped copy hashes differently, the refusal path is alive\r\n");
+}
+
+pub fn kernel_elf_bytes() -> &'static [u8] {
     include_bytes!("../../target/kernel.elf")
 }
 
@@ -103,6 +176,13 @@ pub extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const Syste
 
     // ---- 3. kernel image ----
     let kernel_bytes = kernel_elf_bytes();
+    // ---- 3a. Stage-2 integrity verification (the ADR-0014 chain's
+    //         first landed link): hash EVERY byte of the embedded
+    //         kernel image and refuse to load it unless the digest
+    //         matches the one build.sh recorded at link time. A
+    //         corrupted or mismatched payload halts here with both
+    //         digests printed, before a single kernel byte is copied.
+    verify_kernel_integrity(kernel_bytes);
     let ki = match elf::parse(kernel_bytes) {
         Ok(ki) => ki,
         Err(e) => boot::die(elf_error_str(e)),
