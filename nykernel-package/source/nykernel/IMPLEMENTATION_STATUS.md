@@ -3609,6 +3609,26 @@ nyrqis ubld: stub alive under UEFI; SecureBoot=absent
   then the full demo chain reaches its final banner and the UEFI gate
   PASSES with the round trip in it.
 
+### The parity re-pass across the new increments (2026-10-25): both toolchains rebuilt from-scratch, gates keyed, both boots PASS
+
+After the exception-table + resource-tree + variable-services
+increments landed, the whole pipeline was re-proven on BOTH toolchain
+lines exactly as the 26.04 card prescribes: every composed PE artifact
+removed first (`rm userprog/userprog_pe*.exe *.dll` -- the patchers
+refuse re-composition by design), then a from-scratch rebuild with
+2.46's as/ld/objdump first in PATH (its unpacked root under
+`target/toolchain-2.46/`, libbfd/libsframe from the same root on
+LD_LIBRARY_PATH), the layout gate keyed on the ld in PATH, and BOTH
+boot gates against the 2.46-linked kernel -- build exit 0, gate exit
+0, BIOS PASS (251 `-- OK` fact lines), UEFI PASS with the
+variable-services roundtrip in it (250 `-- OK` lines). The baseline
+was then re-proven the SAME WAY on the host default 2.42/2.43: build
+exit 0, gate exit 0, BIOS PASS (251 `-- OK` lines), UEFI PASS (250
+`-- OK` lines). Both toolchains carry the same kernel-side behavior
+end-to-end (the full demo chain now including the pdata/res walks,
+the three+four carrier refusals, and the stub's varchk), differing
+only in the catalogued, keyed layout literals.
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is
