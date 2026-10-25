@@ -51,8 +51,12 @@ pub const ALLOC_ANY: u32 = 0;
 pub const ALLOC_MAX_ADDRESS: u32 = 1;
 pub const ALLOC_ADDRESS: u32 = 2;
 
-// Variable attribute: we require nonvolatile for the SecureBoot read.
+// Variable attributes: SecureBoot's read requires nonvolatile presence;
+// the round-trip check's own scratch variable is deliberately VOLATILE
+// (no NON_VOLATILE bit) so the boot never writes firmware NVRAM.
 pub const VARIABLE_ATTRIBUTE_NONVOLATILE: u32 = 0x1;
+pub const VARIABLE_ATTRIBUTE_BOOTSERVICE: u32 = 0x2;
+pub const VARIABLE_ATTRIBUTE_RUNTIME: u32 = 0x4;
 
 /// One entry of the boot-services memory map (40 bytes as the spec
 /// fixes it for x86_64).
@@ -110,6 +114,15 @@ pub const ACPI_20_TABLE_GUID: Guid =
 /// ACPI 1.0 configuration-table GUID.
 pub const ACPI_10_TABLE_GUID: Guid =
     Guid::new(0xeb9d2d31, 0x2d88, 0x11d3, [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d]);
+
+/// This stub's OWN vendor GUID for the variable-services round trip's
+/// scratch variable. DELIBERATELY NOT EFI_GLOBAL_VARIABLE: that GUID
+/// namespace is reserved for spec-defined names, and edk2 firmware
+/// (OVMF included) refuses SetVariable of an unknown name there with
+/// EFI_INVALID_PARAMETER. A vendor-owned namespace is the spec-legal
+/// home for a stub-created variable.
+pub const VARCHK_VENDOR_GUID: Guid =
+    Guid::new(0x6e1d14a1, 0x2b4f, 0x4b8a, [0x9c, 0xd1, 0x37, 0x4a, 0xd1, 0x94, 0x0f, 0x2b]);
 
 #[repr(C)]
 pub struct TableHeader {
@@ -244,6 +257,7 @@ pub struct RuntimeServices {
     pub get_time: usize,
     pub set_time: usize,
     pub get_wakeup_time: usize,
+    pub set_wakeup_time: usize,
     pub set_virtual_address_map: usize,
     pub convert_pointer: usize,
     /// (variable_name: *const u16, guid: *const Guid, attributes: *mut u32,
@@ -256,7 +270,16 @@ pub struct RuntimeServices {
         *mut c_void,
     ) -> Status,
     pub get_next_variable_name: usize,
-    pub set_variable: usize,
+    /// (variable_name: *const u16, guid: *const Guid, attributes: u32,
+    ///  data_size: usize, data: *mut c_void); a data_size 0 with a null
+    /// data pointer deletes the variable (spec: SetVariable semantics).
+    pub set_variable: unsafe extern "efiapi" fn(
+        *const u16,
+        *const Guid,
+        u32,
+        usize,
+        *const c_void,
+    ) -> Status,
     pub get_next_high_monotonic_count: usize,
     pub reset_system: usize,
     pub update_capsule: usize,
@@ -268,7 +291,7 @@ pub struct RuntimeServices {
 // that the hand-rolled layout cannot silently drift. ----
 const _: () = assert!(core::mem::size_of::<TableHeader>() == 24);
 const _: () = assert!(core::mem::size_of::<MemoryDescriptor>() == 40);
-const _: () = assert!(core::mem::size_of::<RuntimeServices>() == 24 + 13 * 8);
+const _: () = assert!(core::mem::size_of::<RuntimeServices>() == 24 + 14 * 8);
 const _: () = assert!(core::mem::size_of::<BootServices>() == 376);
 const _: () = assert!(core::mem::offset_of!(SystemTable, con_out) == 64);
 const _: () = assert!(core::mem::offset_of!(SystemTable, runtime_services) == 88);

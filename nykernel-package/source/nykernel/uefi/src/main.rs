@@ -88,6 +88,12 @@ pub extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const Syste
     boot::conout(sb.fact());
     boot::conout("\r\n");
 
+    // ---- 1b. variable-services round trip: the protocol the
+    //         SecureBoot fact rode on, proven with a variable this stub
+    //         writes itself. A firmware failing one step lies about
+    //         every variable, so the boot dies naming the exact step. ----
+    boot::verify_variable_services();
+
     // ---- 2. watchdog off, allocations ----
     boot::disarm_watchdog();
     let pg_phys = boot::alloc_identity_pages(3, "page tables");

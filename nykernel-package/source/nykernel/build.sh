@@ -210,6 +210,29 @@ ld -m i386pep --subsystem native -e _start --image-base=0x480000000000 -o userpr
 ld -m i386pep --subsystem native -e _start --image-base=0x490000000000 -o userprog/userprog_pe_delay_full.exe userprog/prog_pe_delay.o
 python3 tools/patch_pe_delay.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_delay_good.exe userprog/userprog_pe_delay_bad.exe userprog/userprog_pe_delay_mut.exe userprog/userprog_pe_delay_attrs.exe userprog/userprog_pe_delay_mis.exe userprog/userprog_pe_delay_va.exe userprog/userprog_pe_delay_vabias.exe userprog/userprog_pe_delay_many.exe userprog/userprog_pe_delay_thunks.exe userprog/userprog_pe_delay_full.exe
 
+echo "==> link userprog pe-EXCEPTION CARRIERS (three no-import, toolchain-raw PE32+ clients of ONE assembled program; the EXCEPTION-TABLE increment probes their composed IMAGE_DIRECTORY_ENTRY_EXCEPTION surfaces -- .pdata runtime-function tables laid into .idata's in-block padding: the good carrier's two-entry sorted table must pass the walked facts and its client run in ring 3, while the MIS carrier's genuinely OVERLAPPING second entry and the VER carrier's UNWIND_INFO version nibble of 3 must each refuse the load with the typed MalformedExceptionTable)"
+as --64 userprog/prog_pe_pdata.s -o userprog/prog_pe_pdata.o
+# ImageBase 0x550000000000 (private PML4 index 0xAA, canonical): the
+# shared PML4[0] identity subtree already carries pages in the low
+# region's range and a PE mapped there would PageAlreadyMap -- the same
+# boot-caught lesson the pe-import pair recorded in its link-line
+# comment above, applied before the first boot this time.
+ld -m i386pep --subsystem native -e _start --image-base=0x550000000000 -o userprog/userprog_pe_pdata_good.exe userprog/prog_pe_pdata.o
+ld -m i386pep --subsystem native -e _start --image-base=0x560000000000 -o userprog/userprog_pe_pdata_mis.exe userprog/prog_pe_pdata.o
+ld -m i386pep --subsystem native -e _start --image-base=0x570000000000 -o userprog/userprog_pe_pdata_ver.exe userprog/prog_pe_pdata.o
+python3 tools/patch_pe_pdata.py userprog/userprog_pe_pdata_good.exe userprog/userprog_pe_pdata_mis.exe userprog/userprog_pe_pdata_ver.exe
+
+echo "==> link userprog pe-RESOURCE CARRIERS (four no-import, toolchain-raw PE32+ clients of ONE assembled program; the RESOURCE-DIRECTORY increment probes their composed IMAGE_DIRECTORY_ENTRY_RESOURCE surfaces -- the resource tree laid into .idata's in-block padding with dir[2] pointed at it: the good carrier's one-named/one-subdirectory/one-ID/one-leaf tree must pass the walked facts and its client run in ring 3, while the RBAD carrier's leaf Size running past the image footprint, the RNAME carrier's empty length-0 name string, and the RMANY carrier's 17-ID over-cap array must each refuse the load with the typed MalformedResourceDirectory)"
+as --64 userprog/prog_pe_res.s -o userprog/prog_pe_res.o
+# ImageBases 0x5800..0x5B00 (private PML4 indexes 0xB0/0xB2/0xB4/0xB6,
+# canonical): the pdata family's lesson (0x54/0x56 etc. stay private,
+# below 2^47, and never the shared index-0 subtree).
+ld -m i386pep --subsystem native -e _start --image-base=0x580000000000 -o userprog/userprog_pe_res_good.exe userprog/prog_pe_res.o
+ld -m i386pep --subsystem native -e _start --image-base=0x590000000000 -o userprog/userprog_pe_res_bad.exe userprog/prog_pe_res.o
+ld -m i386pep --subsystem native -e _start --image-base=0x5a0000000000 -o userprog/userprog_pe_res_rname.exe userprog/prog_pe_res.o
+ld -m i386pep --subsystem native -e _start --image-base=0x5b0000000000 -o userprog/userprog_pe_res_rmany.exe userprog/prog_pe_res.o
+python3 tools/patch_pe_res.py userprog/userprog_pe_res_good.exe userprog/userprog_pe_res_bad.exe userprog/userprog_pe_res_rname.exe userprog/userprog_pe_res_rmany.exe
+
 echo "==> readelf LAYOUT GATE: every embedded userprog artifact is fact-checked (SONAMEs, version tables, NEEDED chains, PLT/JUMP_SLOT, WEAK dynsym, PE edata/idata) BEFORE kernel code ever sees them"
 ./tools/verify_prog_layout.sh
 

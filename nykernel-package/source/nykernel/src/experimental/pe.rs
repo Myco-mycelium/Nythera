@@ -189,7 +189,54 @@ pub enum PeError {
     /// provider: typed, distinct from the normal import walk's
     /// `MissingDllImport` so the refusal names WHICH table failed.
     MissingDelayDllImport,
+    /// The exception directory (`IMAGE_DIRECTORY_ENTRY_EXCEPTION`,
+    /// DataDirectory[3], the x64 `.pdata` runtime-function array) is
+    /// malformed: a size not a multiple of the 12-byte entry, an
+    /// entry beyond the image's own footprint, a zero-width or
+    /// unsorted/overlapping entry set, an unwind-address outside the
+    /// image, or an UNWIND_INFO whose Version nibble is neither 1 nor
+    /// 2. Typed refusals, never silently ignored -- the table is what
+    /// a Windows unwinder would DISPATCH on, so a wrong one is worse
+    /// than an absent one.
+    MalformedExceptionTable(&'static str),
+    /// The resource directory (`IMAGE_DIRECTORY_ENTRY_RESOURCE`,
+    /// DataDirectory[2], the two-level+resource tree: named-then-ID
+    /// entries whose children are subdirectories or
+    /// `IMAGE_RESOURCE_DATA_ENTRY`s) is malformed: an entry-less
+    /// directory, an unbounded entry array, a named-entry list not
+    /// first, a name offset without its length-prefixed string (or an
+    /// empty/overlong one), a subtree nested deeper than the walk's
+    /// cap, or a data entry whose bytes run past the image's own
+    /// footprint. Typed refusals, never silently ignored -- this
+    /// table is what Windows' `EnumResource` surfaces, so a wrong one
+    /// is as bad as an absent one.
+    MalformedResourceDirectory(&'static str),
 }
+
+/// A walked resource tree's facts: what the load verified, stated in
+/// the boot transcript's own vocabulary (a named type, one language
+/// entry, the leaf data's exact RVA/size). No `fmt`, no heap: fixed
+/// strings and RVAs only.
+pub struct ResourceFacts {
+    pub type_name: NameBuf,
+    pub lang_id: u32,
+    pub data_entry_rva: u64,
+    pub data_rva: u64,
+    pub data_size: u64,
+    /// The total number of entries the walk crossed (directories plus
+    /// leaf entries); a bounded, stated fact, not a count assertion.
+    pub entries_walked: u64,
+}
+
+/// Per-directory caps the walk enforces instead of trusting the
+/// structure it reads: 16 entries in one directory, nesting depth 3
+/// (the resource tree's documented shape: one type level, one name
+/// level, one language level), and a name at most 32 characters.
+const RESOURCE_MAX_ENTRIES: u64 = 16;
+const RESOURCE_MAX_DEPTH: u64 = 3;
+const RESOURCE_NAME_CAP: u64 = 32;
+const RESOURCE_FLAG_SUBDIR: u32 = 1 << 31;
+const RESOURCE_FLAG_NAME: u32 = 1 << 31;
 
 pub struct LoadedPe {
     pub entry_point: VirtAddr,
@@ -200,6 +247,18 @@ pub struct LoadedPe {
     /// The load-time RVA footprint (from the file bytes the loader
     /// mapped); the single authority every later bounds-check uses.
     pub image_max_rva: u64,
+    /// The exception directory's parsed `.pdata` runtime functions (an
+    /// absent directory answers an empty vec, not a refusal -- a real
+    /// Windows image is allowed to carry no exception table). Each
+    /// entry's bounds, sort order, and unwind-info version nibble were
+    /// all verified at load time; a contradiction anywhere refuses
+    /// the whole load.
+    pub exception_table: Vec<RuntimeFunction>,
+    /// The resource directory's walked facts (an absent directory
+    /// answers `None`, not a refusal -- a non-resource image is a
+    /// legal image). A malformed surface refuses the whole load;
+    /// an absent surface is exactly "no resource tree".
+    pub resource_facts: Option<ResourceFacts>,
 }
 
 fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
@@ -488,10 +547,23 @@ fn load_callers(
         Some(r) => unsafe { resolve_imports(load_base, mapper, max_rva, r) }?,
     };
 
+    // The exception directory's `.pdata` runtime functions, verified
+    // against the now-mapped image (the same read-only mapped-image
+    // discipline the walks above use). A malformed surface refuses the
+    // load -- the table is what a Windows unwinder would dispatch on.
+    let exception_table = unsafe { load_exception_table(load_base, max_rva) }?;
+
+    // The resource directory's tree, verified at load time the same
+    // way -- an absent directory is None; a malformed one refuses the
+    // load (the typed MalformedResourceDirectory).
+    let resource_facts = unsafe { load_resource_directory(load_base, max_rva) }?;
+
     Ok(LoadedPe {
         entry_point: VirtAddr::new(load_base.wrapping_add(address_of_entry_point as u64)),
         imports,
         image_max_rva: max_rva,
+        exception_table,
+        resource_facts,
     })
 }
 
@@ -561,6 +633,22 @@ unsafe fn read_u32_at(load_base: u64, rva: u64, max_rva: u64) -> Result<u32, PeE
     Ok(core::ptr::read_unaligned(p))
 }
 
+/// A mapped u16, bounded exactly like [`read_u32_at`] (the resource
+/// tree's u16 fields need this length). Note the typed error: unlike
+/// `read_u8_at`'s borrowed `MalformedImageDirectory`, this one tags
+/// with the resource table -- its only caller today.
+unsafe fn read_u16_at(load_base: u64, rva: u64, max_rva: u64) -> Result<u16, PeError> {
+    match rva.checked_add(2) {
+        None => return Err(PeError::MalformedImageDirectory("rva overflow")),
+        Some(end) if end > max_rva => {
+            return Err(PeError::MalformedImageDirectory("pointer outside image"))
+        }
+        _ => {}
+    }
+    let p = load_base.wrapping_add(rva) as *const u16;
+    Ok(core::ptr::read_unaligned(p))
+}
+
 /// The mapped image's own preferred `ImageBase` (optional-header field),
 /// read from MAPPED bytes -- used only by the delay-load walk's
 /// pre-VC7 VA-form decode (a VA descriptor field minus the preferred
@@ -620,6 +708,364 @@ unsafe fn read_data_directory_absent_ok(load_base: u64, index: u32) -> Result<(u
         return Ok((0, 0));
     }
     unsafe { read_data_directory(load_base, index) }
+}
+
+// ---------------------------------------------------------------------
+// The EXCEPTION half -- the x64 `.pdata` runtime-function array
+// (IMAGE_DIRECTORY_ENTRY_EXCEPTION, DataDirectory[3]). This is the
+// table a real Windows unwinder DISPATCHES on at fault time; unlike
+// the imports (which get resolved and patched) it is never taken as a
+// write target: the loader's job is to parse and VERIFY it, then hand
+// the facts to the caller (`LoadedPe::exception_table`). Dispatch on
+// it is deliberately out of scope (no unwinding is implemented); a
+// malformed surface refuses the load at cause rather than riding a
+// silent default into a later dispatch.
+
+/// One x64 `.pdata` entry, as parsed: the covered code range and the
+/// RVA of its `UNWIND_INFO` (whose Version nibble was checked to be 1
+/// or 2, the only values the x64 ABI defines; Flags are recorded raw
+/// via the resume type below, never interpreted here).
+#[derive(Debug)]
+pub struct RuntimeFunction {
+    pub begin_rva: u64,
+    pub end_rva: u64,
+    pub unwind_rva: u64,
+    pub unwind_version: u8,
+}
+
+/// The exception-directory cap: entries come from the directory's OWN
+/// Size (the array has no terminator -- its length is the directory's
+/// declared size, so nothing can consume past it), so this is an upper
+/// sanity bound against a directory lying about its span. Every demo
+/// artifact sits far below it; a real image needing more raises the
+/// bound deliberately, with the transcript fact, not silently.
+const EXCEPTION_MAX_ENTRIES: u64 = 4096;
+
+/// Walks the mapped image's exception directory (DataDirectory[3])
+/// when the optional header declares a nonzero span, verifies every
+/// entry the `LoadedPe::exception_table` facts state, and refuses the
+/// whole load on contradiction. An optional header that does not
+/// declare the directory answers an EMPTY table, not a refusal -- the
+/// absence of a `.pdata` is a legal shape for a real Windows image,
+/// exactly the posture `read_data_directory_absent_ok` exists for.
+///
+/// # Safety
+/// The image must be mapped at `load_base` (the sections placed), and
+/// `max_rva` must be the image's actual mapped footprint.
+unsafe fn load_exception_table(
+    load_base: u64,
+    max_rva: u64,
+) -> Result<Vec<RuntimeFunction>, PeError> {
+    let (rva, size) = unsafe { read_data_directory_absent_ok(load_base, 3)? };
+    if rva == 0 || size == 0 {
+        return Ok(Vec::new());
+    }
+    let (rva, size) = (rva as u64, size as u64);
+    if size % 12 != 0 {
+        return Err(PeError::MalformedExceptionTable(
+            "size not a multiple of 12",
+        ));
+    }
+    let count = size as u64 / 12;
+    if count > EXCEPTION_MAX_ENTRIES {
+        return Err(PeError::MalformedExceptionTable(
+            "runtime-function array unbounded",
+        ));
+    }
+    let mut out = Vec::new();
+    let mut prev_end: u64 = 0;
+    for i in 0..count {
+        let base_rva = rva + i * 12;
+        let begin = unsafe { read_u32_at(load_base, base_rva, max_rva)? } as u64;
+        let end = unsafe { read_u32_at(load_base, base_rva + 4, max_rva)? } as u64;
+        let unwind_rva = unsafe { read_u32_at(load_base, base_rva + 8, max_rva)? } as u64;
+        if begin >= end {
+            return Err(PeError::MalformedExceptionTable(
+                "entry covers no code",
+            ));
+        }
+        if end > max_rva {
+            return Err(PeError::MalformedExceptionTable(
+                "entry beyond the image's mapped footprint",
+            ));
+        }
+        if unwind_rva == 0 || unwind_rva >= max_rva {
+            return Err(PeError::MalformedExceptionTable(
+                "unwind info outside the image's mapped footprint",
+            ));
+        }
+        if i > 0 && begin < prev_end {
+            return Err(PeError::MalformedExceptionTable(
+                "runtime-function entries overlap",
+            ));
+        }
+        // UNWIND_INFO byte 0: Version is bits 5-7 (Flags the low 5),
+        // and only 1 and 2 are defined for x64. Read bounded against
+        // max_rva like every mapped byte.
+        let b0 = unsafe { read_u8_at(load_base, unwind_rva, max_rva)? };
+        let version = (b0 >> 5) & 7;
+        if version != 1 && version != 2 {
+            return Err(PeError::MalformedExceptionTable("unwind info version"));
+        }
+        out.push(RuntimeFunction {
+            begin_rva: begin,
+            end_rva: end,
+            unwind_rva,
+            unwind_version: version,
+        });
+        prev_end = end;
+    }
+    Ok(out)
+}
+
+/// The resource directory's two-level+ walk
+/// (`IMAGE_DIRECTORY_ENTRY_RESOURCE`, DataDirectory[2]). Verified at
+/// load time against the now-mapped image, the same read-only
+/// mapped-image discipline the walks above use: the tree's SPEC
+/// structure (named entries first, then ID entries, per level) is
+/// what the file holds, or the load refuses with a typed
+/// `MalformedResourceDirectory`. Bound-checks the directory span, the
+/// name table, and every leaf data entry against `max_rva` -- the
+/// whole tree is the load image's OWN accidentally-exposed surface
+/// otherwise.
+/// # Safety
+/// `load_base` must be the base of an image already mapped with its
+/// sections' VirtualAddress+VirtualSize spans live under `max_rva`.
+unsafe fn load_resource_directory(
+    load_base: u64,
+    max_rva: u64,
+) -> Result<Option<ResourceFacts>, PeError> {
+    let (root_rva, root_size) = unsafe { read_data_directory_absent_ok(load_base, 2)? };
+    if root_rva == 0 || root_size == 0 {
+        return Ok(None);
+    }
+    let (root_rva, root_size) = (root_rva as u64, root_size as u64);
+    let mut state = ResourceWalkState::default();
+    unsafe {
+        resource_walk_dir(load_base, max_rva, root_rva, root_size, 0, &mut state, root_rva)?;
+    }
+    Ok(Some(ResourceFacts {
+        type_name: state.name.unwrap_or_else(NameBuf::empty),
+        lang_id: state.lang_id,
+        data_entry_rva: state.data_entry_rva,
+        data_rva: state.data_rva,
+        data_size: state.data_size,
+        entries_walked: state.entries_walked,
+    }))
+}
+
+/// Mutable accumulation across the tree walk: the First facts the
+/// walk crosses (the resource tree's own documented discriminator)
+/// become the stated ones; every later entry is still VERIFIED but
+/// does not overwrite the facts.
+struct ResourceWalkState {
+    name: Option<NameBuf>,
+    lang_id: u32,
+    data_entry_rva: u64,
+    data_rva: u64,
+    data_size: u64,
+    entries_walked: u64,
+}
+
+impl Default for ResourceWalkState {
+    fn default() -> Self {
+        Self {
+            name: None,
+            lang_id: 0,
+            data_entry_rva: 0,
+            data_rva: 0,
+            data_size: 0,
+            entries_walked: 0,
+        }
+    }
+}
+
+/// One directory level of the walk: reads the 16-byte
+/// `IMAGE_RESOURCE_DIRECTORY` header, its named entries (FIRST by
+/// spec) then ID entries, and dispatches each entry's offset field to
+/// either a subdirectory (recurring, depth-capped) or a leaf
+/// DATA_ENTRY (bound-checked as its own last-rule). Every mapped read
+/// is bounded exactly like the other walks' reads.
+unsafe fn resource_walk_dir(
+    load_base: u64,
+    max_rva: u64,
+    dir_rva: u64,
+    dir_size: u64,
+    depth: u64,
+    state: &mut ResourceWalkState,
+    root_rva: u64,
+) -> Result<(), PeError> {
+    if depth > RESOURCE_MAX_DEPTH {
+        return Err(PeError::MalformedResourceDirectory(
+            "resource directory nesting too deep",
+        ));
+    }
+    if dir_rva.wrapping_add(16) > max_rva {
+        return Err(PeError::MalformedResourceDirectory(
+            "resource directory outside the image's mapped footprint",
+        ));
+    }
+    let named = unsafe { read_u16_at(load_base, dir_rva + 12, max_rva)? } as u64;
+    let ided = unsafe { read_u16_at(load_base, dir_rva + 14, max_rva)? } as u64;
+    let total = named + ided;
+    if total == 0 {
+        return Err(PeError::MalformedResourceDirectory(
+            "resource directory contains no entries",
+        ));
+    }
+    if total > RESOURCE_MAX_ENTRIES {
+        return Err(PeError::MalformedResourceDirectory(
+            "resource directory entry array unbounded",
+        ));
+    }
+    state.entries_walked += total;
+    if state.entries_walked > 5 * RESOURCE_MAX_ENTRIES {
+        return Err(PeError::MalformedResourceDirectory(
+            "resource tree entry total unbounded",
+        ));
+    }
+    let span = 16 + total * 8;
+    if span > dir_size {
+        return Err(PeError::MalformedResourceDirectory(
+            "resource directory entry array runs past the directory",
+        ));
+    }
+    for i in 0..total {
+        let entry_at = dir_rva + 16 + i * 8;
+        if entry_at + 8 > max_rva {
+            return Err(PeError::MalformedResourceDirectory(
+                "resource entry outside the image's mapped footprint",
+            ));
+        }
+        let name_or_id = unsafe { read_u32_at(load_base, entry_at, max_rva)? };
+        let child_off = unsafe { read_u32_at(load_base, entry_at + 4, max_rva)? } as u64;
+        let is_named = i < named;
+        if is_named {
+            // `name_or_id` is an offset (relative to the ROOT
+            // directory) into the tree's name table with the high
+            // bit set, naming a u16-length-prefixed string.
+            if name_or_id & RESOURCE_FLAG_NAME == 0 {
+                return Err(PeError::MalformedResourceDirectory(
+                    "resource named entry list not first",
+                ));
+            }
+            let name_rva = root_rva + (name_or_id & !RESOURCE_FLAG_NAME) as u64;
+            let name = unsafe { resource_read_name(load_base, max_rva, name_rva)? };
+            if state.name.is_none() {
+                state.name = Some(name);
+            }
+        } else if name_or_id & RESOURCE_FLAG_NAME != 0 {
+            return Err(PeError::MalformedResourceDirectory(
+                "resource ID entry carries a name flag",
+            ));
+        }
+        if child_off & RESOURCE_FLAG_SUBDIR as u64 != 0 {
+            let subdir_rva = root_rva + (child_off & !(RESOURCE_FLAG_SUBDIR as u64));
+            if subdir_rva <= dir_rva {
+                return Err(PeError::MalformedResourceDirectory(
+                    "resource subdirectory loop",
+                ));
+            }
+            unsafe {
+                resource_walk_dir(
+                    load_base, max_rva, subdir_rva, dir_size, depth + 1, state, root_rva,
+                )?;
+            }
+        } else {
+            // The DATA_ENTRY leaf: (OffsetToData, Size, CodePage,
+            // Reserved), bounds-checked BEFORE any of its reads.
+            let data_at = root_rva + child_off;
+            if data_at + 8 > max_rva {
+                return Err(PeError::MalformedResourceDirectory(
+                    "resource data entry outside the image's mapped footprint",
+                ));
+            }
+            if data_at & 0x3 != 0 {
+                return Err(PeError::MalformedResourceDirectory(
+                    "resource data entry not 4-byte aligned",
+                ));
+            }
+            let leaf_rva = unsafe { read_u32_at(load_base, data_at, max_rva)? } as u64;
+            let leaf_size = unsafe { read_u32_at(load_base, data_at + 4, max_rva)? } as u64;
+            if leaf_rva == 0 || leaf_size == 0 {
+                return Err(PeError::MalformedResourceDirectory(
+                    "resource data entry covers nothing",
+                ));
+            }
+            if leaf_rva + leaf_size > max_rva {
+                return Err(PeError::MalformedResourceDirectory(
+                    "resource data beyond the image's mapped footprint",
+                ));
+            }
+            if state.data_entry_rva == 0 {
+                state.data_entry_rva = data_at;
+                state.data_rva = leaf_rva;
+                state.data_size = leaf_size;
+                state.lang_id = name_or_id;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reads a resource-tree name at `name_rva`: a u16 character length
+/// followed by that many UTF-16LE code units. ASCII-required at the
+/// `NameBuf`::`Debug` level (injection can't reach the boot
+/// transcript). Bounded by `max_rva` like every mapped read.
+unsafe fn resource_read_name(
+    load_base: u64,
+    max_rva: u64,
+    name_rva: u64,
+) -> Result<NameBuf, PeError> {
+    if name_rva + 2 > max_rva {
+        return Err(PeError::MalformedResourceDirectory(
+            "resource name outside the image's mapped footprint",
+        ));
+    }
+    let wchars = unsafe { read_u16_at(load_base, name_rva, max_rva)? } as u64;
+    if wchars == 0 {
+        return Err(PeError::MalformedResourceDirectory("empty resource name"));
+    }
+    if wchars > RESOURCE_NAME_CAP {
+        return Err(PeError::MalformedResourceDirectory(
+            "resource name exceeds the 32-wide cap",
+        ));
+    }
+    let mut out = NameBuf::empty();
+    for k in 0..wchars {
+        let at = name_rva + 2 + k * 2;
+        if at + 2 > max_rva {
+            return Err(PeError::MalformedResourceDirectory(
+                "resource name outside the image's mapped footprint",
+            ));
+        }
+        let w = unsafe { read_u16_at(load_base, at, max_rva)? };
+        if w < 0x20 || w > 0x7e {
+            return Err(PeError::MalformedResourceDirectory(
+                "resource name byte outside printable ASCII",
+            ));
+        }
+        if k == RESOURCE_NAME_CAP {
+            return Err(PeError::MalformedResourceDirectory(
+                "resource name exceeds the 32-wide cap",
+            ));
+        }
+        out.bytes[k as usize] = w as u8;
+        out.len += 1;
+    }
+    Ok(out)
+}
+
+/// A single mapped byte, bounded like [`read_u32_at`] (which cannot
+/// express this length).
+unsafe fn read_u8_at(load_base: u64, rva: u64, max_rva: u64) -> Result<u8, PeError> {
+    if rva >= max_rva {
+        return Err(PeError::MalformedExceptionTable(
+            "pointer outside image",
+        ));
+    }
+    let p = load_base.wrapping_add(rva) as *const u8;
+    Ok(unsafe { core::ptr::read_unaligned(p) })
 }
 
 /// One resolved import: the runtime address of the patched IAT slot,

@@ -49,6 +49,8 @@ pub mod isolated_tasks;
 pub mod isolation_demo;
 pub mod pe;
 pub mod pe_demo;
+pub mod pe_exception_demo;
+pub mod pe_resource_demo;
 pub mod pe_import_demo;
 pub mod pe_reloc_demo;
 pub mod pie_demo;

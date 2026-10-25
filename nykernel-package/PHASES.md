@@ -33,7 +33,7 @@ yet -- noted here so it's not lost by the time Phase 9 starts.
 | 7 | GPU / graphics kernel path | ⬜ Not started | NPS-001 §3, NPS-013 (Accepted) |
 | 8 | Storage integration | ⬜ Not started | NPS-004 (Accepted), NyVault (source/nyhal-linux-backend precedent) |
 | 9 | Gaming subsystem / multi-device | ⬜ Not started | NPS-006, NPS-012, NPS-014 (Accepted) |
-| 10 | Secure Boot / UEFI | ⬜ Not started | ADR-0014 (**Accepted** 2026-10-11, AG row I3 — unblocks this phase) |
+| 10 | Secure Boot / UEFI | 🚧 In progress: native UEFI boot path + a verified SecureBoot variable read are IN; ADR-0014's verification chain (shim-equivalent + Nyrqis-key + optional user MOK) and key-management tooling still open | ADR-0014 (**Accepted** 2026-10-11, AG row I3 — unblocks this phase) |
 
 ---
 
@@ -1199,7 +1199,7 @@ implementation, not a redesign.
 consoles, tablets, phones) become real targets rather than aspirational
 README language.
 
-## Phase 10 -- Secure Boot / UEFI ⬜, unblocked 2026-10-11 (ADR-0014 Accepted, AG row I3)
+## Phase 10 -- Secure Boot / UEFI 🚧 In progress, unblocked 2026-10-11 (ADR-0014 Accepted, AG row I3)
 
 ADR-0014 (UEFI Secure Boot with user-enrollable keys) was **Accepted
 2026-10-11** (AG decision-log row I3, owner direction via the recorded
@@ -1214,3 +1214,17 @@ increments, per the ADR's own accepted status text. Phase 1's
 BIOS/GRUB2/Multiboot2 boot path remains intentionally decoupled from
 this -- it neither assumes nor blocks UEFI Secure Boot landing later. This
 phase starts only once ADR-0014 is Accepted.
+
+**Implementation is underway (see `source/nykernel/IMPLEMENTATION_STATUS.md`).**
+The native UEFI boot path is landed and CI-gated (the stub loads the
+kernel from its own bytes, synthesizes MBI, hands off through
+ExitBootServices + CR3 switch -- the 2026-10-22 and 2026-10-23 cards),
+and the SecureBoot variable read is now VERIFIED rather than assumed:
+every spec answer the read relies on (its query pass, its 1-byte size,
+its exact bytes) is pinned by a stub-owned variable-services round
+trip that runs before anything is trusted -- the 2026-10-25 card. What
+remains in this phase is ADR-0014's actual verification chain
+(shim-equivalent + Nyrqis-key + optional user MOK) and the
+key-management tooling its accepted text names; a current SB-off boot
+stays legal per that ADR -- the SecureBoot fact is recorded, never
+enforced as policy.

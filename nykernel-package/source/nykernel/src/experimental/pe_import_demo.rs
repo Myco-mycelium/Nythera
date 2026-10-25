@@ -76,7 +76,7 @@ use x86_64::structures::paging::PageTableFlags;
 use x86_64::VirtAddr;
 
 use crate::experimental::address_space::AddressSpace;
-use crate::experimental::{isolation_demo, pe, usermode};
+use crate::experimental::{pe, usermode};
 use crate::memory::frame_allocator::BumpFrameAllocator;
 use crate::memory::paging;
 use crate::serial_println;
@@ -711,7 +711,7 @@ unsafe fn run_delay_cap_controls(
 /// negative controls, resolves the client's imports for real, states
 /// the structural facts, and enters ring 3 at the client's entry
 /// point. `on_trap` (vector 0x8C) reports the ring-3 results and
-/// chains into `experimental::isolation_demo`, keeping the single
+/// chains into `experimental::pe_exception_demo`, keeping the single
 /// unified demo chain.
 ///
 /// The whole increment's headline: a real Windows-format executable's
@@ -1325,7 +1325,8 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 /// completion gate -- vector collisions overwrite silently, so the
 /// next free slot is the hard rule here). Verifies BOTH results the
 /// faithful Windows import pattern produced, then chains into
-/// `experimental::isolation_demo`.
+/// `experimental::pe_exception_demo` (the .pdata exception-table
+/// proof).
 pub unsafe fn on_trap() -> ! {
     let via_pointer = core::ptr::read_volatile(SLOT_A as *const u64);
     let via_call = core::ptr::read_volatile(SLOT_B as *const u64);
@@ -1350,5 +1351,5 @@ pub unsafe fn on_trap() -> ! {
     );
 
     let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
-    isolation_demo::start(fa)
+    crate::experimental::pe_exception_demo::start(fa)
 }

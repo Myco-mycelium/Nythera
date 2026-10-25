@@ -79,6 +79,9 @@ set +e
 # delta as the BIOS gate: the isa-debug-exit write routes through
 # qemu_system_shutdown_request_with_code(), which -no-shutdown would
 # have kept stopped-not-exited. -no-reboot stays: reboot-loop guard.
+# OVMF's DXE DEBUG() output rides the debugcon port (0x402): captured
+# every run into target/qemu-uefi-test-ovmf.log so a refused firmware
+# call names its own reason on inspection, not just a status code.
 timeout 120 qemu-system-x86_64 \
     -machine q35 \
     -m 256 \
@@ -87,6 +90,8 @@ timeout 120 qemu-system-x86_64 \
     -drive format=raw,file=uefi/dist/esp.img \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -serial stdio \
+    -debugcon file:target/qemu-uefi-test-ovmf.log \
+    -global isa-debugcon.iobase=0x402 \
     -display none \
     -no-reboot \
     > target/qemu-uefi-test-stdout.log 2>&1

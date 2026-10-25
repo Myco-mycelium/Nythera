@@ -999,6 +999,320 @@ if cs_b - cs_a != 8:
 print("  layout-gate: PE import slot-constant digit-class rule -- both halves equal, 47-bit 2^46 private-index class, SLOT_B = SLOT_A + 8 -- OK")
 EOF
 
+# ---- PE EXCEPTION-TABLE (.pdata) composition: the three carriers'
+# dir[3] facts, from the FILES. GNU ld emits no exception directory for
+# a native-subsystem client, so every .pdata surface here is the
+# checked composition (tools/patch_pe_pdata.py): the entry array sits
+# exactly at .idata's grown virtual tail, two RUNTIME_FUNCTION entries
+# whose spans are derived from the carrier's OWN .text header (which
+# the kernel-side -- experimental::pe -- verifies independently against
+# the bytes it maps), the two UNWIND_INFOs follow with legal version
+# nibbles 1 and 2 in the good carrier, the MIS carrier's entry 1
+# genuinely overlaps entry 0, and the VER carrier's second UNWIND_INFO
+# carries the genuinely undefined version 3. The demo consts, the
+# composed bytes, and the client .s's slot copy are all cross-checked
+# so none can drift into something the kernel would refuse for a
+# DIFFERENT reason.
+python3 - <<'EOF' || exit 1
+import re, struct
+
+def pe_dirs(data):
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    opt = e + 4 + 20
+    ndirs = struct.unpack_from('<I', data, opt + 108)[0]
+    return [(struct.unpack_from('<II', data, opt + 112 + i*8)) for i in range(ndirs)]
+
+def pe_image_base(data):
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    return struct.unpack_from('<Q', data, e + 4 + 20 + 24)[0]
+
+def sections_of(data):
+    nsec = struct.unpack_from('<H', data, struct.unpack_from('<I', data, 0x3C)[0] + 6)[0]
+    coff = struct.unpack_from('<I', data, 0x3C)[0] + 4
+    optsize = struct.unpack_from('<H', data, coff + 16)[0]
+    sh = coff + 20 + optsize
+    out = []
+    for i in range(nsec):
+        b = sh + i*40
+        name = data[b:b+8].rstrip(b'\x00')
+        vsize, vaddr, rawsize, raw = struct.unpack_from('<IIII', data, b+8)
+        out.append((name, vaddr, vsize, rawsize, raw))
+    return out
+
+def rva_at(sections, rva):
+    for name, vaddr, vsize, rawsize, raw in sections:
+        if vaddr <= rva < vaddr + max(vsize, rawsize):
+            return raw + (rva - vaddr)
+    raise SystemExit(f'FAIL: rva {rva:#x} not inside any section')
+
+def text_of(secs):
+    t = [s for s in secs if s[0] == b'.text']
+    if len(t) != 1 or t[0][2] == 0:
+        raise SystemExit('FAIL: carrier must carry exactly one nonempty .text')
+    return t[0][1], t[0][1] + t[0][2]
+
+demo = open('src/experimental/pe_exception_demo.rs').read()
+def const(name):
+    m = re.search(r'const ' + name + r': u64 = (0x[0-9a-fA-F_]+);', demo)
+    if not m:
+        raise SystemExit(f'FAIL: demo const {name} drifted')
+    return int(m.group(1).replace('_', ''), 16)
+
+def unwind_version(data, off):
+    # the kernel's extraction: Version is UNWIND_INFO byte 0's bits
+    # 5-7 (only 1 and 2 are defined for x64)
+    return (data[off] >> 5) & 0x07
+
+for base_const, path, label, kind in (
+    ('GOOD_IMAGE_BASE', 'userprog/userprog_pe_pdata_good.exe', 'pdatagood', 'legal composed table'),
+    ('MIS_IMAGE_BASE',  'userprog/userprog_pe_pdata_mis.exe',  'pdatamis',  'overlapping-entries refusal surface'),
+    ('VER_IMAGE_BASE',  'userprog/userprog_pe_pdata_ver.exe',  'pdataver',  'unwind-version-3 refusal surface'),
+):
+    data = open(path, 'rb').read()
+    dirs = pe_dirs(data)
+    secs = sections_of(data)
+    er_rva, er_size = dirs[3]
+    if er_rva == 0 or er_size == 0:
+        raise SystemExit(f'FAIL: {label} has no exception directory -- the composition is absent')
+    idata = [s for s in secs if s[0] == b'.idata']
+    if len(idata) != 1:
+        raise SystemExit(f'FAIL: {label} must carry exactly one .idata section')
+    id_va, id_vs = idata[0][1], idata[0][2]
+    if er_rva + 40 != id_va + id_vs:
+        raise SystemExit(f'FAIL: {label} composed block must END exactly at .idata\'s grown virtual end {id_va + id_vs:#x} (entries 12+12 + unwind info 8 + 8), it ends at {er_rva + 40:#x}')
+    want_base = const(base_const)
+    got_base = pe_image_base(data)
+    if got_base != want_base:
+        raise SystemExit(f'FAIL: {label} ImageBase {got_base:#x} != demo {base_const} {want_base:#x}')
+    pidx = want_base >> 39
+    if want_base >= (1 << 47):
+        raise SystemExit(f'FAIL: {label} ImageBase {want_base:#x} sits in the 4-level x86-64 NON-CANONICAL hole (bit 47 set, bits 63:48 clear) -- every access to the image #GP(0)s; link it below 2^47')
+    if pidx == 0 or pidx >= 512 or pidx == 0x80:
+        raise SystemExit(f'FAIL: {label} PML4 index {pidx:#x} is not a private fresh index')
+    at = rva_at(secs, er_rva)
+    if er_size != 24:
+        raise SystemExit(f'FAIL: {label} dir[3] size {er_size}, composed exactly 24 (the two-entry RUNTIME_FUNCTION array)')
+    # 12 bytes per entry: three RVAs (begin, end, unwind-data RVA) --
+    # exactly what the kernel stride-12 walk reads.
+    r0, r1, w0 = struct.unpack_from('<III', data, at)
+    t_lo, t_hi = text_of(secs)
+    half = (t_hi - t_lo) // 2
+    # both UNWIND_INFOs are composed CONTIGUOUSLY in the same padding
+    # block: A at block+24, B at block+32 (8 bytes each, CountOfCodes
+    # 0), so the entries' unwind RVAs naming those blocks are pinned
+    # too, not assumed.
+    u0_off, u1_off = at + 24, at + 32
+    v0, v1 = unwind_version(data, u0_off), unwind_version(data, u1_off)
+    if (w0, struct.unpack_from('<I', data, at + 20)[0]) != (er_rva + 24, er_rva + 32):
+        raise SystemExit(f'FAIL: {label} the entries\' unwind RVAs must be the composed blocks\' own RVAs ({er_rva + 24:#x}/{er_rva + 32:#x})')
+    if label == 'pdatagood':
+        if (r0, r1) != (t_lo, t_lo + half):
+            raise SystemExit(f'FAIL: {label} entry 0 [{r0:#x},{r1:#x}) must be .text\'s first half [{t_lo:#x},{t_lo+half:#x})')
+        r2, r3 = struct.unpack_from('<II', data, at + 12)
+        if (r2, r3) != (t_lo + half, t_hi):
+            raise SystemExit(f'FAIL: {label} entry 1 [{r2:#x},{r3:#x}) must be .text\'s second half [{t_lo+half:#x},{t_hi:#x})')
+        if (v0, v1) != (1, 2):
+            raise SystemExit(f'FAIL: {label} unwind versions ({v0},{v1}), composed exactly (1,2)')
+        print(f"  layout-gate: pdatagood -- dir[3] 24 bytes at the 40-byte composed block ending at .idata's grown tail, entries [{r0:#x},{r1:#x})+[{r2:#x},{r3:#x}) == .text split in half, unwind v1/v2, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private) -- {kind} -- OK")
+    elif label == 'pdatamis':
+        r2, r3 = struct.unpack_from('<II', data, at + 12)
+        if not (r2 < r1):
+            raise SystemExit(f'FAIL: {label} entry 1 begin {r2:#x} must sit BELOW entry 0 end {r1:#x} -- the overlap must be genuine')
+        if r1 > t_lo + half:
+            raise SystemExit(f'FAIL: {label} entry 0 end {r1:#x} must be the FULL first half {t_lo + half:#x} (the composed contradiction lives only in entry 1)')
+        if v0 != 1 or v1 != 2:
+            raise SystemExit(f'FAIL: {label} the MIS carrier contradiction must live ONLY in the spans -- its unwind versions are ({v0},{v1}), composed (1,2)')
+        print(f"  layout-gate: pdatamis -- dir[3] entries [{r0:#x},{r1:#x}) and [{r2:#x},{r3:#x}) genuinely overlap (begin {r2:#x} < end {r1:#x}), ImageBase {want_base:#x} (PML4 index {pidx:#x}, private, entry point never entered) -- {kind} -- OK")
+    else:
+        r2, r3 = struct.unpack_from('<II', data, at + 12)
+        if not (r1 <= r2):
+            raise SystemExit(f'FAIL: {label} ENTRY array must be legal and sorted ({r1:#x} must not exceed {r2:#x}) -- the refusal must be driven ONLY by the version nibble')
+        if r0 != t_lo or r1 != t_lo + half or r2 != t_lo + half or r3 != t_hi:
+            raise SystemExit(f'FAIL: {label} entry spans drifted from the .text halves')
+        if v1 != 3:
+            raise SystemExit(f'FAIL: {label} second UNWIND_INFO version nibble is {v1}, composed exactly 3 (undefined)')
+        if v0 != 1:
+            raise SystemExit(f'FAIL: {label} first UNWIND_INFO version nibble is {v0}, composed exactly 1')
+        print(f"  layout-gate: pdataver -- dir[3] entries legal and sorted ([{r0:#x},{r1:#x})/{r2:#x},{r3:#x}), unwind v1 then the UNDEFINED v3, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private, entry point never entered) -- {kind} -- OK")
+
+# The good carrier's ring-3 half: the client .s constants vs the demo
+# driver's consts (the digit-swap class the import carrier already
+# proved; one value, byte-identical in both halves).
+import sys
+s_src = open('userprog/prog_pe_pdata.s').read()
+m_slot = re.search(r'\bmovabs \$(0x[0-9a-fA-F]+), %rbx', s_src)
+m_mag = re.search(r'\bmovabs \$(0x[0-9a-fA-F]+), %rax', s_src)
+m_vec = re.search(r'\bint \$(0x[0-9a-fA-F]+)', s_src)
+if not m_slot or not m_mag or not m_vec:
+    sys.exit('FAIL: prog_pe_pdata.s slot/magic/vector values not found by the gate parser (format drifted?)')
+cs_slot = int(m_slot.group(1), 16)
+cs_mag = int(m_mag.group(1), 16)
+cs_vec = int(m_vec.group(1), 16)
+if cs_slot != const('PRIVATE_ADDR'):
+    sys.exit(f'FAIL: client slot {cs_slot:#x} != demo PRIVATE_ADDR {const("PRIVATE_ADDR"):#x} -- the digit-swap hang class, reintroduced')
+if cs_mag != const('EXPECTED_VALUE'):
+    sys.exit(f'FAIL: client magic {cs_mag:#x} != demo EXPECTED_VALUE {const("EXPECTED_VALUE"):#x}')
+m_vec_r = re.search(r'const TRAP_VECTOR: u8 = (0x[0-9a-fA-F_]+);', demo)
+if not m_vec_r:
+    sys.exit('FAIL: demo const TRAP_VECTOR drifted')
+if cs_vec != int(m_vec_r.group(1).replace('_', ''), 16):
+    sys.exit(f'FAIL: client trap vector {cs_vec:#x} != demo TRAP_VECTOR {const("TRAP_VECTOR"):#x}')
+print(f"  layout-gate: pdata slot/magic/vector cross-check -- client (slot {cs_slot:#x}, magic {cs_mag:#x}, int 0x{cs_vec:x}) == demo consts -- OK")
+EOF
+
+# ---- PE RESOURCE-DIRECTORY composition: the four carriers' dir[2]
+# facts, from the FILES. GNU ld emits no resource directory for a
+# native-subsystem client, so the tree here is the checked composition
+# (tools/patch_pe_res.py): an 80-byte block at .idata's grown tail with
+# dir[2] pointed at it, L1 named-1/id-0 for the good shape (or the
+# refusal carriers' single contradiction each), a length-3 "TXT"
+# UTF-16 name blob, an L2 subdirectory named-0/id-1, and a DATA_ENTRY
+# leaf whose bytes end exactly at the block's end. The demo consts,
+# the composed bytes, and the client .s's slot copy are all
+# cross-checked so none can drift into something the kernel would
+# refuse for a DIFFERENT reason.
+python3 - <<'EOF' || exit 1
+import re, struct, sys
+
+def pe_dirs(data):
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    opt = e + 4 + 20
+    ndirs = struct.unpack_from('<I', data, opt + 108)[0]
+    return [(struct.unpack_from('<II', data, opt + 112 + i*8)) for i in range(ndirs)]
+
+def pe_image_base(data):
+    e = struct.unpack_from('<I', data, 0x3C)[0]
+    return struct.unpack_from('<Q', data, e + 4 + 20 + 24)[0]
+
+def sections_of(data):
+    nsec = struct.unpack_from('<H', data, struct.unpack_from('<I', data, 0x3C)[0] + 6)[0]
+    coff = struct.unpack_from('<I', data, 0x3C)[0] + 4
+    optsize = struct.unpack_from('<H', data, coff + 16)[0]
+    sh = coff + 20 + optsize
+    out = []
+    for i in range(nsec):
+        b = sh + i*40
+        name = data[b:b+8].rstrip(b'\x00')
+        vsize, vaddr, rawsize, raw = struct.unpack_from('<IIII', data, b+8)
+        out.append((name, vaddr, vsize, rawsize, raw))
+    return out
+
+def rva_at(sections, rva):
+    for name, vaddr, vsize, rawsize, raw in sections:
+        if vaddr <= rva < vaddr + max(vsize, rawsize):
+            return raw + (rva - vaddr)
+    raise SystemExit(f'FAIL: rva {rva:#x} not inside any section')
+
+demo = open('src/experimental/pe_resource_demo.rs').read()
+def const(name):
+    m = re.search(r'const ' + name + r': u64 = (0x[0-9a-fA-F_]+);', demo)
+    if not m:
+        raise SystemExit(f'FAIL: demo const {name} drifted')
+    return int(m.group(1).replace('_', ''), 16)
+
+TREE = 80
+NAME_OFF, L2_OFF, DATAE_OFF, DATA_OFF = 24, 32, 56, 72
+for base_const, path, label, kind in (
+    ('GOOD_IMAGE_BASE',  'userprog/userprog_pe_res_good.exe',  'resgood', 'legal composed tree'),
+    ('BAD_IMAGE_BASE',   'userprog/userprog_pe_res_bad.exe',   'resbad',  'leaf-Size-past-footprint refusal surface'),
+    ('RNAME_IMAGE_BASE', 'userprog/userprog_pe_res_rname.exe', 'resrname', 'empty-name refusal surface'),
+    ('RMANY_IMAGE_BASE', 'userprog/userprog_pe_res_rmany.exe', 'resrmany', 'over-cap-array refusal surface'),
+):
+    data = open(path, 'rb').read()
+    dirs = pe_dirs(data)
+    secs = sections_of(data)
+    re_rva, re_size = dirs[2]
+    if re_rva == 0 or re_size == 0:
+        raise SystemExit(f'FAIL: {label} has no resource directory -- the composition is absent')
+    idata = [s for s in secs if s[0] == b'.idata']
+    if len(idata) != 1:
+        raise SystemExit(f'FAIL: {label} must carry exactly one .idata section')
+    id_va, id_vs = idata[0][1], idata[0][2]
+    if re_rva + TREE != id_va + id_vs:
+        raise SystemExit(f'FAIL: {label} composed block must END exactly at .idata\'s grown virtual end {id_va + id_vs:#x}, it ends at {re_rva + TREE:#x}')
+    if re_size != TREE:
+        raise SystemExit(f'FAIL: {label} dir[2] size {re_size}, composed exactly {TREE}')
+    want_base = const(base_const)
+    got_base = pe_image_base(data)
+    if got_base != want_base:
+        raise SystemExit(f'FAIL: {label} ImageBase {got_base:#x} != demo {base_const} {want_base:#x}')
+    pidx = want_base >> 39
+    if want_base >= (1 << 47):
+        raise SystemExit(f'FAIL: {label} ImageBase {want_base:#x} sits in the 4-level x86-64 NON-CANONICAL hole (bit 47 set, bits 63:48 clear) -- every access to the image #GP(0)s; link it below 2^47')
+    if pidx == 0 or pidx >= 512 or pidx == 0x80:
+        raise SystemExit(f'FAIL: {label} PML4 index {pidx:#x} is not a private fresh index')
+    at = rva_at(secs, re_rva)
+    ln, lid = struct.unpack_from('<HH', data, at + 12)
+    if label == 'resrmany':
+        if (ln, lid) != (0, 17):
+            raise SystemExit(f'FAIL: {label} L1 counts ({ln},{lid}), composed exactly (0,17)')
+        print(f"  layout-gate: resrmany -- dir[2] {TREE} bytes at .idata's grown tail, L1 claims 17 ID entries (past the 16 cap), ImageBase {want_base:#x} (PML4 index {pidx:#x}, private, entry point never entered) -- {kind} -- OK")
+        continue
+    if (ln, lid) != (1, 0):
+        raise SystemExit(f'FAIL: {label} L1 counts ({ln},{lid}), composed exactly (1,0)')
+    # L1 entry: named flag + name blob offset; child = the L2 subdir.
+    n_field, c_field = struct.unpack_from('<II', data, at + 16)
+    if not (n_field >> 31) or (n_field & 0x7FFFFFFF) != NAME_OFF:
+        raise SystemExit(f'FAIL: {label} L1 entry name field {n_field:#x} must be the named blob at block+{NAME_OFF}')
+    if c_field != (1 << 31) | L2_OFF:
+        raise SystemExit(f'FAIL: {label} L1 entry child {c_field:#x} must be the L2 subdir at block+{L2_OFF} (high bit set)')
+    (nlen,) = struct.unpack_from('<H', data, at + NAME_OFF)
+    if label == 'resrname':
+        if nlen != 0:
+            raise SystemExit(f'FAIL: {label} the composed name length must be 0 (the empty-name contradiction), it is {nlen}')
+        print(f"  layout-gate: resrname -- dir[2] {TREE} bytes at .idata's grown tail, named entry carries a genuine length-0 string, everything else canonic, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private, entry point never entered) -- {kind} -- OK")
+        continue
+    if nlen != 3:
+        raise SystemExit(f'FAIL: {label} the composed name length must be 3 ("TXT"), it is {nlen}')
+    chars = struct.unpack_from('<HHH', data, at + NAME_OFF + 2)
+    if chars != (ord('T'), ord('X'), ord('T')):
+        raise SystemExit(f'FAIL: {label} composed name chars {chars} drifted from TXT')
+    l2n, l2i = struct.unpack_from('<HH', data, at + L2_OFF + 12)
+    if (l2n, l2i) != (0, 1):
+        raise SystemExit(f'FAIL: {label} L2 counts ({l2n},{l2i}), composed exactly (0,1)')
+    i_field, d_field = struct.unpack_from('<II', data, at + L2_OFF + 16)
+    if i_field != 1:
+        raise SystemExit(f'FAIL: {label} L2 ID entry is {i_field}, composed 1')
+    if d_field != DATAE_OFF:
+        raise SystemExit(f'FAIL: {label} L2 leaf child {d_field:#x} must be the DATA_ENTRY at block+{DATAE_OFF} (high bit clear)')
+    d_rva, d_size, _cp, _rsv = struct.unpack_from('<IIII', data, at + DATAE_OFF)
+    if d_rva != re_rva + DATA_OFF:
+        raise SystemExit(f'FAIL: {label} DATA_ENTRY rva {d_rva:#x} must be the payload blob at block+{DATA_OFF}')
+    if label == 'resbad':
+        if d_size <= (id_va + id_vs) - d_rva:
+            raise SystemExit(f'FAIL: {label} the leaf Size {d_size:#x} must genuinely overrun the image footprint (payload end {id_va + id_vs:#x})')
+        print(f"  layout-gate: resbad -- dir[2] {TREE} bytes at .idata's grown tail, canonic tree except the leaf Size {d_size:#x} genuinely overrunning the composable footprint, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private, entry point never entered) -- {kind} -- OK")
+    else:
+        if d_size != 8:
+            raise SystemExit(f'FAIL: {label} the leaf Size {d_size:#x}, composed exactly 8 (the payload ends the block exactly)')
+        if d_rva + d_size != re_rva + TREE:
+            raise SystemExit(f'FAIL: {label} the good tree\'s payload must END at the block\'s end ({re_rva + TREE:#x}), it ends at {d_rva + d_size:#x}')
+        print(f"  layout-gate: resgood -- dir[2] {TREE} bytes at .idata's grown tail, tree named 'TXT' -> subdir -> ID 1 -> leaf payload 8 bytes ending at the block end, ImageBase {want_base:#x} (PML4 index {pidx:#x}, private) -- {kind} -- OK")
+
+# The good carrier's ring-3 half: the client .s constants vs the demo
+# driver's consts (the digit-swap class). The resource client's
+# subtree is 0x58, its slot +1 MiB.
+s_src = open('userprog/prog_pe_res.s').read()
+m_slot = re.search(r'\bmovabs \$(0x[0-9a-fA-F]+), %rbx', s_src)
+m_mag = re.search(r'\bmovabs \$(0x[0-9a-fA-F]+), %rax', s_src)
+m_vec = re.search(r'\bint \$(0x[0-9a-fA-F]+)', s_src)
+if not m_slot or not m_mag or not m_vec:
+    sys.exit('FAIL: prog_pe_res.s slot/magic/vector values not found by the gate parser (format drifted?)')
+cs_slot = int(m_slot.group(1), 16)
+cs_mag = int(m_mag.group(1), 16)
+cs_vec = int(m_vec.group(1), 16)
+if cs_slot != const('PRIVATE_ADDR'):
+    sys.exit(f'FAIL: client slot {cs_slot:#x} != demo PRIVATE_ADDR {const("PRIVATE_ADDR"):#x} -- the digit-swap hang class, reintroduced')
+if cs_mag != const('EXPECTED_VALUE'):
+    sys.exit(f'FAIL: client magic {cs_mag:#x} != demo EXPECTED_VALUE {const("EXPECTED_VALUE"):#x}')
+m_vec_r = re.search(r'const TRAP_VECTOR: u8 = (0x[0-9a-fA-F_]+);', demo)
+if not m_vec_r:
+    sys.exit('FAIL: demo const TRAP_VECTOR drifted')
+if cs_vec != int(m_vec_r.group(1).replace('_', ''), 16):
+    sys.exit(f'FAIL: client trap vector {cs_vec:#x} != demo TRAP_VECTOR {m_vec_r.group(1)}')
+print(f"  layout-gate: resource slot/magic/vector cross-check -- client (slot {cs_slot:#x}, magic {cs_mag:#x}, int 0x{cs_vec:x}) == demo consts -- OK")
+EOF
+
 # ---- negative-control window pin (the scratch-base rule) ----
 #
 # The kernel's negative controls load deliberately-refused objects and
@@ -1031,7 +1345,17 @@ scratch_windows=(
     "0x470000000000 0x470000100000" # delay-load cap-boundary carrier (17 descriptors): fixed ImageBase 0x4700_0000_0000 (PML4 index 0x8E)
     "0x480000000000 0x480000100000" # delay-load cap-boundary carrier (65 thunks): fixed ImageBase 0x4800_0000_0000 (PML4 index 0x90)
     "0x490000000000 0x490000100000" # delay-load legal-maxima carrier (16 descriptors x 64 thunks): fixed ImageBase 0x4900_0000_0000 (PML4 index 0x92)
+    # PE exception-table (pdata) family: same canonical private-subtree rule -- the good carrier boots and traps via its own int 0x85; the refusal carriers are probed only, so no ELF artifact may pre-place PT_LOADs in their windows    # PE exception-table (pdata) family: same canonical private-subtree rule -- the good carrier boots and traps via its own int 0x8E; the MIS/VER refusal carriers' entry points are never entered (loads are refused for their exact typed reasons), so no ELF artifact may pre-place PT_LOADs in their windows
+    "0x550000000000 0x550000100000" # pdata good carrier: fixed ImageBase 0x5500_0000_0000 (PML4 index 0xAA)
+    "0x560000000000 0x560000100000" # pdata MIS carrier (overlapping .pdata entries): fixed ImageBase 0x5600_0000_0000 (PML4 index 0xAC)
+    "0x570000000000 0x570000100000" # pdata VER carrier (UNWIND_INFO version 3): fixed ImageBase 0x5700_0000_0000 (PML4 index 0xAE)
+    # PE resource-directory family: same canonical private-subtree rule -- the good carrier boots and traps via its own int 0x8F; the RBAD/RNAME/RMANY refusal carriers' entry points are never entered (loads are refused for their exact typed reasons), so no ELF artifact may pre-place PT_LOADs in their windows
+    "0x580000000000 0x580000100000" # resource good carrier: fixed ImageBase 0x5800_0000_0000 (PML4 index 0xB0)
+    "0x590000000000 0x590000100000" # resource RBAD carrier (leaf Size past the image footprint): fixed ImageBase 0x5900_0000_0000 (PML4 index 0xB2)
+    "0x5a0000000000 0x5a0000100000" # resource RNAME carrier (empty length-0 name string): fixed ImageBase 0x5A00_0000_0000 (PML4 index 0xB4)
+    "0x5b0000000000 0x5b0000100000" # resource RMANY carrier (17 IDs over the 16 cap): fixed ImageBase 0x5B00_0000_0000 (PML4 index 0xB6)
 )
+
 for art in userprog/userprog_cross_all_lib.elf userprog/userprog_cross_all_lib2.elf \
            userprog/userprog_cross_all.elf userprog/userprog_cross_all2.elf \
            userprog/userprog_cross_all3.elf userprog/userprog_cross_all4.elf \

@@ -247,6 +247,22 @@ pub fn init() {
         idt[crate::experimental::pe_import_demo::TRAP_VECTOR as u8]
             .set_handler_fn(pe_import_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
+        // A fourteenth ring-3-callable vector, dedicated to
+        // experimental::pe_exception_demo -- the PE32+ exception-table
+        // (.pdata) proof (new 0x8E, distinct from every other demo's
+        // vector; the 0x8D lesson from the first failed import boot is
+        // the standing rule: registering over another demo's vector is
+        // a bug, not a shortcut).
+        idt[crate::experimental::pe_exception_demo::TRAP_VECTOR as u8]
+            .set_handler_fn(pe_exception_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
+        // A fifteenth ring-3-callable vector, dedicated to
+        // experimental::pe_resource_demo -- the PE32+ resource-tree
+        // proof (new 0x8F, distinct from every other demo's vector;
+        // same standing rule as 0x8D's lesson).
+        idt[crate::experimental::pe_resource_demo::TRAP_VECTOR as u8]
+            .set_handler_fn(pe_resource_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
         idt
     });
     idt.load();
@@ -420,6 +436,28 @@ extern "x86-interrupt" fn pe_reloc_trap_handler(_stack_frame: InterruptStackFram
 extern "x86-interrupt" fn pe_import_trap_handler(_stack_frame: InterruptStackFrame) {
     unsafe {
         crate::experimental::pe_import_demo::on_trap();
+    }
+}
+
+/// The one trap `experimental::pe_exception_demo`'s good carrier's body
+/// issues (`int $0x8e` from ring 3) -- reports whether the composed
+/// carrier's verified-exception-table load really ran the client's own
+/// code, then chains into `experimental::pe_resource_demo` (the
+/// resource-tree proof), which reaches `experimental::isolation_demo`.
+extern "x86-interrupt" fn pe_exception_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::pe_exception_demo::on_trap();
+    }
+}
+
+/// The one trap `experimental::pe_resource_demo`'s good carrier's body
+/// issues (`int $0x8f` from ring 3) -- reports whether the composed
+/// carrier's verified-resource-tree load really ran the client's own
+/// code, then chains into `experimental::isolation_demo`, keeping the
+/// single unified demo chain linear.
+extern "x86-interrupt" fn pe_resource_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::pe_resource_demo::on_trap();
     }
 }
 

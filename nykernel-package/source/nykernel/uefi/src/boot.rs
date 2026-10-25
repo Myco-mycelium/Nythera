@@ -157,6 +157,150 @@ fn get_variable_u8(name_ascii: &[u8], rs: *const RuntimeServices) -> SecureBootS
     }
 }
 
+// ---- the variable-services round trip (the SecureBoot read's own
+// protocol, verified with a variable WE write and know the bytes of) ----
+//
+// `read_secure_boot` trusts the firmware's GetVariable to honor its
+// documented contract (query pass answers BUFFER_TOO_SMALL with the
+// TRUE size; the data pass fills the caller's buffer and reads back
+// exactly the bytes stored). That contract is checkable for real, at
+// every boot, with a scratch variable this stub writes itself: set /
+// get / too-small-query / get-after-oversize / delete /
+// get-after-delete, each answer pinned to the spec's status. The
+// scratch variable is deliberately VOLATILE (BOOTSERVICE_ACCESS only --
+// no NON_VOLATILE bit) so the check can never write firmware NVRAM,
+// and the stub deletes it before ExitBootServices regardless.
+//
+// A firmware that fails any step is a firmware whose SecureBoot ANSWER
+// cannot be trusted either, so the boot dies here, naming the exact
+// step -- the same refuse-loudly posture as every other UEFI surface.
+
+/// The scratch variable's name (pure ASCII, null-terminated by the
+/// wide-buffer fill below).
+const ROUNDTRIP_NAME: &[u8] = b"NyrqisVarChk";
+/// The payload the check stores and expects back, byte-for-byte.
+const ROUNDTRIP_PAYLOAD: [u8; 4] = [0x5a, 0xa5, 0x3c, 0xc3];
+
+fn wide_name(name_ascii: &[u8]) -> [u16; 32] {
+    let mut wide = [0u16; 32];
+    for (i, &b) in name_ascii.iter().enumerate() {
+        wide[i] = b as u16;
+    }
+    wide
+}
+
+fn get_scratch(rs: *const RuntimeServices) -> (Status, usize, [u8; 4]) {
+    let mut attrs: u32 = 0;
+    let mut size: usize = 4;
+    let mut data = [0u8; 4];
+    let s = unsafe {
+        ((*rs).get_variable)(
+            wide_name(ROUNDTRIP_NAME).as_ptr(),
+            &VARCHK_VENDOR_GUID,
+            &mut attrs,
+            &mut size,
+            data.as_mut_ptr() as *mut c_void,
+        )
+    };
+    (s, size, data)
+}
+
+fn set_scratch_with_size(rs: *const RuntimeServices, size: usize, data: &[u8]) -> Status {
+    unsafe {
+        ((*rs).set_variable)(
+            wide_name(ROUNDTRIP_NAME).as_ptr(),
+            &VARCHK_VENDOR_GUID,
+            VARIABLE_ATTRIBUTE_BOOTSERVICE,
+            size,
+            data.as_ptr() as *const c_void,
+        )
+    }
+}
+
+/// Runs the round trip, printing one fact per step; a wrong answer at
+/// any step is a refused boot (a firmware whose variable protocol lies
+/// about one variable lies about every variable).
+pub fn verify_variable_services() {
+    let st = unsafe { &*SYSTEM_TABLE };
+    let rs = st.runtime_services;
+
+    // Step 0: the scratch variable must not exist at handoff (its name
+    // is this stub's own; a pre-existing one means two boots interleaved
+    // and the check's answers mean different stores).
+    let (s0, _, _) = get_scratch(rs);
+    if s0 != EFI_NOT_FOUND {
+        conout("  varchk: step0 pre-existing scratch variable, get_variable=");
+        conout_hex(s0);
+        die("variable-services roundtrip: scratch name collision");
+    }
+    conout("  varchk: step0 get = EFI_NOT_FOUND, correct (nothing written yet)\r\n");
+
+    // Step 1: SET the 4-byte payload (volatile attributes only).
+    let s1 = set_scratch_with_size(rs, ROUNDTRIP_PAYLOAD.len(), &ROUNDTRIP_PAYLOAD);
+    if s1 != EFI_SUCCESS {
+        conout("  varchk: step1 set_variable=");
+        conout_hex(s1);
+        die("variable-services roundtrip: SetVariable refused a legal volatile write");
+    }
+    conout("  varchk: step1 set (4 bytes) -- EFI_SUCCESS\r\n");
+
+    // Step 2: GET must return exactly the bytes stored.
+    let (s2, size2, data2) = get_scratch(rs);
+    if s2 != EFI_SUCCESS || size2 != ROUNDTRIP_PAYLOAD.len() || data2 != ROUNDTRIP_PAYLOAD {
+        conout("  varchk: step2 get status=");
+        conout_hex(s2);
+        conout(" size=");
+        conout_hex(size2 as u64);
+        conout("\r\n");
+        die("variable-services roundtrip: GetVariable read back differs from the stored payload");
+    }
+    conout("  varchk: step2 get -- the 4 stored bytes, exact (5aa53cc3)\r\n");
+
+    // Step 3: the query-pass contract -- a buffer-too-small GET must
+    // answer BUFFER_TOO_SMALL naming the TRUE size (4), not the
+    // caller's 2. This is exactly the contract read_secure_boot relies
+    // on to learn SecureBoot's fixed size of 1.
+    let mut attrs: u32 = 0;
+    let mut probe: usize = 2;
+    let mut _scratch = 0u64;
+    let s3 = unsafe {
+        ((*rs).get_variable)(
+            wide_name(ROUNDTRIP_NAME).as_ptr(),
+            &VARCHK_VENDOR_GUID,
+            &mut attrs,
+            &mut probe,
+            (&mut _scratch as *mut u64) as *mut c_void,
+        )
+    };
+    if s3 != EFI_BUFFER_TOO_SMALL || probe != ROUNDTRIP_PAYLOAD.len() {
+        conout("  varchk: step3");
+        conout_hex(s3);
+        conout(" reported size=");
+        conout_hex(probe as u64);
+        conout("\r\n");
+        die("variable-services roundtrip: GetVariable's too-small query answers wrongly");
+    }
+    conout("  varchk: step3 too-small query -- EFI_BUFFER_TOO_SMALL with the true size 4\r\n");
+
+    // Step 4: DELETE (size 0) and confirm absence.
+    let s4a = set_scratch_with_size(rs, 0, &[]);
+    if s4a != EFI_SUCCESS {
+        conout("  varchk: step4 delete=");
+        conout_hex(s4a);
+        conout("\r\n");
+        die("variable-services roundtrip: SetVariable(0) refused the delete");
+    }
+    let (s4b, _, _) = get_scratch(rs);
+    if s4b != EFI_NOT_FOUND {
+        conout("  varchk: step4 after-delete get=");
+        conout_hex(s4b);
+        conout("\r\n");
+        die("variable-services roundtrip: deleted variable still reads");
+    }
+    conout("  varchk: step4 delete then get -- EFI_NOT_FOUND, really gone\r\n");
+    conout("  varchk: variable-services roundtrip OK -- the SecureBoot read's protocol is firmware-honest\r\n");
+}
+
 // ---- allocation ----
 
 /// The pre-EBS global allocator: forwards to the boot-services pool

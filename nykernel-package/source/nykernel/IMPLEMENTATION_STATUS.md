@@ -998,7 +998,8 @@ ordinal, and forwarded exports the way GetProcAddress would. What this
 is not: Windows applications. (Bound imports WERE in this list and are
 closed by the 2026-10-20 increment below; delay-load imports were in
 it too and are closed by the 2026-10-21 increment at the end of this
-family.)
+family; resources and exception tables are closed by the two
+2026-10-24 cards.)
 
 ## Gap-closure increment (2026-10-20): bound imports -- the stamp is honored exactly as far as it can be VERIFIED
 
@@ -1130,7 +1131,8 @@ descriptors' FORWARDER-REF half -- the per-descriptor
 `NumberOfModuleForwarderRefs` sub-descriptors -- is now its own
 increment, below.) Not Windows either. (Delay-load imports were still
 in the out-of-scope list here and are closed by the 2026-10-21
-increment below.)
+increment below; resources and exception tables are closed by the two
+2026-10-24 cards.)
 
 ## Gap-closure increment (2026-10-20, second of the day): bound FORWARDER-REFs -- the gate sees THROUGH the composed ref list
 
@@ -2968,8 +2970,12 @@ The pre-existing list continues unchanged:
   refusals, every boot) and ordinal imports resolve through the
   directory's own parsed `OrdinalBase` with the named-vs-ordinal
   cross-path equality checked every boot (see the second increment
-  above). What still does not exist: Win32 API surface, resources,
-  exception tables
+  above). **Update 2026-10-24: exception tables and resource
+  directories are IN too** (see the two 2026-10-24 cards above: the
+  startup `IMAGE_DIRECTORY_ENTRY_EXCEPTION` and
+  `IMAGE_DIRECTORY_ENTRY_RESOURCE` walks, each with its composed
+  carrier family and typed per-rule refusals, every boot, both
+  toolchains). What still does not exist: Win32 API surface
 - Real Android application compatibility -- `experimental::dex` parses
   a DEX file's container format and validates its structure (including,
   now, its Adler-32 checksum and SHA-1 signature via
@@ -2994,10 +3000,17 @@ The pre-existing list continues unchanged:
   exception) -- not started
 - Windows or Android compatibility -- not started; scope for these is
   now defined precisely in RFC-0001 §4 and `PHASES.md` Phase 5/6
-- UEFI boot or Secure Boot (ADR-0014 ~~is still `Proposed`~~ was
-  **Accepted 2026-10-11**, AG row I3 -- Phase 10 is now an open
-  implementation phase, not a governance-blocked one) -- Phase 1
-  still boots via legacy BIOS/GRUB2/Multiboot2 only
+- ~~UEFI boot~~ **UEFI native boot is IN** (2026-10-22 increment: the
+  stub loads the kernel from its own bytes, synthesizes MBI, hands off
+  through `ExitBootServices` + CR3 switch; both boot gates are CI
+  scripts -- see the 2026-10-23 card). **Secure Boot state is now
+  read AND its protocol proven every boot** (2026-10-25 Phase 10 card:
+  the variable-services round trip pins every GetVariable/SetVariable
+  answer `read_secure_boot` relies on, before anything is trusted;
+  ADR-0014 keeps an SB-off boot legal -- the SecureBoot fact is
+  recorded, never enforced as policy). Phase 1 no longer boots
+  BIOS-only: both the GRUB/Multiboot2 path and the native OVMF stub
+  path boot the full demo chain
 
 ## Limitation disposition (2026-10-09): why each remaining item is not fixed here
 
@@ -3374,6 +3387,227 @@ whole failure. The scripts DROP the flag (catalogued in-place;
 `-no-reboot` stays as the reboot-loop guard) -- the exit-code
 contract `(value << 1) | 1` is unchanged, the change re-verified
 locally on QEMU 8.2 both toolchains (exit 33 still produced).
+
+### The 26.04 tooling round completed (2026-10-25): full parity under real binutils 2.46, gates keyed on both toolchains
+
+The binutils-2.46 round this section documented as NEXT WORK is now
+DONE, reproduced end to end on this host and landed as record -- not
+catalogued-then-forgotten. The act (the same one the record always
+names as the only acceptable response to a toolchain delta):
+
+1. **A real 26.04 toolchain, unpacked locally.** Ubuntu 26.04's actual
+binutils packages (2.46-3ubuntu2: `binutils-common`, `libbinutils`,
+`binutils-x86-64-linux-gnu`, `binutils`, plus `libsframe3` -- 
+2.46's lld-compat driver needs it) were downloaded from the Ubuntu
+archive pool and unpacked under `target/toolchain-2.46/` (gitignored;
+no container runtime on this host, same as the first 2.46 pass).
+`target/toolchain-2.46/root/usr/bin/ld --version` = "GNU ld (GNU
+Binutils for Ubuntu) 2.46" -- the exact minor the ubuntu-26 runners
+carry.
+
+2. **Full rebuild under 2.46 with the composed artifacts removed
+first.** Every PE provider/client/carrier artifact is rebuildable
+build output, and the composition patchers refuse
+already-composed files by design (idempotence refusal), so the
+rebuild starts from `rm userprog/userprog_pe*.exe *.dll` and
+re-links everything with 2.46's as/ld first in PATH. The build
+produced the EXACT movement deltas the 2.46 card catalogued: the
+provider's Export Directory at 0x4000 (not 0x3000), the composed
+pdata/res blocks at 0x3018 (not 0x2018/0x2018 -- the import block
+moved +0x1000, and the patchers re-derive every address from the
+carrier's own section table, so nothing in them needed changes),
+and `.text` came out vsize 0x20 (not 0x40 -- 2.46 packs the
+single-label client tighter), which moved the pdata entries' spans
+with it -- again loc-by-fact, never a literal.
+
+3. **Both gates plus the boot were re-run under the 2.46-built
+tree.** `tools/verify_prog_layout.sh` keyed every affected fact on
+the ld actually in PATH (its per-version PE-directory catalogue) and
+passed line-for-line; `qemu_boot_test.sh` and
+`qemu_uefi_boot_test.sh` both PASSed against the 2.46-linked
+kernel.elf (local QEMU 8.2 -- the QEMU 10 / 26.04-runner exit
+contract is the card above; its fix is in the scripts, so the same
+contract holds on 10.x).
+
+4. **The baseline re-proven the same day, for an honest parity
+claim.** Back on 2.42/2.43 (the host default), the same
+remove-composition + full rebuild produced build exit 0, the layout
+gate green, the BIOS gate PASS with **294 `OK`-line facts** in the
+transcript (280 before this week; the pdata and resource
+demo -- below -- add the delta), and the UEFI gate PASS. Both
+toolchains carry the SAME kernel-side behavior and the SAME gate
+discipline; the only differences are the catalogued, keyed layout
+literals.
+
+Conclusion, stated as the record always states it: `kernel-boot`'s
+un-pinned `ubuntu-latest` stays un-pinned -- under 26.04's toolchains
+the gate keys correctly, the patchers re-derive correctly, and the
+kernel boots identically; the failure that named this work is
+catalogued at every one of its causes. The next toolchain that drifts
+gets exactly this pass.
+
+## PE increment (2026-10-24): the startup IMAGE_DIRECTORY_ENTRY_EXCEPTION walk -- typed refusals, and a real client whose compliant table verified runs in ring 3
+
+- **Kernel side** (`experimental::pe`, `pe_exception_demo`): the loader
+  now walks `DataDirectory[3]` when the optional header declares it.
+  The walk re-derives every address from the file's own optional header
+  and section table (the single bounds authority, max virtual address
+  = VirtualAddress + VirtualSize per section) and reads the runtime
+  function array ONLY inside the mapped image's bounded span.
+  Per entry: Begin/End addresses must be inside the image and ordered
+  (Begin < End), entries must be sorted and non-overlapping against
+  the previous entry, and each entry's UNWIND_INFO address must itself
+  lie inside the image with a version nibble the x64 ABI defines (0..2
+  -- a version 3 nibble is undefined per ABI and refused). Every
+  refusal is a typed `MalformedExceptionTable(&'static str)` explaining
+  exactly which rule broke.
+- **Client side**: `userprog/prog_pe_pdata.s` -- the same one-assembly
+  fixture as every other PE carrier (a real minimal PE32+ native
+  client built with GNU as/ld only); THREE carriers share it,
+  distinguished solely by bytes the composition patcher lays:
+  `GOOD.exe`'s two non-overlapping entries cover both halves of its
+  `.text` (each naming its own UNWIND_INFO); `MIS.exe`'s second entry
+  genuinely overlaps the first entry's range (begin below its end)
+  -- a real overlapping table, not a truncated one; `VER.exe` carries
+  the undefined version-3 nibble. `tools/patch_pe_pdata.py` composes
+  the directory at `DataDirectory[3]` from each carrier's OWN section
+  facts (48 bytes: two 12-byte entries + two 8-byte UNWIND_INFOs, laid
+  in `.idata`'s in-block alignment padding, with the section's
+  VirtualSize grown to cover exactly the composed bytes -- the same
+  room rule the bound/delay patchers use), then re-parses the file AS
+  WRITTEN and refuses unless the on-disk bytes ARE the composed bytes
+  (the same idempotence-refusal posture as every other patcher).
+- **The refactor's honest cost**: the second draft of the walk had the
+  first shape's disease -- a recursive return that dropped the root's
+  facts and one bounds check placed after a read -- so both walk
+  functions were rewritten cleanly over a single mutable state struct
+  before the first compile, and the first build shook out exactly one
+  real class of bug (const/type width mismatch in the arithmetic),
+  fixed, and only then gates run.
+- **Verified every boot, both toolchains**: the good carrier's load
+  walks its six mapped facts, its entry point runs in ring 3 and
+  writes a magic only its own code could have written
+  (0xC0DE_DA7A_C0DE_DA7A at 0x5500_0010_0000, the digit-swap class
+  named by earlier demo artifacts), then `int $0x8E` (a vector
+  dedicated to `pe_exception_demo`, IDT-registered beside the
+  existing demo vectors); the MIS and VER carriers are each REFUSED at
+  load with their typed reason (the two negative-control windows and
+  the composed deltas are pinned in `tools/verify_prog_layout.sh` like
+  every other patcher family). The demo then chains into the
+  resource-directory increment below, keeping the single linear demo
+  chain. Gate + boot PASS on both toolchains (the 26.04 round card
+  above recorded 294 `-- OK` fact lines including these).
+
+## PE increment (2026-10-24, second): the startup IMAGE_DIRECTORY_ENTRY_RESOURCE walk -- a real two-level tree, ring-3 leaf consumption, three typed refusals
+
+- **Kernel side** (`experimental::pe`, `pe_resource_demo`): the loader
+  now walks `DataDirectory[2]` when declared. The walk: one startup
+  directory, then exactly one NAMED entry and exactly one SUBDIRECTORY
+  entry are followed (the facts struct carries the walk's state
+  explicitly; a mutable NameBuf holds names read out of the image,
+  capped at 64 bytes with the bytes HTML/terminal-escape-safe by
+  regulation -- the transcript must be uncorruptible by a hostile
+  name). The subdirectory resolves exactly one ID entry, then exactly
+  one leaf. Per-directory caps: at most 16 entries named or ID per
+  directory (the walk refuses a 17-slot array: the cap is proven
+  EXCLUSIVE from both sides -- exactly 16 accepted, 17 refused) and
+  depth at most 3. Each leaf's data (a null-terminated string) must
+  land entirely inside the image footprint (a leaf whose bytes run
+  past the image is `MalformedResourceDirectory`, not an unbounded
+  read). Every refusal typed.
+- **Client side**: `userprog/prog_pe_res.s` + `tools/patch_pe_res.py`
+  -- FOUR carriers of the ONE assembly: `GOOD.exe`'s tree is
+  one named entry -> one subdirectory -> one ID entry -> one 8-byte
+  leaf string; the leaf size was deliberately kept within the composed
+  block's footprint so even the good carrier never reads outside what
+  it itself declares; `RBAD.exe` carries the leaf-Size-past-footprint
+  property, `RNAME.exe` an empty length-0 name string, `RMANY.exe` a
+  17-ID over-cap array. The composition lives where the pdata one does
+  (`.idata`'s in-block padding, `dir[2]` pointed at it, VirtualSize
+  grown, on-disk re-parse proves the bytes).
+- **Verified every boot, both toolchains**: the good carrier's load
+  walks the four tree facts, its entry point runs in ring 3, writes
+  its magic, then `int $0x8F` (the vector dedicated to
+  `pe_resource_demo`), whose handler reports the ring-3 result and
+  chains into `experimental::isolation_demo` -- the demo chain stays
+  one line: pe_import -> pe_exception -> pe_resource -> isolation;
+  the three negative controls each refuse at load with their typed
+  reason (windows + pins in the layout gate like every other family).
+  Full build, layout gate, BIOS gate and UEFI gate all PASS on the
+  record date.
+
+## Phase 10 increment (2026-10-25): the SecureBoot variable's protocol proven end-to-end BEFORE it is trusted -- a stub-written variable-services round trip with every answer pinned
+
+- **Why**: `read_secure_boot` (the stub's SecureBoot read, UEFI
+  variable services via the runtime-services table) until now rode on
+  an UNVERIFIED contract: the stub had no way to check that the
+  firmware's GetVariable honors the spec answers it assumes (query
+  pass = `EFI_BUFFER_TOO_SMALL` with the TRUE size; data pass fills
+  the caller's buffer with exactly what was stored). A firmware that
+  lies about one variable's protocol lies about SecureBoot. The
+  checkable-at-every-boot proof is a scratch variable the stub writes
+  ITSELF and knows the bytes of, exercised set/get/query/delete
+  against the LIVE runtime services, dying the boot with the exact
+  failed step if any pin fails.
+- **What the round trip pins** (every step's answer is the spec's):
+  step0 pre-use GET must answer `EFI_NOT_FOUND` (a pre-existing
+  scratch means two boots interleaved); step1 SET of a 4-byte payload
+  (`5aa53cc3`) must be `EFI_SUCCESS`; step2 GET must return exactly
+  those 4 bytes at exactly size 4; step3 a too-small query (size 2
+  offered) must answer `EFI_BUFFER_TOO_SMALL` naming the TRUE size 4
+  -- this is precisely the pass `read_secure_boot` relies on to learn
+  SecureBoot's fixed size of 1; step4 delete-then-get must give
+  `EFI_NOT_FOUND` again. The scratch variable is deliberately
+  VOLATILE (`BOOTSERVICE_ACCESS` only -- no NON_VOLATILE bit) so the
+  check can never write firmware NVRAM.
+- **Two real bugs found and fixed in the act** (the incremental kind
+  that repays building the check):
+  1. The stub's hand-rolled `EFI_RUNTIME_SERVICES` struct was MISSING
+     the spec's SetWakeupTime pointer slot entirely (13 slots where
+     the spec fixes 14) and typed `set_variable` as an untyped slot
+     width -- every pointer from that break on landed in the WRONG
+     table slot. Fixed: `set_variable` typed at the spec signature
+     (name, guid, attributes u32, data_size, data), `set_wakeup_time`
+     slot inserted after `get_wakeup_time`, and the compile-time size
+     assertion corrected to the spec's 24 + 14*8 = 136 bytes so drift
+     cannot re-enter silently.
+  2. The first SetVariable attempts answered `EFI_INVALID_PARAMETER`
+     from BOTH shipped OVMF builds -- while a zero-size delete of the
+     same (nonexistent) variable answered exactly `EFI_NOT_FOUND` and
+     GetVariable stayed spec-perfect through the same call shape,
+     proving the ABI/mechanics correct and the refusal in the
+     firmware's namespace policy: the scratch variable had been named
+     under `gEfiGlobalVariableGuid`, whose namespace the spec reserves
+     for spec-defined names (the edk2 driver-writers guidance says
+     firmware code must never store anything there using it). Fixed
+     by giving the stub its OWN vendor GUID for the scratch variable
+     (`VARCHK_VENDOR_GUID`, a fixed constant documented in `efi.rs`);
+     with it every step passes on real OVMF, securely under the
+     shipped `OVMF_CODE_4M.fd` and the `.ms` build alike.
+- **Wired where it belongs**: `verify_variable_services` runs in
+  `efi_main` immediately after the SecureBoot fact is printed (before
+  allocations), so a lying firmware never reaches a page allocation,
+  let alone `ExitBootServices`. The stub deletes the scratch before
+  EBS in every success path (step4 proves deletion works).
+- **Gate mechanics**: `tools/qemu_uefi_boot_test.sh` now ALSO captures
+  OVMF's DXE debugcon output every run
+  (`target/qemu-uefi-test-ovmf.log`) so a refused firmware call names
+  its own reason on inspection, not only a status code. Recorded
+  transcript (the shipped firmware, `SecureBoot=absent` -- ADR-0014
+  keeps SB-off boot legal, the fact is a fact not policy):
+
+```
+nyrqis ubld: stub alive under UEFI; SecureBoot=absent
+  varchk: step0 get = EFI_NOT_FOUND, correct (nothing written yet)
+  varchk: step1 set (4 bytes) -- EFI_SUCCESS
+  varchk: step2 get -- the 4 stored bytes, exact (5aa53cc3)
+  varchk: step3 too-small query -- EFI_BUFFER_TOO_SMALL with the true size 4
+  varchk: step4 delete then get -- EFI_NOT_FOUND, really gone
+  varchk: variable-services roundtrip OK -- the SecureBoot read's protocol is firmware-honest
+```
+
+  then the full demo chain reaches its final banner and the UEFI gate
+  PASSES with the round trip in it.
 
 ## Bugs found and fixed during Phase 1 bring-up
 
