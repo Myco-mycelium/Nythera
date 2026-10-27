@@ -33,7 +33,7 @@ yet -- noted here so it's not lost by the time Phase 9 starts.
 | 7 | GPU / graphics kernel path | ⬜ Not started | NPS-001 §3, NPS-013 (Accepted) |
 | 8 | Storage integration | ⬜ Not started | NPS-004 (Accepted), NyVault (source/nyhal-linux-backend precedent) |
 | 9 | Gaming subsystem / multi-device | ⬜ Not started | NPS-006, NPS-012, NPS-014 (Accepted) |
-| 10 | Secure Boot / UEFI | 🚧 In progress: native UEFI boot path + a verified SecureBoot variable read are IN; ADR-0014's verification chain (shim-equivalent + Nyrqis-key + optional user MOK) and key-management tooling still open | ADR-0014 (**Accepted** 2026-10-11, AG row I3 — unblocks this phase) |
+| 10 | Secure Boot / UEFI | 🚧 In progress: native UEFI boot path + verified SecureBoot read + the chain's stub half (link-time SHA-256 pin, RSA-2048 carrier over a leaf-over-root chain, five named negative refusals) are IN; the enforcing `.ms` gate enrolls the carrier chain offline and enforces both directions; optional user-MOK enrollment and key-management tooling for real keys still open | ADR-0014 (**Accepted** 2026-10-11, AG row I3 — unblocks this phase) |
 
 ---
 
@@ -1227,9 +1227,18 @@ the chain's first link is landed: the stub verifies the embedded
 kernel image's SHA-256 against the link-time digest at every boot,
 refusing a corrupted or substituted payload before `uefi_entry`
 (Stage-2 integrity pin -- the second 2026-10-25 card). What remains in
-this phase is the chain's authenticated half -- the Nyrqis-key and
-optional-user-MOK verification (signature carriers once the key
-store lands) -- and the key-management tooling the ADR's accepted
-text names; a current SB-off boot
+this phase is the chain's user-facing remainder. The chain's stub
+half is IN (the second 2026-10-25 card plus the 2026-10-26 carrier
+cards): the RSA-2048 carrier is verified over the SAME bytes the stub
+boots, a leaf-over-root two-certificate chain is in the pin, and five
+generated negative carriers refuse for their named reasons at every
+boot. The chain's firmware-facing half is gated both directions on
+the enforcing `.ms` image (the 2026-10-27 card): the carrier chain is
+enrolled offline as PK/KEK/db, the leaf-signed stub is accepted under
+SecureBoot=1, and the unsigned and one-byte-tampered signed stubs are
+refused BY THE FIRMWARE. Still open is what the ADR's accepted text
+names beyond bring-up: the optional-user-MOK enrollment path and the
+key-management tooling for real keys (today's offline store is
+dev-only), plus expiry/revocation reading. A current SB-off boot
 stays legal per that ADR -- the SecureBoot fact is recorded, never
 enforced as policy.

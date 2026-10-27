@@ -3861,6 +3861,11 @@ PASS: trust walk proves positive + 4 refusal paths on the real carrier bytes
   the `.ms` sibling image compiles the enforcement in but then
   refuses to even LOAD an unsigned stub (BdsDxe "Access Denied") --
   so no bundled image can both run the stub and host the service.
+  (2026-10-27 update: that is only a wall for UNAPPROVED images -- the
+  2026-10-27 card below enrolls the carrier chain itself and
+  leaf-signs the stub, so the enforcing image now both RUNS the stub
+  and hosts the service; the stub's OWN db write is still refused
+  there, and that gate's transcript records it as the named fact.)
   The enrollment records the refusal as the known, named fact it
   now is, and the boot proceeds -- which was always its contract.
 - **The wandering 'timeouts' are explained, and the real cause is
@@ -3900,34 +3905,56 @@ PASS: trust walk proves positive + 4 refusal paths on the real carrier bytes
   stub itself in step 4, the db write is refused by the image as
   documented, and the negative probes are disabled) -- recorded as
   the physical evidence, not asserted from code.
-- **The .ms OVMF path now ENFORCES, both directions, from a scripted
-  gate: `tools/qemu_uefi_ms_secboot_test.sh`.** The enforcing sibling
-  image refuses an unsigned stub (BdsDxe "Access Denied"), so the
-  firmware-facing half of ADR-0014 is closed with the real artifact:
-  the carrier chain's own key hierarchy becomes the firmware's.
-  Offline, from the shipped `.ms` template, `virt-fw-vars` (pip name
-  `virt-firmware`) composes the store: the carrier ROOT as PK and KEK,
-  root + leaf certificates in db, `SecureBootEnable` ON. `sbsign`
-  signs the stub with the LEAF key (its certificate is enrolled
-  verbatim, so the firmware's `AuthenticodeVerify` binds the signer on
-  sight), and the signed stub is installed at the fallback boot path.
-  Two boots assert both directions: positive -- signed stub under
-  enforcement loads with `SecureBoot=1` and PK PRESENT (not
-  SetupMode), the stub's own carrier walk still proves the kernel
-  image, and the boot reaches Ready (host exit 33, the same contract
-  as the non-ms gate); negative -- the same store with the UNSIGNED
-  stub refuses at the boot manager and no stub line ever prints (the
-  refused VM idles, caught by the run's timeout).
-  Two enrollment traps are catalogued because both cost a debugging
-  cycle: `virt-fw-vars` with `-i` alone only PLANS its changes -- the
-  store on disk keeps the template's keys unless `--inplace` (or
-  `-o`) is passed, and with the template's Microsoft keys still read
-  as authoritative the firmware then refuses even a correctly-signed
-  image, which sent the first suspect list to the wrong place (the
-  signature); and the negative boot must be asserted by ABSENCE
-  (`Access Denied` AND no `stub alive` line), because a refused boot
-  does not exit -- it idles in the boot-manager loop until the
-  timeout, which is the verdict, not a hang.
+## Phase 10 increment (2026-10-27): the ADR-0014 chain's firmware-facing half GATES both directions on the enforcing .ms OVMF image -- the leaf-signed stub accepted under SecureBoot=1, the unsigned and the one-byte-tampered signed stubs refused BY THE FIRMWARE
+
+- **What this is, honestly scoped.** The chain's firmware-facing
+  half -- the piece the third card could only attempt honestly, when
+  the plain image hosted no authenticated-variable service and the
+  `.ms` sibling refused an unsigned stub outright. On the enforcing
+  `.ms` image the carrier chain's OWN dev key hierarchy becomes the
+  firmware's, and the stub is Authenticode-signed with the leaf key:
+  the FIRMWARE, not the stub, is the gate deciding which images may
+  load, while the stub's own carrier walk still proves the kernel
+  image inside the image the firmware already allowed.
+- **The store is composed offline from the PLAIN variable-store
+  template, not the `.ms` one** (`virt-fw-vars`, pip name
+  `virt-firmware`): the carrier ROOT as PK and KEK, root + leaf
+  certificates in db, `SecureBootEnable` ON. The plain template is
+  deliberate: `virt-fw-vars` only ADDs entries to a store it reads,
+  never removes them, so a `.ms`-template copy would keep the
+  template's Microsoft authorities in KEK/db and the composed store
+  would not be the one this gate claims to prove against (extracting
+  the certs from the first composition showed exactly that merge).
+  The signer certificate is enrolled verbatim (the leaf), so
+  `AuthenticodeVerify` binds the stub's signer on sight -- no
+  cross-signing ceremony needed for the dev chain.
+- **Three boots, one script, all three assertions physical.**
+  `tools/qemu_uefi_ms_secboot_test.sh` runs the same kernel+stub
+  build as the non-ms gate, then: positive -- the signed stub loads
+  under enforcement with `SecureBoot=1` and PK PRESENT (not
+  SetupMode), walks its carrier chain the usual way, and the kernel
+  reaches Ready (host exit 33, the same contract); negative 1 -- the
+  UNSIGNED stub against the same store: the boot manager's "Access
+  Denied", and no stub line ever prints (the refused VM idles, caught
+  by the run's timeout); negative 2 -- the SAME signed image with ONE
+  flipped byte inside its first hash-covered section (the probe
+  parses the PE's own section table and flips one bit half-way
+  through the data, so no header or certificate byte changes): also
+  refused the same way -- enforcement covers signed-but-modified
+  images, not only unsigned ones. The negative verdicts are asserted
+  by ABSENCE (`Access Denied` AND no `stub alive` line), because a
+  refused boot does not exit -- it idles in the boot-manager loop
+  until the timeout, which is the verdict, not a hang.
+- **Two enrollment traps cost a debugging cycle and are catalogued.**
+  First, `virt-fw-vars` with `-i` alone only PLANS its changes -- the
+  store on disk keeps the template's Microsoft keys, and the firmware
+  then refuses even a correctly-signed image, which sent the first
+  suspect list to the wrong place (the signature); the script now
+  passes `--inplace` explicitly, and asserts the enrollment it meant
+  to write by printing the composed store's shape. Second, the stub
+  is signed with the LEAF (not the root) so the db's verbatim leaf
+  entry is the one AuthenticodeVerify binds; a root-signed stub
+  would have introduced a needless second trust question.
 
 ## Bugs found and fixed during Phase 1 bring-up
 

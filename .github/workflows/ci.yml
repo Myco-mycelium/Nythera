@@ -78,11 +78,16 @@
 # - `rust-wayland`: builds and tests the ADR-0026 crate (the Wayland
 #   display-server client for Nyrqis shell rendering).
 # - `backend`: the pure-Python correctness floor.
-# - `kernel-boot`: the nykernel's TWO boot gates as real emulated boots,
-#   not just "it links": tools/qemu_boot_test.sh (GRUB/Multiboot2 BIOS,
-#   kernel reaches BootPhase::Ready and exits via isa-debug-exit ->
-#   status 33) and tools/qemu_uefi_boot_test.sh (the same contract on
-#   the native OVMF/UEFI stub handoff), plus
+# - `kernel-boot`: the nykernel's THREE boot gates as real emulated
+#   boots, not just "it links": tools/qemu_boot_test.sh
+#   (GRUB/Multiboot2 BIOS, kernel reaches BootPhase::Ready and exits
+#   via isa-debug-exit -> status 33),
+#   tools/qemu_uefi_boot_test.sh (the same contract on the native
+#   OVMF/UEFI stub handoff), and tools/qemu_uefi_ms_secboot_test.sh
+#   (the ENFORCING .ms OVMF image with the carrier chain enrolled as
+#   PK/KEK/db offline: the leaf-signed stub accepted under
+#   SecureBoot=1, the unsigned and the one-byte-tampered signed stubs
+#   both refused by the firmware), plus
 #   tools/qemu_boot_parity_diff.sh, which re-runs BOTH gates and then
 #   cross-checks their guest transcripts: the kernel-side demo chain
 #   must be line-identical after removing only a DOCUMENTED allowlist
@@ -772,7 +777,7 @@ jobs:
         with:
           components: rust-src
       - name: Install the boot-emulation toolchain
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 mtools grub-pc-bin xorriso ovmf
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 mtools grub-pc-bin xorriso ovmf sbsigntool && pipx install virt-firmware
       - name: Provide the OVMF firmware the scripts expect
         # uefi/tools/ is UNTRACKED by policy (external x86-64 firmware
         # binaries, see nykernel-package/.gitignore), so its directory
@@ -784,6 +789,18 @@ jobs:
           mkdir -p uefi/tools
           cp /usr/share/OVMF/OVMF_CODE_4M.fd uefi/tools/
           cp /usr/share/OVMF/OVMF_VARS_4M.fd uefi/tools/
+          # The .ms ENFORCING siblings must come the same way (the ms
+          # gate's FAKECODE/FAKEVARS_TMPL). A distro whose ovmf package
+          # stopped shipping them fails LOUDLY here with the directory
+          # transcript, not as a cryptic gate refusal downstream.
+          for f in OVMF_CODE_4M.ms.fd OVMF_VARS_4M.ms.fd; do
+            if [[ ! -f /usr/share/OVMF/$f ]]; then
+              echo "FAIL: the distro ovmf package does not ship $f; /usr/share/OVMF contains:" >&2
+              ls -la /usr/share/OVMF >&2 || true
+              exit 1
+            fi
+            cp "/usr/share/OVMF/$f" uefi/tools/
+          done
       - name: BIOS gate (GRUB/Multiboot2 reach BootPhase::Ready, exit 33)
         run: |
           mkdir -p target   # fresh checkout has no target/ (gitignored); a redirect into a missing dir would fail the gate before it ever ran
@@ -806,6 +823,22 @@ jobs:
             . /etc/os-release
             echo "::error::UEFIgate env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1) / rustc $(rustc -vV | sed -n 's/^release: //p')"
             ./tools/ci_emit_annotations.sh target/uefi-gate.log UEFIgate
+          fi
+          exit $S
+      - name: ms secure-boot gate (enforced .ms OVMF - leaf-signed stub accepted, unsigned and tampered refused)
+        # virt-fw-vars is pipx-installed (the distro pip is PEP 668
+        # locked); its binary lands in ~/.local/bin, which the gate
+        # already covers with its own PATH fallback.
+        run: |
+          mkdir -p target
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          ./tools/qemu_uefi_ms_secboot_test.sh > target/ms-secboot-gate.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            . /etc/os-release
+            echo "::error::MSsecboot env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1) / $(sbsign --version 2>&1 | head -1) / $(command -v virt-fw-vars >/dev/null || echo virt-fw-vars-MISSING)"
+            ./tools/ci_emit_annotations.sh target/ms-secboot-gate.log MSsecboot
           fi
           exit $S
       - name: Transcript parity (BIOS and UEFI demo chains line-identical)

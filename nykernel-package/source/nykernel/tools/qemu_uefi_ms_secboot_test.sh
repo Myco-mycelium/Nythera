@@ -2,22 +2,32 @@
 #
 # qemu_uefi_ms_secboot_test.sh -- the secure-boot-enforcing twin of
 # qemu_uefi_boot_test.sh. Same kernel+stub build, but the firmware is
-# the enforcing OVMF (-4M.ms) image and the variable store is FRESHLY
-# enrolled (from the shipped .ms template) with the carrier chain
-# itself: the ADR-0014 root pair as PK/KEK, root+leaf certificates in
-# db, SecureBootEnable on. The stub is then Authenticode-signed with
+# the enforcing OVMF (-4M.ms) CODE image and the variable store is
+# FRESHLY composed from the PLAIN variable-store template with the
+# carrier chain itself: the ADR-0014 root pair as PK/KEK, root+leaf
+# certificates in db, SecureBootEnable on. The plain (not .ms)
+# template is deliberate: virt-fw-vars can only ADD entries to a
+# template it reads, never remove them, so a .ms-template copy would
+# keep the template's Microsoft authorities in KEK/db -- the written
+# store would not be the store this gate claims to prove against. The stub is then Authenticode-signed with
 # the leaf key (sbsign) and installed on the ESP, so the FIRMWARE's
 # verification -- not ours -- is the gate the stub passes, and the
 # stub's own carrier walk (which anchors the same root) still enforces
-# the kernel image inside it. Two boots assert both directions:
+# the kernel image inside it. THREE boots assert all directions:
 #
 # positive: signed stub under enforcement -> firmware accepts it, the
 #   stub reads SecureBoot=1 with PK present (not SetupMode), the
 #   carrier chain verifies over the kernel, and the boot reaches Ready
 #   (host exit code 33, the same contract as the non-ms gate).
-# negative: the UNSIGNED stub against the same enforcing store -> the
-#   firmware refuses it at the boot manager ("Access Denied") and the
-#   boot never reaches the stub (host timeout catches the idle loop).
+# negative (unsigned): the UNSIGNED stub against the same enforcing
+#   store -> the firmware refuses it at the boot manager ("Access
+#   Denied") and the boot never reaches the stub (host timeout
+#   catches the idle loop).
+# negative (tampered): the SAME signed image with ONE flipped byte
+#   inside a hash-covered section -> the signature stops matching the
+#   bytes it covers and the firmware must refuse it the same way;
+#   enforcement covers signed-but-modified images, not only images
+#   with no signature at all.
 #
 # This is what CI should run to prove the ms OVMF path, the same way
 # qemu_uefi_boot_test.sh proves the default OVMF path.
@@ -26,10 +36,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 FAKECODE=uefi/tools/OVMF_CODE_4M.ms.fd
-FAKEVARS_TMPL=uefi/tools/OVMF_VARS_4M.ms.fd
-for f in "$FAKECODE" "$FAKEVARS_TMPL"; do
+VARS_TMPL=uefi/tools/OVMF_VARS_4M.fd
+for f in "$FAKECODE" "$VARS_TMPL"; do
     if [[ ! -s "$f" ]]; then
-        echo "FAIL: ms OVMF image missing: $f"
+        echo "FAIL: OVMF image missing: $f"
         exit 1
     fi
 done
@@ -53,7 +63,7 @@ if [[ ! -f "$STUB_EFI" ]]; then
     exit 1
 fi
 
-for tool in sbsign sbverify mformat mmd mcopy qemu-system-x86_64; do
+for tool in sbsign sbverify mformat mmd mcopy qemu-system-x86_64 python3; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "FAIL: required tool missing: $tool"
         exit 1
@@ -65,12 +75,10 @@ if [[ ! -x "$VIRT" ]]; then
     exit 1
 fi
 
-# --- compose the enforcing store from the shipped ms template ---
-# The template itself carries the Microsoft PK/KEK with
-# SecureBootEnable ON, which refuses our unsigned images no matter
-# what our db says; enrollment REPLACES that authority with the
-# carrier chain's own (dev-only, bring-up): root as PK and KEK, both
-# certificates in db. Ownership GUIDs are the standard ones.
+# --- compose the enforcing store from the PLAIN template ---
+# See the header: the .ms template's own keys would MERGE into the
+# composition (virt-fw-vars adds, never removes), so the store starts
+# from the plain template and receives exactly the carrier chain.
 ROOT_CERT=uefi/tools/trust/carrier-dev-cert.pem
 LEAF_CERT=uefi/tools/trust/carrier-dev-leaf-cert.pem
 LEAF_KEY=uefi/tools/trust/carrier-dev-leaf-key.pem
@@ -83,11 +91,11 @@ done
 GLV=8be4df61-93ca-11d2-aa0d-00e098032b8c   # EFI_GLOBAL_VARIABLE
 ISD=d719b2cb-3d3a-4596-a3bc-dad00e67656f   # EFI_IMAGE_SECURITY_DATABASE_GUID
 STORE=uefi/dist/VARS.ms-secboot.fd
-cp "$FAKEVARS_TMPL" "$STORE"
+cp "$VARS_TMPL" "$STORE"
 # NOTE: --inplace (or -o) is REQUIRED to write back; virt-fw-vars with
-# -i alone only PLANS the changes, the store on disk keeps the
-# template's Microsoft keys and the firmware then refuses even our
-# correctly-signed stub.
+# -i alone only PLANS the changes -- the store on disk keeps the
+# template as-is, and the firmware then refuses even a correctly-signed
+# stub.
 "$VIRT" --inplace "$STORE" \
     --set-pk "$GLV" "$ROOT_CERT" \
     --add-kek "$GLV" "$ROOT_CERT" \
@@ -95,6 +103,8 @@ cp "$FAKEVARS_TMPL" "$STORE"
     --add-db "$ISD" "$LEAF_CERT" \
     --sb > /dev/null
 echo "==> enrolled enforcing store: PK/KEK anchored on the carrier root, root+leaf in db, SecureBootEnable ON"
+echo "==> composed store shape (what the firmware will actually read):" && \
+    "$VIRT" -i "$STORE" -p 2>/dev/null | grep -E "PK |KEK |db |SecureBoot" || true
 
 # --- Authenticode-sign the stub with the leaf key ---
 # The signer certificate must be one the firmware's db can bind
@@ -104,7 +114,46 @@ SIGNED_STUB=uefi/dist/nyrqis_uefi_stub-signed.efi
 sbsign --key "$LEAF_KEY" --cert "$LEAF_CERT" "$STUB_EFI" --output "$SIGNED_STUB" > /dev/null
 sbverify --list "$SIGNED_STUB" | head -4
 
-# --- two ESP images: one with the signed stub, one with the raw one ---
+# --- ONE-byte tamper of the SAME signed image ---
+# Flips one bit INSIDE the first hash-covered section (mid-way through
+# its raw data), leaving every header byte and the certificate table
+# untouched: the PE still parses, the signature is still present, and
+# the signed content no longer matches the bytes it covers -- exactly
+# the damage enforcement must catch on a signed-but-modified image.
+TAMPERED_STUB=uefi/dist/nyrqis_uefi_stub-tampered.efi
+python3 - "$SIGNED_STUB" "$TAMPERED_STUB" <<'PYEOF'
+import struct, sys
+src, dst = sys.argv[1], sys.argv[2]
+data = bytearray(open(src, 'rb').read())
+pe = struct.unpack_from('<I', data, 0x3c)[0]
+assert data[pe:pe + 4] == b'PE\x00\x00', 'tamper probe: not a PE image'
+coff = pe + 4
+nsec = struct.unpack_from('<H', data, coff + 2)[0]
+optsz = struct.unpack_from('<H', data, coff + 16)[0]
+table = coff + 20 + optsz
+chosen = None
+for i in range(nsec):
+    s = table + 40 * i
+    name, _vsize, _va, rawsize, ptr = struct.unpack_from('<8sIIII', data, s)
+    if rawsize > 0:
+        chosen = (name.rstrip(b'\x00').decode('latin-1'), ptr, rawsize)
+        break
+assert chosen is not None, 'tamper probe: no raw section found'
+name, ptr, rawsize = chosen
+off = ptr + rawsize // 2
+assert off + 16 < len(data), 'tamper probe: mid-section reaches the cert area'
+before = data[off]
+data[off] ^= 0x80
+open(dst, 'wb').write(data)
+print(f'tamper: flipped top bit at {name}[{off}] '
+      f'(0x{before:02x} -> 0x{data[off]:02x}), size unchanged ({len(data)})')
+PYEOF
+cmp -s "$SIGNED_STUB" "$TAMPERED_STUB" && {
+    echo "FAIL: tampered stub is identical to the signed one"
+    exit 1
+}
+
+# --- three ESP images: signed, unsigned, and tampered-signed ---
 mk_esp() {
     rm -f "$1"
     mkdir -p uefi/dist/EFI/BOOT
@@ -114,8 +163,10 @@ mk_esp() {
 }
 ESP_SIGNED=uefi/dist/esp-signed.img
 ESP_UNSIGNED=uefi/dist/esp-unsigned.img
+ESP_TAMPERED=uefi/dist/esp-tampered.img
 mk_esp "$ESP_SIGNED" "$SIGNED_STUB"
 mk_esp "$ESP_UNSIGNED" "$STUB_EFI"
+mk_esp "$ESP_TAMPERED" "$TAMPERED_STUB"
 
 boot_qemu() { # $1 esp image, $2 serial log, $3 timeout seconds
     timeout "$3" qemu-system-x86_64 \
@@ -157,34 +208,43 @@ elif [[ "$POS_STATUS" -eq 124 ]]; then
     echo "FAIL: positive boot timed out (firmware refused or hung)"
 fi
 
-# --- negative: the unsigned stub must be refused BY THE FIRMWARE ---
-# 240 s settle: the Access-Denied refusal happens in the first ~30 s
-# of BdsDxe; anything still alive at 240 s is the refused boot sitting
-# in the boot-manager loop, exactly the negative verdict we assert.
-echo "==> negative boot: the same store, the UNSIGNED stub"
-boot_qemu "$ESP_UNSIGNED" target/qemu-uefi-ms-secboot-negative.log 240
-NEG_STATUS=$?
-echo "--- negative serial (key lines) ---"
-grep -a -E "Access Denied|Security Violation|Image is not|stub alive" \
-    target/qemu-uefi-ms-secboot-negative.log || true
-echo "-----------------------------------"
-# No stub line may appear at all: the refusal must belong to the
-# FIRMWARE (DB idle at the boot manager), not to anything that got
-# past it. The idle-refused VM is the 480 s festival (timeout 124).
-NEG_OK=0
-if [[ "$NEG_STATUS" -eq 124 ]] \
-   && grep -aq "Access Denied" target/qemu-uefi-ms-secboot-negative.log \
-   && ! grep -aq "stub alive" target/qemu-uefi-ms-secboot-negative.log; then
-    NEG_OK=1
-elif [[ "$NEG_STATUS" -eq 33 ]]; then
-    echo "FAIL: the unsigned stub BOOTED under enforcement -- enforcement is not real"
-fi
+# --- negatives: refusals must belong to the FIRMWARE ---
+# 240 s settle per case: the Access-Denied refusal happens in the
+# first ~30 s of BdsDxe; anything still alive at 240 s is the refused
+# boot sitting in the boot-manager loop, exactly the negative verdict
+# we assert: timeout 124, the boot manager's "Access Denied", and NO
+# stub line of any kind -- nothing got past the firmware's own check.
+refused_by_firmware() { # $1 esp, $2 log, $3 label; sets FW_REFUSED
+    FW_REFUSED=0
+    boot_qemu "$1" "$2" 240
+    S=$?
+    echo "--- $3 serial (key lines) ---"
+    grep -a -E "Access Denied|Security Violation|Image is not|stub alive" "$2" || true
+    echo "-------------------------------"
+    if [[ "$S" -eq 124 ]] \
+       && grep -aq "Access Denied" "$2" \
+       && ! grep -aq "stub alive" "$2"; then
+        FW_REFUSED=1
+    elif [[ "$S" -eq 33 ]]; then
+        echo "FAIL: $3 BOOTED under enforcement -- enforcement is not real"
+    else
+        echo "note: $3 did not match the expected refusal shape (status $S, see $2)"
+    fi
+}
+
+echo "==> negative boot 1/2: the same store, the UNSIGNED stub"
+refused_by_firmware "$ESP_UNSIGNED" target/qemu-uefi-ms-secboot-negative.log "the unsigned stub"
+NEG_OK=$FW_REFUSED
+
+echo "==> negative boot 2/2: the same store, the SIGNED-BUT-TAMPERED stub"
+refused_by_firmware "$ESP_TAMPERED" target/qemu-uefi-ms-secboot-tampered.log "the tampered stub"
+TAMPER_OK=$FW_REFUSED
 
 set -e
 
-if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 ]]; then
-    echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses the unsigned one, and the kernel reached Ready"
+if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 ]]; then
+    echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses both the unsigned one and the one-byte-tampered signed one, and the kernel reached Ready"
     exit 0
 fi
-echo "FAIL: ms OVMF secboot test failed (positive status $POS_STATUS marker_ok=$POS_OK, negative status $NEG_STATUS marker_ok=$NEG_OK)"
+echo "FAIL: ms OVMF secboot test failed (positive status $POS_STATUS marker_ok=$POS_OK, unsigned refusal_ok=$NEG_OK, tampered refusal_ok=$TAMPER_OK)"
 exit 1
