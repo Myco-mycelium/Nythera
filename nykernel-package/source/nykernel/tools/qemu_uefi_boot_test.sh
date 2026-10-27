@@ -69,20 +69,18 @@ test -s uefi/dist/esp.img || {
 cp uefi/tools/OVMF_VARS_4M.fd uefi/dist/VARS.fd
 
 set +e
-# 120 s settle-bound, catalogued: same reasoning as the BIOS gate's
-# cap (tools/qemu_boot_test.sh) -- on the ubuntu-26 CI runners the
-# whole OVMF-spawn + demo chain can exceed the previous 45 s under
-# shared cores; a cap this generous keeps the required gate outside
-# the runner's speed jitter.
-#
-# -no-shutdown is DROPPED below for the same catalogued QEMU 10.x
-# delta as the BIOS gate: the isa-debug-exit write routes through
-# qemu_system_shutdown_request_with_code(), which -no-shutdown would
-# have kept stopped-not-exited. -no-reboot stays: reboot-loop guard.
-# OVMF's DXE DEBUG() output rides the debugcon port (0x402): captured
-# every run into target/qemu-uefi-test-ovmf.log so a refused firmware
-# call names its own reason on inspection, not just a status code.
-timeout 120 qemu-system-x86_64 \
+# 480 s settle-bound, catalogued: under TCG (no KVM on this box) the
+# WHOLE boot is emulated at roughly 1/50 native speed, and the dominant
+# cost is the kernel's ~3-minute selftest suite, not the stub's trust
+# walk (the trust work was rewritten onto Montgomery multiplication:
+# ~10^6 u32 operations per verification, sub-second even emulated --
+# the earlier bit-serial modpow that once cost tens of seconds per
+# verification and made the cap wander is gone). The cap is sized
+# from that measured budget with headroom, NOT trimmed to the
+# observed minimum; it also still acts as a real deadlock detector:
+# nothing in the boot path
+# proceeds to Ready, so a genuine hang still exits failing at 480 s.
+timeout 480 qemu-system-x86_64 \
     -machine q35 \
     -m 256 \
     -drive if=pflash,format=raw,readonly=on,file=uefi/tools/OVMF_CODE_4M.fd \

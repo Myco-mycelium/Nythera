@@ -3676,6 +3676,259 @@ nyrqis ubld: integrity control OK -- a one-bit-flipped copy hashes differently, 
   any allocation). The BIOS path is structurally unaffected: GRUB
   loads the kernel directly and the stub never runs there.
 
+## Phase 10 increment (2026-10-26): the ADR-0014 chain lands its SECOND link -- the stub verifies an RSA-2048 PKCS#1 v1.5 carrier signature over the SAME bytes it boots, every boot, refusal named or halting
+
+- **What this is, honestly scoped.** The accepted chain is
+  shim-equivalent + Nyrqis key + optional user MOK. Link one (the
+  2026-10-25 increment) was the INTEGRITY pin. This increment is the
+  AUTHENTICATED half of the shim-equivalent stage: the stub now
+  include_bytes!es TWO more artifacts that `build.sh` writes right
+  after the kernel links -- `uefi/src/trusted-root.der` (a self-signed
+  X.509 anchor certificate) and `uefi/src/carrier.der` (a DETACHED,
+  attrless PKCS#7/CMS SignedData over the full kernel image) -- and
+  between the sha256 pin and `elf::parse` it walks the carrier and
+  verifies the RSA-2048 PKCS#1 v1.5 signature over
+  sha256(kernel bytes). What this buys now: a kernel image whose
+  bytes do not verify against the embedded anchor CANNOT reach
+  `uefi_entry` silently, sha256-identical to a build artifact or not.
+  Still open, named: no chain-of-trust beyond one self-signed dev
+  anchor (no PK/KEK/db carriers), no enrollment UI, no expiry or
+  revocation reading (the stub has no RTC and pins the anchor
+  byte-for-byte instead), no Authenticode/PE signature -- those are
+  the next Phase 10 increments.
+- **The stub side is hand-rolled and STILL not trusted unreviewed**
+  (`uefi/src/der.rs`, `uefi/src/rsa.rs`, `uefi/src/trust.rs`):
+  RFC-pinned walk at every step -- X.690 TLV with definite lengths
+  only (`der.rs`, indefinite + >4-byte lengths refused), a fixed
+  2048-bit bignum with an exact 65-limb accumulator and e=65537
+  public-key modpow (`rsa.rs`), and the CMS one-carrier walk
+  (`trust.rs`): ContentInfo -> SignedData -> digestAlgorithms SHA-256
+  -> encapContentInfo WITHOUT eContent (a carrier carrying its own
+  payload is refused -- the stub verifies ITS OWN copy of the bytes,
+  not a second copy shipped for it) -> certificates [0] -> one
+  SignerInfo whose sid must byte-equal the anchor's issuer+serial,
+  whose signatureAlgorithm must be rsaEncryption or
+  sha256WithRSAEncryption, and whose signedAttrs being present is a
+  refusal (`-noattr` is the carrier contract). Every refusal is a
+  separate '&static str' naming the exact step; the boot dies on all
+  of them.
+- **The trust anchor is byte-equality, not a chain walk.** The
+  carrier's embedded signer certificate must BYTE-EQUAL the embedded
+  anchor DER, and the anchor itself is parsed only enough to extract
+  its RSA SPKI (modulus + exponent) and its issuer/serial. The
+  anchor's own self-signature is deliberately NOT verified: a
+  signature whose key would be what the signature proves can add
+  nothing over byte equality, and the honest statement of what this
+  stage trusts is "the developer's key, in the stub, as source".
+  Enrollment is the next increment, not a hidden chain walk here.
+- **The signer side is `tools/make_carrier.sh`, called by
+  `build.sh` right after the kernel link and the sha256 record.** It
+  generates a dev RSA-2048 key (e=65537) and self-signed anchor
+  certificate ONCE into `uefi/tools/trust/` (gitignored; regenerated
+  only when absent, and rebuilt whenever the cert disagrees with the
+  key on disk), converts the certificate to DER, then `openssl cms
+  -sign -binary -md sha256 -noattr -outform DER` the kernel image --
+  DETACHED, so the carrier is ~1.4 kB, not a second 7 MB copy -- and
+  SELF-VERIFIES its own output with `openssl cms -verify -noverify`
+  before returning. The signature is deterministic for key+content
+  (no signedAttrs, no randomness in PKCS#1 v1.5), so the carrier
+  bytes change exactly when the kernel image does: cargo recompiles
+  the stub on a kernel change and only then.
+- **Both halves are pinned at every boot by the same live-control
+  pattern as the sha256 check**: the positive path verifies over the
+  REAL bytes, then a one-bit-flipped COPY of the content must arrive
+  at a named refusal ("rsa: DigestInfo digest differs") -- if a
+  flipped copy verified, the comparison above would not be a check,
+  and the boot dies naming that. The transcript that ships this:
+
+```
+nyrqis ubld: sha256 known-answer vectors OK
+nyrqis ubld: kernel image sha256 computed = ... (unchanged link)
+nyrqis ubld: carrier verify: pinning the signer certificate against the embedded anchor, then walking the detached carrier
+nyrqis ubld: carrier verify OK -- RSA-2048 PKCS#1 v1.5 signature over the SAME bytes about to be loaded
+nyrqis ubld: carrier refusal-path control OK -- a one-bit-flipped copy verifies to a named refusal, the trust path is alive
+```
+
+- **The carrier blob missing is a refusal with a name, not a silent
+  pass.** `include_bytes!` on an absent file fails the compile (the
+  stub cannot build without the two DERs, by construction, the same
+  property kernel.sha256 has); a file written empty is refused at
+  the first named check; everything else is refused by one of the
+  walk's named steps. The refusal-path walking host-side lives in
+  `uefi/tests/trust_selfcheck.rs` (rustc, not cargo, no UEFI
+  needed): run against the REAL carrier bytes it proves the
+  positive path plus four refusal paths (flipped content, flipped
+  anchor, flipped carrier, truncated carrier) in one command, which
+  is how the walk was pinned BEFORE the UEFI gate saw it:
+
+```
+-- OK 1: carrier verifies over the 7269152-byte kernel image
+-- OK 2: flipped content refused at the digest comparison: rsa: DigestInfo digest differs from the message digest
+-- OK 3: flipped anchor refused (256 bytes, pin at offset 842)
+-- OK 4: flipped carrier refused: carrier: the signer certificate's DER does not byte-equal the embedded trusted anchor
+-- OK 5: truncated carrier refused
+PASS: trust walk proves positive + 4 refusal paths on the real carrier bytes
+```
+
+- **The UEFI gate ran and PASSED with the carrier check in it**
+  (recorded 2026-10-26): `tools/qemu_uefi_boot_test.sh` rebuilt
+  everything from source in the same order as always, the stub was
+  built against the fresh kernel image, and the FULL demo chain ran
+  to its `BootPhase::Ready` exit-code contract under OVMF -- boot
+  exit 33, kernel transcript complete, with the carrier lines above
+  sitting between the sha256 pin and the kernel's own boot banner.
+  The BIOS path is structurally unaffected: GRUB loads the kernel
+  directly and the stub never runs there.
+
+## Phase 10 increment (2026-10-26, second): the ADR-0014 chain lands its THIRD link -- the carrier is signed by a LEAF over the root anchor (a real two-certificate chain), five generated negative carriers must refuse for their NAMED reasons, and the boot side attempts the chain's firmware-facing half (a db enrollment) honestly, recording what the firmware wills
+
+- **The certificate chain is real now.** `tools/make_carrier.sh`
+  reuses the self-signed root (the previous increment's anchor),
+  generates a fresh LEAF RSA-2048 key + leaf certificate signed BY
+  the root (keyCertSign on the root, digitalSignature on the leaf),
+  and signs the carrier with the leaf -- `openssl cms -sign -binary
+  -md sha256 -noattr -outform DER`, detached, exactly as before. The
+  stub unchanged in its contract: pin the embedded signer
+  certificate, then verify the signature. What changed UNDER the
+  pin is that the embedded signer certificate is no longer the
+  anchor itself: it is the leaf, and the leaf must VERIFY under the
+  anchor's key (issuer+serial chain, keyUsage carried correctly:
+  the BIT STRING's named bits count from the MSB -- root
+  keyCertSign is `03 02 01 06`, leaf digitalSignature is `03 02 07
+  80`, confirmed against `openssl asn1parse` before pinning the
+  masks, because an LSB-first guess parses straight past). The
+  host selfcheck and the boot transcript both exercise the chain.
+- **The gate for a substituted signer got harder for free.** The
+  previous design refused ANY flip of the anchor bytes by an anchor
+  byte-equality pin; the chain design does not verify the anchor's
+  own self-signature (a signature proves the key made it -- the key
+  is WHY the chain starts at the anchor, so that statement is
+  inert). What that leaves protected is exactly what matters: a
+  corrupted anchor KEY is refused (the chain's root verification
+  now fails), which the UEFI gate's negative-anchor control proves
+  by name (`carrier: the embedded signer certificate is not the
+  anchor and does not verify under the anchor's key (no chain to
+  the root)`). The old harness check that pinned ANY anchor-byte
+  flip therefore no longer applies; it was REWRITTEN to flip inside
+  the parsed modulus and expect the named chain refusal.
+- **Five negative carriers are generated and must refuse, each for
+  its own named reason.** `tools/patch_carrier_negatives.py` is a
+  DER-aware byte-surgery tool (TLV lengths walked per X.690 so a
+  corruption that changes sizes knows which ones to fix); it emits
+  the digest, anchor, sid, signedAttrs, attached-eContent variants.
+  The stub's boot path (`main.rs`) embeds all five via
+  `include_bytes!` (compile fails when any is missing -- the stub
+  cannot be built without proof of its refusal set) and MUST refuse
+  every one of them by a substring of the walk's own refusal text;
+  a negative refusing for the WRONG reason (a parse truncation that
+  skipped the real check) also dies by name. `uefi/tests/
+  trust_selfcheck.rs` grew the same five negative controls host-side
+  (`tools/verify_carrier.sh` runs it as part of every `build.sh`,
+  and also exercises the five-carrier refusal pins against the
+  files on disk).
+- **Enrollment (the chain's firmware-facing half) is attempted
+  every boot and honestly recorded.** `boot.rs`
+  `enroll_trusted_root_in_db`: gate on the PK variable (a PK SET
+  means authenticated-var mode and a KeK-signed AUTH package --
+  skipped with a named fact, the stub fabricates none); the
+  firmware's own GetTime datums the write (an implausible clock is
+  a named, non-fatal skip); the descriptor is the UEFI 2.10
+  EFI_VARIABLE_AUTHENTICATION_2 envelope built to edk2's own
+  EnrollDefaultKeys application's EXACT construction (24-byte
+  empty-pkcs7 win-certificate, live date+time, all sub-second/zone
+  fields zeroed) and the write carries
+  NV|BS|RT|EFI_VARIABLE_TIME_BASED_AUTHENTICATED_WRITE_ACCESS; a
+  SetVariable replaces -- an existing db is read back and APPENDED
+  to, never clobbered; the write is claimed only after read-back
+  pinning. Everything short-stepped -- including refusal -- is a
+  named fact, not a hazard: the stub's own chain gate is what
+  enforces trust, not the firmware store.
+- **A real firmware-side refusal was bisected to a stub packet bug,
+  and to an image capability fact.** The first SetVariable came back
+  EFI_INVALID_PARAMETER; three differently-routed writes plus
+  `GetVariable(SecureBoot/SetupMode/VendorKeys)` queries (LEFT DISABLED
+  in `boot.rs` behind `DB_ENROLL_PROBE=false`, carrying what they
+  proved as the reason on their face) split the refusal into two
+  answers. FIRST, a real defect: `CERT_TYPE_PKCS7_GUID` in `efi.rs`
+  had a correct first DWORD and a wrong rest-of-GUID -- edk2 checks
+  the auth2 descriptor's win-certificate CertType GUID before
+  almost anything else and refuses anything else; the constant now
+  matches MdePkg `ImageAuthentication.h` byte for byte. SECOND, a
+  capability fact: the plain non-secboot OVMF image bundled in
+  `uefi/tools/` installs NO authenticated-variable service at all
+  (`SecureBoot`, `SetupMode`, `VendorKeys` all `EFI_NOT_FOUND`;
+  every TBA write, to any name, is `EFI_INVALID_PARAMETER`), while
+  the `.ms` sibling image compiles the enforcement in but then
+  refuses to even LOAD an unsigned stub (BdsDxe "Access Denied") --
+  so no bundled image can both run the stub and host the service.
+  The enrollment records the refusal as the known, named fact it
+  now is, and the boot proceeds -- which was always its contract.
+- **The wandering 'timeouts' are explained, and the real cause is
+  fixed at the source instead of papered over.** The archive task
+  cited "hung"; the monitor socket sampled registers during a
+  reproducer: the CPU was ALIVE at moving addresses -- it was
+  still computing. The original bit-serial modpow (2048 doubling
+  steps, ~2*10^8 u32 limb operations per verification) under TCG
+  cost tens of seconds per call, so the full five-negative harness
+  outlived a 120 s cap. Rather than only raising the cap, the
+  cause was rewritten away: `rsa.rs` now runs public-key modpow
+  via Montgomery multiplication (schoolbook 128-limb product +
+  textbook per-limb REDC -- one cancellation multiplier per limb,
+  caught by probe before any carrier saw it -- R^2 mod n derived
+  by 2048 bounded double-and-subtract steps, ~10^6 u32 operations
+  per verification). The full host selfcheck (good carrier + five
+  negatives) now proves in 0.86 s wall time, and the UEFI gate in
+  TCG boots in two minutes overall, dominated by the kernel's own
+  selftest suite -- not by the trust walk. The 480 s cap in
+  `tools/qemu_uefi_boot_test.sh` stays as the deadlock detector
+  with its comment telling THIS story, not the old one.
+  Two real shape bugs fell out of the rewrite, catalogued because
+  they are classic Montgomery traps: a single global reduction
+  multiplier makes T + m*n divisible by 2^32 but NOT by R (toy
+  probe returned the wrong value with the trap's own words to
+  prove it), and entering the domain via mont_mul(base, R mod n)
+  is a numerical no-op (base*R*R^{-1} = base) -- the entry factor
+  must be R^2 mod n. Both were caught by the same probe discipline
+  (mirror the algorithm in Python against a true pow() before
+  compiling), not by burning gate runs.
+- **Gate transcripts (2026-10-26, this bundle image).** Boot 1
+  (fresh template store) and boot 2 (same store, persisted) both
+  completed: chain verify OK, all five negatives refused for their
+  named reasons, kernel reached `BootPhase::Ready`, host exit 33.
+  The VARS store persist-check found the store free of stub
+  variables (the varchk's round-trip variable is deleted by the
+  stub itself in step 4, the db write is refused by the image as
+  documented, and the negative probes are disabled) -- recorded as
+  the physical evidence, not asserted from code.
+- **The .ms OVMF path now ENFORCES, both directions, from a scripted
+  gate: `tools/qemu_uefi_ms_secboot_test.sh`.** The enforcing sibling
+  image refuses an unsigned stub (BdsDxe "Access Denied"), so the
+  firmware-facing half of ADR-0014 is closed with the real artifact:
+  the carrier chain's own key hierarchy becomes the firmware's.
+  Offline, from the shipped `.ms` template, `virt-fw-vars` (pip name
+  `virt-firmware`) composes the store: the carrier ROOT as PK and KEK,
+  root + leaf certificates in db, `SecureBootEnable` ON. `sbsign`
+  signs the stub with the LEAF key (its certificate is enrolled
+  verbatim, so the firmware's `AuthenticodeVerify` binds the signer on
+  sight), and the signed stub is installed at the fallback boot path.
+  Two boots assert both directions: positive -- signed stub under
+  enforcement loads with `SecureBoot=1` and PK PRESENT (not
+  SetupMode), the stub's own carrier walk still proves the kernel
+  image, and the boot reaches Ready (host exit 33, the same contract
+  as the non-ms gate); negative -- the same store with the UNSIGNED
+  stub refuses at the boot manager and no stub line ever prints (the
+  refused VM idles, caught by the run's timeout).
+  Two enrollment traps are catalogued because both cost a debugging
+  cycle: `virt-fw-vars` with `-i` alone only PLANS its changes -- the
+  store on disk keeps the template's keys unless `--inplace` (or
+  `-o`) is passed, and with the template's Microsoft keys still read
+  as authoritative the firmware then refuses even a correctly-signed
+  image, which sent the first suspect list to the wrong place (the
+  signature); and the negative boot must be asserted by ABSENCE
+  (`Access Denied` AND no `stub alive` line), because a refused boot
+  does not exit -- it idles in the boot-manager loop until the
+  timeout, which is the verdict, not a hang.
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

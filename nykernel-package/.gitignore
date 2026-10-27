@@ -20,3 +20,19 @@ source/nykernel/target/
 source/nykernel/uefi/target/
 source/nykernel/uefi/dist/
 source/nykernel/uefi/tools/
+# The generated digest build.sh records for the stub's Stage-2 kernel
+# image integrity check (a build-path fact, never source).
+source/nykernel/uefi/src/kernel.sha256
+
+# The ADR-0014 chain's AUTHENTICATED half, its generated state:
+# tools/make_carrier.sh signs the kernel image just linked into the
+# stub's include_bytes!-ed carrier and records the anchor's DER next
+# to it. Both regenerate on every build (the signer's dev key and
+# certificate live under uefi/tools/trust/, covered by the
+# uefi/tools/ rule), so neither is source by the same policy as the
+# digest line above.
+source/nykernel/uefi/src/carrier.der
+source/nykernel/uefi/src/trusted-root.der
+# ...and the five negative carriers make_carrier.sh generates beside
+# them (one per refusal shape main.rs's negative controls pin).
+source/nykernel/uefi/src/carrier-neg-*.der

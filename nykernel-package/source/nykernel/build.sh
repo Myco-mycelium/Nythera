@@ -264,4 +264,20 @@ echo "==> done: target/kernel.elf"
 # a fixed [u8; 64] and must not get 65 bytes.
 sha256sum target/kernel.elf | cut -d' ' -f1 | tr -d '\n' > uefi/src/kernel.sha256
 echo "==> recorded uefi/src/kernel.sha256 (the stub's Stage-2 expected digest)"
+# ADR-0014's AUTHENTICATED half (the integrity pin's follow-up link):
+# sign the kernel image just linked into the detached PKCS#7 carrier
+# the stub walks at every boot. tools/make_carrier.sh generates the
+# dev signer key + self-signed anchor on first use, writes BOTH
+# include_bytes!-ed DER inputs (uefi/src/carrier.der +
+# uefi/src/trusted-root.der, gitignored and regenerated every build
+# like kernel.sha256 above), and self-verifies its own output before
+# returning -- a broken signing chain fails the BUILD, never the boot.
+./tools/make_carrier.sh target/kernel.elf uefi/src/carrier.der uefi/src/trusted-root.der
+echo "==> signed uefi/src/carrier.der + wrote uefi/src/trusted-root.der + the five negative carriers (the stub's ADR-0014 chain: one-hop root->leaf carrier)"
+# The carrier set's gate, host-side: the stub's OWN walk code proves
+# the good carrier verifying over the real kernel image AND all five
+# negatives refusing for their named reasons -- before the stub ever
+# compiles. run after make_carrier.sh so a dead refusal path fails
+# the BUILD, not a boot.
+./tools/verify_carrier.sh target/kernel.elf
 file target/kernel.elf

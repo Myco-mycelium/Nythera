@@ -25,6 +25,7 @@ pub const EFI_SUCCESS: Status = 0;
 pub const EFI_BUFFER_TOO_SMALL: Status = 0x8000_0000_0000_0005;
 pub const EFI_INVALID_PARAMETER: Status = 0x8000_0000_0000_0002;
 pub const EFI_NOT_FOUND: Status = 0x8000_0000_0000_000E;
+pub const EFI_SECURITY_VIOLATION: Status = 0x8000_0000_0000_001A;
 
 // EFI System Table's own header signature, read back as a fact.
 pub const EFI_SYSTEM_TABLE_SIGNATURE: u64 = 0x5453_5953_2049_4249; // "IBI SYST"
@@ -57,6 +58,11 @@ pub const ALLOC_ADDRESS: u32 = 2;
 pub const VARIABLE_ATTRIBUTE_NONVOLATILE: u32 = 0x1;
 pub const VARIABLE_ATTRIBUTE_BOOTSERVICE: u32 = 0x2;
 pub const VARIABLE_ATTRIBUTE_RUNTIME: u32 = 0x4;
+/// EFI_VARIABLE_TIME_BASED_AUTHENTICATED_WRITE_ACCESS (0x20): the
+/// attribute bit edk2's auth-variable service requires on every
+/// db/dbx/dbt/KEK/PK update (see boot.rs's enrollment for the exact
+/// SetupMode contract).
+pub const VARIABLE_ATTRIBUTE_TIME_BASED_AUTHENTICATED: u32 = 0x20;
 
 /// One entry of the boot-services memory map (40 bytes as the spec
 /// fixes it for x86_64).
@@ -80,6 +86,12 @@ impl Guid {
     /// Builds from the "canonical" compact string form
     /// (`time-low`/`time-mid`/`time-high-and-version`/clock-seq-and-node)
     /// the spec prints everywhere.
+    /// The 16 GUID bytes in wire order (first-struct-field first):
+    /// the byte layout signature-list entries and variable names use.
+    pub const fn bytes(&self) -> [u8; 16] {
+        self.0
+    }
+
     pub const fn new(time_low: u32, time_mid: u16, time_hi: u16, rest: [u8; 8]) -> Self {
         Guid([
             time_low as u8,
@@ -123,6 +135,57 @@ pub const ACPI_10_TABLE_GUID: Guid =
 /// home for a stub-created variable.
 pub const VARCHK_VENDOR_GUID: Guid =
     Guid::new(0x6e1d14a1, 0x2b4f, 0x4b8a, [0x9c, 0xd1, 0x37, 0x4a, 0xd1, 0x94, 0x0f, 0x2b]);
+
+/// EFI_IMAGE_SECURITY_DATABASE_GUID -- the `db` (and `dbx`) variable
+/// GUID: the authorized-signature database UEFI secure boot validates
+/// images against (UEFI 2.10 section 32.4.1).
+pub const IMAGE_SECURITY_DATABASE_GUID: Guid =
+    Guid::new(0xd719b2cb, 0x3d3a, 0x4596, [0xa3, 0xbc, 0xda, 0xd0, 0x0e, 0x67, 0x65, 0x6f]);
+
+/// EFI_CERT_X509_GUID -- the signature-list entry type for a wrapped
+/// X.509 certificate (the shape the stub enrolls its anchor in).
+pub const CERT_X509_GUID: Guid =
+    Guid::new(0xa5c059a1, 0xe494, 0x4aa7, [0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0, 0x72]);
+
+/// EFI_CERT_TYPE_PKCS7_GUID -- the CertType an EFI_WIN_CERTIFICATE_UEFI_GUID
+/// descriptor claims; edk2 expects exactly it on an auth2 package.
+pub const CERT_TYPE_PKCS7_GUID: Guid =
+    Guid::new(0x4aafd29d, 0x68df, 0x49ee, [0x8a, 0xa9, 0x34, 0x7d, 0x37, 0x56, 0x65, 0xa7]);
+
+/// EFI_TIME as the spec fixes it: 16 bytes (2+1+1+1+1+1+1 + 4 + 2+1+1).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EfiTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    pub pad1: u8,
+    pub nanosecond: u32,
+    pub time_zone: u16,
+    pub daylight: u8,
+    pub pad2: u8,
+}
+
+impl EfiTime {
+    pub const fn zero() -> Self {
+        EfiTime {
+            year: 0,
+            month: 0,
+            day: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            pad1: 0,
+            nanosecond: 0,
+            time_zone: 0,
+            daylight: 0,
+            pad2: 0,
+        }
+    }
+}
 
 #[repr(C)]
 pub struct TableHeader {
@@ -254,7 +317,9 @@ pub struct BootServices {
 #[repr(C)]
 pub struct RuntimeServices {
     pub hdr: TableHeader,
-    pub get_time: usize,
+    /// (time: *mut EfiTime) -- the enrollment's AUTH2 TimeStamp comes
+    /// from here, so the firmware's own clock datums the write.
+    pub get_time: unsafe extern "efiapi" fn(*mut EfiTime) -> Status,
     pub set_time: usize,
     pub get_wakeup_time: usize,
     pub set_wakeup_time: usize,
@@ -290,6 +355,7 @@ pub struct RuntimeServices {
 // ---- offset assertions: the spec fixes these, so the compiler enforces
 // that the hand-rolled layout cannot silently drift. ----
 const _: () = assert!(core::mem::size_of::<TableHeader>() == 24);
+const _: () = assert!(core::mem::size_of::<EfiTime>() == 16);
 const _: () = assert!(core::mem::size_of::<MemoryDescriptor>() == 40);
 const _: () = assert!(core::mem::size_of::<RuntimeServices>() == 24 + 14 * 8);
 const _: () = assert!(core::mem::size_of::<BootServices>() == 376);
@@ -303,6 +369,7 @@ pub fn status_string(status: Status) -> &'static str {
         EFI_INVALID_PARAMETER => "EFI_INVALID_PARAMETER",
         EFI_BUFFER_TOO_SMALL => "EFI_BUFFER_TOO_SMALL",
         EFI_NOT_FOUND => "EFI_NOT_FOUND",
+        EFI_SECURITY_VIOLATION => "EFI_SECURITY_VIOLATION",
         _ => "<other>",
     }
 }

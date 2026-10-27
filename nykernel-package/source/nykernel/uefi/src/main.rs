@@ -24,10 +24,13 @@
 extern crate alloc;
 
 mod boot;
+mod der;
 mod efi;
 mod elf;
 mod mb2;
+mod rsa;
 mod sha256;
+mod trust;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -116,6 +119,57 @@ pub fn kernel_elf_bytes() -> &'static [u8] {
     include_bytes!("../../target/kernel.elf")
 }
 
+/// The ADR-0014 chain's authenticated half, both embed sides of it:
+/// `TRUSTED_ROOT_BYTES` is the anchor certificate the stub TRUSTS,
+/// `CARRIER_BYTES` is the DETACHED carrier signature over the kernel
+/// image; `build.sh` runs `tools/make_carrier.sh` after the kernel
+/// links and BOTH files land here (gitignored, regenerated every
+/// build -- the same generated-state policy as `kernel.sha256`), so
+/// the stub recompiles whenever the carrier does and an anchor change
+/// forces a rebuild too.
+const TRUSTED_ROOT_BYTES: &[u8] = include_bytes!("trusted-root.der");
+const CARRIER_BYTES: &[u8] = include_bytes!("carrier.der");
+
+/// The negative carriers `make_carrier.sh` generates alongside the
+/// real one, each a way the REAL carrier could be wrong-by-design that
+/// openssl would happily sign and the walk must REFUSE (one refusal
+/// shape per negative, marker-matched below; the build refuses if a
+/// negative status verifies -- the refusal path must be alive per
+/// shape, not only for one flipped bit):
+///   neg-digest:   signed over a one-byte-different kernel image
+///                 (the digest under the real image will differ)
+///   neg-anchor:   signed by a stray, unanchored key+cert pair
+///                 (no chain from it to the embedded anchor)
+///   neg-sid:      the real carrier with one byte of the SignerInfo's
+///                 issuerAndSerial serialNumber flipped (the sid no
+///                 longer ties the signature to the signer cert)
+///   neg-attrs:    carrier signed WITH signingTime attrs (the stub
+///                 walks -noattr carriers only)
+///   neg-detached: carrier carrying its own eContent (the stub walks
+///                 DETACHED carriers only)
+static NEG_CARRIER_DIGEST: &[u8] = include_bytes!("carrier-neg-digest.der");
+static NEG_CARRIER_ANCHOR: &[u8] = include_bytes!("carrier-neg-anchor.der");
+static NEG_CARRIER_SID: &[u8] = include_bytes!("carrier-neg-sid.der");
+static NEG_CARRIER_ATTRS: &[u8] = include_bytes!("carrier-neg-attrs.der");
+static NEG_CARRIER_DETACHED: &[u8] = include_bytes!("carrier-neg-detached.der");
+const NEGATIVE_CARRIERS: [&'static [u8]; 5] = [
+    NEG_CARRIER_DIGEST,
+    NEG_CARRIER_ANCHOR,
+    NEG_CARRIER_SID,
+    NEG_CARRIER_ATTRS,
+    NEG_CARRIER_DETACHED,
+];
+/// What each negative MUST be refused for (substring of the walk's
+/// own named refusal), so a negative refused for a WRONG reason --
+/// e.g. a parse truncation that skipped the actual check -- dies too.
+const NEGATIVE_EXPECTED_REFUSALS: [&str; 5] = [
+    "rsa: DigestInfo digest differs from the message digest",
+    "carrier: the embedded signer certificate is not the anchor and does not verify under the anchor's key (no chain to the root)",
+    "carrier: the SignerIdentifier's serial does not byte-equal the signer certificate's serialNumber",
+    "signerInfo: signedAttrs present -- the stub walks -noattr carriers only",
+    "encapContentInfo: eContent present -- the stub walks DETACHED carriers only",
+];
+
 static mut SYSTEM_TABLE: *const SystemTable = core::ptr::null();
 static mut IMAGE_HANDLE: Handle = core::ptr::null_mut();
 
@@ -167,6 +221,14 @@ pub extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const Syste
     //         every variable, so the boot dies naming the exact step. ----
     boot::verify_variable_services();
 
+    // ---- 1c. db enrollment: with the variable-services contract just
+    //          PROVEN, hand the embedded anchor to the firmware's
+    //          signature database in SetupMode (PK absent; a non-fatal,
+    //          fully fact-logged step either way -- the boot's own gate
+    //          is the carrier walk below, not an assumption about the
+    //          db store).
+    boot::enroll_trusted_root_in_db(TRUSTED_ROOT_BYTES);
+
     // ---- 2. watchdog off, allocations ----
     boot::disarm_watchdog();
     let pg_phys = boot::alloc_identity_pages(3, "page tables");
@@ -183,6 +245,14 @@ pub extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const Syste
     //         corrupted or mismatched payload halts here with both
     //         digests printed, before a single kernel byte is copied.
     verify_kernel_integrity(kernel_bytes);
+    // ---- 3b. The ADR-0014 chain's authenticated half lands its link
+    //         right behind the integrity pin: the carrier's RSA-2048
+    //         PKCS#1 v1.5 signature is checked over EXACTLY the bytes
+    //         the stub is about to copy into their vaddr, with the
+    //         signer certificate pinned byte-for-byte against the
+    //         embedded anchor; and the refusal path is proven alive
+    //         before any kernel byte moves.
+    verify_kernel_carrier(kernel_bytes);
     let ki = match elf::parse(kernel_bytes) {
         Ok(ki) => ki,
         Err(e) => boot::die(elf_error_str(e)),
@@ -286,6 +356,86 @@ pub extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const Syste
             options(att_syntax, noreturn)
         );
     }
+}
+
+/// The ADR-0014 chain's authenticated half: the carrier walk.
+///
+/// Missing-carrier refusal FIRST: `include_bytes!` on a file that
+/// does not exist fails the COMPILE (build.sh runs make_carrier.sh
+/// before the stub ever builds), so the runtime shape of "missing"
+/// here is a carrier written empty or truncated -- and both refusals
+/// share the walk: an EMPTY blob is refused here by name, a truncated
+/// or malformed one is refused by every named step inside
+/// `trust::verify_detached_signed_data` propagating its own.
+fn verify_kernel_carrier(kernel: &[u8]) {
+    if TRUSTED_ROOT_BYTES.is_empty() || CARRIER_BYTES.is_empty() {
+        boot::die(
+            "carrier blob missing: tools/make_carrier.sh wrote no trusted-root DER and/or no carrier DER; \
+             refusing to boot an UNAUTHENTICATED kernel image",
+        );
+    }
+    boot::conout(
+        "nyrqis ubld: carrier verify: pinning the signer certificate against the embedded anchor, then walking the detached carrier\r\n",
+    );
+    if let Err(err) = trust::verify_detached_signed_data(TRUSTED_ROOT_BYTES, CARRIER_BYTES, kernel) {
+        boot::die(err);
+    }
+    boot::conout(
+        "nyrqis ubld: carrier verify OK -- RSA-2048 PKCS#1 v1.5 signature over the SAME bytes about to be loaded\r\n",
+    );
+
+    // The refusal path is proven live at every boot: a one-bit-flipped
+    // COPY of the content must FAIL the walk, or none of the refusals
+    // above can be trusted as a check at all (mirrors the hash
+    // integrity control's flipped-copy test exactly).
+    let mut tampered: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(kernel.len());
+    tampered.extend_from_slice(kernel);
+    tampered[0] ^= 0x01;
+    if trust
+        ::verify_detached_signed_data(TRUSTED_ROOT_BYTES, CARRIER_BYTES, &tampered)
+        .is_ok()
+    {
+        boot::die(
+            "carrier refusal-path control FAILED: a one-bit-flipped copy of the kernel image still verifies PKCS#1 v1.5",
+        );
+    }
+    boot::conout(
+        "nyrqis ubld: carrier refusal-path control OK -- a one-bit-flipped copy verifies to a named refusal, the trust path is alive\r\n",
+    );
+
+    // The negative carrier set, every boot: each one must VERIFY to
+    // NO fact, be REFUSED by the walk, and be refused for the RIGHT
+    // named reason. A negative verifying means the refusal path is
+    // dead for that exact attack shape; being refused for a different
+    // reason means a check was skipped (e.g. a parse truncation)
+    // -- both die, naming which negative misbehaved.
+    const NEGATIVE_CARRIER_NAMES: [&str; 5] = [
+        "neg-digest (signed over altered content)",
+        "neg-anchor (stray unanchored signer)",
+        "neg-sid (SignerInfo serial byte-flipped)",
+        "neg-attrs (signedAttrs carried)",
+        "neg-detached (carrier embeds its payload)",
+    ];
+    for i in 0..NEGATIVE_CARRIERS.len() {
+        match trust::verify_detached_signed_data(TRUSTED_ROOT_BYTES, NEGATIVE_CARRIERS[i], kernel) {
+            Ok(()) => boot::die(
+                "carrier negative-control FAILED: a generated negative carrier VERIFIED over the real kernel image",
+            ),
+            Err(e) => {
+                if !e.contains(NEGATIVE_EXPECTED_REFUSALS[i]) {
+                    boot::die("carrier negative-control refused at the WRONG named step for the negative carrier, check skipped or misordered");
+                }
+            }
+        }
+        boot::conout("nyrqis ubld: carrier neg control: ");
+        boot::conout(NEGATIVE_CARRIER_NAMES[i]);
+        boot::conout(" -- refused as required (claimed");
+        boot::conout(NEGATIVE_EXPECTED_REFUSALS[i]);
+        boot::conout(")\r\n");
+    }
+    boot::conout(
+        "nyrqis ubld: carrier neg controls OK -- all five negative carriers refused for their named reasons\r\n",
+    );
 }
 
 fn elf_error_str(e: elf::ElfError) -> &'static str {
