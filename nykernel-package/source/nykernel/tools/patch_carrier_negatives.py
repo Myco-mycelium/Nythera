@@ -234,6 +234,77 @@ def make_dbx_siglist(payload_path, out_path):
     )
 
 
+CERT_X509_SHA256_GUID = bytes(
+    [
+        0x75, 0x9F, 0x68, 0x44, 0x64, 0x9E, 0x49, 0x4A,
+        0xA7, 0x28, 0x67, 0xF7, 0x6E, 0x83, 0xDC, 0x4A,
+    ]
+)
+
+
+def cert_tbs(buf):
+    """A certificate DER's tbsCertificate WHOLE TLV bytes (tag+length+
+    content) -- the bytes RFC 5280 4.1.1.2 hashes, and exactly what
+    uefi/src/dbx.rs computes sha256 over for hash-typed revocation
+    comparison. The first child of the outer SEQUENCE starts exactly
+    at the outer SEQUENCE's content start, so the whole TLV is
+    [outer.content_start, child_total_end) -- computing the child's
+    start this way avoids re-deriving long-form length-byte widths.
+    Mirrors trust.rs's cert_tbs."""
+    outer = read_tlv(buf, 0)
+    expect(outer[0] == 0x30, "cert: not a DER SEQUENCE")
+    expect(outer[3] == len(buf), "cert: trailing bytes after the outer SEQUENCE")
+    start = outer[1]
+    tbs = read_tlv(buf, start)
+    expect(tbs[0] == 0x30, "cert: first element is not tbsCertificate SEQUENCE")
+    # read_tlv's 4th element is the TLV's total LENGTH, not an end.
+    return bytes(buf[start : start + tbs[3]])
+
+
+def make_dbx_hashlist(cert_path, revoke_year, out_path):
+    """Wraps ONE EFI_CERT_X509_SHA256_SIGNATURE entry -- a revoked
+    certificate BY HASH: a 16-byte EFI_TIME revocation date followed
+    by the SHA-256 of the certificate's To-Be-Signed content -- into a
+    one-entry EFI_SIGNATURE_LIST of type EFI_CERT_X509_SHA256_GUID
+    (UEFI 2.10 section 32.4.1's hash-typed revocation form; exactly
+    the shape real-world Microsoft dbx updates use to revoke CA
+    certificates). The revocation date is written with explicit
+    deterministic fields `revoke_year`-01-01 00:00:00 UTC (year, then
+    month..second as u8s, then the zeroed padding/nanoseconds/
+    timezone/daylight tail), so the refusal is reproducible."""
+    import hashlib
+
+    buf = open(cert_path, "rb").read()
+    tbs = cert_tbs(buf)
+    tbs_hash = hashlib.sha256(tbs).digest()
+    year = int(revoke_year)
+    expect(1900 <= year <= 2999, "make-dbx-hashlist: revoke_year must be 1900..2999")
+    efi_time = (
+        year.to_bytes(2, "little")
+        + bytes([1, 1, 0, 0, 0, 0])  # month=1, day=1, hour..second=0, Pad1
+        + bytes(4)  # nanoseconds
+        + bytes(2)  # timezone (0 = UTC)
+        + bytes([0])  # daylight
+        + bytes(1)  # pad2
+    )
+    expect(len(efi_time) == 16, "make-dbx-hashlist: EFI_TIME shape")
+    sig_size = 16 + 16 + 32  # owner GUID + EFI_TIME + TBS hash
+    list_size = 28 + sig_size
+    with open(out_path, "wb") as f:
+        f.write(CERT_X509_SHA256_GUID)
+        f.write(le_u32_bytes(list_size))
+        f.write(le_u32_bytes(0))
+        f.write(le_u32_bytes(sig_size))
+        f.write(bytes(16))  # SignatureOwner
+        f.write(efi_time)
+        f.write(tbs_hash)
+    print(
+        f"patch_carrier_negatives: make-dbx-hashlist OK "
+        f"(tbs {len(tbs)} bytes, sha256 {tbs_hash.hex()[:16]}.., "
+        f"revoked-at {year}-01-01, list {list_size} bytes), wrote {out_path}"
+    )
+
+
 def flip_content(in_path, out_path):
     data = bytearray(open(in_path, "rb").read())
     expect(len(data) > 0, "flip-content: empty input")
@@ -252,12 +323,16 @@ def main():
     if len(args) == 3 and args[0] == "make-dbx-siglist":
         make_dbx_siglist(args[1], args[2])
         return
+    if len(args) == 4 and args[0] == "make-dbx-hashlist":
+        make_dbx_hashlist(args[1], args[2], args[3])
+        return
     if len(args) != 3:
         print(
             "usage: patch_carrier_negatives.py flip-content <kernel> <out.bin>\n"
             "       patch_carrier_negatives.py mutate-sid-serial <good-carrier.der> <out.der>\n"
             "       patch_carrier_negatives.py print-sid-serial-hex <good-carrier.der>\n"
-            "       patch_carrier_negatives.py make-dbx-siglist <payload.der> <out.der>",
+            "       patch_carrier_negatives.py make-dbx-siglist <payload.der> <out.der>\n"
+            "       patch_carrier_negatives.py make-dbx-hashlist <cert.der> <revoke_year> <out.der>",
             file=sys.stderr,
         )
         sys.exit(2)

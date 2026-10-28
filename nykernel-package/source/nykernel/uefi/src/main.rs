@@ -195,25 +195,40 @@ const NEGATIVE_EXPECTED_REFUSALS: [&str; 7] = [
 /// next to the carriers; each must be refused for its own named
 /// reason (see verify_kernel_carrier's dbx controls), the same
 /// negative-set discipline as the carrier walks above.
+/// and the anchor by BYTE, and the same two chains BY To-Be-Signed
+/// HASH: `EFI_CERT_X509_SHA256_GUID` entries (the EFI_TIME +
+/// SHA-256(TBS) payload shape, hash-typed revocations the real-world
+/// Microsoft dbx updates use for revoked CAs). `tools/make_carrier.sh`
+/// writes all five next to the carriers; each must be refused for its
+/// own named reason (see verify_kernel_carrier's dbx controls), the
+/// same negative-set discipline as the carrier walks above.
 static DBX_NEG_SIGNER_BYTE: &[u8] = include_bytes!("dbx-neg-signer-byte.der");
 static DBX_NEG_SIGNER_PAIR: &[u8] = include_bytes!("dbx-neg-signer-pair.der");
 static DBX_NEG_ANCHOR_BYTE: &[u8] = include_bytes!("dbx-neg-anchor-byte.der");
-const DBX_NEGATIVE_BLOBS: [&'static [u8]; 3] = [
+static DBX_NEG_SIGNER_HASH: &[u8] = include_bytes!("dbx-neg-signer-hash.der");
+static DBX_NEG_ANCHOR_HASH: &[u8] = include_bytes!("dbx-neg-anchor-hash.der");
+const DBX_NEGATIVE_BLOBS: [&'static [u8]; 5] = [
     DBX_NEG_SIGNER_BYTE,
     DBX_NEG_SIGNER_PAIR,
     DBX_NEG_ANCHOR_BYTE,
+    DBX_NEG_SIGNER_HASH,
+    DBX_NEG_ANCHOR_HASH,
 ];
-const DBX_NEGATIVE_NAMES: [&str; 3] = [
+const DBX_NEGATIVE_NAMES: [&str; 5] = [
     "dbx-neg-signer-byte (the leaf sits in the revocation store)",
     "dbx-neg-signer-pair (a re-key carries the leaf's issuer+serial)",
     "dbx-neg-anchor-byte (the root sits in the revocation store)",
+    "dbx-neg-signer-hash (a hash entry covers the leaf's To-Be-Signed)",
+    "dbx-neg-anchor-hash (a hash entry covers the root's To-Be-Signed)",
 ];
 /// The named refusal each dbx negative must die with (substrings of
 /// dbx.rs's own refusals).
-const DBX_NEGATIVE_EXPECTED_REFUSALS: [&str; 3] = [
+const DBX_NEGATIVE_EXPECTED_REFUSALS: [&str; 5] = [
     "(the signer certificate byte-matches an entry)",
     "(the signer's issuer+serial matches an entry)",
     "(the anchor certificate byte-matches an entry)",
+    "(a hash-typed entry covers the signer certificate's To-Be-Signed)",
+    "(a hash-typed entry covers the anchor certificate's To-Be-Signed)",
 ];
 
 static mut SYSTEM_TABLE: *const SystemTable = core::ptr::null();
@@ -551,14 +566,31 @@ fn verify_kernel_carrier(kernel: &[u8], now: trust::Rfc5280Time) {
                 boot::conout(
                     "  dbx: present but empty (0 signature-list bytes) -- nothing to enforce\r\n",
                 );
-            } else {
-                match dbx::check_blob(&dbx_bytes, &chain) {
+            } else {                match dbx::check_blob(
+                    &dbx_bytes,
+                    &[
+                        now.year as u16,
+                        now.month as u16,
+                        now.day as u16,
+                        now.hour as u16,
+                        now.minute as u16,
+                        now.second as u16,
+                    ],
+                    &chain,
+                ) {
                     Ok(facts) => {
                         boot::conout("  dbx: walked ");
                         print_decimal(facts.x509_entries_walked as u64);
                         boot::conout(
                             " X.509 entries, none revoke the just-verified chain",
                         );
+                        if facts.x509_sha256_entries_walked > 0 {
+                            boot::conout("; walked ");
+                            print_decimal(facts.x509_sha256_entries_walked as u64);
+                            boot::conout(
+                                " hash-typed entries, none in force against the chain (named)",
+                            );
+                        }
                         if facts.other_type_entries_skipped > 0 {
                             boot::conout("; skipped ");
                             print_decimal(facts.other_type_entries_skipped as u64);
@@ -579,7 +611,18 @@ fn verify_kernel_carrier(kernel: &[u8], now: trust::Rfc5280Time) {
         }
     }
     for i in 0..DBX_NEGATIVE_BLOBS.len() {
-        match dbx::check_blob(DBX_NEGATIVE_BLOBS[i], &chain) {
+        match dbx::check_blob(
+            DBX_NEGATIVE_BLOBS[i],
+            &[
+                now.year as u16,
+                now.month as u16,
+                now.day as u16,
+                now.hour as u16,
+                now.minute as u16,
+                now.second as u16,
+            ],
+            &chain,
+        ) {
             Ok(_) => boot::die(
                 "dbx negative-control FAILED: a generated revocation blob did NOT refuse the chain the walk just accepted",
             ),
@@ -598,7 +641,7 @@ fn verify_kernel_carrier(kernel: &[u8], now: trust::Rfc5280Time) {
         boot::conout(")\r\n");
     }
     boot::conout(
-        "  dbx neg controls OK -- all three generated revocations refused for their named reasons\r\n",
+        "  dbx neg controls OK -- all five generated revocations refused for their named reasons\r\n",
     );
 }
 

@@ -278,5 +278,14 @@ python3 tools/patch_carrier_negatives.py make-dbx-siglist \
     uefi/tools/trust/carrier-leafcert.der uefi/src/dbx-neg-signer-byte.der
 python3 tools/patch_carrier_negatives.py make-dbx-siglist \
     "$ROOT_OUT" uefi/src/dbx-neg-anchor-byte.der
+# And the same two chains BY To-Be-Signed HASH: EFI_CERT_X509_SHA256
+# entries (EFI_TIME + SHA-256(TBS)), the hash-typed revocation form
+# real-world Microsoft dbx updates use for revoked CAs. Revoked as of
+# 2020-01-01, so any boot clock after that date refuses.
+echo "==> building the dbx hash-typed negative blobs (signer-tbs / anchor-tbs)"
+python3 tools/patch_carrier_negatives.py make-dbx-hashlist \
+    uefi/tools/trust/carrier-leafcert.der 2020 uefi/src/dbx-neg-signer-hash.der
+python3 tools/patch_carrier_negatives.py make-dbx-hashlist \
+    "$ROOT_OUT" 2020 uefi/src/dbx-neg-anchor-hash.der
 
-echo "==> make_carrier.sh: GOOD carrier self-check via openssl cms -verify PASS ($(stat -c%s "$CARRIER_OUT") carrier bytes, $(stat -c%s "$ROOT_OUT") root bytes); negatives written (anchor/digest/sid/attrs/detached/window-expired/window-future) + dbx blobs (signer-byte/re-key-pair/anchor-byte) -- tools/verify_carrier.sh proves each refusing"
+echo "==> make_carrier.sh: GOOD carrier self-check via openssl cms -verify PASS ($(stat -c%s "$CARRIER_OUT") carrier bytes, $(stat -c%s "$ROOT_OUT") root bytes); negatives written (anchor/digest/sid/attrs/detached/window-expired/window-future) + dbx blobs (signer-byte/re-key-pair/anchor-byte/signer-hash/anchor-hash) -- tools/verify_carrier.sh proves each refusing"

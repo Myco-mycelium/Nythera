@@ -37,7 +37,7 @@ source/nykernel/uefi/src/trusted-root.der
 # them (one per refusal shape main.rs's negative controls pin, the
 # five chain shapes plus the two validity-window ones).
 source/nykernel/uefi/src/carrier-neg-*.der
-# ...and the three generated dbx revocation-control blobs (the
+# ...and the five generated dbx revocation-control blobs (the
 # signature-list shape the revocation walk's every-boot controls
 # run against), regenerated beside the carriers on every build.
 source/nykernel/uefi/src/dbx-neg-*.der

@@ -4058,6 +4058,42 @@ PASS: trust walk proves positive + 4 refusal paths on the real carrier bytes
   revoking the chain -- the revocation reading ran against a store
   the FIRMWARE itself wrote, not only the generated controls.
 
+**Same-day update: hash-typed dbx entries are enforced too.**
+The scope note above named EFI_CERT_X509_SHA256_GUID entries as a
+follow-up; they landed hours later, and the walk's domain now covers
+both UEFI 2.10 32.4.1 entry forms the real-world Microsoft dbx
+updates actually use:
+
+- **`dbx.rs`: the hash list branch.** An X.509-SHA256 list's entries
+  are owner GUID + one `EFI_CERT_X509_SHA256_SIGNATURE` each -- an
+  `EFI_TIME RevocationDate` (16 bytes) plus the SHA-256 of the
+  certificate's To-Be-Signed content (32 bytes) -- so the walk hashes
+  each chain certificate's TBS via the new `trust.rs cert_tbs()` (the
+  whole TLV over an independently walked certificate, byte-identical
+  to what `Cert::parse` stores) and compares. A matching hashrefuses by name, and the standoff date is exactly the entry's
+  RevocationDate read as six civil fields and required to be at or
+  before the firmware clock the walk already fetched: a future-dated
+  entry is NOT yet in force -- it stays a countable walk fact, never
+  a refusal. `sig_size` that is not 16+48 refuses structurally.
+- **The negative set grew to five.** `make_carrier.sh` emits two
+  hash-typed blobs (`make-dbx-hashlist`, revoked 2020-01-01 so any
+  boot clock after that date refuses): the leaf's TBS hash and the
+  root's. `verify_carrier.sh` passes five dbx pairs, and the host
+  harness gains a synthesized FUTURE-dated hash entry (revocation
+  2400) over the real leaf's TBS hash, proving the date gate -- it
+  is walked and counted, never refused. `main.rs` grew to five
+  every-boot dbx controls.
+- **Verified:** host `verify_carrier.sh` PASS (positive + 6
+  controls + 7 carrier refusals + 5 dbx refusals + BOTH skip
+  facts), and the plain UEFI gate's transcript shows all five dbx
+  controls refusing on real firmware. (A find worth recording: the
+  first Python TBS walker sliced the whole-TLV arithmetic wrong for
+  long-form lengths -- 601 vs the stub reader's 608 bytes -- so the
+  blob carried a hash over the WRONG bytes and the negative did NOT
+  refuse; the host gate caught it the same way it catches dead
+  refusal paths, and the walker now anchors the child at the outer
+  SEQUENCE's content start.)
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

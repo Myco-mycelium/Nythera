@@ -274,18 +274,26 @@ fn main() {
     //    every blob must REFUSE the chain that just verified, for its
     //    marker (a verification, or a refusal naming a different
     //    rule, stops the process), plus the synthesized unknown-type
-    //    control proving the skip path.
+    //    and future-dated-hash controls proving the skip paths.
     let mut dbx_count = 0;
     if let Some(dargs) = dbx_args {
         if dargs.len() % 2 != 0 {
             eprintln!("usage: dbx blobs come in (file, marker) pairs after --dbx");
             std::process::exit(2);
         }
-        // Synthesized POSITIVE control FIRST: the leaf certificate
-        // under an unknown CertType GUID -- it must NOT refuse, and
-        // must report exactly one skipped entry.
+        let boot_now: [u16; 6] = [
+            now.year, now.month as u16, now.day as u16,
+            now.hour as u16, now.minute as u16, now.second as u16,
+        ];
+        // Synthesized POSITIVE control FIRST: the chain's certificates --
+        // the leaf, the anchor, and a FUTURE-dated hash entry covering
+        // the leaf's To-Be-Signed (revocation in 2400, far any host
+        // clock) -- packaged under:
+        //   - an unknown CertType GUID, and
+        //   - the X.509-SHA256 type with a future revocation date, too:
+        // both must NOT refuse, and the facts must name the counts.
         let unknown = sig_list([0u8; 16], &chain.signer_der);
-        match dbx::check_blob(&unknown, &chain) {
+        match dbx::check_blob(&unknown, &boot_now, &chain) {
             Ok(f) if f.other_type_entries_skipped == 1 && f.x509_entries_walked == 0 => {
                 println!(
                     "-- OK dbx-skip: an unknown-CertType entry carrying the signer is REPORTED as skipped, never enforced"
@@ -303,6 +311,42 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        // A future-dated hash entry: in 2400, so no host clock hits
+        // it. Must be walked and counted, never refused.
+        let leaf_der = &chain.signer_der;
+        let leaf_tbs = trust::cert_tbs(leaf_der).expect("leaf cert tbs");
+        let leaf_tbs_hash: [u8; 32] = sha256::sha256(leaf_tbs);
+        let future_payload: Vec<u8> = {
+            let mut p = Vec::with_capacity(48);
+            p.extend_from_slice(&2400u16.to_le_bytes());
+            p.extend_from_slice(&[1u8, 1, 0, 0, 0, 0]);
+            p.extend_from_slice(&[0u8; 8]); // nanoseconds + timezone + daylight + pad2
+            p.extend_from_slice(&leaf_tbs_hash);
+            p
+        };
+        let hash_type: [u8; 16] = efi::CERT_X509_SHA256_GUID.bytes();
+        let future = sig_list(hash_type, &future_payload);
+        match dbx::check_blob(&future, &boot_now, &chain) {
+            Ok(f) if f.x509_sha256_entries_walked == 1 && f.x509_entries_walked == 0 => {
+                println!(
+                    "-- OK dbx-hash-future: a future-dated hash entry over the signer's To-Be-Signed is WALKED and NOT in force (revocation 2400)"
+                );
+            }
+            Ok(f) => {
+                println!(
+                    "FAIL: future hash entry came back wrong (x509 {}, hash {}, skipped {})",
+                    f.x509_entries_walked, f.x509_sha256_entries_walked, f.other_type_entries_skipped
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                println!(
+                    "FAIL: a future-dated hash entry REFUSED ({}); the date gate must keep it out of force",
+                    e
+                );
+                std::process::exit(1);
+            }
+        }
         for k in 0..(dargs.len() / 2) {
             let blob_path = &dargs[k * 2];
             let marker = &dargs[k * 2 + 1];
@@ -313,7 +357,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            match dbx::check_blob(&blob, &chain) {
+            match dbx::check_blob(&blob, &boot_now, &chain) {
                 Ok(_) => {
                     println!(
                         "FAIL: dbx blob {} did NOT refuse the chain the walk just accepted",
@@ -338,7 +382,7 @@ fn main() {
 
     let _ = u32::from(a.spki.exponent); // exponent pinned by rsa::verify at 65537 in run 1
     println!(
-        "PASS: trust walk proves positive + 6 controls + {} negative-carrier refusals on the real carrier bytes; dbx walk proved with {} refusals + unknown-type skip",
+        "PASS: trust walk proves positive + 6 controls + {} negative-carrier refusals on the real carrier bytes; dbx walk proved with {} refusals + unknown-type skip + future-dated-hash skip",
         neg_errors, dbx_count
     );
 }

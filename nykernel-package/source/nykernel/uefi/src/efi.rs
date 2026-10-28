@@ -147,6 +147,17 @@ pub const IMAGE_SECURITY_DATABASE_GUID: Guid =
 pub const CERT_X509_GUID: Guid =
     Guid::new(0xa5c059a1, 0xe494, 0x4aa7, [0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0, 0x72]);
 
+/// EFI_CERT_X509_SHA256_GUID -- the signature-list entry type for a
+/// *revocation by hash*: the entry carries `EFI_TIME RevocationDate`
+/// (16 bytes) followed by the SHA-256 of the certificate's
+/// To-Be-Signed content (UEFI 2.10 section 32.4.1, the
+/// EFI_CERT_X509_SHA256 row of the signature-data table: "a signature
+/// containing the SHA256 hash of an X.509 certificate's To-Be-Signed
+/// contents, and a time of revocation"). This is the form real-world
+/// Microsoft dbx updates use for revoked CA certificates.
+pub const CERT_X509_SHA256_GUID: Guid =
+    Guid::new(0x44689f75, 0x9e64, 0x4a49, [0xa7, 0x28, 0x67, 0xf7, 0x6e, 0x83, 0xdc, 0x4a]);
+
 /// EFI_CERT_TYPE_PKCS7_GUID -- the CertType an EFI_WIN_CERTIFICATE_UEFI_GUID
 /// descriptor claims; edk2 expects exactly it on an auth2 package.
 pub const CERT_TYPE_PKCS7_GUID: Guid =

@@ -647,6 +647,30 @@ impl<'a> Cert<'a> {
     }
 }
 
+/// The To-Be-Signed content octets of a certificate DER, by an
+/// independent least-effort walk (certificate -> SEQUENCE of
+/// (tbsCertificate, ..., ...)): the exact bytes 4.1.1.2 hashes -- tag
+/// + length + content -- used by dbx.rs's hash-typed revocation
+/// comparison, over DERs the full `Cert::parse` has NOT already
+/// vetted (a dbx entry certificate). Returns the whole TLV, matching
+/// what `Cert::parse` stores in `tbs`, so a hash over this equals a
+/// hash over a parsed certificate's `tbs` on the same DER.
+pub fn cert_tbs(cert_der: &[u8]) -> Result<&[u8], &'static str> {
+    let mut r = Reader::new(cert_der);
+    let outer = r.expect(0x30, "dbx: the entry certificate is not a DER SEQUENCE")?;
+    if !r.at_end() {
+        return Err("dbx: the entry certificate has trailing bytes after the outer SEQUENCE");
+    }
+    let mut r = Reader::new(outer.content);
+    let tbs = r
+        .next()
+        .map_err(|_| "dbx: the entry certificate has no tbsCertificate")?;
+    if tbs.tag != 0x30 {
+        return Err("dbx: the entry certificate's first element is not the tbsCertificate SEQUENCE");
+    }
+    Ok(tbs.raw)
+}
+
 /// The signer side of the carrier, as parsed: the bytes this walk
 /// needs to bind the SIGNATURE to the signed leaf.
 pub struct SignedData<'a> {

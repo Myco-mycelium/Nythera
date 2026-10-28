@@ -11,8 +11,9 @@
 #     refusal naming the right step (armor expected-refusal markers
 #     are passed as argument pairs below),
 #   - the dbx revocation walk must refuse the chain the GOOD carrier
-#     produced for each of the THREE generated dbx blobs, and skip
-#     (by name) an unknown-CertType entry.
+#     produced for each of the FIVE generated dbx blobs, and skip
+#     (by name) an unknown-CertType entry and a future-dated
+#     hash-typed entry.
 #
 # Called by build.sh right after make_carrier.sh, so a broken signing
 # chain or a dead refusal path fails the BUILD, never a boot. The
@@ -36,7 +37,8 @@ for f in uefi/src/carrier.der uefi/src/trusted-root.der \
          uefi/src/carrier-neg-window-expired.der uefi/src/carrier-neg-window-future.der \
          uefi/src/carrier-neg-detached.der \
          uefi/src/dbx-neg-signer-byte.der uefi/src/dbx-neg-signer-pair.der \
-         uefi/src/dbx-neg-anchor-byte.der; do
+         uefi/src/dbx-neg-anchor-byte.der \
+         uefi/src/dbx-neg-signer-hash.der uefi/src/dbx-neg-anchor-hash.der; do
     if [[ ! -s "$f" ]]; then
         echo "verify_carrier.sh: missing carrier-set file (run make_carrier.sh first): $f"
         exit 1
@@ -73,4 +75,8 @@ rustc --edition 2021 -O -o "$TMP/trust_selfcheck" uefi/tests/trust_selfcheck.rs 
     uefi/src/dbx-neg-signer-pair.der \
     "dbx: the carrier chain is REVOKED by the firmware's dbx (the signer's issuer+serial matches an entry)" \
     uefi/src/dbx-neg-anchor-byte.der \
-    "dbx: the carrier chain is REVOKED by the firmware's dbx (the anchor certificate byte-matches an entry)"
+    "dbx: the carrier chain is REVOKED by the firmware's dbx (the anchor certificate byte-matches an entry)" \
+    uefi/src/dbx-neg-signer-hash.der \
+    "dbx: the carrier chain is REVOKED by the firmware's dbx (a hash-typed entry covers the signer certificate's To-Be-Signed)" \
+    uefi/src/dbx-neg-anchor-hash.der \
+    "dbx: the carrier chain is REVOKED by the firmware's dbx (a hash-typed entry covers the anchor certificate's To-Be-Signed)"
