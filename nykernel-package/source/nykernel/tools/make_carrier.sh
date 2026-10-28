@@ -288,4 +288,76 @@ python3 tools/patch_carrier_negatives.py make-dbx-hashlist \
 python3 tools/patch_carrier_negatives.py make-dbx-hashlist \
     "$ROOT_OUT" 2020 uefi/src/dbx-neg-anchor-hash.der
 
+# ---- the MOK path's control material (the ADR-0014 chain's OPTIONAL
+#      user enrollment reading, mok.rs): a second, INDEPENDENT one-hop
+#      chain (MOK CA -> MOK leaf) the built-in pin does NOT know, a
+#      carrier the MOK leaf signs over the SAME kernel bytes, and the
+#      MokList blobs the controls run against:
+#     moklist-pos.der        the MOK CA wrapped in an X.509
+#                            EFI_SIGNATURE_LIST -- the enrollment
+#                            shape shim's MokManager writes; the walk
+#                            hands this entry to the carrier as an
+#                            ADDITIONAL anchor
+#     moklist-neg-stranger.der  the REAL embedded root wrapped the same
+#                            way -- a MokList whose entries are
+#                            strangers to the MOK chain must anchor
+#                            NOTHING the MOK carrier needs
+#     dbx-neg-mok-hash.der   the MOK leaf's TBS hash as an X.509-SHA256
+#                            dbx entry -- the revocation gate must
+#                            cover MOK-anchored chains too
+MOK_CA_KEY=uefi/tools/trust/mok-dev-key.pem
+MOK_CA_CRT=uefi/tools/trust/mok-dev-cert.pem
+MOK_LEAF_KEY=uefi/tools/trust/mok-dev-leaf-key.pem
+MOK_LEAF_CSR=uefi/tools/trust/mok-dev-leaf.csr
+if [[ ! -s "$MOK_CA_KEY" ]]; then
+    echo "==> generating the MOK CA key (uefi/tools/trust/mok-dev-key.pem)"
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:65537 -out "$MOK_CA_KEY"
+fi
+if [[ ! -s "$MOK_CA_CRT" ]] || [[ "$(mod_of_cert "$MOK_CA_CRT")" != "$(mod_of_key "$MOK_CA_KEY")" ]]; then
+    echo "==> generating the MOK CA certificate (uefi/tools/trust/mok-dev-cert.pem)"
+    openssl req -new -x509 -key "$MOK_CA_KEY" -sha256 -days 3650 \
+        -subj "/CN=Nyrqis dev MOK enrollment anchor/OU=Nyrqis bringup" \
+        -addext basicConstraints=critical,CA:TRUE \
+        -addext keyUsage=critical,keyCertSign,cRLSign \
+        -out "$MOK_CA_CRT"
+fi
+if [[ ! -s "$MOK_LEAF_KEY" ]]; then
+    echo "==> generating the MOK LEAF key (uefi/tools/trust/mok-dev-leaf-key.pem)"
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:65537 -out "$MOK_LEAF_KEY"
+fi
+if [[ ! -s "$MOK_LEAF_CSR" ]]; then
+    echo "==> generating the MOK LEAF CSR"
+    openssl req -new -key "$MOK_LEAF_KEY" -sha256 \
+        -subj "/CN=Nyrqis dev MOK carrier leaf/OU=Nyrqis bringup" -out "$MOK_LEAF_CSR"
+fi
+# MOK leaf cert: issued by the MOK CA the same way the real leaf is
+# (v3, critical digitalSignature, CA:FALSE). openssl ca's -cert/-keyfile
+# options override the config's CA pair (which points at the real
+# root), so the throwaway DB's header stays the real chain's and the
+# issuer comes from the MOK CA; a fresh serial file (2000) keeps MOK
+# issuances distinct.
+: > "$NEGWIN_DB/index"
+echo 2000 > "$NEGWIN_DB/serial"
+echo "==> issuing the MOK LEAF certificate signed by the MOK CA"
+openssl ca -batch -config "$NEGWIN_CNF" -in "$MOK_LEAF_CSR" \
+    -extfile "$NEGWIN_EXT" -extensions ext_leaf -notext \
+    -cert "$MOK_CA_CRT" -keyfile "$MOK_CA_KEY" \
+    -out uefi/tools/trust/mok-dev-leaf-cert.crt
+openssl x509 -in uefi/tools/trust/mok-dev-leaf-cert.crt -outform DER \
+    -out uefi/tools/trust/mok-dev-leaf-cert.der
+
+echo "==> signing the MOK carrier with the MOK LEAF (detached, noattr, sha256) over $KERNEL"
+openssl cms -sign -binary -md sha256 -noattr \
+    -in "$KERNEL" -signer uefi/tools/trust/mok-dev-leaf-cert.crt -inkey "$MOK_LEAF_KEY" \
+    -outform DER -out uefi/src/mok-carrier.der
+openssl cms -verify -noverify -binary \
+    -in uefi/src/mok-carrier.der -inform DER -content "$KERNEL" -out /dev/null >/dev/null
+openssl x509 -in "$MOK_CA_CRT" -outform DER -out uefi/tools/trust/mok-dev-cert.der
+python3 tools/patch_carrier_negatives.py make-dbx-siglist \
+    uefi/tools/trust/mok-dev-cert.der uefi/src/moklist-pos.der
+python3 tools/patch_carrier_negatives.py make-dbx-siglist \
+    "$ROOT_OUT" uefi/src/moklist-neg-stranger.der
+python3 tools/patch_carrier_negatives.py make-dbx-hashlist \
+    uefi/tools/trust/mok-dev-leaf-cert.der 2020 uefi/src/dbx-neg-mok-hash.der
+
 echo "==> make_carrier.sh: GOOD carrier self-check via openssl cms -verify PASS ($(stat -c%s "$CARRIER_OUT") carrier bytes, $(stat -c%s "$ROOT_OUT") root bytes); negatives written (anchor/digest/sid/attrs/detached/window-expired/window-future) + dbx blobs (signer-byte/re-key-pair/anchor-byte/signer-hash/anchor-hash) -- tools/verify_carrier.sh proves each refusing"

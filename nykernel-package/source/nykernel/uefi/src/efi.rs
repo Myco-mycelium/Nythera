@@ -157,6 +157,11 @@ pub const CERT_X509_GUID: Guid =
 /// Microsoft dbx updates use for revoked CA certificates.
 pub const CERT_X509_SHA256_GUID: Guid =
     Guid::new(0x44689f75, 0x9e64, 0x4a49, [0xa7, 0x28, 0x67, 0xf7, 0x6e, 0x83, 0xdc, 0x4a]);
+/// shim's vendor GUID -- the namespace shim's own MokList (and
+/// MokListX etc.) variables live under; the stub's MOK trust
+/// extension reads `MokList` there (mok.rs).
+pub const MOK_SHIM_GUID: Guid =
+    Guid::new(0x605dab50, 0xe046, 0x4300, [0xab, 0xb6, 0x3d, 0xd8, 0x10, 0xdd, 0x8b, 0x23]);
 
 /// EFI_CERT_TYPE_PKCS7_GUID -- the CertType an EFI_WIN_CERTIFICATE_UEFI_GUID
 /// descriptor claims; edk2 expects exactly it on an auth2 package.

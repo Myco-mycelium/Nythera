@@ -57,9 +57,15 @@ mod sha256;
 mod trust;
 #[path = "../src/dbx.rs"]
 mod dbx;
+#[path = "../src/mok.rs"]
+mod mok;
 
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+// mok.rs (and dbx.rs) speak `alloc::vec::Vec`; the host binary has the
+// same alloc crate available, so the modules compile verbatim here.
+extern crate alloc;
 
 /// The host's own UTC clock, as `Rfc5280Time`: converts a unix
 /// seconds count to civil fields with the standard days-based
@@ -109,11 +115,16 @@ fn sig_list(cert_type: [u8; 16], payload: &[u8]) -> Vec<u8> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    // The --dbx section marker splits carrier pairs from dbx pairs.
+    // The --dbx / --mok section markers split carrier pairs from dbx
+    // pairs from the MOK set (moklist-pos, mok-carrier, moklist-neg,
+    // dbx-mok-hash, in that order after --mok).
     let dbx_pos = args.iter().position(|a| a == "--dbx");
-    let (car_args, dbx_args) = match dbx_pos {
-        Some(i) => (&args[..i], Some(&args[i + 1..])),
-        None => (&args[..], None),
+    let mok_pos = args.iter().position(|a| a == "--mok");
+    let (car_args, dbx_args, mok_args) = match (dbx_pos, mok_pos) {
+        (Some(i), Some(j)) => (&args[..i.min(j)], Some(&args[i + 1..j]), Some(&args[j + 1..])),
+        (Some(i), None) => (&args[..i], Some(&args[i + 1..]), None),
+        (None, Some(j)) => (&args[..j], None, Some(&args[j + 1..])),
+        (None, None) => (&args[..], None, None),
     };
     if car_args.len() < 4 {
         eprintln!(
@@ -380,9 +391,111 @@ fn main() {
         }
     }
 
+    // 8. the MOK reading (mok.rs + trust.rs's MokList-anchored entry
+    //    point), when the caller passed --mok <moklist-pos> <mok-carrier>
+    //    <moklist-neg> <dbx-mok-hash>: the generated chain verifies under
+    //    the MokList blob's entry (the enrollment shape), refuses under
+    //    the embedded anchor (the anchor sets are separate), refuses
+    //    under a stranger MokList blob, and its own dbx hash blob refuses
+    //    the MOK chain the revocation gate consumed.
+    if let Some(margs) = mok_args {
+        if margs.len() != 4 {
+            eprintln!("usage: --mok <moklist-pos.der> <mok-carrier.der> <moklist-neg-stranger.der> <dbx-neg-mok-hash.der>");
+            std::process::exit(2);
+        }
+        let boot_now: [u16; 6] = [
+            now.year, now.month as u16, now.day as u16,
+            now.hour as u16, now.minute as u16, now.second as u16,
+        ];
+        let moklist = fs::read(&margs[0]).expect("moklist-pos read");
+        let mok_carrier = fs::read(&margs[1]).expect("mok-carrier read");
+        let moklist_neg = fs::read(&margs[2]).expect("moklist-neg read");
+        let dbx_mok = fs::read(&margs[3]).expect("dbx-mok-hash read");
+        // M1: MOK carrier verifies under the MokList blob's entry.
+        let chain_mok = {
+            let w = mok::walk(&moklist).expect("moklist-pos must walk");
+            assert!(
+                !w.anchor_ders.is_empty(),
+                "moklist-pos must carry at least one X.509 entry"
+            );
+            match trust::verify_mok_anchored_chain(w.anchor_ders[0], &mok_carrier, &content, now) {
+                Ok(c) => {
+                    println!(
+                        "-- OK mok-enroll: the alternate MOK chain verified under the MokList blob's first entry ({} X.509 entries walked)",
+                        w.anchors.len()
+                    );
+                    c
+                }
+                Err(e) => {
+                    println!("FAIL: MOK carrier did NOT verify under its enrolled anchor: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        };
+        // M2: the same MOK carrier must NOT verify under the embedded
+        // anchor -- the anchor sets are separate, not conflated.
+        match trust::verify_trusted_chain(&anchor, &mok_carrier, &content, now) {
+            Err(e) if e.contains("no chain to the root") => {
+                println!(
+                    "-- OK mok-stranger: the MOK carrier refused under the EMBEDDED anchor, as required: {}",
+                    e
+                );
+            }
+            Err(e) => {
+                println!("FAIL: MOK carrier refused under the embedded anchor at the WRONG step: {}", e);
+                std::process::exit(1);
+            }
+            Ok(_) => {
+                println!("FAIL: the MOK carrier VERIFIED under the embedded anchor -- the anchor sets are conflated");
+                std::process::exit(1);
+            }
+        }
+        // M3: the stranger MokList blob (the REAL root inside) must NOT
+        // anchor the MOK carrier either.
+        {
+            let w = mok::walk(&moklist_neg).expect("moklist-neg must walk");
+            assert!(!w.anchor_ders.is_empty(), "moklist-neg must carry its entry");
+            match trust::verify_mok_anchored_chain(w.anchor_ders[0], &mok_carrier, &content, now) {
+                Err(e) if e.contains("no chain to the root") => {
+                    println!(
+                        "-- OK mok-conflict: the MOK carrier refused under the STRANGER MokList entry, as required: {}",
+                        e
+                    );
+                }
+                Err(e) => {
+                    println!("FAIL: stranger MokList entry refused the MOK carrier at the WRONG step: {}", e);
+                    std::process::exit(1);
+                }
+                Ok(_) => {
+                    println!("FAIL: the STRANGER MokList entry VERIFIED under the MOK carrier -- trust is not scoped");
+                    std::process::exit(1);
+                }
+            }
+        }
+        // M4: the revocation gate covers MOK-anchored chains too.
+        match dbx::check_blob(&dbx_mok, &boot_now, &chain_mok) {
+            Ok(_) => {
+                println!("FAIL: the MOK chain's dbx blob did NOT refuse the MOK chain");
+                std::process::exit(1);
+            }
+            Err(e) if e.contains("(a hash-typed entry covers the signer certificate's To-Be-Signed)") => {
+                println!(
+                    "-- OK mok-revoked: the MOK chain's TBS-hash dbx blob refused it, as required: {}",
+                    e
+                );
+            }
+            Err(e) => {
+                println!("FAIL: the MOK chain's dbx blob refused at the WRONG step: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     let _ = u32::from(a.spki.exponent); // exponent pinned by rsa::verify at 65537 in run 1
     println!(
-        "PASS: trust walk proves positive + 6 controls + {} negative-carrier refusals on the real carrier bytes; dbx walk proved with {} refusals + unknown-type skip + future-dated-hash skip",
-        neg_errors, dbx_count
+        "PASS: trust walk proves positive + 6 controls + {} negative-carrier refusals on the real carrier bytes; dbx walk proved with {} refusals + unknown-type skip + future-dated-hash skip; MOK path proved with enrollment/stranger/conflict controls{}",
+        neg_errors,
+        dbx_count,
+        if mok_args.is_some() { " " } else { " (no --mok section passed)" }
     );
 }

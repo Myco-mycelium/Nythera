@@ -536,6 +536,9 @@ impl<'a> Cert<'a> {
                 "anchor" => {
                     "cert: the ANCHOR's validity window does not include the boot clock (not valid before its notBefore)"
                 }
+                "mok" => {
+                    "cert: the MokList anchor's validity window does not include the boot clock (not valid before its notBefore)"
+                }
                 _ => {
                     "cert: the leaf's validity window does not include the boot clock (not valid before its notBefore)"
                 }
@@ -545,6 +548,9 @@ impl<'a> Cert<'a> {
             return Err(match role {
                 "anchor" => {
                     "cert: the ANCHOR's validity window does not include the boot clock (expired at its notAfter)"
+                }
+                "mok" => {
+                    "cert: the MokList anchor's validity window does not include the boot clock (expired at its notAfter)"
                 }
                 _ => {
                     "cert: the leaf's validity window does not include the boot clock (expired at its notAfter)"
@@ -875,6 +881,37 @@ pub fn verify_trusted_chain<'a>(
     // include the boot clock (it is the pin the chain leverages, so
     // an expired pin refuses the walk, not quietly ride along).
     root.assert_valid_at(now, "anchor")?;
+    verify_with_anchor(anchor_cert_der, root, carrier_der, content, now)
+}
+
+/// The MOK reading's entry: a shim `MokList` certificate as the
+/// chain's anchor (mok.rs). Deliberately NO `assert_anchor_shape`:
+/// MokManager enrolls whatever X.509 certificate the user chose, CA
+/// or leaf signer, and a MokList entry that signs a carrier DIRECTLY
+/// is exactly the walk's signer==anchor shape here too. The entry's
+/// own validity window gates (its refusal names are the MokList-\nn/// anchor ones), and everything else in the walk is verbatim the
+/// same code the embedded-anchor path runs.
+pub fn verify_mok_anchored_chain<'a>(
+    mok_anchor_der: &'a [u8],
+    carrier_der: &'a [u8],
+    content: &[u8],
+    now: Rfc5280Time,
+) -> Result<TrustedChain<'a>, &'static str> {
+    let entry = Cert::parse(mok_anchor_der)?;
+    entry.assert_valid_at(now, "mok")?;
+    verify_with_anchor(mok_anchor_der, entry, carrier_der, content, now)
+}
+
+/// The shared one-anchor core: parse the carrier, check the signer
+/// against `root`'s key (the direct-signer or one-hop-leaf shapes),
+/// gate the leaf's window, verify the content signature.
+fn verify_with_anchor<'a>(
+    anchor_cert_der: &'a [u8],
+    root: Cert<'a>,
+    carrier_der: &'a [u8],
+    content: &[u8],
+    now: Rfc5280Time,
+) -> Result<TrustedChain<'a>, &'static str> {
     let sd = SignedData::parse(carrier_der)?;
     let signer_cert_bytes = sd.signer_cert_der;
     if signer_cert_bytes == anchor_cert_der {

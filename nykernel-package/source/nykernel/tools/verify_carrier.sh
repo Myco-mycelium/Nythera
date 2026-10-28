@@ -13,7 +13,10 @@
 #   - the dbx revocation walk must refuse the chain the GOOD carrier
 #     produced for each of the FIVE generated dbx blobs, and skip
 #     (by name) an unknown-CertType entry and a future-dated
-#     hash-typed entry.
+#     hash-typed entry,
+#   - the MOK reading (mok.rs): the MOK chain verifies under the blob
+#     its MokList carries, refuses under the embedded anchor and under
+#     a stranger MokList blob, and is revoked by its own dbx hash blob.
 #
 # Called by build.sh right after make_carrier.sh, so a broken signing
 # chain or a dead refusal path fails the BUILD, never a boot. The
@@ -38,7 +41,9 @@ for f in uefi/src/carrier.der uefi/src/trusted-root.der \
          uefi/src/carrier-neg-detached.der \
          uefi/src/dbx-neg-signer-byte.der uefi/src/dbx-neg-signer-pair.der \
          uefi/src/dbx-neg-anchor-byte.der \
-         uefi/src/dbx-neg-signer-hash.der uefi/src/dbx-neg-anchor-hash.der; do
+         uefi/src/dbx-neg-signer-hash.der uefi/src/dbx-neg-anchor-hash.der \
+         uefi/src/mok-carrier.der uefi/src/moklist-pos.der \
+         uefi/src/moklist-neg-stranger.der uefi/src/dbx-neg-mok-hash.der; do
     if [[ ! -s "$f" ]]; then
         echo "verify_carrier.sh: missing carrier-set file (run make_carrier.sh first): $f"
         exit 1
@@ -79,4 +84,9 @@ rustc --edition 2021 -O -o "$TMP/trust_selfcheck" uefi/tests/trust_selfcheck.rs 
     uefi/src/dbx-neg-signer-hash.der \
     "dbx: the carrier chain is REVOKED by the firmware's dbx (a hash-typed entry covers the signer certificate's To-Be-Signed)" \
     uefi/src/dbx-neg-anchor-hash.der \
-    "dbx: the carrier chain is REVOKED by the firmware's dbx (a hash-typed entry covers the anchor certificate's To-Be-Signed)"
+    "dbx: the carrier chain is REVOKED by the firmware's dbx (a hash-typed entry covers the anchor certificate's To-Be-Signed)" \
+    --mok \
+    uefi/src/moklist-pos.der \
+    uefi/src/mok-carrier.der \
+    uefi/src/moklist-neg-stranger.der \
+    uefi/src/dbx-neg-mok-hash.der

@@ -359,6 +359,16 @@ pub fn read_dbx() -> (Status, alloc::vec::Vec<u8>) {
     get_variable_bytes(b"dbx", &IMAGE_SECURITY_DATABASE_GUID, rs)
 }
 
+/// Reads the whole shim `MokList` variable (the OPTIONAL user trust
+/// store the chain's MOK extension honors; mok.rs). Same query+data
+/// contract as every other variable read; EFI_NOT_FOUND arrives as
+/// empty bytes and the caller treats it as the named fact it is.
+pub fn read_moklist() -> (Status, alloc::vec::Vec<u8>) {
+    let st = unsafe { &*SYSTEM_TABLE };
+    let rs = st.runtime_services;
+    get_variable_bytes(b"MokList", &MOK_SHIM_GUID, rs)
+}
+
 // ---- allocation ----
 
 /// The pre-EBS global allocator: forwards to the boot-services pool

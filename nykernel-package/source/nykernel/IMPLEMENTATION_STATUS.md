@@ -4094,6 +4094,47 @@ updates actually use:
   refusal paths, and the walker now anchors the child at the outer
   SEQUENCE's content start.)
 
+**Same-day update 2: the MOK enrollment reading (the chain's
+OPTIONAL user surface) is honored.** This is the "other open tool"
+above: the stub now READS shim's `MokList` variable (shim's own
+vendor GUID 605dab50-e046-4300-abb6-3dd810dd8b23 -- the store shim's
+MokManager writes for a user's enrolled keys), and the new
+`mok.rs` parses it with the SAME signature-list rules dbx.rs
+enforces (named with MokList prefixes; structural breakage refuses);
+an `MokList` entry acts as an ADDITIONAL chain anchor through a new
+`trust.rs verify_mok_anchored_chain` entry point -- verbatim the
+embedded-anchor walk, minus the CA shape assertion (a user's MOK
+can be a leaf signer; a MOK-anchored carrier signed DIRECTLY by the
+enrolled key is the walk's own signer==anchor shape) and keeping
+the entry's own validity-window gate under its own refusal name.
+Everything downstream is free: the windows gate, the content
+digest RSA, and the dbx revocation walk take the MOK chain's
+TrustedChain as-is.
+
+- **Enrollment itself stays out.** MokManager's UI is what writes
+  MokList; the stub honors what is there, names what is not (the
+  absent store is the same named-fact discipline as `dbx:`
+  `EFI_NOT_FOUND`), and NEVER silently extends: the transcript
+  reports covered/uncovered per entry, a fact, not a refusal.
+- **The control material is generated.** `make_carrier.sh` builds a
+  second INDEPENDENT chain (MOK CA -> MOK leaf, v3 critical
+  digitalSignature) plus an MOK carrier over the SAME kernel bytes,
+  a MokList blob carrying the MOK CA (the enrollment shape), a
+  STRANGER MokList blob (the REAL embedded root on the inside), and
+  `dbx-neg-mok-hash.der` (the MOK leaf's TBS hash). Four controls
+  run every boot, both host-side and in-stub: M1, the MOK carrier
+  verifies under the generated MokList entry (anchoring works as
+  enrolled); M2, it refuses under the EMBEDDED anchor (MOK trust
+  does NOT ride the built-in pin); M3, it refuses under the
+  stranger MokList blob (an unrelated MokList covers nothing); M4,
+  the MOK leaf's hash blob refuses the MOK chain (the revocation
+  gate covers MOK-anchored boots too).
+- **Verified:** host `verify_carrier.sh` PASS with all four MOK
+  controls named, and the plain UEFI gate transcript fires all of
+  them on real firmware (`MokList: absent on this firmware
+  (EFI_NOT_FOUND) -- no shim user keys (named fact)` on the default
+  OVMF store, then the three refusal facts + the anchoring fact).
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

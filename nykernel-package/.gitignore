@@ -37,7 +37,13 @@ source/nykernel/uefi/src/trusted-root.der
 # them (one per refusal shape main.rs's negative controls pin, the
 # five chain shapes plus the two validity-window ones).
 source/nykernel/uefi/src/carrier-neg-*.der
+# ...the MOK path's control carrier (the generated alternate chain,
+# same generated-state policy as carrier.der itself).
+source/nykernel/uefi/src/mok-carrier.der
 # ...and the five generated dbx revocation-control blobs (the
 # signature-list shape the revocation walk's every-boot controls
-# run against), regenerated beside the carriers on every build.
+# run against) plus the two generated MokList blobs (the
+# enrollment + stranger shapes the MOK path's controls run
+# against), regenerated beside the carriers on every build.
 source/nykernel/uefi/src/dbx-neg-*.der
+source/nykernel/uefi/src/moklist-*.der

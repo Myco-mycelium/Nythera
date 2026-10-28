@@ -29,6 +29,7 @@ mod der;
 mod efi;
 mod elf;
 mod mb2;
+mod mok;
 mod rsa;
 mod sha256;
 mod trust;
@@ -230,6 +231,21 @@ const DBX_NEGATIVE_EXPECTED_REFUSALS: [&str; 5] = [
     "(a hash-typed entry covers the signer certificate's To-Be-Signed)",
     "(a hash-typed entry covers the anchor certificate's To-Be-Signed)",
 ];
+
+/// ---- the MOK path's every-boot control material ----
+
+/// The generated MokList blob carrying the MOK CA (the trust shape shim's
+/// MokManager would hold for a user-enrolled root), plus the STRANGER blob
+/// (the REAL embedded root on the inside -- the MOK chain's stranger) as
+/// the anchor-mismatch negative, and the MOK carrier (the alternate chain
+/// the MOK leaf signs over the SAME kernel bytes):
+static MOKLIST_POS: &[u8] = include_bytes!("moklist-pos.der");
+static MOKLIST_NEG_STRANGER: &[u8] = include_bytes!("moklist-neg-stranger.der");
+static MOK_CARRIER: &[u8] = include_bytes!("mok-carrier.der");
+
+/// The dbx blob revoking the MOK leaf's TBS hash: the revocation gate
+/// must cover MOK-anchored chains too, not only the built-in one.
+static DBX_NEG_MOK_HASH: &[u8] = include_bytes!("dbx-neg-mok-hash.der");
 
 static mut SYSTEM_TABLE: *const SystemTable = core::ptr::null();
 static mut IMAGE_HANDLE: Handle = core::ptr::null_mut();
@@ -643,7 +659,178 @@ fn verify_kernel_carrier(kernel: &[u8], now: trust::Rfc5280Time) {
     boot::conout(
         "  dbx neg controls OK -- all five generated revocations refused for their named reasons\r\n",
     );
+
+    // The MOK reading: the chain's OPTIONAL user enrollment surface,
+    // facts + controls, every boot (mok_walk_and_controls below).
+    mok_walk_and_controls(kernel, now);
 }
+
+fn mok_now_fields(now: trust::Rfc5280Time) -> [u16; 6] {
+    [
+        now.year as u16,
+        now.month as u16,
+        now.day as u16,
+        now.hour as u16,
+        now.minute as u16,
+        now.second as u16,
+    ]
+}
+
+// ---- the MOK reading: the chain's OPTIONAL user enrollment surface
+// (mok.rs). The firmware's shim MokList variable is read whole and
+// its facts printed; the generated control set below proves the
+// extension's limbs every boot -- the ONLY trust the default OVMF
+// store puts under the stub is the built-in carrier chain, so the
+// controls are what makes the MOK path live in every build; the
+// every-boot discipline is the same as the dbx set's: each control
+// must produce ITS named fact, and a dead or misordered limb dies
+// instead of finishing the boot.
+fn mok_walk_and_controls(kernel: &[u8], now: trust::Rfc5280Time) {
+    // (a) The firmware's own MokList store, named fact either way:
+    // walked when present (a covered chain is a named extra fact per
+    // entry), EFI_NOT_FOUND named when the firmware has no shim keys.
+    let (mok_status, mok_bytes) = boot::read_moklist();
+    match mok_status {
+        EFI_SUCCESS => {
+            if mok_bytes.is_empty() {
+                boot::conout(
+                    "  MokList: present but empty (0 signature-list bytes) -- no user anchors (named fact)\r\n",
+                );
+            } else {
+                match mok::walk(&mok_bytes) {
+                    Ok(w) => {
+                        boot::conout("  MokList: walked ");
+                        print_decimal(w.anchors.len() as u64);
+                        boot::conout(" X.509 entries");
+                        if w.other_type_entries_skipped > 0 {
+                            boot::conout("; skipped ");
+                            print_decimal(w.other_type_entries_skipped as u64);
+                            boot::conout(" entries of types this walk does not enforce (named)");
+                        }
+                        boot::conout("\r\n");
+                        for i in 0..w.anchors.len() {
+                            if trust::verify_mok_anchored_chain(
+                                w.anchor_ders[i],
+                                CARRIER_BYTES,
+                                kernel,
+                                now,
+                            )
+                            .is_ok()
+                            {
+                                boot::conout("  MokList: entry #");
+                                print_decimal(i as u64);
+                                boot::conout(" ALSO covers the just-verified chain (MOK trust path extends the embedded anchor, named fact)\r\n");
+                            }
+                        }
+                    }
+                    Err(e) => boot::die(e),
+                }
+            }
+        }
+        EFI_NOT_FOUND => {
+            boot::conout(
+                "  MokList: absent on this firmware (EFI_NOT_FOUND) -- no shim user keys (named fact)\r\n",
+            );
+        }
+        s => {
+            boot::conout("  MokList: GetVariable(MokList) = ");
+            boot::conout_hex(s);
+            boot::conout(" -- unreadable, consulted nothing (named fact)\r\n");
+        }
+    }
+
+    // (b) Control M1: the generated MOK chain (a second, INDEPENDENT
+    // one-hop chain the stub does NOT anchor) verifies under the
+    // generated MokList blob's first entry -- the enrollment shape
+    // MokManager's writes give the walk.
+    let chain_mok = match mok::walk(MOKLIST_POS) {
+        Ok(w) if !w.anchor_ders.is_empty() => {
+            match trust::verify_mok_anchored_chain(w.anchor_ders[0], MOK_CARRIER, kernel, now) {
+                Ok(c) => c,
+                Err(e) => boot::die(e),
+            }
+        }
+        Ok(_) => boot::die("MOK control FAILED: the generated MokList blob carries no X.509 anchor"),
+        Err(e) => boot::die(e),
+    };
+    boot::conout(
+        "  MOK control: mok-carrier (the alternate MOK chain) verified under the MokList blob's entry -- MOK anchoring works as enrolled\r\n",
+    );
+
+    // (c) Control M2: the same MOK carrier must NOT verify under the
+    // embedded anchor -- MOK trust is NOT the built-in pin's; a
+    // carrier the built-in chain does not cover stays refused unless
+    // a MokList entry takes it in.
+    match trust::verify_trusted_chain(TRUSTED_ROOT_BYTES, MOK_CARRIER, kernel, now) {
+        Ok(_) => boot::die(
+            "MOK control FAILED: the alternate MOK chain verified under the EMBEDDED anchor -- the anchor sets are conflated",
+        ),
+        Err(e) => {
+            if !e.contains("no chain to the root") {
+                boot::die(
+                    "MOK control refused at the WRONG named step -- the stranger-refusal path is dead or misordered",
+                );
+            }
+        }
+    }
+    boot::conout(
+        "  MOK control: mok-carrier refused under the embedded anchor -- MOK trust does not ride on the built-in chain's pin\r\n",
+    );
+
+    // (d) Control M3: the stranger MokList blob (the REAL embedded
+    // root inside, nothing to do with the MOK chain) must not anchor
+    // the MOK carrier either; the refusal is the same named one --
+    // "no chain to the root" -- which is exactly what a real user
+    // carrier faces when the enrolled MokList simply does not cover it.
+    match mok::walk(MOKLIST_NEG_STRANGER) {
+        Ok(w) if !w.anchor_ders.is_empty() => {
+            if w.anchor_ders.len() == w.anchors.len() {
+                match trust::verify_mok_anchored_chain(w.anchor_ders[0], MOK_CARRIER, kernel, now) {
+                    Ok(_) => boot::die(
+                        "MOK control FAILED: the STRANGER MokList entry anchored the alternate MOK chain",
+                    ),
+                    Err(e) => {
+                        if !e.contains("no chain to the root") {
+                            boot::die(
+                                "MOK control refused at the WRONG named step -- the MokList-entry refusal is dead or misordered",
+                            );
+                        }
+                    }
+                }
+            } else {
+                boot::die("MOK control error: anchor lists misaligned (internal misuse)")
+            }
+        }
+        Ok(_) => boot::die("MOK control FAILED: the generated stranger MokList blob carries no X.509 anchor"),
+        Err(e) => boot::die(e),
+    }
+    boot::conout(
+        "  MOK control: mok-carrier refused under the STRANGER MokList blob -- an unrelated MokList covers nothing (named refusal)\r\n",
+    );
+
+    // (e) Control M5: the revocation gate covers MOK-anchored chains
+    // too -- the same dbx walk, fed the blob carrying the MOK leaf's
+    // TBS hash, must refuse the MOK chain the M1 control just made.
+    match dbx::check_blob(DBX_NEG_MOK_HASH, &mok_now_fields(now), &chain_mok) {
+        Ok(_) => boot::die(
+            "MOK control FAILED: the MOK chain's revocation blob did NOT refuse the MOK chain -- dbx skips MOK-anchored boots",
+        ),
+        Err(e) => {
+            if !e
+                .contains("(a hash-typed entry covers the signer certificate's To-Be-Signed)")
+            {
+                boot::die(
+                    "MOK control refused at the WRONG named step -- the MOK-chain revocation is dead or misordered",
+                );
+            }
+        }
+    }
+    boot::conout(
+        "  MOK control: dbx-neg-mok-hash refused the MOK chain -- the revocation gate covers MOK-anchored chains\r\n",
+    );
+}
+
+
 
 fn elf_error_str(e: elf::ElfError) -> &'static str {
     match e {
