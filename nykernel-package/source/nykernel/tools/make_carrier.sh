@@ -185,4 +185,98 @@ openssl cms -sign -binary -md sha256 -noattr -nodetach \
     -in "$KERNEL" -signer "$LEAF_CRT" -inkey "$LEAF_KEY" \
     -outform DER -out uefi/src/carrier-neg-detached.der
 
-echo "==> make_carrier.sh: GOOD carrier self-check via openssl cms -verify PASS ($(stat -c%s "$CARRIER_OUT") carrier bytes, $(stat -c%s "$ROOT_OUT") root bytes); negatives written (anchor/digest/sid/attrs/detached) -- tools/verify_carrier.sh proves each refusing"
+# ---- the VALIDITY-WINDOW negatives (the ADR-0014 expiry gate's
+#      every-boot controls): two certificates SIGNED BY THE REAL ROOT
+#      over the REAL leaf key, whose windows lie entirely outside any
+#      plausible firmware clock. Their chains verify genuinely, so the
+#      WINDOW gate is the only thing between each and a load:
+#      neg-window-expired must refuse at its notAfter (1990..2020,
+#      UTCTime), neg-window-future at its notBefore (2400..2500,
+#      GeneralizedTime -- RFC 5280's beyond-2049 encoding). Each
+#      certificate is issued over a FRESH, WIPED throwaway CA
+#      database with explicit -startdate/-enddate, so the bytes are
+#      deterministic run to run (today's date rides along in NOTHING
+#      the stub parses; openssl cms itself adds no randomness under
+#      -noattr, and the signature is bare PKCS#1 v1.5).
+NEGWIN_DB=uefi/tools/trust/negwin-db
+NEGWIN_CNF=uefi/tools/trust/negwin-ca.cnf
+NEGWIN_EXT=uefi/tools/trust/negwin-ext.cnf
+mkdir -p "$NEGWIN_DB"
+cat > "$NEGWIN_CNF" <<EOF
+[ca]
+default_ca = CA_default
+[CA_default]
+certificate = $(pwd)/$ROOT_CRT
+private_key = $(pwd)/$ROOT_KEY
+new_certs_dir = $(pwd)/$NEGWIN_DB
+database = $(pwd)/$NEGWIN_DB/index
+serial = $(pwd)/$NEGWIN_DB/serial
+default_md = sha256
+default_days = 3650
+policy = policy_any
+unique_subject = no
+copy_extensions = none
+[policy_any]
+commonName = supplied
+EOF
+cat > "$NEGWIN_EXT" <<'EOF'
+[ext_leaf]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+EOF
+issue_window_leaf() { # <out.crt> <startdate> <enddate>
+    rm -f "$NEGWIN_DB/index"* "$NEGWIN_DB/serial"* "$NEGWIN_DB"/*.pem
+    : > "$NEGWIN_DB/index"
+    echo 1000 > "$NEGWIN_DB/serial"
+    openssl ca -batch -config "$NEGWIN_CNF" -in "$LEAF_CSR" \
+        -extfile "$NEGWIN_EXT" -extensions ext_leaf \
+        -startdate "$2" -enddate "$3" -notext -out "$1"
+}
+echo "==> issuing the EXPIRED window leaf (1990..2020, real root, real leaf key)"
+issue_window_leaf uefi/tools/trust/carrier-neg-window-expired.crt \
+    19900101000000Z 20200101000000Z
+echo "==> issuing the NOT-YET-VALID window leaf (2400..2500)"
+issue_window_leaf uefi/tools/trust/carrier-neg-window-future.crt \
+    24000101000000Z 25000101000000Z
+echo "==> signing the neg-window-expired negative carrier over the real kernel"
+openssl cms -sign -binary -md sha256 -noattr \
+    -in "$KERNEL" -signer uefi/tools/trust/carrier-neg-window-expired.crt -inkey "$LEAF_KEY" \
+    -outform DER -out uefi/src/carrier-neg-window-expired.der
+echo "==> signing the neg-window-future negative carrier over the real kernel"
+openssl cms -sign -binary -md sha256 -noattr \
+    -in "$KERNEL" -signer uefi/tools/trust/carrier-neg-window-future.crt -inkey "$LEAF_KEY" \
+    -outform DER -out uefi/src/carrier-neg-window-future.der
+
+# ---- the dbx revocation gate's every-boot controls: GENERATED EFI
+#      signature-list blobs (the shape the firmware's own dbx
+#      variable carries), each revoking the chain the walk itself
+#      verifies -- the signer by BYTE, the signer by issuer+serial
+#      (a re-key: a certificate RE-ISSUED by the same root with the
+#      SAME serial over a DIFFERENT key, the exact attack the pair
+#      rule exists for), and the anchor by BYTE.
+# The re-key's serial must BYTE-EQUAL the real signer certificate's,
+# so the real serial is read straight out of the good carrier's
+# SignerIdentifier (tools/patch_carrier_negatives.py).
+echo "==> building the dbx negative blobs (signer-byte / re-key pair / anchor-byte)"
+LEAF_SERIAL_HEX=$(python3 tools/patch_carrier_negatives.py print-sid-serial-hex "$CARRIER_OUT")
+rm -f "$NEGWIN_DB/index"* "$NEGWIN_DB/serial"* "$NEGWIN_DB"/*.pem
+: > "$NEGWIN_DB/index"
+# The serial file (hex, one line) is how a re-key certificate is
+# forced onto the signer's serial: `openssl ca` reads its value for
+# the issuance in progress.
+echo "$LEAF_SERIAL_HEX" > "$NEGWIN_DB/serial"
+openssl ca -batch -config "$NEGWIN_CNF" -in "$LEAF_CSR" \
+    -extfile "$NEGWIN_EXT" -extensions ext_leaf -notext \
+    -out uefi/tools/trust/carrier-neg-rekey.crt
+openssl x509 -in uefi/tools/trust/carrier-neg-rekey.crt -outform DER \
+    -out uefi/tools/trust/carrier-neg-rekey.der
+python3 tools/patch_carrier_negatives.py make-dbx-siglist \
+    uefi/tools/trust/carrier-neg-rekey.der uefi/src/dbx-neg-signer-pair.der
+openssl x509 -in "$LEAF_CRT" -outform DER -out uefi/tools/trust/carrier-leafcert.der
+python3 tools/patch_carrier_negatives.py make-dbx-siglist \
+    uefi/tools/trust/carrier-leafcert.der uefi/src/dbx-neg-signer-byte.der
+python3 tools/patch_carrier_negatives.py make-dbx-siglist \
+    "$ROOT_OUT" uefi/src/dbx-neg-anchor-byte.der
+
+echo "==> make_carrier.sh: GOOD carrier self-check via openssl cms -verify PASS ($(stat -c%s "$CARRIER_OUT") carrier bytes, $(stat -c%s "$ROOT_OUT") root bytes); negatives written (anchor/digest/sid/attrs/detached/window-expired/window-future) + dbx blobs (signer-byte/re-key-pair/anchor-byte) -- tools/verify_carrier.sh proves each refusing"

@@ -273,11 +273,12 @@ echo "==> recorded uefi/src/kernel.sha256 (the stub's Stage-2 expected digest)"
 # like kernel.sha256 above), and self-verifies its own output before
 # returning -- a broken signing chain fails the BUILD, never the boot.
 ./tools/make_carrier.sh target/kernel.elf uefi/src/carrier.der uefi/src/trusted-root.der
-echo "==> signed uefi/src/carrier.der + wrote uefi/src/trusted-root.der + the five negative carriers (the stub's ADR-0014 chain: one-hop root->leaf carrier)"
+echo "==> signed uefi/src/carrier.der + wrote uefi/src/trusted-root.der + the seven negative carriers + the three dbx negative blobs (the stub's ADR-0014 chain: one-hop root->leaf carrier)"
 # The carrier set's gate, host-side: the stub's OWN walk code proves
-# the good carrier verifying over the real kernel image AND all five
-# negatives refusing for their named reasons -- before the stub ever
-# compiles. run after make_carrier.sh so a dead refusal path fails
-# the BUILD, not a boot.
+# the good carrier verifying over the real kernel image AND all seven
+# negatives refusing for their named reasons, then the dbx revocation
+# walk refusing all three generated blobs and skipping an
+# unknown-type entry -- before the stub ever compiles. run after
+# make_carrier.sh so a dead refusal path fails the BUILD, not a boot.
 ./tools/verify_carrier.sh target/kernel.elf
 file target/kernel.elf

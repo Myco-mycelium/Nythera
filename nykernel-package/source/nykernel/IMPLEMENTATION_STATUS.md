@@ -3956,6 +3956,108 @@ PASS: trust walk proves positive + 4 refusal paths on the real carrier bytes
   entry is the one AuthenticodeVerify binds; a root-signed stub
   would have introduced a needless second trust question.
 
+## Phase 10 increment (2026-10-28): the ADR-0014 chain lands its expiry + revocation reading -- the walk's clock is the FIRMWARE'S OWN GetTime (refusal-gated), both chain certificates' validity windows gate before any content digest, and the firmware's dbx revokes a chain the walk just verified, four ways, by name
+
+- **What this is, honestly scoped.** The third open card of the
+  ADR-0014 1.1.0 scope-measure: the chain's TIME and REVOCATION
+  gates. The carrier walk already verified the signature and the
+  one-hop chain; this card adds the two things a signature alone
+  cannot say: that the keys are being used INSIDE their validity
+  windows (compared against the firmware's own RTC reading, not a
+  stub-side constant), and that the chain is not sitting in the
+  firmware's forbidden-signature database (`dbx`). Both gates sit
+  between carrier verification and uefi_entry: a chain that WAS
+  valid and unrevoked at its last boot but is expired or revoked now
+  refuses, by name, at its own step.
+- **The clock is a firmware-owned datum, every boot.**
+  `boot.rs::firmware_time_or_die` reads runtime-services GetTime and
+  refuses (named) both an unreadable clock and an implausible
+  reading (year outside 2000..2999, month/day out of range) -- the
+  windows only gate honestly if the datum they are compared against
+  is a real clock, so a dead or lying RTC halts instead of quietly
+  passing everything. `trust.rs::Rfc5280Time` holds exactly the six
+  fields RFC 5280 validity carries at second precision; comparison
+  is plain field-tuple ordering (both sides civil-calendar), so
+  there is no calendar arithmetic anywhere to get wrong.
+- **Validity parsing is per-slot named.** `parse_rfc5280_time`
+  accepts UTCTime (`YYMMDDHHMMSSZ`, through 2049) and GeneralizedTime
+  (`YYYYMMDDHHMMSSZ`, beyond -- RFC 5280 4.1.2.5's encoding rule,
+  exactly the two forms openssl emits, verified against its own
+  output before the shape was pinned); every refusal names the slot
+  it appeared in (`notBefore` / `notAfter`), the encoding problem
+  (wrong width, non-digit, no Z, out-of-range calendar value, wrong
+  tag), and refuses at the next-of-kin step -- a validity member the
+  walk cannot read is a refusal, never a "skip and continue". The
+  anchor's window gates too (`assert_valid_at(.., "anchor")`), and
+  the LEAF's window gates BEFORE the content digest: the two window
+  negative carriers pin the ORDER (an expired signer refuses at the
+  window name, not later at or after a successful RSA).
+- **`dbx.rs`: the revocation surface, sat behind the walk.** The
+  `dbx` variable (EFI_IMAGE_SECURITY_DATABASE_GUID, UEFI 2.10 section
+  32.4.1) is read whole through the same GetVariable contract as
+  every other variable; the EFI_SIGNATURE_LIST walk enforces
+  EFI_CERT_X509_GUID entries two ways -- whole-certificate byte
+  equality against the signer or the anchor, and (after parsing the
+  entry with the SAME certificate reader the chain used)
+  issuer-Name + serialNumber byte equality, the pair X.509 treats as
+  THE identity a signature binds, so the "re-key with the old
+  serial" attack is revoked with it. Entries of any other CertType
+  are counted and reported as skipped -- named facts, never
+  silently enforced or silently dropped -- and structural breakage
+  (a list header whose sizes disagree with the blob it lives in)
+  refuses rather than truncates. Four refusal strings total, each
+  naming which certificate matched and by which rule.
+- **The generated negative set grew to keep the gate honest,
+  every boot, both in-stub and host-side.** `make_carrier.sh` now
+  emits two window carriers (real root + REAL LEAF KEY, so the
+  chains are genuine and the window gate is the only thing between
+  each and a load): expired at 1990..2020 (UTCTime) and
+  not-yet-valid at 2400..2500 (GeneralizedTime), each issued over a
+  fresh wiped throwaway CA database with explicit
+  `-startdate/-enddate` so no today-relative default value rides
+  into bytes the stub parses (an `openssl ca` shape lesson: without
+  an explicit `-extensions` section the issued certificate came out
+  v1 with NO extensions and the negatives refused at the keyUsage
+  shape check -- caught because the wrong-name refusal died the
+  build instead of the right one). And three dbx blobs: the leaf by
+  byte, the anchor by byte, and a genuine re-key -- a certificate
+  RE-ISSUED by the same root with THE SAME serial over a DIFFERENT
+  key, where the serial is read straight out of the good carrier's
+  SignerIdentifier (`patch_carrier_negatives.py print-sid-serial-hex`)
+  and forced through the CA serial file (`openssl ca` in this
+  OpenSSL has no `-serial` option; the serial file is the
+  supported path). `main.rs` refuses at boot if any negative
+  verifies, or is refused for a reason other than its own -- the
+  same exclusivity the carrier set pinned.
+- **Host harness grew with the walk.** `trust_selfcheck.rs` now
+  takes the walk clock from the host's own UTC time (std-only
+  civil conversion, printed for cross-checking against `date -u`;
+  the firmware's GetTime plays this role at boot) and compiles the
+  stub's `dbx.rs` + `efi.rs` in via `#[path]` like the other walk
+  modules -- then proves, host-side: positive chain verify returns
+  the `TrustedChain` the revocation gate consumes; all seven
+  negative carriers refuse for their named reasons; all three dbx
+  blobs refuse the just-verified chain for their named reasons; and
+  a synthesized unknown-CertType entry carrying the NULL-signer
+  bytes is SKIPPED (one skipped entry, zero refused), proving the
+  walk enforces only what it walks. `verify_carrier.sh` passes the
+  full seven-carrier + three-blob + marker set.
+- **The gates.** Host: `tools/verify_carrier.sh` PASS (positive + 6
+  controls + 7 negative refusals + 3 dbx refusals + skip). BIOS:
+  `tools/qemu_boot_test.sh` PASS. Plain UEFI:
+  `tools/qemu_uefi_boot_test.sh` PASS with the boot transcript
+  showing the firmware clock read (`walk clock: firmware GetTime =
+  2026-10-28 10:07:52`), all seven carrier negatives refused for
+  their named reasons (the two window names at their slots), the
+  `dbx: absent on this firmware (EFI_NOT_FOUND)` named fact the
+  default store gives, and the three dbx control refusals. Enforcing
+  `.ms` gate: `tools/qemu_uefi_ms_secboot_test.sh` PASS
+  (SecureBoot=1, positive + both Access-Denied negatives), and its
+  transcript shows the REAL dbx the composed store carries being
+  walked: one entry of an unenforced type skipped by name, none
+  revoking the chain -- the revocation reading ran against a store
+  the FIRMWARE itself wrote, not only the generated controls.
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

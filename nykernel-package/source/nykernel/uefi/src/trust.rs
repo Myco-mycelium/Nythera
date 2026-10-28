@@ -38,6 +38,183 @@ const OID_BASIC_CONSTRAINTS: [u8; 3] = [0x55, 0x1d, 0x13];
 /// 2.5.29.15 -- keyUsage.
 const OID_KEY_USAGE: [u8; 3] = [0x55, 0x1d, 0x0f];
 
+/// A second-precision UTC clock reading: the only resolution RFC 5280
+/// validity carries (UTCTime / GeneralizedTime) and the same
+/// resolution EFI GetTime reports, so the walk's expiry gate is a
+/// straight field comparison on both sides -- no calendar arithmetic
+/// anywhere (a month-length or leap-year rule would be code the
+/// comparison does not need).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Rfc5280Time {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+}
+
+impl Rfc5280Time {
+    /// The two real sources of a value: the firmware's GetTime (via
+    /// `boot.rs`, which owns all firmware calls) and the host harness
+    /// (`tools/verify_carrier.sh` passes `date -u`'s 14 digits).
+    pub const fn from_parts(
+        year: u16,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+    ) -> Rfc5280Time {
+        Rfc5280Time {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        }
+    }
+
+    /// Lexicographic on (year, month, day, hour, minute, second):
+    /// both sides are civil-calendar fields, so field order IS time
+    /// order. No month lengths, no leap days, nothing to implement
+    /// wrong.
+    fn fields(self) -> (u16, u8, u8, u8, u8, u8) {
+        (
+            self.year,
+            self.month,
+            self.day,
+            self.hour,
+            self.minute,
+            self.second,
+        )
+    }
+
+    /// self is strictly earlier than `other`.
+    pub fn precedes(self, other: Rfc5280Time) -> bool {
+        self.fields() < other.fields()
+    }
+}
+
+/// Which slot a validity member is being parsed as: every refusal
+/// names it, per RFC 5280 4.1.2.5 (a field both full sequences
+/// require).
+#[derive(Clone, Copy)]
+enum TimeSlot {
+    NotBefore,
+    NotAfter,
+}
+
+fn slot_label(slot: TimeSlot) -> &'static str {
+    match slot {
+        TimeSlot::NotBefore => "notBefore",
+        TimeSlot::NotAfter => "notAfter",
+    }
+}
+
+fn all_ascii_digits(b: &[u8]) -> bool {
+    b.iter().all(|c| (0x30..=0x39).contains(c))
+}
+
+/// Reads an exact-width run of ASCII digits as a big-endian integer.
+/// The caller has checked the width and every byte is a digit.
+fn ascii_digits_u16(b: &[u8]) -> u16 {
+    let mut v: u16 = 0;
+    for &c in b {
+        v = v * 10 + (c - 0x30) as u16;
+    }
+    v
+}
+
+/// One X.509 validity member, per RFC 5280 4.1.2.5: UTCTime (tag 0x17)
+/// for years through 2049, GeneralizedTime (tag 0x18) beyond, both
+/// seconds-precision and Z-terminated -- exactly the two forms openssl
+/// emits for a certificate's notBefore/notAfter (checked against its
+/// own output before pinning the shape: a 2026 notBefore encodes
+/// '17 0d "261028093429Z"', a 2400 one '18 0f "24000101000000Z"').
+/// Anything else is refused by name at the slot it appeared in, every
+/// refusal a distinct &'static str.
+fn parse_rfc5280_time(node: Node, slot: TimeSlot) -> Result<Rfc5280Time, &'static str> {
+    let (year, digits) = match node.tag {
+        0x17 => {
+            // UTCTime: content is exactly 13 bytes YYMMDDHHMMSSZ. The
+            // two-digit year expands per RFC 5280: 50..=99 -> 19xx,
+            // 00..=49 -> 20xx.
+            if node.content.len() != 13
+                || !all_ascii_digits(&node.content[..12])
+                || node.content[12] != b'Z'
+            {
+                return Err(match slot {
+                    TimeSlot::NotBefore => {
+                        "cert: validity notBefore is not seconds-precision, Z-terminated UTCTime 'YYMMDDHHMMSSZ'"
+                    }
+                    TimeSlot::NotAfter => {
+                        "cert: validity notAfter is not seconds-precision, Z-terminated UTCTime 'YYMMDDHHMMSSZ'"
+                    }
+                });
+            }
+            let yy = ascii_digits_u16(&node.content[..2]);
+            (
+                if yy >= 50 { 1900 + yy } else { 2000 + yy },
+                &node.content[2..12],
+            )
+        }
+        0x18 => {
+            // GeneralizedTime: exactly 15 bytes YYYYMMDDHHMMSSZ (the
+            // encoding RFC 5280 fixes for years beyond 2049 -- the
+            // far-future negative certificate exercises exactly it).
+            if node.content.len() != 15
+                || !all_ascii_digits(&node.content[..14])
+                || node.content[14] != b'Z'
+            {
+                return Err(match slot {
+                    TimeSlot::NotBefore => {
+                        "cert: validity notBefore is not seconds-precision, Z-terminated GeneralizedTime 'YYYYMMDDHHMMSSZ'"
+                    }
+                    TimeSlot::NotAfter => {
+                        "cert: validity notAfter is not seconds-precision, Z-terminated GeneralizedTime 'YYYYMMDDHHMMSSZ'"
+                    }
+                });
+            }
+            (ascii_digits_u16(&node.content[..4]), &node.content[4..14])
+        }
+        _ => {
+            return Err(match slot {
+                TimeSlot::NotBefore => {
+                    "cert: validity notBefore is neither a UTCTime nor a GeneralizedTime"
+                }
+                TimeSlot::NotAfter => {
+                    "cert: validity notAfter is neither a UTCTime nor a GeneralizedTime"
+                }
+            });
+        }
+    };
+    let month = ascii_digits_u16(&digits[0..2]) as u8;
+    let day = ascii_digits_u16(&digits[2..4]) as u8;
+    let hour = ascii_digits_u16(&digits[4..6]) as u8;
+    let minute = ascii_digits_u16(&digits[6..8]) as u8;
+    let second = ascii_digits_u16(&digits[8..10]) as u8;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return Err(match slot {
+            TimeSlot::NotBefore => {
+                "cert: validity notBefore carries an out-of-range calendar value"
+            }
+            TimeSlot::NotAfter => {
+                "cert: validity notAfter carries an out-of-range calendar value"
+            }
+        });
+    }
+    Ok(Rfc5280Time::from_parts(
+        year, month, day, hour, minute, second,
+    ))
+}
+
 fn oids_equal(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a == b
 }
@@ -304,6 +481,10 @@ pub struct Cert<'a> {
     pub spki: RsaSpki<'a>,
     /// The two vetted extensions.
     pub exts: CertFlags,
+    /// The validity window as parsed (RFC 5280 4.1.2.5): the two
+    /// datums the walk's clock gate compares the boot clock against.
+    pub not_before: Rfc5280Time,
+    pub not_after: Rfc5280Time,
 }
 
 fn alg_oid<'buf>(node: Node<'buf>, what: &'static str) -> Result<&'buf [u8], &'static str> {
@@ -337,6 +518,38 @@ impl<'a> Cert<'a> {
         }
         if !self.exts.ku_critical || !self.exts.ku_digital_signature {
             return Err("leaf: keyUsage must be critical and include digitalSignature");
+        }
+        Ok(())
+    }
+
+    /// RFC 5280 6.1.1(a) at the walk's smallest: the certificate's
+    /// validity window must include the clock reading EVERY downstream
+    /// use of its key stands on. `role` names which chain position is
+    /// refusing (the two refusals are per-role statics).
+    pub fn assert_valid_at(
+        &self,
+        now: Rfc5280Time,
+        role: &'static str,
+    ) -> Result<(), &'static str> {
+        if now.precedes(self.not_before) {
+            return Err(match role {
+                "anchor" => {
+                    "cert: the ANCHOR's validity window does not include the boot clock (not valid before its notBefore)"
+                }
+                _ => {
+                    "cert: the leaf's validity window does not include the boot clock (not valid before its notBefore)"
+                }
+            });
+        }
+        if self.not_after.precedes(now) {
+            return Err(match role {
+                "anchor" => {
+                    "cert: the ANCHOR's validity window does not include the boot clock (expired at its notAfter)"
+                }
+                _ => {
+                    "cert: the leaf's validity window does not include the boot clock (expired at its notAfter)"
+                }
+            });
         }
         Ok(())
     }
@@ -390,7 +603,19 @@ impl<'a> Cert<'a> {
             return Err("cert: signature algorithm is not sha256WithRSAEncryption");
         }
         let issuer = tr.expect(0x30, "cert: issuer Name SEQUENCE missing")?;
-        let _validity = tr.expect(0x30, "cert: validity SEQUENCE missing")?;
+        let validity = tr.expect(0x30, "cert: validity SEQUENCE missing")?;
+        let (not_before, not_after) = {
+            let mut vr = Reader::new(validity.content);
+            let nb = vr.next().map_err(|_| "cert: validity notBefore is missing")?;
+            let na = vr.next().map_err(|_| "cert: validity notAfter is missing")?;
+            if !vr.at_end() {
+                return Err("cert: validity carries more members than notBefore/notAfter");
+            }
+            (
+                parse_rfc5280_time(nb, TimeSlot::NotBefore)?,
+                parse_rfc5280_time(na, TimeSlot::NotAfter)?,
+            )
+        };
         let _subject = tr.expect(0x30, "cert: subject Name SEQUENCE missing")?;
         let spki = tr.expect(0x30, "cert: subjectPublicKeyInfo SEQUENCE missing")?;
         let exts = if !tr.at_end() {
@@ -416,6 +641,8 @@ impl<'a> Cert<'a> {
             signature: &sv.content[1..],
             spki: spki_p,
             exts,
+            not_before,
+            not_after,
         })
     }
 }
@@ -573,30 +800,72 @@ fn verify_content_signature(
     rsa::verify_pkcs1_v1_5_sha256(sd.signature, signer_spki.modulus_be, signer_spki.exponent, &digest)
 }
 
-/// The one function `main` calls, with the three things it has at
+/// The chain that verified, as data the revocation gate (see
+/// `dbx.rs`) consumes: the anchor's and the signer's DER bytes plus
+/// the signer's issuer+serial bindings. One lifetime: every real
+/// caller passes static-girl embeds; a byte-surgery'd caller passes
+/// one borrowed buffer for both.
+pub struct TrustedChain<'a> {
+    /// The ANCHOR certificate DER the stub embeds.
+    pub anchor_der: &'a [u8],
+    /// The certificate the carrier embeds (the leaf in the chain
+    /// shape; the anchor itself in the direct-signer shape).
+    pub signer_der: &'a [u8],
+    /// The signer's issuer Name (whole TLV) and serial content, the
+    /// exact pair a dbx entry must match to revoke it.
+    pub signer_issuer: &'a [u8],
+    pub signer_serial: &'a [u8],
+}
+
+/// The one function `main` calls, with the four things it has at
 /// boot: the embedded ANCHOR certificate DER (a CA), the embedded
-/// CARRIER DER, and the kernel image bytes the carrier must be a
-/// signature over. Refuses, named, on: a carrier that does not
-/// parse, an anchor that is not a CA kyUsage/basicConstraints-wise,
-/// an embedded signer that is neither the anchor itself nor
-/// verifiable under the anchor's key (the one-hop chain), a leaf
+/// CARRIER DER, the kernel image bytes the carrier must be a
+/// signature over, and the boot clock the chain's validity windows
+/// are compared against. Refuses, named, on: a carrier that does not
+/// parse, an anchor that is not a CA keyUsage/basicConstraints-wise,
+/// an anchor or a leaf whose validity window does not include the
+/// boot clock, an embedded signer that is neither the anchor itself
+/// nor verifiable under the anchor's key (the one-hop chain), a leaf
 /// carrying the wrong issuer role, a SignerInfo that does not tie to
 /// that signer certificate, and then the RSA-2048 PKCS#1 v1.5
 /// verification over sha256(content) itself.
-pub fn verify_detached_signed_data<'r, 'c>(
-    anchor_cert_der: &'r [u8],
-    carrier_der: &'c [u8],
+pub fn verify_detached_signed_data<'a>(
+    anchor_cert_der: &'a [u8],
+    carrier_der: &'a [u8],
     content: &[u8],
+    now: Rfc5280Time,
 ) -> Result<(), &'static str> {
+    verify_trusted_chain(anchor_cert_der, carrier_der, content, now).map(|_| ())
+}
+
+/// The same walk, returning the chain as data for the revocation gate.
+pub fn verify_trusted_chain<'a>(
+    anchor_cert_der: &'a [u8],
+    carrier_der: &'a [u8],
+    content: &[u8],
+    now: Rfc5280Time,
+) -> Result<TrustedChain<'a>, &'static str> {
     let root = Cert::parse(anchor_cert_der)?;
     root.assert_anchor_shape()?;
+    // RFC 5280 6.1.1(a) for the anchor itself: its window must
+    // include the boot clock (it is the pin the chain leverages, so
+    // an expired pin refuses the walk, not quietly ride along).
+    root.assert_valid_at(now, "anchor")?;
     let sd = SignedData::parse(carrier_der)?;
     let signer_cert_bytes = sd.signer_cert_der;
     if signer_cert_bytes == anchor_cert_der {
         // A carrier signed DIRECTLY by the anchor's own key (the
         // single-cert shape `make_carrier.sh` used before the chain
-        // walk; kept legal so old carriers cannot be waved in).
-        verify_content_signature(&root.spki, root.issuer, root.serial, &sd, content)
+        // walk; kept legal so old carriers cannot be waved in). The
+        // anchor's window check above covers the signer (it IS the
+        // signer here).
+        verify_content_signature(&root.spki, root.issuer, root.serial, &sd, content)?;
+        Ok(TrustedChain {
+            anchor_der: anchor_cert_der,
+            signer_der: signer_cert_bytes,
+            signer_issuer: root.issuer,
+            signer_serial: root.serial,
+        })
     } else {
         // RFC 5280 one-hop chain: the embedded LEAF's TBSCertificate
         // sha256 must verify under the ANCHOR's key. This is the pin
@@ -611,6 +880,18 @@ pub fn verify_detached_signed_data<'r, 'c>(
         )
         .map_err(|_| "carrier: the embedded signer certificate is not the anchor and does not verify under the anchor's key (no chain to the root)")?;
         leaf.assert_leaf_shape()?;
-        verify_content_signature(&leaf.spki, leaf.issuer, leaf.serial, &sd, content)
+        // The chain's clock gate at the signer: BEFORE the content
+        // digest -- a carrier whose signer is expired must refuse at
+        // the WINDOW name, not later at (or after) a successful RSA
+        // verification. The two window-negative carriers pin exactly
+        // this order.
+        leaf.assert_valid_at(now, "leaf")?;
+        verify_content_signature(&leaf.spki, leaf.issuer, leaf.serial, &sd, content)?;
+        Ok(TrustedChain {
+            anchor_der: anchor_cert_der,
+            signer_der: signer_cert_bytes,
+            signer_issuer: leaf.issuer,
+            signer_serial: leaf.serial,
+        })
     }
 }

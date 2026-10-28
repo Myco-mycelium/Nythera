@@ -301,6 +301,64 @@ pub fn verify_variable_services() {
     conout("  varchk: variable-services roundtrip OK -- the SecureBoot read's protocol is firmware-honest\r\n");
 }
 
+// ---- the walk's clock and the revocation store: the two firmware
+// inputs the chain's expiry/revocation gates compare against (see
+// trust.rs's validity windows and dbx.rs's walk). Both refuse rather
+// than degrade: an unreadable clock or a malformed dbx blob halts
+// with its name, NPS-001 §6.2-style, never boot an unverifiable ----
+
+/// Reads the firmware's RTC through runtime-services GetTime and
+/// converts it to the walk's clock type, refusing by NAME when the
+/// reading is missing or implausible: the validity windows only gate
+/// honestly if the datum they are compared against is a real clock
+/// reading, and a dead clock would make the gate decorative while
+/// still printing its pass line.
+pub fn firmware_time_or_die() -> crate::trust::Rfc5280Time {
+    let st = unsafe { &*SYSTEM_TABLE };
+    let rs = st.runtime_services;
+    let mut now = EfiTime::zero();
+    let s = unsafe { ((*rs).get_time)(&mut now as *mut EfiTime) };
+    if s != EFI_SUCCESS {
+        conout("  walk-clock: GetTime = ");
+        conout_hex(s);
+        conout("\r\n");
+        die(
+            "firmware clock: GetTime refused -- the chain's expiry gate refuses an unreadable clock",
+        );
+    }
+    if now.year < 2000
+        || now.year > 2999
+        || now.month < 1
+        || now.month > 12
+        || now.day < 1
+        || now.day > 31
+    {
+        conout("  walk-clock: the firmware reports year=");
+        conout_hex(now.year as u64);
+        conout(" month=");
+        conout_hex(now.month as u64);
+        conout(" day=");
+        conout_hex(now.day as u64);
+        conout("\r\n");
+        die(
+            "firmware clock: the reading is implausible -- the chain's expiry gate refuses to run on it",
+        );
+    }
+    crate::trust::Rfc5280Time::from_parts(
+        now.year, now.month, now.day, now.hour, now.minute, now.second,
+    )
+}
+
+/// Reads the whole `dbx` variable (the revocation store the chain's
+/// gate consults): the same query+data contract as every other
+/// variable read in this stub. (Status, bytes); EFI_NOT_FOUND arrives
+/// as empty bytes and the caller treats it as the named fact it is.
+pub fn read_dbx() -> (Status, alloc::vec::Vec<u8>) {
+    let st = unsafe { &*SYSTEM_TABLE };
+    let rs = st.runtime_services;
+    get_variable_bytes(b"dbx", &IMAGE_SECURITY_DATABASE_GUID, rs)
+}
+
 // ---- allocation ----
 
 /// The pre-EBS global allocator: forwards to the boot-services pool

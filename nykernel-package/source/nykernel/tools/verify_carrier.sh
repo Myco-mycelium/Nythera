@@ -7,12 +7,18 @@
 # checks against the files make_carrier.sh just wrote:
 #
 #   - the GOOD carrier must VERIFY over the exact kernel image, and
-#   - each of the FIVE negative carriers must be REFUSED, with the
+#   - each of the SEVEN negative carriers must be REFUSED, with the
 #     refusal naming the right step (armor expected-refusal markers
-#     are passed as argument pairs below).
+#     are passed as argument pairs below),
+#   - the dbx revocation walk must refuse the chain the GOOD carrier
+#     produced for each of the THREE generated dbx blobs, and skip
+#     (by name) an unknown-CertType entry.
 #
 # Called by build.sh right after make_carrier.sh, so a broken signing
-# chain or a dead refusal path fails the BUILD, never a boot.
+# chain or a dead refusal path fails the BUILD, never a boot. The
+# walk's clock is the host's own UTC time (std::time in the harness,
+# printed for cross-checking) -- the firmware's GetTime plays this
+# role at boot.
 #
 # Usage: ./tools/verify_carrier.sh <kernel-elf>
 
@@ -27,7 +33,10 @@ fi
 for f in uefi/src/carrier.der uefi/src/trusted-root.der \
          uefi/src/carrier-neg-anchor.der uefi/src/carrier-neg-digest.der \
          uefi/src/carrier-neg-sid.der uefi/src/carrier-neg-attrs.der \
-         uefi/src/carrier-neg-detached.der; do
+         uefi/src/carrier-neg-window-expired.der uefi/src/carrier-neg-window-future.der \
+         uefi/src/carrier-neg-detached.der \
+         uefi/src/dbx-neg-signer-byte.der uefi/src/dbx-neg-signer-pair.der \
+         uefi/src/dbx-neg-anchor-byte.der; do
     if [[ ! -s "$f" ]]; then
         echo "verify_carrier.sh: missing carrier-set file (run make_carrier.sh first): $f"
         exit 1
@@ -52,5 +61,16 @@ rustc --edition 2021 -O -o "$TMP/trust_selfcheck" uefi/tests/trust_selfcheck.rs 
     "carrier: the SignerIdentifier's serial does not byte-equal the signer certificate's serialNumber" \
     uefi/src/carrier-neg-attrs.der \
     "signerInfo: signedAttrs present -- the stub walks -noattr carriers only" \
+    uefi/src/carrier-neg-window-expired.der \
+    "cert: the leaf's validity window does not include the boot clock (expired at its notAfter)" \
+    uefi/src/carrier-neg-window-future.der \
+    "cert: the leaf's validity window does not include the boot clock (not valid before its notBefore)" \
     uefi/src/carrier-neg-detached.der \
-    "encapContentInfo: eContent present -- the stub walks DETACHED carriers only"
+    "encapContentInfo: eContent present -- the stub walks DETACHED carriers only" \
+    --dbx \
+    uefi/src/dbx-neg-signer-byte.der \
+    "dbx: the carrier chain is REVOKED by the firmware's dbx (the signer certificate byte-matches an entry)" \
+    uefi/src/dbx-neg-signer-pair.der \
+    "dbx: the carrier chain is REVOKED by the firmware's dbx (the signer's issuer+serial matches an entry)" \
+    uefi/src/dbx-neg-anchor-byte.der \
+    "dbx: the carrier chain is REVOKED by the firmware's dbx (the anchor certificate byte-matches an entry)"

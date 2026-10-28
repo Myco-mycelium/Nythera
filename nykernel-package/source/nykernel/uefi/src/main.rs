@@ -24,6 +24,7 @@
 extern crate alloc;
 
 mod boot;
+mod dbx;
 mod der;
 mod efi;
 mod elf;
@@ -152,22 +153,67 @@ static NEG_CARRIER_ANCHOR: &[u8] = include_bytes!("carrier-neg-anchor.der");
 static NEG_CARRIER_SID: &[u8] = include_bytes!("carrier-neg-sid.der");
 static NEG_CARRIER_ATTRS: &[u8] = include_bytes!("carrier-neg-attrs.der");
 static NEG_CARRIER_DETACHED: &[u8] = include_bytes!("carrier-neg-detached.der");
-const NEGATIVE_CARRIERS: [&'static [u8]; 5] = [
+/// The VALIDITY-WINDOW negatives (the expiry gate's every-boot
+/// controls, the ADR-0014 expiry/revocation card): carriers signed
+/// by the REAL leaf key over the real kernel image, but embedded
+/// certificates whose windows lie ENTIRELY outside any plausible
+/// firmware clock -- one already expired (1990..2020), one not yet
+/// valid (2400..2500, GeneralizedTime-encoded, past 2049). The
+/// signature chains are genuine, so the window gate is the only
+/// thing between them and a load; each must refuse at its own
+/// window name, exactly the exclusivity the negative-carrier set
+/// pins for the other shapes.
+static NEG_CARRIER_WINDOW_EXPIRED: &[u8] = include_bytes!("carrier-neg-window-expired.der");
+static NEG_CARRIER_WINDOW_FUTURE: &[u8] = include_bytes!("carrier-neg-window-future.der");
+const NEGATIVE_CARRIERS: [&'static [u8]; 7] = [
     NEG_CARRIER_DIGEST,
     NEG_CARRIER_ANCHOR,
     NEG_CARRIER_SID,
     NEG_CARRIER_ATTRS,
     NEG_CARRIER_DETACHED,
+    NEG_CARRIER_WINDOW_EXPIRED,
+    NEG_CARRIER_WINDOW_FUTURE,
 ];
 /// What each negative MUST be refused for (substring of the walk's
 /// own named refusal), so a negative refused for a WRONG reason --
 /// e.g. a parse truncation that skipped the actual check -- dies too.
-const NEGATIVE_EXPECTED_REFUSALS: [&str; 5] = [
+const NEGATIVE_EXPECTED_REFUSALS: [&str; 7] = [
     "rsa: DigestInfo digest differs from the message digest",
     "carrier: the embedded signer certificate is not the anchor and does not verify under the anchor's key (no chain to the root)",
     "carrier: the SignerIdentifier's serial does not byte-equal the signer certificate's serialNumber",
     "signerInfo: signedAttrs present -- the stub walks -noattr carriers only",
     "encapContentInfo: eContent present -- the stub walks DETACHED carriers only",
+    "cert: the leaf's validity window does not include the boot clock (expired at its notAfter)",
+    "cert: the leaf's validity window does not include the boot clock (not valid before its notBefore)",
+];
+
+/// The dbx revocation walk's every-boot controls: GENERATED EFI
+/// signature-list blobs (what the firmware's own dbx would carry)
+/// that revoke the chain the walk itself verified -- the signer by
+/// BYTE, the signer by issuer+serial (a re-key carrying the pair),
+/// and the anchor by BYTE. `tools/make_carrier.sh` writes all three
+/// next to the carriers; each must be refused for its own named
+/// reason (see verify_kernel_carrier's dbx controls), the same
+/// negative-set discipline as the carrier walks above.
+static DBX_NEG_SIGNER_BYTE: &[u8] = include_bytes!("dbx-neg-signer-byte.der");
+static DBX_NEG_SIGNER_PAIR: &[u8] = include_bytes!("dbx-neg-signer-pair.der");
+static DBX_NEG_ANCHOR_BYTE: &[u8] = include_bytes!("dbx-neg-anchor-byte.der");
+const DBX_NEGATIVE_BLOBS: [&'static [u8]; 3] = [
+    DBX_NEG_SIGNER_BYTE,
+    DBX_NEG_SIGNER_PAIR,
+    DBX_NEG_ANCHOR_BYTE,
+];
+const DBX_NEGATIVE_NAMES: [&str; 3] = [
+    "dbx-neg-signer-byte (the leaf sits in the revocation store)",
+    "dbx-neg-signer-pair (a re-key carries the leaf's issuer+serial)",
+    "dbx-neg-anchor-byte (the root sits in the revocation store)",
+];
+/// The named refusal each dbx negative must die with (substrings of
+/// dbx.rs's own refusals).
+const DBX_NEGATIVE_EXPECTED_REFUSALS: [&str; 3] = [
+    "(the signer certificate byte-matches an entry)",
+    "(the signer's issuer+serial matches an entry)",
+    "(the anchor certificate byte-matches an entry)",
 ];
 
 static mut SYSTEM_TABLE: *const SystemTable = core::ptr::null();
@@ -251,8 +297,15 @@ pub extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const Syste
     //         the stub is about to copy into their vaddr, with the
     //         signer certificate pinned byte-for-byte against the
     //         embedded anchor; and the refusal path is proven alive
-    //         before any kernel byte moves.
-    verify_kernel_carrier(kernel_bytes);
+    //         before any kernel byte moves. The chain's expiry and
+    //         revocation gates (windows + dbx) run inside, each on
+    //         firmware-OWNED datum: the RTC reading is refused unless
+    //         it is a plausible clock, never faked.
+    let walk_clock = boot::firmware_time_or_die();
+    boot::conout("nyrqis ubld: walk clock: firmware GetTime = ");
+    print_walk_clock(walk_clock);
+    boot::conout("\r\n");
+    verify_kernel_carrier(kernel_bytes, walk_clock);
     let ki = match elf::parse(kernel_bytes) {
         Ok(ki) => ki,
         Err(e) => boot::die(elf_error_str(e)),
@@ -367,7 +420,48 @@ pub extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const Syste
 /// share the walk: an EMPTY blob is refused here by name, a truncated
 /// or malformed one is refused by every named step inside
 /// `trust::verify_detached_signed_data` propagating its own.
-fn verify_kernel_carrier(kernel: &[u8]) {
+fn print_two_digits(v: u8) {
+    const D: &[u8] = b"0123456789";
+    boot::conout(core::str::from_utf8(&[D[(v / 10) as usize], D[(v % 10) as usize]]).unwrap());
+}
+
+fn print_decimal(mut v: u64) {
+    const D: &[u8] = b"0123456789";
+    let mut buf = [0u8; 20];
+    let mut n = 0usize;
+    if v == 0 {
+        boot::conout("0");
+        return;
+    }
+    while v > 0 {
+        buf[n] = D[(v % 10) as usize];
+        n += 1;
+        v /= 10;
+    }
+    let mut out = [0u8; 20];
+    for i in 0..n {
+        out[i] = buf[n - 1 - i];
+    }
+    boot::conout(core::str::from_utf8(&out[..n]).unwrap());
+}
+
+/// The walk's clock, as the transcript shows it (YYYY-MM-DD
+/// hh:mm:ss, the fields GetTime carries and the windows compare).
+fn print_walk_clock(now: trust::Rfc5280Time) {
+    print_decimal(now.year as u64);
+    boot::conout("-");
+    print_two_digits(now.month);
+    boot::conout("-");
+    print_two_digits(now.day);
+    boot::conout(" ");
+    print_two_digits(now.hour);
+    boot::conout(":");
+    print_two_digits(now.minute);
+    boot::conout(":");
+    print_two_digits(now.second);
+}
+
+fn verify_kernel_carrier(kernel: &[u8], now: trust::Rfc5280Time) {
     if TRUSTED_ROOT_BYTES.is_empty() || CARRIER_BYTES.is_empty() {
         boot::die(
             "carrier blob missing: tools/make_carrier.sh wrote no trusted-root DER and/or no carrier DER; \
@@ -377,9 +471,10 @@ fn verify_kernel_carrier(kernel: &[u8]) {
     boot::conout(
         "nyrqis ubld: carrier verify: pinning the signer certificate against the embedded anchor, then walking the detached carrier\r\n",
     );
-    if let Err(err) = trust::verify_detached_signed_data(TRUSTED_ROOT_BYTES, CARRIER_BYTES, kernel) {
-        boot::die(err);
-    }
+    let chain = match trust::verify_trusted_chain(TRUSTED_ROOT_BYTES, CARRIER_BYTES, kernel, now) {
+        Ok(chain) => chain,
+        Err(err) => boot::die(err),
+    };
     boot::conout(
         "nyrqis ubld: carrier verify OK -- RSA-2048 PKCS#1 v1.5 signature over the SAME bytes about to be loaded\r\n",
     );
@@ -392,7 +487,7 @@ fn verify_kernel_carrier(kernel: &[u8]) {
     tampered.extend_from_slice(kernel);
     tampered[0] ^= 0x01;
     if trust
-        ::verify_detached_signed_data(TRUSTED_ROOT_BYTES, CARRIER_BYTES, &tampered)
+        ::verify_trusted_chain(TRUSTED_ROOT_BYTES, CARRIER_BYTES, &tampered, now)
         .is_ok()
     {
         boot::die(
@@ -409,16 +504,18 @@ fn verify_kernel_carrier(kernel: &[u8]) {
     // dead for that exact attack shape; being refused for a different
     // reason means a check was skipped (e.g. a parse truncation)
     // -- both die, naming which negative misbehaved.
-    const NEGATIVE_CARRIER_NAMES: [&str; 5] = [
+    const NEGATIVE_CARRIER_NAMES: [&str; 7] = [
         "neg-digest (signed over altered content)",
         "neg-anchor (stray unanchored signer)",
         "neg-sid (SignerInfo serial byte-flipped)",
         "neg-attrs (signedAttrs carried)",
         "neg-detached (carrier embeds its payload)",
+        "neg-window-expired (signer window 1990..2020)",
+        "neg-window-future (signer window 2400..2500)",
     ];
     for i in 0..NEGATIVE_CARRIERS.len() {
-        match trust::verify_detached_signed_data(TRUSTED_ROOT_BYTES, NEGATIVE_CARRIERS[i], kernel) {
-            Ok(()) => boot::die(
+        match trust::verify_trusted_chain(TRUSTED_ROOT_BYTES, NEGATIVE_CARRIERS[i], kernel, now) {
+            Ok(_) => boot::die(
                 "carrier negative-control FAILED: a generated negative carrier VERIFIED over the real kernel image",
             ),
             Err(e) => {
@@ -434,7 +531,74 @@ fn verify_kernel_carrier(kernel: &[u8]) {
         boot::conout(")\r\n");
     }
     boot::conout(
-        "nyrqis ubld: carrier neg controls OK -- all five negative carriers refused for their named reasons\r\n",
+        "nyrqis ubld: carrier neg controls OK -- all seven negative carriers refused for their named reasons\r\n",
+    );
+
+    // ---- the revocation gate: the chain that just verified must not
+    //         sit in the firmware's dbx (the ADR-0014 chain's revocation
+    //         reading). The firmware's store is the datum; the generated
+    //         controls below prove the walk's limbs every boot, the
+    //         same way the negative carriers prove the signature walk's.
+    let (dbx_status, dbx_bytes) = boot::read_dbx();
+    match dbx_status {
+        EFI_NOT_FOUND => {
+            boot::conout(
+                "  dbx: absent on this firmware (EFI_NOT_FOUND) -- no revocation store to consult (named fact)\r\n",
+            );
+        }
+        EFI_SUCCESS => {
+            if dbx_bytes.is_empty() {
+                boot::conout(
+                    "  dbx: present but empty (0 signature-list bytes) -- nothing to enforce\r\n",
+                );
+            } else {
+                match dbx::check_blob(&dbx_bytes, &chain) {
+                    Ok(facts) => {
+                        boot::conout("  dbx: walked ");
+                        print_decimal(facts.x509_entries_walked as u64);
+                        boot::conout(
+                            " X.509 entries, none revoke the just-verified chain",
+                        );
+                        if facts.other_type_entries_skipped > 0 {
+                            boot::conout("; skipped ");
+                            print_decimal(facts.other_type_entries_skipped as u64);
+                            boot::conout(
+                                " entries of types this walk does not enforce (named)",
+                            );
+                        }
+                        boot::conout("\r\n");
+                    }
+                    Err(e) => boot::die(e),
+                }
+            }
+        }
+        s => {
+            boot::conout("  dbx: GetVariable(dbx) = ");
+            boot::conout_hex(s);
+            boot::conout(" -- unreadable, enforced nothing (named fact)\r\n");
+        }
+    }
+    for i in 0..DBX_NEGATIVE_BLOBS.len() {
+        match dbx::check_blob(DBX_NEGATIVE_BLOBS[i], &chain) {
+            Ok(_) => boot::die(
+                "dbx negative-control FAILED: a generated revocation blob did NOT refuse the chain the walk just accepted",
+            ),
+            Err(e) => {
+                if !e.contains(DBX_NEGATIVE_EXPECTED_REFUSALS[i]) {
+                    boot::die(
+                        "dbx negative-control refused at the WRONG named step -- a limb of the revocation walk is dead or misordered",
+                    );
+                }
+            }
+        }
+        boot::conout("  dbx neg control: ");
+        boot::conout(DBX_NEGATIVE_NAMES[i]);
+        boot::conout(" -- refused as required (claimed");
+        boot::conout(DBX_NEGATIVE_EXPECTED_REFUSALS[i]);
+        boot::conout(")\r\n");
+    }
+    boot::conout(
+        "  dbx neg controls OK -- all three generated revocations refused for their named reasons\r\n",
     );
 }
 
