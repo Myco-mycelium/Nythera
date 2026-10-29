@@ -197,9 +197,15 @@ def le_u32_bytes(v):
     return bytes([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF])
 
 
+# Serialized EFI_CERT_X509_GUID (canonical edk2, LE per field):
+# a5c059a1-94e4-4aa7-87b5-ab155c2bf072. NOTE the byte order: time_mid
+# 0x94e4 serializes (e4, 94), not (94, e4) -- a prior constant here had
+# it backwards and matched the stub's own wrong constant, so BOTH sides
+# agreed with each other and mismatched every real store; discovered
+# only when the .ms gate served a REAL firmware MokList (see efi.rs).
 CERT_X509_GUID = bytes(
     [
-        0xA1, 0x59, 0xC0, 0xA5, 0x94, 0xE4, 0xA7, 0x4A,
+        0xA1, 0x59, 0xC0, 0xA5, 0xE4, 0x94, 0xA7, 0x4A,
         0x87, 0xB5, 0xAB, 0x15, 0x5C, 0x2B, 0xF0, 0x72,
     ]
 )
@@ -234,10 +240,14 @@ def make_dbx_siglist(payload_path, out_path):
     )
 
 
+# Serialized EFI_CERT_X509_SHA256_GUID (canonical edk2, LE per field):
+# 3bd2a492-96c0-4079-b420-fcf98ef103ed. A prior constant here was a
+# GUID that exists nowhere in the spec (44689f75-9e64-...); same
+# self-consistency trap as CERT_X509_GUID above.
 CERT_X509_SHA256_GUID = bytes(
     [
-        0x75, 0x9F, 0x68, 0x44, 0x64, 0x9E, 0x49, 0x4A,
-        0xA7, 0x28, 0x67, 0xF7, 0x6E, 0x83, 0xDC, 0x4A,
+        0x92, 0xA4, 0xD2, 0x3B, 0xC0, 0x96, 0x79, 0x40,
+        0xB4, 0x20, 0xFC, 0xF9, 0x8E, 0xF1, 0x03, 0xED,
     ]
 )
 

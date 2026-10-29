@@ -34,6 +34,7 @@ directory; this index tracks status only.
 | [ADR-0025](ADR-0025-nui-runtime-consumption.md) | NUI runtime consumption | Accepted |
 | [ADR-0026](ADR-0026-wayland-display-server-integration.md) | Wayland display server integration for the Nyrqis shell | Accepted |
 | [ADR-0027](ADR-0027-wire-verified-protocol-and-fail-closed-gates.md) | Wire-verified protocol constants and fail-closed acceptance gates | **Accepted** |
+| [ADR-0028](ADR-0028-real-keys-and-moklist-content.md) | Real keys for ADR-0014 — one-hop hierarchy, MokList carries the leaf | **Accepted** (2026-10-29) |
 
 ## Blocked Statuses
 

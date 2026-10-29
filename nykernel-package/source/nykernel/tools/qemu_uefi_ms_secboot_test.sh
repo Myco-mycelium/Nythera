@@ -5,11 +5,17 @@
 # the enforcing OVMF (-4M.ms) CODE image and the variable store is
 # FRESHLY composed from the PLAIN variable-store template with the
 # carrier chain itself: the ADR-0014 root pair as PK/KEK, root+leaf
-# certificates in db, SecureBootEnable on. The plain (not .ms)
+# certificates in db, SecureBootEnable on. The LEAF cert additionally
+# goes into MokList under shim's SHIM_LOCK_GUID (ADR-0015's content
+# decision: a user enrollment carries the LEAF signer, never the root
+# anchor -- enrolling the root would grant every future leaf it ever
+# issues), so the positive leg also proves the stub reads a REAL shim
+# MokList variable on real enforcing firmware and names its facts. The plain (not .ms)
 # template is deliberate: virt-fw-vars can only ADD entries to a
 # template it reads, never remove them, so a .ms-template copy would
 # keep the template's Microsoft authorities in KEK/db -- the written
-# store would not be the store this gate claims to prove against. The stub is then Authenticode-signed with
+# store would not be the store this gate claims to prove against.
+# The stub is then Authenticode-signed with
 # the leaf key (sbsign) and installed on the ESP, so the FIRMWARE's
 # verification -- not ours -- is the gate the stub passes, and the
 # stub's own carrier walk (which anchors the same root) still enforces
@@ -17,7 +23,10 @@
 #
 # positive: signed stub under enforcement -> firmware accepts it, the
 #   stub reads SecureBoot=1 with PK present (not SetupMode), the
-#   carrier chain verifies over the kernel, and the boot reaches Ready
+#   carrier chain verifies over the kernel, the stub ALSO walks the
+#   real MokList variable and names its leaf entry covering the
+#   just-verified chain (the MOK path extending the embedded anchor,
+#   both facts pinned), and the boot reaches Ready
 #   (host exit code 33, the same contract as the non-ms gate).
 # negative (unsigned): the UNSIGNED stub against the same enforcing
 #   store -> the firmware refuses it at the boot manager ("Access
@@ -90,6 +99,11 @@ for f in "$ROOT_CERT" "$LEAF_CERT" "$LEAF_KEY"; do
 done
 GLV=8be4df61-93ca-11d2-aa0d-00e098032b8c   # EFI_GLOBAL_VARIABLE
 ISD=d719b2cb-3d3a-4596-a3bc-dad00e67656f   # EFI_IMAGE_SECURITY_DATABASE_GUID
+# shim's SHIM_LOCK_GUID, the vendor GUID shim reads every MokListRT/
+# MokNew/MokAuth state variable from -- verified line-for-line against
+# rhboot/shim lib/guid.c, the same value virt-fw-vars' Shim GUID and
+# the stub's efi.rs pin.
+SHIM=605dab50-e046-4300-abb6-3dd810dd8b23
 STORE=uefi/dist/VARS.ms-secboot.fd
 cp "$VARS_TMPL" "$STORE"
 # NOTE: --inplace (or -o) is REQUIRED to write back; virt-fw-vars with
@@ -101,10 +115,11 @@ cp "$VARS_TMPL" "$STORE"
     --add-kek "$GLV" "$ROOT_CERT" \
     --add-db "$ISD" "$ROOT_CERT" \
     --add-db "$ISD" "$LEAF_CERT" \
+    --add-mok "$SHIM" "$LEAF_CERT" \
     --sb > /dev/null
-echo "==> enrolled enforcing store: PK/KEK anchored on the carrier root, root+leaf in db, SecureBootEnable ON"
+echo "==> enrolled enforcing store: PK/KEK anchored on the carrier root, root+leaf in db, SecureBootEnable ON, leaf in MokList"
 echo "==> composed store shape (what the firmware will actually read):" && \
-    "$VIRT" -i "$STORE" -p 2>/dev/null | grep -E "PK |KEK |db |SecureBoot" || true
+    "$VIRT" -i "$STORE" -p 2>/dev/null | grep -E "PK |KEK |db |MokList|SecureBoot" || true
 
 # --- Authenticode-sign the stub with the leaf key ---
 # The signer certificate must be one the firmware's db can bind
@@ -199,6 +214,8 @@ if [[ "$POS_STATUS" -eq 33 ]]; then
     if grep -aq "SecureBoot=1" target/qemu-uefi-ms-secboot-positive.log \
        && grep -aq "PK variable PRESENT" target/qemu-uefi-ms-secboot-positive.log \
        && grep -aq "carrier verify OK" target/qemu-uefi-ms-secboot-positive.log \
+       && grep -aq "MokList: walked" target/qemu-uefi-ms-secboot-positive.log \
+       && grep -aq "ALSO covers the just-verified chain" target/qemu-uefi-ms-secboot-positive.log \
        && grep -aq "boot phase = 7 (Ready)" target/qemu-uefi-ms-secboot-positive.log; then
         POS_OK=1
     else

@@ -4067,10 +4067,11 @@ updates actually use:
 - **`dbx.rs`: the hash list branch.** An X.509-SHA256 list's entries
   are owner GUID + one `EFI_CERT_X509_SHA256_SIGNATURE` each -- an
   `EFI_TIME RevocationDate` (16 bytes) plus the SHA-256 of the
-  certificate's To-Be-Signed content (32 bytes) -- so the walk hashes
+  certificate's To-Be-Signed  content (32 bytes) -- so the walk hashes
   each chain certificate's TBS via the new `trust.rs cert_tbs()` (the
   whole TLV over an independently walked certificate, byte-identical
-  to what `Cert::parse` stores) and compares. A matching hashrefuses by name, and the standoff date is exactly the entry's
+  to what `Cert::parse` stores) and compares. A matching hash
+  refuses by name, and the standoff date is exactly the entry's
   RevocationDate read as six civil fields and required to be at or
   before the firmware clock the walk already fetched: a future-dated
   entry is NOT yet in force -- it stays a countable walk fact, never
@@ -4134,6 +4135,87 @@ TrustedChain as-is.
   them on real firmware (`MokList: absent on this firmware
   (EFI_NOT_FOUND) -- no shim user keys (named fact)` on the default
   OVMF store, then the three refusal facts + the anchoring fact).
+
+## Phase 10 increment (2026-10-29): real keys for ADR-0014 (ADR-0028) -- and the enforcing .ms gate composes a REAL shim MokList whose two facts the positive leg now requires
+
+- **ADR-0028 is the real-key decision record, written after
+  verifying against the code, not against intent.**
+  `docs/reference/adr/ADR-0028-real-keys-and-moklist-content.md`:
+  the walk is ONE-HOP (the leaf's TBS hash verified under the pinned
+  anchor's SPKI), so the real-key hierarchy models exactly that --
+  offline root, leaf per signing host -- and a two-tier tree would
+  be a DIFFERENT ADR with different walk code, not a stronger
+  variant of this one. The MokList content decision: a user
+  enrollment carries the LEAF SIGNER, never the root anchor
+  (enrolling the root would grant every future leaf it ever issues,
+  collapsing the point of having a hierarchy). Revocation stays the
+  dbx TBS-hash path the walk already enforces; leaves rotate freely
+  (the anchor pins the issuer); production private keys live
+  offline, never in the repo or on the build host.
+- **The shim vendor GUID was verified against shim's actual
+  source,** not remembered: rhboot/shim's lib/guid.c defines
+  SHIM_LOCK_GUID = 605dab50-e046-4300-abb6-3dd810dd8b23 -- exactly
+  the value the stub's efi.rs already pinned, and the same value
+  virt-fw-vars' Shim GUID maps to. The `mok.rs` comment now names it
+  correctly (shim reads every MokListRT/MokNew/MokAuth state
+  variable from this GUID). Memory had it WRONG (wanted 8b71);
+  checking the source settled it and CONFIRMED the stub was
+  already right -- the read surface is shim-source-faithful.
+- **The enforcing .ms gate now composes a real MokList too.**
+  `tools/qemu_uefi_ms_secboot_test.sh` adds
+  `--add-mok "$SHIM" "$LEAF_CERT"` under the verified
+  SHIM_LOCK_GUID (virt-fw-vars' own `--add-mok` writes the
+  `MokList` name, NV+BS attributes, Shim GUID -- checked in its
+  source before use), holding the LEAF cert per ADR-0028's content
+  decision. The composed-store print now lists MokList (this run:
+  932 bytes) so the variable is INSPECTED, not assumed.
+- **The gate's POSITIVE leg gained two required markers,**
+  `MokList: walked` and `ALSO covers the just-verified chain`: the
+  stub must actually READ the variable on real enforcing firmware,
+  and the enrolled leaf must EXTEND the embedded anchor -- the
+  walk's own signer==anchor shape (legal per ADR-0028), meaning the
+  MOK trust path provably took an entry in rather than merely
+  parsing one. A dead parse path fails the gate instead of silently
+  shrinking to the old marker set.
+- **And the new marker caught a REAL bug on its first fire.** The
+  gate's first run failed exactly this requirement: with a real
+  932-byte MokList in the composed store, the stub booted Ready but
+  printed `MokList: walked 0 X.509 entries; skipped 1 entries of
+  types this walk does not enforce` -- the REAL firmware-served
+  signature list's X.509 entry was classified as "other". On-flash
+  bytes were perfect UEFI 32.4.1 (three source checks against
+  rhboot/shim, edk2's ImageAuthentication.h, and efivar/virt-fw-vars
+  agree on the canonical GUID); the bug was OURS: `efi.rs`
+  `CERT_X509_GUID` encoded time_mid as `0xe494` (a swapped u16 --
+  its LE bytes are (94, e4) where the spec-wire bytes are (e4, 94)),
+  and `CERT_X509_SHA256_GUID` was not the spec GUID at all
+  (44689f75-... against the canonical 3bd2a492-96c0-4079-b420-
+  fcf98ef103ed). Both host-side blob generators
+  (`patch_carrier_negatives.py`) carried the SAME wrong bytes, so
+  every generated control and every dbx negative agreed with the
+  stub -- self-consistent, self-validating, and wrong against the
+  outside world; only REAL firmware bytes could expose it, and it
+  took the MOK surface being exercised against a REAL store for the
+  check to fire. Both constants and both generator tables are now
+  canonical (serialized spec bytes pinned in a comment at each
+  definition), blobs were regenerated, and all gates re-ran green.
+- **Verified:** TWO passes, recorded as run.
+  PASS 1 (pre-fix): host `verify_carrier.sh` all 18 named OKs, plain
+  gate PASS, `.ms` gate FAILED exactly on the new positive-leg
+  markers (marker_ok=0; both Access-Denied refusals correct) --
+  root-caused to the GUID byte order above, not papered over.
+  PASS 2 (post-fix): host harness all 18 named OKs again with the
+  regenerated canonical-GUID blobs, plain UEFI gate PASS, `.ms`
+  secboot gate PASS on the full three-leg transcript (PK/KEK/db/
+  dbx/MokList/SecureBootEnable composed store, positive boots Ready
+  WITH both MokList markers fired on the real firmware-served
+  variable, both Access-Denied negatives refused by the firmware).
+  `mkdocs build --strict` passes with ADR-0028 registered in BOTH
+  ADR indexes (NPC-005 v1.26.0 + adr/README row), and the
+  doc-numbering collision this record replaces was caught before
+  commit: the first draft of the ADR file carried the already-taken
+  number ADR-0015 and was renamed to the next free slot (ADR-0028)
+  before anything referenced it.
 
 ## Bugs found and fixed during Phase 1 bring-up
 

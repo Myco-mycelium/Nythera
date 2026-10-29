@@ -1,6 +1,8 @@
 //! The ADR-0014 chain's MOK reading: the shim's `MokList` variable
 //! (name `MokList`, vendor GUID 605dab50-e046-4300-abb6-3dd810dd8b23
-//! -- shim's own EFI file-vendor GUID; UEFI 2.10 section 32.4.1
+//! -- shim's SHIM_LOCK_GUID, the GUID shim's mok.c reads every
+//! MokListRT/MokNew/MokAuth-MokXNew MokXAuth state variable from
+//! and mokutil writes against; UEFI 2.10 section 32.4.1
 //! signature-list shape) is the OPTIONAL user-enrollment surface the
 //! chain's stub side can honor: entries an enrolled user's MokManager
 //! put there act as ADDITIONAL chain anchors, verified with the SAME

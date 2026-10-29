@@ -1,13 +1,13 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.25.0
+version: 1.26.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-10-11
+updated: 2026-10-29
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -49,6 +49,7 @@ only.
 | ADR-0025 | NUI runtime consumption | Accepted | 2026-08-16 | status cell added 2026-09-20 — the index row itself was missing (caught by the frontmatter-vs-index sweep; its 2026-09-06 frontmatter flip is NOT recorded in any Group decision log — same flag as ADR-0019, see that row) |
 | ADR-0026 | Wayland Display Server Integration for the Nyrqis Shell | Accepted | 2026-09-01 | status cell added 2026-09-20 — the index row itself was missing; Accepted by implementation record (M13's display-server integration milestone, roadmap-checked), no separate AG session noted |
 | ADR-0027 | Wire-verified protocol constants and fail-closed acceptance gates | **Accepted** | 2026-09-16 | — |
+| ADR-0028 | Real keys for ADR-0014 — the one-hop hierarchy and the MokList content decision | **Accepted** | 2026-10-29 | — |
 
 ## ADR Statuses
 
@@ -83,6 +84,7 @@ only.
 | 1.19.0  | 2026-09-10 | ADR-0009 v1.3.1: Implementation Note — per-sender fairness implemented (`FairTokenBucket`, fair-by-default endpoints, operator control-plane ops, dynamic-shares opt-in), §32b–d benchmark record complete, review package published (`ADR-0009-review-package.md`) |
 | 1.20.0  | 2026-09-16 | Add ADR-0027 (wire-verified protocol constants and fail-closed acceptance gates) — **Accepted** |
 | 1.21.0  | 2026-09-20 | Add the missing ADR-0025/0026 status rows; correct six stale adr/README.md cells (0007/0009/0013/0016/0022/0023 still read pre-2026-09-19-review Proposed); the ADR-0019 frontmatter reverted to Proposed per its own governance line and this index (its 2026-09-06 flip to Accepted was not sanctioned by any Group record) — caught by the frontmatter-vs-index status sweep |
+| 1.26.0  | 2026-10-29 | Add ADR-0028 (real keys for ADR-0014 — the one-hop offline-root hierarchy and the MokList carries-the-leaf content decision) — **Accepted** by implementation record (the two ADR-0014 Consequences work items it closes were named properly-scoped Phase-10 follow-ups by ADR-0014's own accepted record, the ADR-0026 precedent) |
 | 1.22.0  | 2026-09-21 | ADR-0009 v1.3.2 — the standing dynamic-shares-as-default item decided (AG decision log D1): static default retained; nothing remains open in the ADR. Frontmatter version caught up to this table (it had lagged at 1.18.0 through the 1.19–1.21 entries) || 1.25.0 | 2026-10-11 | ADR-0024 **Accepted** — AG decision-log row J2 (owner direction via the recorded session), as proposed: both increments implemented same-day (0.14.20/0.14.21) and benchmarked (§29; the post-0.14.21 §27 re-measurement collected 2026-09-20), the evidence set per its own review-input record complete; the two review-input caveats land verbatim in its Consequences |
 | 1.24.0 | 2026-10-11 | ADR-0014 **Accepted** — AG decision-log row I3 (owner direction via the recorded session, the E1/F1/G1 shape), as proposed with no text amendments. Was never named a gate ("not benchmark-blocked" per REPOSITORY_STATE's own record); the adopted D3 key-trust mirror conforms to its postures; its two Consequences work items become properly-scoped Phase-10 follow-ups |
 | 1.23.0 | 2026-09-30 | ADR-0019 **Accepted** — RATIFIED AS-IMPLEMENTED, Bundle D decided (AG decision-log row D1, owner direction via the recorded session, the E1/F1 same-day shape): all three issue-#1 ledgers resolved per AG_BRIEF_ADR0019's recommendation (60 s cadence retained; `auto_compact=True` ratified — the ADR-0022 as-implemented shape; shutdown ordering confirmed); the watcher resource profile recorded as a tuning follow-up, not a blocker. The sanctioned flip supersedes the 2026-09-06 unsanctioned self-flip reverted 2026-09-20 |

@@ -145,7 +145,18 @@ pub const IMAGE_SECURITY_DATABASE_GUID: Guid =
 /// EFI_CERT_X509_GUID -- the signature-list entry type for a wrapped
 /// X.509 certificate (the shape the stub enrolls its anchor in).
 pub const CERT_X509_GUID: Guid =
-    Guid::new(0xa5c059a1, 0xe494, 0x4aa7, [0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0, 0x72]);
+    // NOTE on the byte order this constructor serializes: the spec's
+    // EFI_GUID is little-endian per field on the wire, so time_mid is
+    // 0x94e4 (canonical edk2) and NOT "0xe494" -- a prior constant in
+    // this slot read 0xe494, whose LE bytes are (94, e4) instead of the
+    // (e4, 94) every real store carries. The self-consistent-but-wrong
+    // pair it made with the host-side generators passed every
+    // generated control and the OVMF dbx NEGATIVES, and only exposed
+    // itself when a REAL firmware-served MokList (the ".ms"-
+    // composition's 932-byte leaf enrollment) failed the compare this
+    // wrong constant -- see the 2026-10-29 increment in
+    // IMPLEMENTATION_STATUS.md.
+    Guid::new(0xa5c059a1, 0x94e4, 0x4aa7, [0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0, 0x72]);
 
 /// EFI_CERT_X509_SHA256_GUID -- the signature-list entry type for a
 /// *revocation by hash*: the entry carries `EFI_TIME RevocationDate`
@@ -156,7 +167,11 @@ pub const CERT_X509_GUID: Guid =
 /// contents, and a time of revocation"). This is the form real-world
 /// Microsoft dbx updates use for revoked CA certificates.
 pub const CERT_X509_SHA256_GUID: Guid =
-    Guid::new(0x44689f75, 0x9e64, 0x4a49, [0xa7, 0x28, 0x67, 0xf7, 0x6e, 0x83, 0xdc, 0x4a]);
+    // Canonical edk2 {{?)): 3bd2a492-96c0-4079-b420-fcf98ef103ed -- a
+    // prior constant in this slot was a GUID that exists nowhere in
+    // the spec (44689f75-9e64-...), self-consistent only with the
+    // host-side blob generators that carried the same wrong bytes.
+    Guid::new(0x3bd2a492, 0x96c0, 0x4079, [0xb4, 0x20, 0xfc, 0xf9, 0x8e, 0xf1, 0x03, 0xed]);
 /// shim's vendor GUID -- the namespace shim's own MokList (and
 /// MokListX etc.) variables live under; the stub's MOK trust
 /// extension reads `MokList` there (mok.rs).
