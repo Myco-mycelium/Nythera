@@ -4217,6 +4217,81 @@ TrustedChain as-is.
   number ADR-0015 and was renamed to the next free slot (ADR-0028)
   before anything referenced it.
 
+## Phase 10 increment (2026-10-29, second): the GUID drift gets standalone detectors, the leaf revocation gets a REAL firmware-served boot leg, and the gates get a weekly CI drift run
+
+- **The anti-self-consistency trap got its own differential control.**
+  The GUID byte-order bug this morning killed was invisible to every
+  repo-internal check because the stub's constants and the host blob
+  generators were wrong TOGETHER (each validated the other against
+  identical bytes). `uefi/tests/trust_selfcheck.rs` now builds two
+  signature-list fixtures whose input bytes come from SPEC-CANONICAL
+  ASCII GUID strings parsed by `spec_guid_bytes` in the harness —
+  hand-rolled from the spec text, deliberately NOT a copy of any repo
+  constant — and classifies them through the walk: canonical
+  EFI_CERT_X509 bytes must classify as the enforced whole-certificate
+  type (marked by a byte-match refusal naming the stub's own constant
+  at the FAIL site), canonical EFI_CERT_X509_SHA256 bytes must classify
+  as the hash-typed revocation walk (future-dated 2400, so walked and
+  counted, never in force). On any recurrence the fixtures flip from
+  "classified" to "unknown type" and the FAIL names exactly which spec
+  wire bytes the stub's constants must serialize. Both controls PASS
+  (harness run: `OK spec-guid-x509` / `OK spec-guid-hash`).
+- **`make-dbx-auth-update` in `patch_carrier_negatives.py` builds the
+  authenticated-update header virt-fw's `--set-dbx` parses** — with an
+  honest scope note, because the format is not what it looks like:
+  virt-fw's `varstore/authfiles.py` writes EFI_TIME + dwLength=24 +
+  wRevision 0x0200 + wCertType 0x0EF1 + EfiCertPkcs7 GUID, then the RAW
+  signature-list payload in CertData, and `parse_authdata` slices the
+  payload at 16+dwLength and feeds it straight to its SigDB parser —
+  a genuine edk2 CreateTimeBasedPayload file (a real PKCS7 body,
+  dwLength 24+pkcs7) can NOT survive that parser, and the first draft
+  here was exactly that wrong shape. The varstore composition IS the
+  trust boundary of these gates (every enrollment in them — PK/KEK/db/
+  MokList/dbx — is written by virt-fw-vars, not by a SetVariable
+  exchange), so the header exists to make the payload readable by the
+  store tooling and firmware, not to claim a signed variable-update
+  protocol exchange. The writer self-checks by parsing its own output
+  with virt-fw's OWN EfiVar and asserting the recovered payload
+  byte-equals the input (proven at runtime, not asserted in a comment).
+- **The `.ms` secboot gate has a FOURTH boot leg: the enrolled leaf
+  revoked BY HASH.** A second enforcing store, identical enrollment
+  plus the LEAF's To-Be-Signed SHA-256 as an EFI_CERT_X509_SHA256 dbx
+  entry (revoked 2020 — real-world Microsoft dbx update form, wrapped
+  through `make-dbx-auth-update`), and the leaf-signed stub must be
+  refused. The gate accepts BOTH enforcement paths, named: firmware
+  refusal (Access Denied before the stub runs) or the stub's own
+  revocation walk over the REAL firmware-served dbx variable (this
+  OVMF build served the bytes; the walk refused with
+  "a hash-typed entry covers the signer certificate's To-Be-Signed").
+  Convenience: the live walk now ALSO prints the served shape —
+  `dbx: firmware served 92 signature-list bytes; type GUID (0x92
+  0xa4 0xd2 0x3b ...)` — so served-vs-composed mismatches are on the
+  screen instead of inferred from the walk counters.
+- **The leg's first run FAILED — recorded as run, root-caused, and
+  the fix is real, not a re-run.** The revocation boot used the WRONG
+  store: the new leg's `boot_qemu` call passed no store argument, so
+  it booted the FIRST store, whose `--sb`-implied dbx is the virt-fw
+  DUMMY (a hash-of-empty EFI_CERT_SHA256 entry — an "unknown type" to
+  the walk — exactly matching the observed `walked 0 X.509 ...
+  skipped 1`), and the stub booted Ready. Root cause found by com-
+  posing and booting the leg manually, byte-comparing the store
+  content (`payload identical: True` at the varstore's lone dbx
+  record), and serving-side hex in the new transcript line; the fix
+  is the missing `$REV_STORE` argument, and the standalone boot
+  refused BEFORE the gate was re-run, not because of it.
+- **The gates are now on a weekly CI schedule** (`.github/workflows/
+  ci.yml` `schedule: cron 17 6 * * 1`): the boot-emulation gates live
+  on EXTERNAL inputs that drift without any push to this repo — OVMF
+  firmware updates, virt-fw-vars and sbsign releases, the rustc
+  interaction the toolchain pin documents — and the push-triggered
+  runs never see that drift. Monday 06:17 UTC, all gates unchanged.
+- **Verified:** full battery on the changed sources. Host
+  `verify_carrier.sh` with the two new spec-GUID controls green;
+  plain UEFI gate PASS; `.ms` gate PASS on ALL FOUR legs (positive
+  Ready with both MokList markers; unsigned and tampered refused by
+  the firmware; the leaf-TBS-revoked store refused by the stub's walk
+  with the served-bytes transcript printed).
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

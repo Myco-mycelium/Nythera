@@ -106,6 +106,15 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # Weekly boot-emulation re-run: the QEMU gates (BIOS, UEFI, .ms
+  # secboot, parity) live on EXTERNAL inputs that drift without any
+  # push to this repo -- OVMF/distro firmware updates (a .ms template
+  # change is invisible to a push-triggered run), virt-fw-vars and
+  # sbsign releases, and the rustc-flag interaction the toolchain pin
+  # documents. The weekly run is the drift detector for those; all
+  # push-time gates still fire as before.
+  schedule:
+    - cron: "17 6 * * 1"
 
 jobs:
   version-drift:

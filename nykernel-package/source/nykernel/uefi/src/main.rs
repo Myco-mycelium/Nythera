@@ -582,7 +582,22 @@ fn verify_kernel_carrier(kernel: &[u8], now: trust::Rfc5280Time) {
                 boot::conout(
                     "  dbx: present but empty (0 signature-list bytes) -- nothing to enforce\r\n",
                 );
-            } else {                match dbx::check_blob(
+            } else {
+                // Transcript: the SERVED bytes' shape first, then the
+                // walk. The type GUID is the first 16 bytes -- what
+                // classification turns on -- so a served-vs-composed
+                // mismatch (or a constants drift) is on the screen,
+                // not inferred from the counts alone.
+                boot::conout("  dbx: firmware served ");
+                print_decimal(dbx_bytes.len() as u64);
+                boot::conout(" signature-list bytes; type GUID (");
+                boot::conout_hex(dbx_bytes[0] as u64);
+                for b in &dbx_bytes[1..16] {
+                    boot::conout(" ");
+                    boot::conout_hex(*b as u64);
+                }
+                boot::conout(" )\r\n");
+                match dbx::check_blob(
                     &dbx_bytes,
                     &[
                         now.year as u16,

@@ -100,6 +100,54 @@ fn host_utc_now() -> trust::Rfc5280Time {
 /// CertType GUID: both the walk's own test blobs (via
 /// patch_carrier_negatives.py) and this file's unknown-type control
 /// ride on the same layout.
+/// One canonical "a5c059a1-94e4-4aa7-87b5-ab155c2bf072"-shaped GUID
+/// string, decoded to the 16 spec-wire bytes: the three integer fields
+/// little-endian (the EFI_GUID layout), the last eight bytes verbatim
+/// in field order. Lives HERE, hand-rolled from the spec's own string
+/// form, deliberately NOT a copy of any repo constant: when the .ms
+/// gate's real firmware-served MokList failed classification, the stub
+/// and the tooling constants were wrong TOGETHER (the 2026-10-29
+/// CERT_X509* drift), so the differential that catches a recurrence
+/// standalone has to input bytes derived from the spec text itself.
+fn spec_guid_bytes(s: &str) -> [u8; 16] {
+    assert_eq!(s.len(), 36, "canonical GUID string shape");
+    let digits: Vec<u8> = s
+        .bytes()
+        .filter(|c| *c != b'-')
+        .map(|c| match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => panic!("non-hex byte in canonical GUID string"),
+        })
+        .collect();
+    assert_eq!(digits.len(), 32, "canonical GUID hex length");
+    let pair = |i: usize| -> u8 { (digits[i] << 4) | digits[i + 1] };
+    let mut out = [0u8; 16];
+    // time_low: nibbles 0..7 = hex digits 8..0 (the u32 value),
+    // serialized with the LOW byte FIRST (the spec's LE fields).
+    out[0] = pair(6);
+    out[1] = pair(4);
+    out[2] = pair(2);
+    out[3] = pair(0);
+    // time_mid: nibbles 8..11; low byte first.
+    out[4] = pair(10);
+    out[5] = pair(8);
+    // time_hi_and_version: nibbles 12..15; low byte first.
+    out[6] = pair(14);
+    out[7] = pair(12);
+    // octets 2..8: nibbles 16..31, LITERAL byte order (not reversed).
+    let o = (8..16usize)
+        .scan(16usize, |st, _i| {
+            let v = pair(*st);
+            *st += 2;
+            Some(v)
+        })
+        .collect::<Vec<u8>>();
+    out[8..16].copy_from_slice(&o);
+    out
+}
+
 fn sig_list(cert_type: [u8; 16], payload: &[u8]) -> Vec<u8> {
     assert!(!payload.is_empty());
     let sig_size = 16 + payload.len();
@@ -387,6 +435,76 @@ fn main() {
                     println!("-- OK dbx {}: {} refused as required: {}", dbx_count, blob_path, e);
                     dbx_count += 1;
                 }
+            }
+        }
+
+        // 7b. the ANTI-SELF-CONSISTENCY differential control: two
+        //     signature-list fixtures built from SPEC-CANONICAL ASCII
+        //     GUID strings parsed HERE. This deliberately does NOT open
+        //     uefi.rs's constants or patch_carrier_negatives.py's byte
+        //     tables: when the .ms gate's REAL firmware-served MokList
+        //     failed classification (2026-10-29), the stub's constants
+        //     and the generator tables were wrong TOGETHER, so the only
+        //     differential that catches a recurrence standalone is one
+        //     whose input bytes come straight from the spec text, not
+        //     from any shared code. Concretely, on any drift, BOTH
+        //     fixtures flip from "classified" to "unknown type", because
+        //     classification compares against the stub's own constants
+        //     while the fixtures carry canonical-spec bytes:
+        //     - X.509: the SIGNER cert inside a canonical
+        //       EFI_CERT_X509_GUID list -- dbx::check_blob must REFUSE
+        //       by the byte-match rule (proof the list type reached the
+        //       enforced walk, and not the skip-separated unknown gate).
+        //     - X.509-SHA256: the signer's TBS hash with a FUTURE
+        //       revocation date (2400, past any real clock) inside a
+        //       canonical EFI_CERT_X509_SHA256_GUID list -- must be
+        //       WALKED, countable, and NOT in force.
+        let spec_x509 = spec_guid_bytes("a5c059a1-94e4-4aa7-87b5-ab155c2bf072");
+        let spec_x509_sha256 = spec_guid_bytes("3bd2a492-96c0-4079-b420-fcf98ef103ed");
+
+        let x509_fixture = sig_list(spec_x509, &chain.signer_der);
+        match dbx::check_blob(&x509_fixture, &boot_now, &chain) {
+            Err(e) if e.contains("byte-matches") => {
+                println!(
+                    "-- OK spec-guid-x509: canonical-spec EFI_CERT_X509_GUID bytes classify as the enforced whole-certificate type; stub constants agree with the spec"
+                );
+            }
+            other => {
+                println!(
+                    "FAIL: spec-canonical EFI_CERT_X509_GUID (a5c059a1-94e4-4aa7-87b5-ab155c2bf072) did NOT classify under the stub's constants:\n        got: {:?}\n\n   the stub's CERT_X509_GUID in uefi/src/efi.rs must serialize the spec-wire bytes a1 59 c0 a5 e4 94 a7 4a 87 b5 ab 15 5c 2b f0 72; if printed differently, the constants have drifted from the real-world serialized form again",
+                    other.map(|_| "Ok(no refusal)".to_string()).unwrap_or_else(|e| format!("Err({})", e))
+                );
+                std::process::exit(1);
+            }
+        }
+
+        let future_spec: Vec<u8> = {
+            let mut p = Vec::with_capacity(48);
+            p.extend_from_slice(&2400u16.to_le_bytes());
+            p.extend_from_slice(&[1u8, 1, 0, 0, 0, 0]);
+            p.extend_from_slice(&[0u8; 8]);
+            p.extend_from_slice(&leaf_tbs_hash);
+            p
+        };
+        let future_spec_fixture = sig_list(spec_x509_sha256, &future_spec);
+        match dbx::check_blob(&future_spec_fixture, &boot_now, &chain) {
+            Ok(f) if f.x509_sha256_entries_walked == 1 && f.other_type_entries_skipped == 0 => {
+                println!(
+                    "-- OK spec-guid-hash: canonical-spec EFI_CERT_X509_SHA256_GUID bytes classify as the hash-typed revocation walk (future-dated, not in force); stub constants agree with the spec"
+                );
+            }
+            Ok(_) => {
+                println!(
+                    "FAIL: spec-canonical EFI_CERT_X509_SHA256_GUID (3bd2a492-96c0-4079-b420-fcf98ef103ed) did NOT classify under the stub's constants: the fixture came back as unknown/other type, which on a constants drift manifests as skipped;\n\n   the stub's CERT_X509_SHA256_GUID in uefi/src/efi.rs must serialize the spec-wire bytes 92 a4 d2 3b c0 96 79 40 b4 20 fc f9 8e f1 03 ed"
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                println!(
+                    "FAIL: spec-canonical EFI_CERT_X509_SHA256 future-dated fixture REFUSED ({}); the revocation date must gate its own skip, not refuse",
+                    e
+                );
+                std::process::exit(1);
             }
         }
     }

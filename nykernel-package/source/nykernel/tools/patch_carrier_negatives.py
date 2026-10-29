@@ -271,6 +271,23 @@ def cert_tbs(buf):
     return bytes(buf[start : start + tbs[3]])
 
 
+def efi_time_bytes(year, month=1, day=1, hour=0, minute=0, second=0):
+    """One EFI_TIME field sequence (16 bytes, LE): u16 year, u8
+    month/day/hour/minute/second, pad1, u32 nanoseconds, i16 timezone
+    (0 = UTC), u8 daylight, pad2. Deterministic fields only, so
+    refusal timestamps are reproducible."""
+    t = (
+        year.to_bytes(2, "little")
+        + bytes([month, day, hour, minute, second, 0])  # ..+ pad1
+        + bytes(4)  # nanoseconds
+        + bytes(2)  # timezone (0 = UTC)
+        + bytes([0])  # daylight
+        + bytes(1)  # pad2
+    )
+    expect(len(t) == 16, "efi_time_bytes: EFI_TIME shape")
+    return t
+
+
 def make_dbx_hashlist(cert_path, revoke_year, out_path):
     """Wraps ONE EFI_CERT_X509_SHA256_SIGNATURE entry -- a revoked
     certificate BY HASH: a 16-byte EFI_TIME revocation date followed
@@ -289,15 +306,7 @@ def make_dbx_hashlist(cert_path, revoke_year, out_path):
     tbs_hash = hashlib.sha256(tbs).digest()
     year = int(revoke_year)
     expect(1900 <= year <= 2999, "make-dbx-hashlist: revoke_year must be 1900..2999")
-    efi_time = (
-        year.to_bytes(2, "little")
-        + bytes([1, 1, 0, 0, 0, 0])  # month=1, day=1, hour..second=0, Pad1
-        + bytes(4)  # nanoseconds
-        + bytes(2)  # timezone (0 = UTC)
-        + bytes([0])  # daylight
-        + bytes(1)  # pad2
-    )
-    expect(len(efi_time) == 16, "make-dbx-hashlist: EFI_TIME shape")
+    efi_time = efi_time_bytes(year)
     sig_size = 16 + 16 + 32  # owner GUID + EFI_TIME + TBS hash
     list_size = 28 + sig_size
     with open(out_path, "wb") as f:
@@ -315,6 +324,100 @@ def make_dbx_hashlist(cert_path, revoke_year, out_path):
     )
 
 
+# Serialized EFI_CERT_TYPE_PKCS7_GUID (canonical edk2, LE per field):
+# 4aafd29d-68df-49ee-8aa9-347d375665a7 -- the CertType GUID every
+# EFI_VARIABLE_AUTHENTICATION_2 update carries under the
+# WIN_CERTIFICATE_UEFI_GUID banner (UEFI 2.10 section 3.27.4, and the
+# exact layout virt-fw's varstore/authfiles.py empty_auth_header()
+# writes: length 24 = the 8-byte WIN_CERTIFICATE header plus the
+# 16-byte GUID, revision 0x0200, certtype 0x0EF1, GUID, then the RAW
+# PAYLOAD in CertData -- virt-fw's parse_authdata slices data at
+# 16+length and does NOT carry a PKCS7 body in CertData, so an edk2
+# CreateTimeBasedPayload-shaped file (PKCS7 body, length 24+pkcs7)
+# would fail BOTH its length slice and its SigDB parse).
+CERT_TYPE_PKCS7_GUID = bytes(
+    [
+        0x9D, 0xD2, 0xAF, 0x4A, 0xDF, 0x68, 0xEE, 0x49,
+        0x8A, 0xA9, 0x34, 0x7D, 0x37, 0x56, 0x65, 0xA7,
+    ]
+)
+
+
+def make_dbx_auth_update(payload_path, ts_year, out_path):
+    """Wraps ONE known dbx payload (an EFI_SIGNATURE_LIST blob made by
+    make-dbx-* above) into the EFI_VARIABLE_AUTHENTICATION_2 header
+    shape virt-fw-vars' --set-dbx parses: EFI_TIME (16 bytes,
+    deterministic from ts_year) followed by the 24-byte
+    WIN_CERTIFICATE_UEFI_GUID header (dwLength=24, wRevision=0x0200,
+    wCertificateType=0x0EF1, EfiCertPkcs7 GUID) with the RAW PAYLOAD
+    in CertData. virt-fw's parse_authdata slices the variable payload
+    at 16+dwLength=40 and feeds it straight to its SigDB parser, so
+    the payload bytes must sit there verbatim -- proven after writing
+    by re-walking the output with virt-fw's own EfiVar and
+    byte-comparing against the input.
+
+    Scope, stated honestly: the varstore composition IS the trust
+    boundary of these gates (the same as every other enrollment in
+    them -- PK/KEK/db/MokList all get written by virt-fw-vars, not by
+    a real SetVariable exchange), so this header makes the payload
+    readable by the store tooling and the firmware; it does NOT claim
+    a real signed PKCS7 update exchange. Nothing here parses CertData
+    as an edk2 PKCS7 body, and that is the deliberate, documented
+    shape of virt-fw's format.
+    """
+    payload = open(payload_path, "rb").read()
+    expect(len(payload) > 0, "make-dbx-auth-update: empty payload")
+    year = int(ts_year)
+    expect(1900 <= year <= 2999, "make-dbx-auth-update: ts_year must be 1900..2999")
+    blob = bytearray()
+    blob += efi_time_bytes(year)
+    # virt-fw's empty_auth_header() layout, byte for byte:
+    # length 24 (header only), revision 0x0200, certtype 0x0EF1,
+    # then the PKCS7 CertType GUID, then the raw payload.
+    blob += (24).to_bytes(4, "little")
+    blob += (0x0200).to_bytes(2, "little")
+    blob += (0x0EF1).to_bytes(2, "little")
+    blob += CERT_TYPE_PKCS7_GUID
+    blob += payload
+    open(out_path, "wb").write(bytes(blob))
+
+    # -- the REAL consumer check: parse the written file with virt-fw's
+    # own EfiVar exactly like --set-dbx does, and byte-compare; when
+    # virt-firmware is not importable here, walk the header slices and
+    # say so in the verdict.
+    try:
+        from virt.firmware.efi.efivar import EfiVar, ucs16
+
+        v = EfiVar(ucs16.from_string("dbx"), authdata=bytes(blob))
+        if v.data != payload:
+            raise ValueError(
+                f"make-dbx-auth-update: virt-fw recovered {len(v.data)} bytes, "
+                f"expected the {len(payload)}-byte payload verbatim"
+            )
+        if v.sigdb is None:
+            raise ValueError("make-dbx-auth-update: virt-fw did not class the blob as a SigDB")
+        print(
+            f"patch_carrier_negatives: make-dbx-auth-update OK "
+            f"(payload {len(payload)} bytes, header 40 bytes, EFI_TIME "
+            f"{year}-01-01; virt-fw's own EfiVar recovered the payload "
+            f"byte-exact as a signature database), wrote {out_path}"
+        )
+    except ImportError:
+        # virt-firmware not importable in THIS python: still sanity-walk
+        # the header slices per the format above, then report honestly.
+        expect(bytes(blob[16:20]) == (24).to_bytes(4, "little"), "auth header: dwLength")
+        expect(bytes(blob[20:22]) == (0x0200).to_bytes(2, "little"), "auth header: wRevision")
+        expect(bytes(blob[22:24]) == (0x0EF1).to_bytes(2, "little"), "auth header: wCertType")
+        expect(bytes(blob[24:40]) == CERT_TYPE_PKCS7_GUID, "auth header: CertType GUID")
+        expect(bytes(blob[40:]) == payload, "auth header: CertData is not the payload")
+        print(
+            f"patch_carrier_negatives: make-dbx-auth-update OK "
+            f"(payload {len(payload)} bytes, header 40 bytes, EFI_TIME "
+            f"{year}-01-01; header slices walked, virt-firmware NOT importable "
+            f"in this interpreter -- interop NOT proven), wrote {out_path}"
+        )
+
+
 def flip_content(in_path, out_path):
     data = bytearray(open(in_path, "rb").read())
     expect(len(data) > 0, "flip-content: empty input")
@@ -324,11 +427,29 @@ def flip_content(in_path, out_path):
     print(f"patch_carrier_negatives: flip-content OK (bit flipped at {idx}), wrote {out_path}")
 
 
+def sha256_tbs_hex(cert_path):
+    """Prints (to stdout) the SHA-256 of a DER certificate's
+tbsCertificate WHOLE TLV -- the exact hash an EFI_CERT_X509_SHA256
+dbx entry carries for that certificate, and the value the .ms gate's
+leaf-revocation leg feeds virt-fw-vars (--set-dbx of a
+make-dbx-hashlist blob). A separate mode from the dbx blob WRITERS
+because composition wants the hash bare on stdout while the blob
+writers want a file."""
+    import hashlib
+
+    buf = open(cert_path, "rb").read()
+    tbs_hash = hashlib.sha256(cert_tbs(buf)).digest()
+    print(f"sha256_tbs_hex: {tbs_hash.hex()}")
+
+
 def main():
     argv = sys.argv
     args = argv[1:]
     if len(args) == 2 and args[0] == "print-sid-serial-hex":
         print_sid_serial_hex(args[1])
+        return
+    if len(args) == 2 and args[0] == "sha256-tbs-hex":
+        sha256_tbs_hex(args[1])
         return
     if len(args) == 3 and args[0] == "make-dbx-siglist":
         make_dbx_siglist(args[1], args[2])
@@ -336,13 +457,18 @@ def main():
     if len(args) == 4 and args[0] == "make-dbx-hashlist":
         make_dbx_hashlist(args[1], args[2], args[3])
         return
+    if len(args) == 4 and args[0] == "make-dbx-auth-update":
+        make_dbx_auth_update(args[1], args[2], args[3])
+        return
     if len(args) != 3:
         print(
             "usage: patch_carrier_negatives.py flip-content <kernel> <out.bin>\n"
             "       patch_carrier_negatives.py mutate-sid-serial <good-carrier.der> <out.der>\n"
             "       patch_carrier_negatives.py print-sid-serial-hex <good-carrier.der>\n"
+            "       patch_carrier_negatives.py sha256-tbs-hex <cert.der>\n"
             "       patch_carrier_negatives.py make-dbx-siglist <payload.der> <out.der>\n"
-            "       patch_carrier_negatives.py make-dbx-hashlist <cert.der> <revoke_year> <out.der>",
+            "       patch_carrier_negatives.py make-dbx-hashlist <cert.der> <revoke_year> <out.der>\n"
+            "       patch_carrier_negatives.py make-dbx-auth-update <payload.der> <ts_year> <out.der>",
             file=sys.stderr,
         )
         sys.exit(2)

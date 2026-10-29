@@ -19,7 +19,7 @@
 # the leaf key (sbsign) and installed on the ESP, so the FIRMWARE's
 # verification -- not ours -- is the gate the stub passes, and the
 # stub's own carrier walk (which anchors the same root) still enforces
-# the kernel image inside it. THREE boots assert all directions:
+# the kernel image inside it. FOUR boots assert all directions:
 #
 # positive: signed stub under enforcement -> firmware accepts it, the
 #   stub reads SecureBoot=1 with PK present (not SetupMode), the
@@ -37,6 +37,19 @@
 #   bytes it covers and the firmware must refuse it the same way;
 #   enforcement covers signed-but-modified images, not only images
 #   with no signature at all.
+# negative (revoked): a SECOND enforcing store, identical enrollment
+#   PLUS the LEAF signer's To-Be-Signed hash as an EFI_CERT_X509_SHA256
+#   dbx entry (revoked 2020, so any boot clock after that date hits it)
+#   -- the exact real-world hash-typed revocation form Microsoft dbx
+#   updates use, delivered to the store through the authenticated-update
+#   header virt-fw's --set-dbx parses. The leaf-signed stub (and the
+#   MokList-enrolled signer it rides on) must be REFUSED: either by the
+#   firmware itself (Access Denied, the boot manager's loop), or -- if
+#   this OVMF build's dbx hash check is absent -- by the STUB's own
+#   revocation walk over the REAL firmware-served dbx variable. Either
+#   refusal is a PASS because both prove the same fact: the revocation
+#   leg is wired through real firmware bytes and enforced, and every
+#   refusal names its stage.
 #
 # This is what CI should run to prove the ms OVMF path, the same way
 # qemu_uefi_boot_test.sh proves the default OVMF path.
@@ -183,12 +196,13 @@ mk_esp "$ESP_SIGNED" "$SIGNED_STUB"
 mk_esp "$ESP_UNSIGNED" "$STUB_EFI"
 mk_esp "$ESP_TAMPERED" "$TAMPERED_STUB"
 
-boot_qemu() { # $1 esp image, $2 serial log, $3 timeout seconds
+boot_qemu() { # $1 esp image, $2 serial log, $3 timeout seconds, $4 store (default: the enforcing store)
+    local STORE_ELSE="${4:-$STORE}"
     timeout "$3" qemu-system-x86_64 \
         -machine q35 \
         -m 256 \
         -drive if=pflash,format=raw,readonly=on,file="$FAKECODE" \
-        -drive if=pflash,format=raw,file="$STORE" \
+        -drive if=pflash,format=raw,file="$STORE_ELSE" \
         -drive format=raw,file="$1" \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -serial stdio \
@@ -253,15 +267,64 @@ echo "==> negative boot 1/2: the same store, the UNSIGNED stub"
 refused_by_firmware "$ESP_UNSIGNED" target/qemu-uefi-ms-secboot-negative.log "the unsigned stub"
 NEG_OK=$FW_REFUSED
 
-echo "==> negative boot 2/2: the same store, the SIGNED-BUT-TAMPERED stub"
+echo "==> negative boot 2/3: the same store, the SIGNED-BUT-TAMPERED stub"
 refused_by_firmware "$ESP_TAMPERED" target/qemu-uefi-ms-secboot-tampered.log "the tampered stub"
 TAMPER_OK=$FW_REFUSED
 
+# --- negative 3: the ENROLLED LEAF is revoked BY HASH in dbx ---
+# The hash-typed dbx blob (the leaf's TBS, revoked 2020) already lives
+# in uefi/src/dbx-neg-signer-hash.der from make_carrier.sh; wrap it in
+# the authenticated-update header virt-fw's --set-dbx parses (the
+# wrapping is self-checked against virt-fw's OWN parser inside the
+# tool), compose the SECOND enforcing store with it, and boot the
+# leaf-signed stub. Revocation of a cert that is ALSO in db must bind:
+# dbx is checked first, by definition.
+REV_STORE=uefi/dist/VARS.ms-secboot-dbxrev.fd
+REV_UPDATE=uefi/src/dbx-neg-signer-hash-auth2.der
+echo "==> wrapping the leaf TBS-hash dbx blob into the authenticated-update header"
+python3 tools/patch_carrier_negatives.py make-dbx-auth-update \
+    uefi/src/dbx-neg-signer-hash.der 2020 "$REV_UPDATE"
+cp "$VARS_TMPL" "$REV_STORE"
+"$VIRT" --inplace "$REV_STORE" \
+    --set-pk "$GLV" "$ROOT_CERT" \
+    --add-kek "$GLV" "$ROOT_CERT" \
+    --add-db "$ISD" "$ROOT_CERT" \
+    --add-db "$ISD" "$LEAF_CERT" \
+    --add-mok "$SHIM" "$LEAF_CERT" \
+    --set-dbx "$REV_UPDATE" \
+    --sb > /dev/null
+echo "==> revoked store shape (dbx must carry the hash-typed revocation):" && \
+    "$VIRT" -i "$REV_STORE" -p 2>/dev/null | grep -E "dbx|SecureBoot" || true
+
+echo "==> negative boot 3/3: the REVOKED store, the leaf-signed stub"
+REV_OK=0
+boot_qemu "$ESP_SIGNED" target/qemu-uefi-ms-secboot-revoked.log 240 "$REV_STORE"
+REV_STATUS=$?
+echo "--- revoked-store serial (key lines) ---"
+grep -a -E "Access Denied|Security Violation|FAILED|nyrqis ubld|REVOKED" \
+    target/qemu-uefi-ms-secboot-revoked.log || true
+echo "-----------------------------------"
+if [[ "$REV_STATUS" -eq 124 ]] \
+   && grep -aq "Access Denied" target/qemu-uefi-ms-secboot-revoked.log \
+   && ! grep -aq "nyrqis ubld" target/qemu-uefi-ms-secboot-revoked.log; then
+    echo "-- revoked stub refused BY THE FIRMWARE (Access Denied before the stub ever ran)"
+    REV_OK=1
+elif [[ "$REV_STATUS" -ne 33 ]] \
+   && grep -aq "a hash-typed entry covers the signer certificate's To-Be-Signed" \
+        target/qemu-uefi-ms-secboot-revoked.log; then
+    echo "-- revoked stub refused BY THE STUB'S OWN WALK over the real firmware-served dbx"
+    REV_OK=1
+elif [[ "$REV_STATUS" -eq 33 ]]; then
+    echo "FAIL: the leaf-signed stub BOOTED on the revocation store -- the dbx hash entry did not bind"
+else
+    echo "note: revoked boot did not match either refusal shape (status $REV_STATUS, see log)"
+fi
+
 set -e
 
-if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 ]]; then
-    echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses both the unsigned one and the one-byte-tampered signed one, and the kernel reached Ready"
+if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 && "$REV_OK" -eq 1 ]]; then
+    echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses both the unsigned one and the one-byte-tampered signed one, refuses the leaf-signed stub once its signer's To-Be-Signed hash is revoked BY HASH in dbx, and the kernel reached Ready"
     exit 0
 fi
-echo "FAIL: ms OVMF secboot test failed (positive status $POS_STATUS marker_ok=$POS_OK, unsigned refusal_ok=$NEG_OK, tampered refusal_ok=$TAMPER_OK)"
+echo "FAIL: ms OVMF secboot test failed (positive status $POS_STATUS marker_ok=$POS_OK, unsigned refusal_ok=$NEG_OK, tampered refusal_ok=$TAMPER_OK, revocation refusal_ok=$REV_OK)"
 exit 1
