@@ -289,13 +289,27 @@ def efi_time_bytes(year, month=1, day=1, hour=0, minute=0, second=0):
 
 
 def make_dbx_hashlist(cert_path, revoke_year, out_path):
-    """Wraps ONE EFI_CERT_X509_SHA256_SIGNATURE entry -- a revoked
-    certificate BY HASH: a 16-byte EFI_TIME revocation date followed
-    by the SHA-256 of the certificate's To-Be-Signed content -- into a
-    one-entry EFI_SIGNATURE_LIST of type EFI_CERT_X509_SHA256_GUID
+    """Wraps ONE EFI_CERT_X509_SHA256 entry -- a revoked certificate BY
+    HASH: the SHA-256 of the certificate's To-Be-Signed content (32
+    bytes) FOLLOWED BY the EFI_TIME revocation date (16 bytes) -- into
+    a one-entry EFI_SIGNATURE_LIST of type EFI_CERT_X509_SHA256_GUID
     (UEFI 2.10 section 32.4.1's hash-typed revocation form; exactly
     the shape real-world Microsoft dbx updates use to revoke CA
-    certificates). The revocation date is written with explicit
+    certificates).
+
+    THE FIELD ORDER IS THE POINT, and this docstring says so because
+    the first version of this function had it BACKWARDS (EFI_TIME
+    first) together with the stub's parser: both sides agreed, every
+    control passed, and the bytes were wrong -- a real firmware reads
+    `EFI_CERT_X509_SHA256` as
+        EFI_SHA256_HASH ToBeSignedHash;   // 32 bytes, FIRST
+        EFI_TIME        TimeOfRevocation; // 16 bytes, second
+    (MdePkg/Include/Guid/ImageAuthentication.h; SignatureSize 16 + 48)
+    and compares the digest at the START of SignatureData. A time-first
+    entry matches no firmware on earth. See the 2026-10-30 correction
+    in IMPLEMENTATION_STATUS.md and ADR-0029's Implementation Note.
+
+    The revocation date is written with explicit
     deterministic fields `revoke_year`-01-01 00:00:00 UTC (year, then
     month..second as u8s, then the zeroed padding/nanoseconds/
     timezone/daylight tail), so the refusal is reproducible."""
@@ -307,16 +321,16 @@ def make_dbx_hashlist(cert_path, revoke_year, out_path):
     year = int(revoke_year)
     expect(1900 <= year <= 2999, "make-dbx-hashlist: revoke_year must be 1900..2999")
     efi_time = efi_time_bytes(year)
-    sig_size = 16 + 16 + 32  # owner GUID + EFI_TIME + TBS hash
+    sig_size = 16 + 32 + 16  # owner GUID + TBS hash + EFI_TIME
     list_size = 28 + sig_size
     with open(out_path, "wb") as f:
         f.write(CERT_X509_SHA256_GUID)
         f.write(le_u32_bytes(list_size))
         f.write(le_u32_bytes(0))
         f.write(le_u32_bytes(sig_size))
-        f.write(bytes(16))  # SignatureOwner
-        f.write(efi_time)
-        f.write(tbs_hash)
+        f.write(bytes(16))   # SignatureOwner
+        f.write(tbs_hash)    # EFI_CERT_X509_SHA256.ToBeSignedHash (32, FIRST)
+        f.write(efi_time)    # EFI_CERT_X509_SHA256.TimeOfRevocation (16)
     print(
         f"patch_carrier_negatives: make-dbx-hashlist OK "
         f"(tbs {len(tbs)} bytes, sha256 {tbs_hash.hex()[:16]}.., "

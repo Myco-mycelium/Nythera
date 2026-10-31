@@ -4292,6 +4292,279 @@ TrustedChain as-is.
   the firmware; the leaf-TBS-revoked store refused by the stub's walk
   with the served-bytes transcript printed).
 
+## Phase 10 increment (2026-10-30): the rollout's tooling half -- a rotation ceremony that issues the replacement leaf and the dead one's dbx entry, a revocation leg that ASSERTS who refused and which bytes it saw, and the payload-layout defect that probe exposed (both dbx hash forms are firmware-enforced once the bytes are the spec's)
+
+Three gaps this phase's own tracker named are closed here, and one
+firmware behaviour is recorded honestly rather than glossed.
+
+- **`tools/rotate_leaf_ceremony.sh` -- ADR-0028's rotation and
+  ADR-0029's compromise procedure as one executable step.** It issues a
+  replacement leaf under the root (fresh RSA-2048 key, 0600, the same
+  extension shape the stub's leaf walk vets), signs the kernel image
+  with it, and composes the DEAD leaf's `EFI_CERT_X509_SHA256` entry
+  (EFI_TIME 2020 + SHA-256 of the To-Be-Signed TLV) plus its
+  authenticated-update wrapping -- the exact shapes the `.ms` gate's
+  fourth leg proves enforcement for. Ceremony posture is structural,
+  not advisory: it refuses to run without an explicit root pair (it
+  will not generate one), refuses a root key whose mode carries
+  group/world bits, and writes nothing into the enrolled chain (all
+  artifacts land in `uefi/dist/leaf-rotation/`).
+- **Its checks encode ADR-0029's scope decision, each a named FAIL.**
+  The replacement's To-Be-Signed hash must DIFFER from the dead leaf's
+  -- otherwise the hash-typed entry would revoke the replacement, which
+  is the failure the hash form exists to avoid -- AND its serialNumber
+  must differ, or ADR-0014's issuer+serial form would revoke it too.
+  The replacement must verify under the root (`openssl verify`) and its
+  carrier must verify over the kernel bytes (`openssl cms -verify`), and
+  the composed blob must be accepted by virt-fw's own parser and by
+  virt-fw-vars on a store COPY, with the read-back variable's size
+  matched against the composed SigDB.
+- **Verified (real run):** `PASS: rotation ceremony complete` -- dead
+  leaf serial `13452F6F…460` / TBS `c623c16e…cc49`; replacement
+  `13452F6F…462` / TBS `d996e689…be07`; chain OK; carrier 1357 bytes
+  verifies; `make-dbx-hashlist` list 92 bytes; `make-dbx-auth-update`
+  payload recovered byte-exact by virt-fw's EfiVar; store probe
+  `dbx: blob: 92 bytes`. Run twice (the cosmetic hash-print fix between
+  runs), both green; every run generates a NEW key, so a stale artifact
+  cannot pass by reuse.
+- **The `.ms` gate's revocation leg now ASSERTS what it used to
+  print.** It requires ADR-0029's unconditional transcript line, checks
+  the served byte count equals the SigDB it composed (auth header
+  excluded), and normalizes the printed type GUID to hex to require
+  EFI_CERT_X509_SHA256's canonical wire bytes
+  (`92a4d23bc0967940b420fcf98ef103ed`) -- written in the gate as spec
+  bytes, not read from a repo constant, per the ADR-0028 drift lesson.
+  Which party refused is now a verdict field, not a note; the stub
+  branch additionally requires the stub's own alive line, so a boot
+  that never named the hash-typed refusal cannot be counted as either
+  path. Re-run verdict: `revocation leg: refused by stub; the firmware
+  served the composed 92-byte EFI_CERT_X509_SHA256 list (GUID
+  92a4d23bc0967940b420fcf98ef103ed) byte-for-byte`.
+- **The assertion was proven discriminating, not self-satisfying:** the
+  same normalization applied to a one-byte-mutated GUID
+  (`…f1 0x4 0xed`) yields `…04ed` and compares NO.
+- **Every gate re-run green on the changed sources, including the ones
+  this increment did not touch** (the edits sit in the stub's boot
+  path's inputs, so the whole battery was owed): `.ms` gate PASS on all
+  four legs; plain OVMF gate PASS; BIOS gate PASS; and the transcript
+  parity gate PASS with `BIOS 353 chain lines == UEFI 353 chain lines`
+  and a **0-byte** residual diff. Host `verify_carrier.sh` PASS in all
+  three runs (`positive + 6 controls + 7 negative-carrier refusals`,
+  dbx 5 refusals + unknown-type skip + future-dated-hash skip, MOK
+  enrollment/stranger/conflict).
+- **The ceremony is now a CI step** (`.github/workflows/ci.yml`,
+  `kernel-boot`, after the boot gates): it reads the key material and
+  kernel image the gates above generate and fails the build on any
+  named check -- so a broken issuance or revocation path breaks a
+  build, not a ceremony.
+- **The ceremony's refusal PATHS are tested**
+  (`tools/ceremony_refusals_test.sh`, its own CI step right after). A
+  positive run PASSES first, so the negatives are specific rather than
+  "the script always fails"; then a `--root-key` that does not exist, a
+  root key with group bits (640, on a TEMP COPY -- the original is
+  never touched), and a replacement leaf forced onto the DEAD leaf's
+  serialNumber must each fail with its own named line. Every case
+  asserts BOTH the exit class and the named text, so an unrelated
+  crash cannot satisfy a case. Verified: 4/4 cases OK, `PASS: rotation
+  ceremony refusal paths verified`.
+- **Recorded, not glossed: a FIFTH boot gives the stub's OTHER dbx
+  parser branch a firmware-served leg, and on that one the FIRMWARE is
+  the refusing party.** A third enforcing store carries the leaf
+  certificate as `EFI_CERT_X509` (the whole-certificate form,
+  ADR-0014's byte-match rule, `uefi/src/dbx-neg-signer-byte.der`
+  wrapped by `make-dbx-auth-update`), with the SAME enrollment (signer
+  in db AND MokList), and the leaf-signed stub must be refused. Both
+  revocation legs share one checker, `dbx_leg_check`, so the served
+  shape, the refusing party and the booted-anyway failure are asserted
+  identically for both branches.
+- **WITHDRAWN, kept as run: the FIRMWARE-refusal path did not fire on
+  the HASH-TYPED leg, in either hash form -- and the probe that chased
+  it found OUR bug, not a firmware gap (see the layout record below).
+  The reading that follows was superseded by the corrected re-run in
+  this same section, where BOTH legs are refused by the firmware; it is
+  kept because it is how the defect was found.** The `.ms` leg's revocation
+  store (leaf TBS hash, 2020-dated, in force) produced `stub alive
+  under UEFI; SecureBoot=1` -- the stub's walk refused, the firmware
+  did not. A probe store was then composed with a different entry
+  shape: `EFI_CERT_X509_SHA256` carrying the SHA-256 of the leaf
+  certificate's WHOLE DER (`30b373e6…`) instead of its TBS, 2020-dated,
+  signer still enrolled in db AND MokList, and the same leaf-signed
+  stub again reached the handoff (`stub alive under UEFI;
+  SecureBoot=1`, 150 s cap). So on this distro `OVMF_CODE_4M.ms.fd`
+  the SecureBoot verification's decision is consistent with its
+  enrolled-certificate path and does not consult cert-hash dbx entries
+  -- stated as observed behaviour, not root-caused inside the firmware,
+  which this repo does not build or instrument. Consequence for the
+  gate: it keeps BOTH paths in its contract and names the one that
+  fired (now asserted), so this fact is on the transcript instead of
+  being inferred from a refusal that did not happen. The stub's walk
+  remains proven on the same real served bytes, which is path 2's
+  claim and unaffected. **This paragraph's conclusion ("does not
+  consult cert-hash dbx entries") is wrong and is withdrawn: the
+  firmware does consult them, and the earlier silence was the
+  field-order defect below.**
+- **A bug in THIS increment's own first run, recorded as run.** The
+  served-shape assertion was ordered before the path determination and
+  required the stub's `<dbx: firmware served ...>` line
+  unconditionally -- so the whole-cert leg failed with `served shape
+  MISMATCH` on the FIRST run even though the firmware refusing is
+  exactly that leg's claim: the stub never ran, so the line it prints
+  could not exist. That is the assertion being wrong, not the gate's
+  subject. Fixed by determining the refusing party FIRST and making
+  the shape evidence path-specific: the stub path must show the served
+  bytes matching the composed SigDB, while the firmware path must show
+  NO stub output at all (already required) and takes its shape evidence
+  from the composition-time virt-fw read-back; a firmware refusal next
+  to a printed served line is now itself a FAIL as a contradiction.
+  Worth recording because it is the same class as the earlier
+  "wrong-store" root cause: a gate that asserts a fact out of its
+  reach fails loudly for the wrong reason, and only the honest reading
+  of the transcript says which.
+- **First five-leg run, on the PRE-correction bytes: exit 0 -- and the
+  split it measured was the defect's fingerprint, not a firmware fact.**
+  `positive status 33` (Ready, SecureBoot=1, PK present, MokList facts);
+  unsigned and one-byte-tampered both refused with `Access Denied` and
+  no stub output; `[hash-typed] leg: refused by stub; served shape
+  verified` (firmware served 92 bytes, GUID
+  `92a4d23bc0967940b420fcf98ef103ed`, matching the composed SigDB
+  byte-for-byte); `[whole-cert] leg: refused by firmware; served shape
+  firmware-refused`; and the final PASS line naming both revocation
+  forms. This is the FIRST time the FIRMWARE-refusal path has fired in
+  any gate in this repo -- the either-path contract now has BOTH paths
+  exercised against real firmware, which is what ADR-0029's "Who
+  refuses, and what counts" section asked for and what the previous
+  increment could only name. Every line of this run was measured on the
+  swapped bytes described below: the hash-typed leg's `refused by stub`
+  was THIS repo's parser accepting THIS repo's layout, and the re-run
+  supersedes it.
+- **THE PROBE'S REAL FINDING: a payload-layout bug in THIS repo, not
+  a firmware gap.** Chasing why the firmware ignored the hash-typed
+  entry, `edk2-stable202402`'s `SecurityPkg/Library/
+  DxeImageVerificationLib/DxeImageVerificationLib.c` was read directly:
+  `IsCertHashFoundInDbx` DOES enforce hash-typed dbx entries, and hashes
+  the certificate's To-Be-Signed content -- exactly ADR-0029's
+  semantics, so the "OVMF does not consult cert-hash dbx" reading was
+  wrong. What was wrong was OURS: `EFI_CERT_X509_SHA256` is
+  `EFI_SHA256_HASH ToBeSignedHash; EFI_TIME TimeOfRevocation;` -- the
+  32-byte digest FIRST (UEFI 2.10 32.4.1 and edk2's MdePkg
+  `Guid/ImageAuthentication.h`, SignatureSize 16 + 48; edk2 compares
+  the digest at `SignatureData + 0` and reads the date at
+  `SignatureData + DigestLength`), while `make-dbx-hashlist` wrote
+  EFI_TIME first and `dbx.rs`'s `read_revocation` read it first. The
+  two agreed with each other and with nothing else, so every host
+  control, every stub-side boot control and the whole served-shape
+  assertion passed over bytes no real firmware can match -- the
+  ADR-0028 "self-consistent-but-wrong" class, in the one place two of
+  our own implementations could agree with nobody outside.
+- **Corrected the same day, generator and parser together:**
+  `tools/patch_carrier_negatives.py`'s `make-dbx-hashlist` now writes
+  hash-then-EFI_TIME (with the field order called out in its docstring,
+  because a silent swap is what hid it), and `uefi/src/dbx.rs`'s
+  `read_revocation` now parses hash-then-EFI_TIME (module doc, branch
+  comment and the two structural refusal messages corrected with it).
+  All dbx blobs were regenerated by `make_carrier.sh`; the host harness
+  is green on the corrected bytes (`dbx 3`/`dbx 4` refusals, unknown
+  type skip, future-dated skip, MOK hash blob); the boot gates re-prove
+  them on real firmware. This also removes the earlier conclusion that
+  the hash-typed guarantee was stub-only on these images: it is the
+  firmware's too, once the bytes are the spec's.
+- **Re-run on the corrected bytes (the one that counts): the FIRMWARE
+  now refuses BOTH legs.** `[hash-typed] leg: refused by firmware;
+  served shape firmware-refused` and `[whole-cert] leg: refused by
+  firmware; served shape firmware-refused`; `positive status 33`
+  (Ready, SecureBoot=1) and the unsigned/tampered refusals unchanged;
+  the probe leg still reaches Ready while reading the composed
+  975-byte `EFI_CERT_X509` entry through the firmware
+  (`a159c0a5e494a74a87b5ab155c2bf072`); gate exit 0. So on these OVMF
+  images both dbx forms ADR-0029 names are enforced by the PLATFORM
+  once the bytes are the spec's, and the earlier "the firmware only
+  enforces the whole-certificate form" conclusion is withdrawn, not
+  softened. The honest cost: path 2 (the stub's own walk) no longer
+  fires on this firmware -- the boot manager refuses first -- so its
+  real-firmware evidence is the probe leg (a non-matching entry read
+  through the firmware) plus the host harness over the same
+  regenerated bytes. The walk stays as defence in depth for firmware
+  without hash-typed enforcement, which is a platform question these
+  gates cannot assert.
+- **The gate's own summary lines were path-specific after this run:**
+  they printed "the firmware served the composed ... byte-for-byte"
+  even on a firmware-refused leg, where the stub never ran and nothing
+  was served to it. Each leg's clause is now chosen from its measured
+  shape (`verified` -> "the stub read ... then refused it",
+  `firmware-refused` -> "the stub never ran, so the evidence is the
+  composed entry checked at composition time plus the firmware's own
+  refusal"). The re-run that exercised the change printed, verbatim:
+
+  ```
+  revocation leg (hash-typed): refused by firmware; the stub never ran, so the evidence is the composed 92-byte EFI_CERT_X509_SHA256 list (GUID 92a4d23bc0967940b420fcf98ef103ed) checked at composition time plus the firmware's own refusal
+  revocation leg (whole-cert): refused by firmware; the stub never ran, so the evidence is the composed 932-byte EFI_CERT_X509 list (GUID a159c0a5e494a74a87b5ab155c2bf072) checked at composition time plus the firmware's own refusal
+  ```
+
+  with the probe leg reading its composed 975-byte `EFI_CERT_X509` entry
+  through the firmware and reaching Ready, and gate exit 0.
+- **The hash types the walk SKIPS are now pinned, all seven of them.**
+  `uefi/tests/trust_selfcheck.rs` synthesizes one-list blobs for
+  `EFI_CERT_SHA1`/`224`/`256`/`384`/`512` and
+  `EFI_CERT_X509_SHA384`/`512`, with GUIDs decoded from the SPEC's own
+  ASCII strings (the `spec_guid_bytes` differential, not any repo
+  constant) and payloads filled to each type's spec width from the
+  signer's To-Be-Signed hash, and asserts the walk reports every one
+  as a skipped fact with zero X.509 and zero hash-typed entries walked.
+  Those payloads are deliberately MATCHES, so an implementation that
+  later adopts one of these types starts from a fixture that will
+  refuse rather than a paper claim. Runs in `verify_carrier.sh`, so it
+  gates the build and both boot gates: `-- OK dbx-skip-types: all 7
+  hash-type classes the walk does not enforce ... are REPORTED as
+  skipped, none enforced and none refused`.
+- **The UPDATE side now has a gate of its own:
+  `tools/dbx_update_gate.sh`** (plus a CI step). It builds a real
+  KEK-signed `EFI_VARIABLE_AUTHENTICATION_2` package over the
+  X.509-SHA256 revocation list -- 16-byte EFI_TIME, a
+  `WIN_CERTIFICATE_UEFI_GUID` of dwLength 8+16+PKCS7, revision 0x0200,
+  type 0x0EF1, `EFI_CERT_TYPE_PKCS7_GUID`, CertData = a genuine DER
+  PKCS7 over (list || EFI_TIME) -- and proves the binding with
+  openssl. Measured: `positive` verifies; a one-byte-altered list
+  fails; a BACKDATED header timestamp fails (the stamp is signed, so
+  rollback attempts cannot replay an update); a non-KEK signer fails by
+  certificate identity. Two of my own first-cut mistakes are recorded
+  because both are the same trap this session keeps meeting: the check
+  compared `SignatureSize` to edk2's SigDataSize (48) instead of
+  `SignatureSize - 16` with the owner GUID (64), and the stranger
+  negative initially passed because `openssl cms -verify` accepts any
+  signer certificate the message carries -- `-certfile` does not
+  constrain identity. The gate now compares the package's signer DER
+  to the KEK's, so "a signature verified" can never stand in for "the
+  KEK signed it".
+- **Blocked, with measurements rather than an assumption: the
+  cross-build confirmation.** The tree carries exactly two OVMF CODE
+  images -- `uefi/tools/OVMF_CODE_4M.fd` and `OVMF_CODE_4M.ms.fd`,
+  3,653,632 bytes each, sha256 `ad23261d…` and `1286f2a3…`, both from
+  the same 2026-10-22 package drop -- and those are the pair every
+  gate already uses. Repeating the hash-typed enforcement measurement
+  on a DIFFERENT firmware needs a third build (another edk2 revision
+  or a vendor image) provisioned with PK/KEK/db, which this repository
+  does not have. So the finding above stands on ONE firmware build and
+  says so; no second build was invented to make the claim look
+  broader.
+- **Scope decision recorded: ADR-0030 (Rejected) keeps the enforced
+  surface at ADR-0029's two types.** The seven other UEFI 2.10 32.4.1
+  entry classes stay reported facts. Reasons stated in the ADR: the
+  boot path has no SHA-384/512 implementation and adding two digest
+  implementations to the trust walk buys nothing real distributions
+  ship; SHA-1 would enforce an identity weaker than the chain just
+  verified; the raw-digest classes name an IMAGE, not a certificate
+  identity, so enforcing them here would silently redefine the walk's
+  subject; RSA2048 blobs carry no certificate identity. The new
+  fixtures are the decision's guard -- implementing any of the seven
+  fails `dbx-skip-types`, so widening has to come with a superseding
+  ADR instead of arriving quietly.
+- **Firmware acceptance of the update package remains uncovered**, and
+  the gate says so in its own PASS line: driving a real
+  time-based-authenticated SetVariable needs a store whose PK/KEK the
+  signer is enrolled in, and the enforcing gates' stores are composed
+  by virt-fw-vars (ADR-0029's composition boundary), while the stub's
+  own db write is the SetupMode arm where edk2 verifies no signature.
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

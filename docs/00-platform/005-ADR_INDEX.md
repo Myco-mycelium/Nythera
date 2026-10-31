@@ -1,13 +1,13 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.26.0
+version: 1.29.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-10-29
+updated: 2026-10-30
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -84,11 +84,14 @@ only.
 | 1.19.0  | 2026-09-10 | ADR-0009 v1.3.1: Implementation Note — per-sender fairness implemented (`FairTokenBucket`, fair-by-default endpoints, operator control-plane ops, dynamic-shares opt-in), §32b–d benchmark record complete, review package published (`ADR-0009-review-package.md`) |
 | 1.20.0  | 2026-09-16 | Add ADR-0027 (wire-verified protocol constants and fail-closed acceptance gates) — **Accepted** |
 | 1.21.0  | 2026-09-20 | Add the missing ADR-0025/0026 status rows; correct six stale adr/README.md cells (0007/0009/0013/0016/0022/0023 still read pre-2026-09-19-review Proposed); the ADR-0019 frontmatter reverted to Proposed per its own governance line and this index (its 2026-09-06 flip to Accepted was not sanctioned by any Group record) — caught by the frontmatter-vs-index status sweep |
-| 1.27.0  | 2026-10-29 | Add ADR-0029 (leaf revocation by dbx TBS hash — the enforcement semantics the `.ms` gate's firmware-served revocation leg now pins) — **Accepted** by implementation record, the ADR-0026/0028 precedent |
-| 1.26.0  | 2026-10-29 | Add ADR-0028 (real keys for ADR-0014 — the one-hop offline-root hierarchy and the MokList carries-the-leaf content decision) — **Accepted** by implementation record (the two ADR-0014 Consequences work items it closes were named properly-scoped Phase-10 follow-ups by ADR-0014's own accepted record, the ADR-0026 precedent) |
-| 1.22.0  | 2026-09-21 | ADR-0009 v1.3.2 — the standing dynamic-shares-as-default item decided (AG decision log D1): static default retained; nothing remains open in the ADR. Frontmatter version caught up to this table (it had lagged at 1.18.0 through the 1.19–1.21 entries) || 1.25.0 | 2026-10-11 | ADR-0024 **Accepted** — AG decision-log row J2 (owner direction via the recorded session), as proposed: both increments implemented same-day (0.14.20/0.14.21) and benchmarked (§29; the post-0.14.21 §27 re-measurement collected 2026-09-20), the evidence set per its own review-input record complete; the two review-input caveats land verbatim in its Consequences |
-| 1.24.0 | 2026-10-11 | ADR-0014 **Accepted** — AG decision-log row I3 (owner direction via the recorded session, the E1/F1/G1 shape), as proposed with no text amendments. Was never named a gate ("not benchmark-blocked" per REPOSITORY_STATE's own record); the adopted D3 key-trust mirror conforms to its postures; its two Consequences work items become properly-scoped Phase-10 follow-ups |
+| 1.22.0  | 2026-09-21 | ADR-0009 v1.3.2 — the standing dynamic-shares-as-default item decided (AG decision log D1): static default retained; nothing remains open in the ADR. Frontmatter version caught up to this table (it had lagged at 1.18.0 through the 1.19–1.21 entries) |
 | 1.23.0 | 2026-09-30 | ADR-0019 **Accepted** — RATIFIED AS-IMPLEMENTED, Bundle D decided (AG decision-log row D1, owner direction via the recorded session, the E1/F1 same-day shape): all three issue-#1 ledgers resolved per AG_BRIEF_ADR0019's recommendation (60 s cadence retained; `auto_compact=True` ratified — the ADR-0022 as-implemented shape; shutdown ordering confirmed); the watcher resource profile recorded as a tuning follow-up, not a blocker. The sanctioned flip supersedes the 2026-09-06 unsanctioned self-flip reverted 2026-09-20 |
+| 1.24.0 | 2026-10-11 | ADR-0014 **Accepted** — AG decision-log row I3 (owner direction via the recorded session, the E1/F1/G1 shape), as proposed with no text amendments. Was never named a gate ("not benchmark-blocked" per REPOSITORY_STATE's own record); the adopted D3 key-trust mirror conforms to its postures; its two Consequences work items become properly-scoped Phase-10 follow-ups |
+| 1.25.0 | 2026-10-11 | ADR-0024 **Accepted** — AG decision-log row J2 (owner direction via the recorded session), as proposed: both increments implemented same-day (0.14.20/0.14.21) and benchmarked (§29; the post-0.14.21 §27 re-measurement collected 2026-09-20), the evidence set per its own review-input record complete; the two review-input caveats land verbatim in its Consequences |
+| 1.26.0  | 2026-10-29 | Add ADR-0028 (real keys for ADR-0014 — the one-hop offline-root hierarchy and the MokList carries-the-leaf content decision) — **Accepted** by implementation record (the two ADR-0014 Consequences work items it closes were named properly-scoped Phase-10 follow-ups by ADR-0014's own accepted record, the ADR-0026 precedent) |
+| 1.27.0  | 2026-10-29 | Add ADR-0029 (leaf revocation by dbx TBS hash — the enforcement semantics the `.ms` gate's firmware-served revocation leg now pins) — **Accepted** by implementation record, the ADR-0026/2028 precedent |
+| 1.28.0  | 2026-10-30 | ADR-0029 v1.2.0: Implementation Note — the compromise procedure has tooling (`tools/rotate_leaf_ceremony.sh`: replacement leaf issuance + the dead leaf's dbx TBS-hash entry, scope/serial/chain/carrier/store checks, both a CI step and covered by a refusal-path test); the `.ms` gate carries TWO firmware-served revocation legs (hash-typed and whole-certificate, one per dbx parser branch) plus a stub-side shape probe, each ASSERTING the refusing party and the served bytes; and the entry's payload FIELD ORDER is corrected — `EFI_CERT_X509_SHA256` is digest-then-EFI_TIME (UEFI 2.10 32.4.1, edk2 `ImageAuthentication.h`), while this repo's generator and parser had them swapped and agreed only with each other, which is why no real firmware matched; fixed in `patch_carrier_negatives.py` + `dbx.rs` and re-proven on real firmware, where BOTH dbx forms are now refused by the firmware itself (superseding the earlier "whole-cert only" reading, which was the field-order defect) |
+| 1.29.0  | 2026-10-31 | Add ADR-0030 (reject extra dbx hash types in the enforced revocation surface) — **Rejected**: the seven other UEFI 2.10 32.4.1 entry classes stay REPORTED facts, now pinned by the `dbx-skip-types` fixture control, and widening the surface requires a superseding ADR |
 
 ---
 **End of Document**

@@ -47,3 +47,8 @@ source/nykernel/uefi/src/mok-carrier.der
 # against), regenerated beside the carriers on every build.
 source/nykernel/uefi/src/dbx-neg-*.der
 source/nykernel/uefi/src/moklist-*.der
+# ...and the shape probe's generated dbx entry (the STRANGER certificate
+# as an EFI_CERT_X509 signature list plus its authenticated-update
+# wrapping), composed by the `.ms` gate itself at run time -- generated
+# state by the same policy as the blobs above, not source.
+source/nykernel/uefi/src/dbx-probe-*.der

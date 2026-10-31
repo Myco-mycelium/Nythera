@@ -36,6 +36,7 @@ directory; this index tracks status only.
 | [ADR-0027](ADR-0027-wire-verified-protocol-and-fail-closed-gates.md) | Wire-verified protocol constants and fail-closed acceptance gates | **Accepted** |
 | [ADR-0028](ADR-0028-real-keys-and-moklist-content.md) | Real keys for ADR-0014 — one-hop hierarchy, MokList carries the leaf | **Accepted** (2026-10-29) |
 | [ADR-0029](ADR-0029-leaf-revocation-tbs-hash-semantics.md) | Leaf revocation by dbx TBS hash — the enforcement semantics the gates enforce | **Accepted** (2026-10-29) |
+| [ADR-0030](ADR-0030-dbx-hash-type-scope.md) | Reject extra dbx hash types in the enforced revocation surface | **Rejected** |
 
 ## Blocked Statuses
 

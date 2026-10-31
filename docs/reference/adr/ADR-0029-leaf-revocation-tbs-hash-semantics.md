@@ -1,11 +1,11 @@
 ---
 title: Leaf Revocation by dbx TBS Hash — the Enforcement Semantics the Gates Enforce
 document_id: ADR-0029
-version: 1.0.0
+version: 1.2.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-10-29
-updated: 2026-10-29
+updated: 2026-10-30
 ai_assisted: true
 depends_on: [ADR-0014, ADR-0028]
 ---
@@ -35,9 +35,11 @@ ratified by a Group session.
 
 ONE certificate, identified by the SHA-256 of its whole
 tbsCertificate TLV (tag + length + content — the bytes RFC 5280 4.1.1.2
-kills). The entry is `EFI_CERT_X509_SHA256_SIGNATURE`: a 16-byte
-EFI_TIME revocation date followed by the 32-byte digest, UEFI 2.10
-section 32.4.1's hash-typed revocation form — deliberately the SAME
+kills). The entry is an `EFI_CERT_X509_SHA256`: the 32-byte digest FOLLOWED BY
+a 16-byte EFI_TIME revocation date (`EFI_SHA256_HASH ToBeSignedHash;
+EFI_TIME TimeOfRevocation;` — UEFI 2.10 section 32.4.1 and edk2's
+MdePkg `Guid/ImageAuthentication.h`, SignatureSize 16 + 48), the
+hash-typed revocation form — deliberately the SAME
 form real-world Microsoft dbx updates use for revoked CAs, so the
 stub's parser is exercised against a shape the outside world actually
 ships. Not the whole-certificate dbx form (ADR-0014's byte-match and
@@ -116,6 +118,120 @@ KEK-signed EFI_VARIABLE_AUTHENTICATION_2 package at real SetVariable
 time, or the vendor's signed dbx distribution); that machinery is a
 separate surface, not weakened or faked by anything here, and no gate
 in this repo pretends to test it.
+
+## Implementation Note (2026-10-30)
+
+This ADR's Consequences bullet -- issue the replacement leaf, compose the
+dbx entry carrying the dead leaf's TBS hash, distribute it -- now has
+tooling, and the `.ms` gate's fourth leg now asserts what it used to
+print as a note. No decision in this ADR changed; this note records what
+was built against it and one firmware behaviour the gates can now state.
+
+### The procedure as one step: `tools/rotate_leaf_ceremony.sh`
+
+ADR-0028's rotation and this ADR's revocation procedure are one
+ceremony, not two: issue a replacement leaf under the root (fresh key,
+same extension shape the stub's leaf walk vets), sign the kernel with
+it, and compose the DEAD leaf's `EFI_CERT_X509_SHA256` entry plus its
+authenticated-update wrapping -- this ADR's "What a hash-typed entry
+covers" and "When it takes force" sections in executable form
+(EFI_TIME 2020-01-01, so any firmware clock after it is in force).
+
+The tool's named checks encode this ADR's decisions rather than
+restating them in prose: the replacement's To-Be-Signed hash must
+DIFFER from the dead leaf's ("A re-issued leaf (new key, same identity)
+has a DIFFERENT TBS hash" -- equal hashes would mean the entry revokes
+the replacement), its serialNumber must differ too (the whole-
+certificate form's scope), the replacement must verify under the root
+and sign the kernel, and the composed blob must survive both virt-fw's
+own `EfiVar` parser and a `virt-fw-vars --set-dbx` composition with the
+read-back variable's size matched to the composed SigDB. Ceremony
+posture is a control, not a comment: no explicit root pair, no run; a
+root key with group/world bits, no run; nothing is written into the
+enrolled chain. It runs as a CI step, so a broken issuance or
+revocation path fails a build instead of a ceremony.
+
+### The gate asserts the refusal party and the served bytes
+
+"Who refuses, and what counts" above requires the gates not to silently
+prefer one enforcement path and to record the served shape
+unconditionally. Both are now assertions, and BOTH dbx parser branches
+have a firmware-served enforcing leg of their own (a hash-typed store
+and a whole-certificate store), each with the same enrollment (signer
+in db AND MokList) and each required to be refused. Per leg: whichever
+party refused is a verdict field; on the stub path the `dbx:
+firmware served <n> signature-list bytes; type GUID (...)` line is
+required, `<n>` checked against the SigDB the gate composed, and the
+printed GUID normalized to the branch's canonical serialization
+(`92a4d23bc0967940b420fcf98ef103ed` for `EFI_CERT_X509_SHA256`,
+`a159c0a5e494a74a87b5ab155c2bf072` for `EFI_CERT_X509`) -- spec bytes
+written in the gate, not repo constants. On the FIRMWARE path there is
+no served-bytes line to check BY CONSTRUCTION (the stub never ran), so
+that path's shape evidence is the composition-time virt-fw read-back
+printed with the store plus the firmware's own refusal; a firmware
+refusal alongside a printed served line is a contradiction and fails.
+A boot that reached the stub without naming its refusal, or whose
+served bytes differ from what the gate composed, is neither path and
+fails.
+
+### Observed firmware behaviour, re-measured AFTER the correction: the firmware enforces BOTH forms
+
+On the distro `OVMF_CODE_4M.ms.fd` these gates use, with the payload
+order this ADR now specifies, each leg reports its own refusing party,
+signer enrolled in db AND MokList in both:
+
+- **Whole-certificate form (`EFI_CERT_X509`): the FIRMWARE refuses.**
+  The boot manager reports "Access Denied" for the leaf-signed image
+  and no stub output appears at all -- path 1.
+- **Hash-typed form (`EFI_CERT_X509_SHA256`, the corrected bytes): the
+  FIRMWARE refuses too** -- `[hash-typed] leg: refused by firmware;
+  served shape firmware-refused`, no stub output. edk2's
+  `IsCertHashFoundInDbx` compared the digest at the START of
+  `SignatureData` against the leaf's To-Be-Signed hash and refused at
+  the boot manager, which is this ADR's "What a hash-typed entry
+  covers" enforced by the platform itself rather than by our code.
+
+An earlier revision of this note reported the OPPOSITE split (firmware
+enforcing whole-cert only, the hash-typed form left to the stub). That
+reading was the field-order defect recorded below, not a firmware
+limitation: against bytes no reader outside this repo could parse, the
+firmware's silence looked like non-enforcement. Two consequences are
+worth stating plainly, because they change what the legs prove:
+
+- **The stub's own TBS-hash walk is now PREEMPTED on this firmware** --
+  the firmware refuses before the stub runs, so path 2 does not fire on
+  these images. Its coverage is the host harness over the same
+  regenerated bytes, plus the probe leg, which shows the stub reading a
+  composed dbx through the firmware and reaching Ready when the entry
+  does not match (975 bytes, `EFI_CERT_X509` GUID `a159…`). The stub's
+  walk stays in the build as defence in depth for firmware that does
+  not enforce hash-typed entries; that is a platform question, not a
+  claim these gates make.
+
+### Correction (2026-10-30, same day): the payload's FIELD ORDER
+
+An earlier revision of this ADR and of the code put `EFI_TIME` first and
+the 32-byte digest second. Generator and parser agreed with each other,
+so the host harness and the stub's every-boot controls all passed while
+the bytes were wrong: `EFI_CERT_X509_SHA256` is `EFI_SHA256_HASH
+ToBeSignedHash; EFI_TIME TimeOfRevocation;` — digest FIRST — and
+edk2's `IsCertHashFoundInDbx` compares the digest at the START of
+`SignatureData` and reads the date from `SignatureData +
+DigestLength`. A time-first entry therefore matches no real firmware
+and revokes nothing there; only this repo's own parser could see it.
+
+The firmware probe written to look for an OVMF gap found the real cause
+instead and is the reason this correction exists at all: with the
+corrected order in `tools/patch_carrier_negatives.py`
+(`make-dbx-hashlist`) and `uefi/src/dbx.rs` (`read_revocation`), the
+hash-typed form is enforced by the firmware exactly as this ADR's
+semantics describe -- measured on the re-run as `[hash-typed] leg:
+refused by firmware`, where the pre-correction bytes on the same
+firmware got as far as the stub. This is ADR-0028's "self-consistent-but-wrong"
+failure class again, in the one place where two implementations of ours
+could agree with nobody else — and it is why the gates now compare
+against SPEC bytes (the type GUIDs, the served SigDB sizes) rather than
+against each other's constants.
 
 ## Consequences
 

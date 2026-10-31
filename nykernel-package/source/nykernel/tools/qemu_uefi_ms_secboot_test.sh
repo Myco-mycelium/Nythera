@@ -19,7 +19,7 @@
 # the leaf key (sbsign) and installed on the ESP, so the FIRMWARE's
 # verification -- not ours -- is the gate the stub passes, and the
 # stub's own carrier walk (which anchors the same root) still enforces
-# the kernel image inside it. FOUR boots assert all directions:
+# the kernel image inside it. FIVE boots assert all directions:
 #
 # positive: signed stub under enforcement -> firmware accepts it, the
 #   stub reads SecureBoot=1 with PK present (not SetupMode), the
@@ -46,10 +46,22 @@
 #   MokList-enrolled signer it rides on) must be REFUSED: either by the
 #   firmware itself (Access Denied, the boot manager's loop), or -- if
 #   this OVMF build's dbx hash check is absent -- by the STUB's own
-#   revocation walk over the REAL firmware-served dbx variable. Either
-#   refusal is a PASS because both prove the same fact: the revocation
+#   revocation walk over the REAL firmware-served dbx variable. Either# refusal is a PASS because both prove the same fact: the revocation
 #   leg is wired through real firmware bytes and enforced, and every
-#   refusal names its stage.
+#   refusal names its stage. WHICH party refused is now asserted as a
+#   pinned fact in the verdict (it used to be a printed note): the leg
+#   also requires ADR-0029's unconditional `dbx: firmware served <n>
+#   signature-list bytes; type GUID (...)` line, with <n> equal to the
+#   SigDB this gate composed and the GUID bytes equal to
+#   EFI_CERT_X509_SHA256's canonical serialization -- so the leg can no
+#   longer pass on a refusal that never saw our bytes.
+#
+#   The FITH boot is the stub's OTHER dbx parser branch given the same
+#   treatment: the leaf certificate in dbx as EFI_CERT_X509 (the
+#   whole-certificate form, ADR-0014's byte-match rule), delivered the
+#   same way. Both branches now have a firmware-served enforcing leg,
+#   not just the host harness and the stub's embedded negatives, and
+#   both legs assert the same two facts (served shape, refusing party).
 #
 # This is what CI should run to prove the ms OVMF path, the same way
 # qemu_uefi_boot_test.sh proves the default OVMF path.
@@ -57,14 +69,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-FAKECODE=uefi/tools/OVMF_CODE_4M.ms.fd
-VARS_TMPL=uefi/tools/OVMF_VARS_4M.fd
+# OVMF_CODE_OVERRIDE runs the SAME assertions against a different
+# firmware build -- the cross-build measurement ADR-0029's Implementation
+# Note asks for. The image's sha256 goes into the transcript, so a verdict
+# always names the firmware it describes instead of implying "OVMF".
+FAKECODE="${OVMF_CODE_OVERRIDE:-uefi/tools/OVMF_CODE_4M.ms.fd}"
+VARS_TMPL="${OVMF_VARS_OVERRIDE:-uefi/tools/OVMF_VARS_4M.fd}"
 for f in "$FAKECODE" "$VARS_TMPL"; do
     if [[ ! -s "$f" ]]; then
         echo "FAIL: OVMF image missing: $f"
         exit 1
     fi
 done
+FIRMWARE_SHA="$(sha256sum "$FAKECODE" | cut -d' ' -f1)"
+echo "==> firmware under test: $FAKECODE (sha256 $FIRMWARE_SHA)"
 
 # Same build order and stub path as qemu_uefi_boot_test.sh: kernel
 # BEFORE stub, because the stub embeds the kernel image bytes.
@@ -263,13 +281,103 @@ refused_by_firmware() { # $1 esp, $2 log, $3 label; sets FW_REFUSED
     fi
 }
 
-echo "==> negative boot 1/2: the same store, the UNSIGNED stub"
+echo "==> negative boot 1/4: the same store, the UNSIGNED stub"
 refused_by_firmware "$ESP_UNSIGNED" target/qemu-uefi-ms-secboot-negative.log "the unsigned stub"
 NEG_OK=$FW_REFUSED
 
-echo "==> negative boot 2/3: the same store, the SIGNED-BUT-TAMPERED stub"
+echo "==> negative boot 2/4: the same store, the SIGNED-BUT-TAMPERED stub"
 refused_by_firmware "$ESP_TAMPERED" target/qemu-uefi-ms-secboot-tampered.log "the tampered stub"
 TAMPER_OK=$FW_REFUSED
+
+# --- shared verdict logic for the revocation legs (there are TWO: one
+#     per dbx parser branch the stub implements). Each leg composes its
+#     own enforcing store, boots the leaf-signed stub against it, and
+#     hands the log to this checker, which pins three facts:
+#       - the served shape (ADR-0029): the byte count the stub read
+#         equals the SigDB the leg composed, and the type GUID it
+#         printed is the branch's canonical serialization -- the GUID is
+#         normalized (the printer's prefix/width is not the fact, the
+#         byte sequence is) and compared against spec bytes written
+#         here, never a repo constant (the ADR-0028 drift lesson);
+#       - WHICH party refused (firmware vs the stub's own walk), with
+#         the expected, branch-specific refusal text present when the
+#         stub is the refusing party -- so a boot that reached the stub
+#         without naming the revocation is neither path;
+#       - that the stub did NOT simply boot (status 33 is a hard FAIL).
+# Sets LEG_OK / LEG_PATH / LEG_SHAPE / LEG_EXPECT_BYTES +
+# LEG_EXPECT_GUID_HEX for the caller's final verdict.
+dbx_leg_check() { # $1 label, $2 log, $3 auth-update blob, $4 expected refusal text, $5 expected GUID hex, $6 qemu status
+    local label="$1" log="$2" update="$3" expect="$4" exp_guid="$5" status="$6"
+    LEG_PATH=none
+    LEG_SHAPE=none
+    LEG_EXPECT_BYTES=$(( $(wc -c < "$update") - 40 ))   # strip the auth header
+    LEG_EXPECT_GUID_HEX="$exp_guid"
+    local served_line guid_raw guid_hex="" b
+    served_line="$(grep -a "dbx: firmware served" "$log" || true)"
+    guid_raw="$(printf '%s' "$served_line" | sed -n 's/.*type GUID (\(.*\)).*/\1/p')"
+    for b in $guid_raw; do
+        guid_hex="${guid_hex}$(printf '%02x' "$b")"
+    done
+    if [[ "$status" -eq 124 ]] \
+       && grep -aq "Access Denied" "$log" \
+       && ! grep -aq "nyrqis ubld" "$log"; then
+        LEG_PATH=firmware
+        echo "-- [$label] stub refused BY THE FIRMWARE (Access Denied before the stub ever ran)"
+    elif [[ "$status" -ne 33 ]] \
+       && grep -aq "nyrqis ubld: stub alive" "$log" \
+       && grep -aq "$expect" "$log"; then
+        LEG_PATH=stub
+        echo "-- [$label] stub refused BY THE STUB'S OWN WALK over the real firmware-served dbx"
+    elif [[ "$status" -eq 33 ]]; then
+        echo "FAIL: [$label] the leaf-signed stub BOOTED on this revocation store -- the dbx entry did not bind"
+    else
+        echo "note: [$label] boot matched NEITHER refusal shape (status $status, see $log) -- counting it as a failure, not as an unnamed third verdict"
+    fi
+    # --- the served shape, as far as THIS path permits ---
+    # Ordering matters and was wrong on this leg's first run: the
+    # served-bytes line is printed by the STUB, so on the firmware path
+    # there is none BY CONSTRUCTION. Requiring it unconditionally made a
+    # firmware-refusing store look like a failure even though the
+    # firmware refusing IS path 1's claim (ADR-0029: path 1 proves the
+    # composed store is shape-correct for the firmware's own reader).
+    # So: the stub path must show the served bytes matching the composed
+    # SigDB; the firmware path must show NO stub output at all (already
+    # required above) and its shape evidence is the composition-time
+    # virt-fw read-back printed with the store -- never an absent line
+    # counted as a pass.
+    if [[ "$LEG_PATH" == stub ]]; then
+        if [[ -z "$served_line" ]]; then
+            echo "FAIL: [$label] the stub ran but never printed the served dbx shape -- ADR-0029's unconditional transcript line is missing, so nothing proves the walk saw the composed bytes"
+        else
+            echo "-- [$label] served dbx shape: ${served_line#  }"
+            echo "-- [$label] composed SigDB:   $LEG_EXPECT_BYTES bytes, type GUID ${LEG_EXPECT_GUID_HEX}"
+            if [[ "$served_line" == *"firmware served $LEG_EXPECT_BYTES signature-list bytes"* ]] \
+               && [[ "$guid_hex" == "$LEG_EXPECT_GUID_HEX" ]]; then
+                LEG_SHAPE=verified
+            elif [[ "$guid_hex" != "$LEG_EXPECT_GUID_HEX" ]]; then
+                LEG_SHAPE=MISMATCH
+                echo "FAIL: [$label] the served dbx entry's type GUID is ${guid_hex:-<unparsed>}, not ${LEG_EXPECT_GUID_HEX} -- a type GUID classification drift, or the stub printed a GUID whose bytes are not the spec's"
+            else
+                LEG_SHAPE=MISMATCH
+                echo "FAIL: [$label] the served dbx is not the $LEG_EXPECT_BYTES-byte signature list this gate composed -- served-vs-composed mismatch, so the walk did not act on our bytes"
+            fi
+        fi
+    elif [[ "$LEG_PATH" == firmware ]]; then
+        LEG_SHAPE=firmware-refused
+        if [[ -n "$served_line" ]]; then
+            LEG_SHAPE=MISMATCH
+            echo "FAIL: [$label] the FIRMWARE refused yet the stub printed a served-dbx line -- those two facts contradict each other"
+        else
+            echo "-- [$label] served shape: n/a by construction (the stub never ran); the composed $LEG_EXPECT_BYTES-byte SigDB (type GUID ${LEG_EXPECT_GUID_HEX}) is what the store read-back above shows, and the firmware's own refusal is this path's evidence"
+        fi
+    fi
+    LEG_OK=0
+    if [[ "$LEG_PATH" != none ]] \
+       && { [[ "$LEG_SHAPE" == verified ]] || [[ "$LEG_SHAPE" == firmware-refused ]]; }; then
+        LEG_OK=1
+    fi
+    echo "-- [$label] leg: refused by $LEG_PATH; served shape $LEG_SHAPE"
+}
 
 # --- negative 3: the ENROLLED LEAF is revoked BY HASH in dbx ---
 # The hash-typed dbx blob (the leaf's TBS, revoked 2020) already lives
@@ -296,35 +404,173 @@ cp "$VARS_TMPL" "$REV_STORE"
 echo "==> revoked store shape (dbx must carry the hash-typed revocation):" && \
     "$VIRT" -i "$REV_STORE" -p 2>/dev/null | grep -E "dbx|SecureBoot" || true
 
-echo "==> negative boot 3/3: the REVOKED store, the leaf-signed stub"
+echo "==> negative boot 3/4: the HASH-revoked store, the leaf-signed stub"
 REV_OK=0
+REV_PATH=none
 boot_qemu "$ESP_SIGNED" target/qemu-uefi-ms-secboot-revoked.log 240 "$REV_STORE"
 REV_STATUS=$?
 echo "--- revoked-store serial (key lines) ---"
 grep -a -E "Access Denied|Security Violation|FAILED|nyrqis ubld|REVOKED" \
     target/qemu-uefi-ms-secboot-revoked.log || true
 echo "-----------------------------------"
-if [[ "$REV_STATUS" -eq 124 ]] \
-   && grep -aq "Access Denied" target/qemu-uefi-ms-secboot-revoked.log \
-   && ! grep -aq "nyrqis ubld" target/qemu-uefi-ms-secboot-revoked.log; then
-    echo "-- revoked stub refused BY THE FIRMWARE (Access Denied before the stub ever ran)"
-    REV_OK=1
-elif [[ "$REV_STATUS" -ne 33 ]] \
-   && grep -aq "a hash-typed entry covers the signer certificate's To-Be-Signed" \
-        target/qemu-uefi-ms-secboot-revoked.log; then
-    echo "-- revoked stub refused BY THE STUB'S OWN WALK over the real firmware-served dbx"
-    REV_OK=1
-elif [[ "$REV_STATUS" -eq 33 ]]; then
-    echo "FAIL: the leaf-signed stub BOOTED on the revocation store -- the dbx hash entry did not bind"
+
+# --- the SERVED SHAPE is a pinned fact, not an inference (ADR-0029) ---
+# ADR-0029 makes the served dbx shape an unconditional transcript line
+# precisely so a served-vs-composed mismatch or a type-GUID
+# classification drift rings on its own, BEFORE any refusal is
+# interpreted (a refusal that would have happened anyway must not
+# certify the bytes that were read). So this leg now ASSERTS:
+#   - the byte count the stub read equals the SigDB this gate composed
+#     (the authenticated-update header is not part of it), and
+#   - the type GUID the stub printed is EFI_CERT_X509_SHA256's
+#     canonical serialized bytes {3bd2a492-96c0-4079-b420-fcf98ef103ed}
+#     -- UEFI 2.10 32.4.1's wire form (field order 1-2-3-4), written
+#     out here as hex rather than compared against a repo constant, so
+#     a drifted constant cannot self-certify (the ADR-0028 lesson).
+# The printed GUID is normalized (prefix/width/format of the stub's
+# printer is not the fact; the byte sequence is).
+dbx_leg_check "hash-typed" target/qemu-uefi-ms-secboot-revoked.log "$REV_UPDATE" \
+    "a hash-typed entry covers the signer certificate's To-Be-Signed" \
+    92a4d23bc0967940b420fcf98ef103ed "$REV_STATUS"
+REV_OK=$LEG_OK
+REV_PATH=$LEG_PATH
+REV_SHAPE=$LEG_SHAPE
+REV_EXPECT_BYTES=$LEG_EXPECT_BYTES
+REV_EXPECT_GUID_HEX=$LEG_EXPECT_GUID_HEX
+
+# --- negative 4: the ENROLLED LEAF is revoked in the WHOLE-CERTIFICATE
+#     dbx form (EFI_CERT_X509, ADR-0014's byte-match rule) ---
+# The hash-typed leg above pins ONE of the stub's two dbx parser
+# branches. This pins the other with the same rigor, so neither branch's
+# firmware-facing path rests on the host harness and the stub's embedded
+# negatives alone: the leaf certificate's own DER wrapped as an
+# EFI_CERT_X509 signature list (make_carrier.sh writes exactly that as
+# uefi/src/dbx-neg-signer-byte.der), delivered through the
+# authenticated-update header, in a THIRD enforcing store with the SAME
+# enrollment -- leaf still in db AND MokList. dbx must still win.
+REVC_STORE=uefi/dist/VARS.ms-secboot-dbxcert.fd
+REVC_PAYLOAD=uefi/src/dbx-neg-signer-byte.der
+REVC_UPDATE=uefi/src/dbx-neg-signer-byte-auth2.der
+echo "==> wrapping the leaf WHOLE-CERTIFICATE dbx blob into the authenticated-update header"
+python3 tools/patch_carrier_negatives.py make-dbx-auth-update \
+    "$REVC_PAYLOAD" 2020 "$REVC_UPDATE"
+cp "$VARS_TMPL" "$REVC_STORE"
+"$VIRT" --inplace "$REVC_STORE" \
+    --set-pk "$GLV" "$ROOT_CERT" \
+    --add-kek "$GLV" "$ROOT_CERT" \
+    --add-db "$ISD" "$ROOT_CERT" \
+    --add-db "$ISD" "$LEAF_CERT" \
+    --add-mok "$SHIM" "$LEAF_CERT" \
+    --set-dbx "$REVC_UPDATE" \
+    --sb > /dev/null
+echo "==> [whole-cert] revoked store shape (dbx must carry the byte-match entry):" && \
+    "$VIRT" -i "$REVC_STORE" -p 2>/dev/null | grep -E "dbx|SecureBoot" || true
+
+echo "==> negative boot 4/4: the WHOLE-CERT-revoked store, the leaf-signed stub"
+boot_qemu "$ESP_SIGNED" target/qemu-uefi-ms-secboot-revcert.log 240 "$REVC_STORE"
+REVC_STATUS=$?
+echo "--- whole-cert-revoked serial (key lines) ---"
+grep -a -E "Access Denied|Security Violation|FAILED|nyrqis ubld|REVOKED" \
+    target/qemu-uefi-ms-secboot-revcert.log || true
+echo "-------------------------------------------"
+dbx_leg_check "whole-cert" target/qemu-uefi-ms-secboot-revcert.log "$REVC_UPDATE" \
+    "the signer certificate byte-matches an entry" \
+    a159c0a5e494a74a87b5ab155c2bf072 "$REVC_STATUS"
+REVC_OK=$LEG_OK
+REVC_PATH=$LEG_PATH
+REVC_SHAPE=$LEG_SHAPE
+REVC_EXPECT_BYTES=$LEG_EXPECT_BYTES
+REVC_EXPECT_GUID_HEX=$LEG_EXPECT_GUID_HEX
+
+# --- probe boot: a WHOLE-CERTIFICATE dbx entry read back THROUGH THE
+#     STUB -- i.e. through a firmware-facing parser, not only through
+#     virt-fw at composition time. ---
+# The whole-cert leg's refusal happens at the boot manager, so its stub
+# never runs and prints nothing; its shape evidence would otherwise be
+# only the assembling tool's own read-back. This probe closes that gap
+# WITHOUT weakening the refusal: it composes a store whose dbx carries
+# the whole certificate of a STRANGER (the negative-only stray cert
+# make_carrier.sh already generated) -- same enrollment as the other
+# stores -- so the firmware accepts the leaf-signed stub, the stub runs,
+# and its own dbx walk reads the entry the firmware serves, PRINTS the
+# served byte count and type GUID, and (correctly) does not refuse a
+# chain the entry does not cover. Asserted: exit 33 (Ready, so nothing
+# refused), the served byte count equal to the composed SigDB, and the
+# type GUID equal to EFI_CERT_X509's canonical serialization. Together
+# with the whole-cert leg's firmware refusal, that pins the entry's
+# bytes and classification from BOTH sides: the firmware refuses when it
+# matches, and the stub reads it when it does not.
+PROBE_STORE=uefi/dist/VARS.ms-secboot-dbxprobe.fd
+PROBE_CERT_DER=uefi/tools/trust/carrier-neg-stray-cert.der
+PROBE_PAYLOAD=uefi/src/dbx-probe-stranger-cert.der
+PROBE_UPDATE=uefi/src/dbx-probe-stranger-cert-auth2.der
+echo "==> composing the shape probe: the STRANGER certificate as an EFI_CERT_X509 dbx entry"
+openssl x509 -in uefi/tools/trust/carrier-neg-stray-cert.pem -outform DER -out "$PROBE_CERT_DER"
+python3 tools/patch_carrier_negatives.py make-dbx-siglist "$PROBE_CERT_DER" "$PROBE_PAYLOAD"
+python3 tools/patch_carrier_negatives.py make-dbx-auth-update "$PROBE_PAYLOAD" 2020 "$PROBE_UPDATE"
+cp "$VARS_TMPL" "$PROBE_STORE"
+"$VIRT" --inplace "$PROBE_STORE" \
+    --set-pk "$GLV" "$ROOT_CERT" \
+    --add-kek "$GLV" "$ROOT_CERT" \
+    --add-db "$ISD" "$ROOT_CERT" \
+    --add-db "$ISD" "$LEAF_CERT" \
+    --add-mok "$SHIM" "$LEAF_CERT" \
+    --set-dbx "$PROBE_UPDATE" \
+    --sb > /dev/null
+echo "==> [probe] store shape (dbx must carry the stranger's certificate):" && \
+    "$VIRT" -i "$PROBE_STORE" -p 2>/dev/null | grep -E "dbx|SecureBoot" || true
+
+echo "==> probe boot: leaf-signed stub against a whole-cert dbx entry it does NOT match"
+boot_qemu "$ESP_SIGNED" target/qemu-uefi-ms-secboot-dbxprobe.log 480 "$PROBE_STORE"
+PROBE_STATUS=$?
+PROBE_SERVED="$(grep -a "dbx: firmware served" target/qemu-uefi-ms-secboot-dbxprobe.log || true)"
+PROBE_GUID_RAW="$(printf '%s' "$PROBE_SERVED" | sed -n 's/.*type GUID (\(.*\)).*/\1/p')"
+PROBE_GUID_HEX=""
+for _pb in $PROBE_GUID_RAW; do
+    PROBE_GUID_HEX="${PROBE_GUID_HEX}$(printf '%02x' "$_pb")"
+done
+PROBE_EXPECT_BYTES=$(wc -c < "$PROBE_PAYLOAD")
+PROBE_EXPECT_GUID_HEX=a159c0a5e494a74a87b5ab155c2bf072   # EFI_CERT_X509
+PROBE_OK=0
+if [[ "$PROBE_STATUS" -ne 33 ]]; then
+    echo "FAIL: [probe] the stub did not reach Ready (status $PROBE_STATUS) -- a dbx entry for a STRANGER must not refuse this chain"
+elif [[ -z "$PROBE_SERVED" ]]; then
+    echo "FAIL: [probe] the stub ran but never printed the served dbx shape, so the whole-cert leg's shape evidence still rests on virt-fw alone"
 else
-    echo "note: revoked boot did not match either refusal shape (status $REV_STATUS, see log)"
+    echo "-- [probe] served dbx shape: ${PROBE_SERVED#  }"
+    echo "-- [probe] composed SigDB:   $PROBE_EXPECT_BYTES bytes, EFI_CERT_X509 GUID $PROBE_EXPECT_GUID_HEX"
+    if [[ "$PROBE_SERVED" == *"firmware served $PROBE_EXPECT_BYTES signature-list bytes"* ]] \
+       && [[ "$PROBE_GUID_HEX" == "$PROBE_EXPECT_GUID_HEX" ]]; then
+        PROBE_OK=1
+        echo "-- [probe] the stub read the composed entry through the firmware, byte count and type GUID included; Ready reached, nothing refused"
+    elif [[ "$PROBE_GUID_HEX" != "$PROBE_EXPECT_GUID_HEX" ]]; then
+        echo "FAIL: [probe] the served entry's type GUID is ${PROBE_GUID_HEX:-<unparsed>}, not EFI_CERT_X509 ($PROBE_EXPECT_GUID_HEX)"
+    else
+        echo "FAIL: [probe] the served dbx is not the $PROBE_EXPECT_BYTES-byte signature list this gate composed"
+    fi
 fi
 
 set -e
 
-if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 && "$REV_OK" -eq 1 ]]; then
-    echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses both the unsigned one and the one-byte-tampered signed one, refuses the leaf-signed stub once its signer's To-Be-Signed hash is revoked BY HASH in dbx, and the kernel reached Ready"
+if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 && "$REV_OK" -eq 1 && "$REVC_OK" -eq 1 ]]; then
+    echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses both the unsigned one and the one-byte-tampered signed one, refuses the leaf-signed stub once its signer's To-Be-Signed hash is revoked BY HASH in dbx AND once its certificate is revoked in the whole-certificate dbx form, and the kernel reached Ready"
+    # The clause after the refusing party must match THAT path: only the
+    # stub path reads the served bytes, so on the firmware path the claim
+    # is the composed shape + the firmware's refusal, never "served".
+    if [[ "$REV_SHAPE" == verified ]]; then
+        REV_CLAIM="the stub read the composed $REV_EXPECT_BYTES-byte EFI_CERT_X509_SHA256 list (GUID $REV_EXPECT_GUID_HEX) byte-for-byte, then refused it"
+    else
+        REV_CLAIM="the stub never ran, so the evidence is the composed $REV_EXPECT_BYTES-byte EFI_CERT_X509_SHA256 list (GUID $REV_EXPECT_GUID_HEX) checked at composition time plus the firmware's own refusal"
+    fi
+    if [[ "$REVC_SHAPE" == verified ]]; then
+        REVC_CLAIM="the stub read the composed $REVC_EXPECT_BYTES-byte EFI_CERT_X509 list (GUID $REVC_EXPECT_GUID_HEX) byte-for-byte, then refused it"
+    else
+        REVC_CLAIM="the stub never ran, so the evidence is the composed $REVC_EXPECT_BYTES-byte EFI_CERT_X509 list (GUID $REVC_EXPECT_GUID_HEX) checked at composition time plus the firmware's own refusal"
+    fi
+    echo "     revocation leg (hash-typed): refused by $REV_PATH; $REV_CLAIM"
+    echo "     revocation leg (whole-cert): refused by $REVC_PATH; $REVC_CLAIM"
+    echo "     firmware under test: $FAKECODE (sha256 $FIRMWARE_SHA)"
     exit 0
 fi
-echo "FAIL: ms OVMF secboot test failed (positive status $POS_STATUS marker_ok=$POS_OK, unsigned refusal_ok=$NEG_OK, tampered refusal_ok=$TAMPER_OK, revocation refusal_ok=$REV_OK)"
+echo "FAIL: ms OVMF secboot test failed (positive status $POS_STATUS marker_ok=$POS_OK, unsigned refusal_ok=$NEG_OK, tampered refusal_ok=$TAMPER_OK, hash-typed revocation ok=$REV_OK refused_by=$REV_PATH served_shape=$REV_SHAPE, whole-cert revocation ok=$REVC_OK refused_by=$REVC_PATH served_shape=$REVC_SHAPE)"
 exit 1

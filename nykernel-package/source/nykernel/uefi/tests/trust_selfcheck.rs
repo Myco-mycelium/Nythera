@@ -406,6 +406,67 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        // The other hash-type classes UEFI 2.10 32.4.1 names, one list
+        // each: EFI_CERT_SHA1/224/256/384/512 (a bare digest) and
+        // EFI_CERT_X509_SHA384/SHA512 (digest THEN EFI_TIME, 48 and 64
+        // bytes -- edk2's mSupportSigItem gives the whole SignatureData
+        // width, 64 and 80 with the owner GUID). The walk enforces X.509
+        // and X.509-SHA256 only, so all seven must come back as SKIPPED
+        // facts: not refused, not silently dropped, not misclassified
+        // into the enforced branches. The GUIDs come from the SPEC's own
+        // string forms (spec_guid_bytes) and each payload is filled to
+        // the type's spec width from the signer's To-Be-Signed hash, so
+        // a later decision to enforce one of them starts from a live
+        // fixture rather than a paper claim.
+        let hash_classes: [(&str, &str, usize); 7] = [
+            ("EFI_CERT_SHA1", "826ca512-cf10-4ac9-b187-be01496631bd", 20),
+            ("EFI_CERT_SHA224", "0b6e5233-a65c-44c9-9407-d9ab83bfc8bd", 28),
+            ("EFI_CERT_SHA256", "c1c41626-504c-4092-aca9-41f936934328", 32),
+            ("EFI_CERT_SHA384", "ff3e5307-9fd0-48c9-85f1-8ad56c701e01", 48),
+            ("EFI_CERT_SHA512", "093e0fae-a6c4-4f50-9f1b-d41e2b89c19a", 64),
+            ("EFI_CERT_X509_SHA384", "7076876e-80c2-4ee6-aad2-28b349a6865b", 64),
+            ("EFI_CERT_X509_SHA512", "446dbf63-2502-4cda-bcfa-2465d2b0fe9d", 80),
+        ];
+        let mut skip_blob: Vec<u8> = Vec::new();
+        for (_name, guid, width) in hash_classes.iter() {
+            let mut payload: Vec<u8> = Vec::with_capacity(*width);
+            while payload.len() < *width {
+                let take = std::cmp::min(32, *width - payload.len());
+                payload.extend_from_slice(&leaf_tbs_hash[..take]);
+            }
+            skip_blob.extend_from_slice(&sig_list(spec_guid_bytes(guid), &payload));
+        }
+        match dbx::check_blob(&skip_blob, &boot_now, &chain) {
+            Ok(f)
+                if f.other_type_entries_skipped == hash_classes.len()
+                    && f.x509_entries_walked == 0
+                    && f.x509_sha256_entries_walked == 0 =>
+            {
+                println!(
+                    "-- OK dbx-skip-types: all {} hash-type classes the walk does not enforce \
+                     (SHA-1/224/256/384/512, X.509-SHA384/512) are REPORTED as skipped, \
+                     none enforced and none refused",
+                    hash_classes.len()
+                );
+            }
+            Ok(f) => {
+                println!(
+                    "FAIL: hash-type skip control came back wrong (x509 {}, x509-sha256 {}, skipped {}; expected 0/0/{})",
+                    f.x509_entries_walked,
+                    f.x509_sha256_entries_walked,
+                    f.other_type_entries_skipped,
+                    hash_classes.len()
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                println!(
+                    "FAIL: a hash-type list the walk does not enforce REFUSED ({}); unenforced types must skip by name, and a refusal here means classification drift",
+                    e
+                );
+                std::process::exit(1);
+            }
+        }
         for k in 0..(dargs.len() / 2) {
             let blob_path = &dargs[k * 2];
             let marker = &dargs[k * 2 + 1];
@@ -611,7 +672,7 @@ fn main() {
 
     let _ = u32::from(a.spki.exponent); // exponent pinned by rsa::verify at 65537 in run 1
     println!(
-        "PASS: trust walk proves positive + 6 controls + {} negative-carrier refusals on the real carrier bytes; dbx walk proved with {} refusals + unknown-type skip + future-dated-hash skip; MOK path proved with enrollment/stranger/conflict controls{}",
+        "PASS: trust walk proves positive + 6 controls + {} negative-carrier refusals on the real carrier bytes; dbx walk proved with {} refusals + unknown-type skip + future-dated-hash skip + all 7 unenforced hash-type classes skipped; MOK path proved with enrollment/stranger/conflict controls{}",
         neg_errors,
         dbx_count,
         if mok_args.is_some() { " " } else { " (no --mok section passed)" }

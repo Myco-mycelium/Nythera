@@ -19,9 +19,15 @@
 //! certificates this walk just parsed, see entry_revokes below.
 //!
 //! Hash-typed entries ARE enforced too: EFI_CERT_X509_SHA256_GUID
-//! entries fix the payload at `EFI_TIME RevocationDate` (16 bytes)
-//! plus the SHA-256 of the certificate's To-Be-Signed content (32
-//! bytes, UEFI 2.10 32.4.1's EFI_CERT_X509_SHA256_SIGNATURE shape),
+//! entries fix the payload at the SHA-256 of the certificate's
+//! To-Be-Signed content (32 bytes) FOLLOWED BY the EFI_TIME revocation
+//! date (16 bytes) -- `EFI_CERT_X509_SHA256`'s field order in UEFI
+//! 2.10 32.4.1 and in edk2's MdePkg `Guid/ImageAuthentication.h`
+//! (`EFI_SHA256_HASH ToBeSignedHash; EFI_TIME TimeOfRevocation;`), and
+//! the order edk2's own `IsCertHashFoundInDbx` compares at. An earlier
+//! revision of this walk read the two fields the OTHER way round,
+//! agreeing only with this repo's generator and never with a real
+//! firmware; see the 2026-10-30 correction in IMPLEMENTATION_STATUS.md.
 //! and the walk hashes the To-Be-Signed content of each chain
 //! certificate (the exact bytes trust.rs located when parsing) and
 //! compares: a matching hash revokes the certificate whose
@@ -110,19 +116,24 @@ fn le_u32(b: &[u8]) -> u32 {
 /// UEFI 2.10 32.4.1's EFI_CERT_X509_SHA256_SIGNATURE shape at all
 /// (the caller treats those as structurally broken, see below).
 fn read_revocation(data: &[u8]) -> Option<([u16; 6], [u8; 32])> {
-    if data.len() < 16 + 32 {
+    if data.len() < 32 + 16 {
         return None;
     }
-    let date = [
-        u16::from_le_bytes([data[0], data[1]]),
-        data[2] as u16,
-        data[3] as u16,
-        data[4] as u16,
-        data[5] as u16,
-        data[6] as u16,
-    ];
+    // EFI_CERT_X509_SHA256 = { EFI_SHA256_HASH ToBeSignedHash; EFI_TIME
+    // TimeOfRevocation; } -- the hash comes FIRST (MdePkg
+    // Guid/ImageAuthentication.h, UEFI 2.10 32.4.1, and the order
+    // edk2's IsCertHashFoundInDbx compares at). The hash is an opaque
+    // digest, not a reorderable struct field.
     let mut hash = [0u8; 32];
-    hash.copy_from_slice(&data[16..16 + 32]);
+    hash.copy_from_slice(&data[0..32]);
+    let date = [
+        u16::from_le_bytes([data[32], data[33]]),
+        data[34] as u16,
+        data[35] as u16,
+        data[36] as u16,
+        data[37] as u16,
+        data[38] as u16,
+    ];
     Some((date, hash))
 }
 
@@ -237,9 +248,10 @@ pub fn check_blob(
                 e += sig_size;
             }
         } else if guid == x509_sha256_type {
-            // UEFI 2.10 32.4.1: entries of one owner GUID + one
-            // EFI_CERT_X509_SHA256_SIGNATURE = EFI_TIME (16 bytes) +
-            // 32-byte hash. No header, like the X.509 list.
+            // UEFI 2.10 32.4.1 + edk2's ImageAuthentication.h:
+            // entries of one owner GUID + one EFI_CERT_X509_SHA256 =
+            // 32-byte ToBeSignedHash THEN EFI_TIME (16 bytes). No
+            // header, like the X.509 list.
             if header_size != 0 {
                 return Err(
                     "dbx: an X.509-SHA256 signature list declares a nonzero SignatureHeaderSize (the spec fixes 0)",
@@ -247,7 +259,7 @@ pub fn check_blob(
             }
             if sig_size != 16 + 48 {
                 return Err(
-                    "dbx: an X.509-SHA256 signature list declares a SignatureSize that is not owner GUID + EFI_TIME + 32 bytes",
+                    "dbx: an X.509-SHA256 signature list declares a SignatureSize that is not owner GUID + 32-byte hash + EFI_TIME",
                 );
             }
             let entries_start = pos + 28;
@@ -261,7 +273,7 @@ pub fn check_blob(
             while e < list_end {
                 let (date, hash) =
                     read_revocation(&dbx[e + 16..e + sig_size]).ok_or(
-                        "dbx: an X.509-SHA256 entry's SignatureData is not the EFI_TIME + 32-byte shape",
+                        "dbx: an X.509-SHA256 entry's SignatureData is not the 32-byte hash + EFI_TIME shape",
                     )?;
                 // In force only once the revocation date is at or
                 // before the firmware clock the boot's first gate

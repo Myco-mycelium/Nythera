@@ -862,4 +862,66 @@ jobs:
             ./tools/ci_emit_annotations.sh target/parity-gate.log Paritygate
           fi
           exit $S
+      - name: Rotation ceremony (ADR-0028 issuance + ADR-0029 dbx TBS-hash composition)
+        # The OPS half of the revocation path the .ms gate proves. Runs
+        # LAST because it reads the key material and kernel image the
+        # gates above generate (build.sh -> make_carrier.sh owns the dev
+        # root/leaf; the ceremony never writes into the enrolled chain,
+        # it emits uefi/dist/leaf-rotation/). Its own named checks are
+        # the gate: replacement leaf must verify under the root and sign
+        # the kernel, its TBS hash and serialNumber must DIFFER from the
+        # dead leaf's (or the composed revocation would kill the
+        # replacement -- ADR-0029's scope decision), and the dbx entry
+        # must be accepted by the same store tooling the gates compose
+        # with. virt-fw-vars is the pipx install above (~/.local/bin).
+        run: |
+          mkdir -p target
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          ./tools/rotate_leaf_ceremony.sh > target/rotation-ceremony.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            . /etc/os-release
+            echo "::error::Ceremony env: $PRETTY_NAME / $(openssl version 2>&1 | head -1) / $(command -v virt-fw-vars >/dev/null || echo virt-fw-vars-MISSING)"
+            ./tools/ci_emit_annotations.sh target/rotation-ceremony.log Ceremony
+          fi
+          exit $S
+      - name: Rotation ceremony refusal tests (the ceremony's checks bite)
+        # A check that silently stopped firing looks exactly like a
+        # passing ceremony, so this runs the ceremony's refusal paths:
+        # a positive control passes first, then a missing root pair, a
+        # group-readable root key, and a replacement leaf forced onto the
+        # dead leaf's serialNumber must EACH fail with its own named
+        # message (exit class AND text asserted, so an unrelated crash
+        # cannot satisfy a case). No QEMU; temp dirs only.
+        run: |
+          set +e
+          ./tools/ceremony_refusals_test.sh > target/ceremony-refusals.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/ceremony-refusals.log CeremonyRefusals
+          fi
+          exit $S
+      - name: dbx update package (KEK-signed EFI_VARIABLE_AUTHENTICATION_2 binding)
+        # The UPDATE side ADR-0029 names as "a separate surface": the
+        # package a real revocation ships. Built here (EFI_TIME +
+        # WIN_CERTIFICATE_UEFI_GUID carrying a DER PKCS7 signature over
+        # the new list followed by that same EFI_TIME) and verified with
+        # openssl: signer identity against the KEK certificate, payload
+        # coverage, the signed timestamp, and the list's shape against
+        # edk2's own SignatureSize table. Negatives included, so a
+        # package that verifies over the wrong list, a backdated stamp
+        # or a stranger key fails the build rather than a ceremony.
+        # Firmware ACCEPTANCE at SetVariable time is NOT covered here
+        # (no provisioned PK/KEK store; the gates' stores are composed
+        # by virt-fw-vars, which bypasses the auth path by design).
+        run: |
+          mkdir -p target
+          set +e
+          ./tools/dbx_update_gate.sh > target/dbx-update-gate.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/dbx-update-gate.log DbxUpdate
+          fi
+          exit $S
 
