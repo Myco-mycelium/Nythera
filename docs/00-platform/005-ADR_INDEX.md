@@ -1,13 +1,13 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.29.0
+version: 1.30.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-10-30
+updated: 2026-10-31
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -92,6 +92,7 @@ only.
 | 1.27.0  | 2026-10-29 | Add ADR-0029 (leaf revocation by dbx TBS hash — the enforcement semantics the `.ms` gate's firmware-served revocation leg now pins) — **Accepted** by implementation record, the ADR-0026/2028 precedent |
 | 1.28.0  | 2026-10-30 | ADR-0029 v1.2.0: Implementation Note — the compromise procedure has tooling (`tools/rotate_leaf_ceremony.sh`: replacement leaf issuance + the dead leaf's dbx TBS-hash entry, scope/serial/chain/carrier/store checks, both a CI step and covered by a refusal-path test); the `.ms` gate carries TWO firmware-served revocation legs (hash-typed and whole-certificate, one per dbx parser branch) plus a stub-side shape probe, each ASSERTING the refusing party and the served bytes; and the entry's payload FIELD ORDER is corrected — `EFI_CERT_X509_SHA256` is digest-then-EFI_TIME (UEFI 2.10 32.4.1, edk2 `ImageAuthentication.h`), while this repo's generator and parser had them swapped and agreed only with each other, which is why no real firmware matched; fixed in `patch_carrier_negatives.py` + `dbx.rs` and re-proven on real firmware, where BOTH dbx forms are now refused by the firmware itself (superseding the earlier "whole-cert only" reading, which was the field-order defect) |
 | 1.29.0  | 2026-10-31 | Add ADR-0030 (reject extra dbx hash types in the enforced revocation surface) — **Rejected**: the seven other UEFI 2.10 32.4.1 entry classes stay REPORTED facts, now pinned by the `dbx-skip-types` fixture control, and widening the surface requires a superseding ADR |
+| 1.30.0  | 2026-10-31 | ADR-0029 v1.3.0: Implementation Note — the UPDATE side's ACCEPTANCE half is measured on real firmware (a KeK-signed package written through SetVariable, stored, and read back; its non-KeK twin refused), and closing it exposed two defects in this repo's own builder: the signed content is `VariableName‖VendorGuid‖Attributes‖EFI_TIME‖Data` (not `Data‖EFI_TIME`), and the descriptor carries a BARE PKCS#7 `SignedData` (not `openssl`'s `ContentInfo` wrapper). Both were self-consistent with the host gate and refused by edk2; the gate now pins the layout byte-wise from spec strings and cross-checks it against `sbvarsign` |
 
 ---
 **End of Document**

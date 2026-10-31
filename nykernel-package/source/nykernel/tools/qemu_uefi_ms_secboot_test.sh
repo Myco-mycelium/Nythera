@@ -63,6 +63,19 @@
 #   not just the host harness and the stub's embedded negatives, and
 #   both legs assert the same two facts (served shape, refusing party).
 #
+# The POSITIVE boot also covers ADR-0029's UPDATE side, which the host
+# gate (tools/dbx_update_gate.sh) cannot reach: that store carries a
+# 1-byte trigger in the stub's own vendor namespace, and the stub then
+# writes its embedded KeK-signed EFI_VARIABLE_AUTHENTICATION_2 package
+# to dbx through SetVariable -- so the FIRMWARE verifies the bare
+# PKCS#7 SignedData over (VariableName, VendorGuid, Attributes, EFI_TIME,
+# payload) and stores it. Asserted: the non-KeK-signed twin is REFUSED
+# by the firmware first (its stamp cannot explain the refusal), the
+# KeK-signed package is ACCEPTED, the read-back carries the exact entry
+# it signed, and the trigger is consumed so a re-boot does not replay a
+# now-stale timestamp. No other store carries the trigger, so the
+# revocation/probe stores' composed dbx entries are never replaced.
+#
 # This is what CI should run to prove the ms OVMF path, the same way
 # qemu_uefi_boot_test.sh proves the default OVMF path.
 
@@ -148,7 +161,21 @@ cp "$VARS_TMPL" "$STORE"
     --add-db "$ISD" "$LEAF_CERT" \
     --add-mok "$SHIM" "$LEAF_CERT" \
     --sb > /dev/null
-echo "==> enrolled enforcing store: PK/KEK anchored on the carrier root, root+leaf in db, SecureBootEnable ON, leaf in MokList"
+# The authenticated-update trigger (ADR-0029's UPDATE side): a
+# variable in the stub's OWN vendor namespace (efi.rs
+# VARCHK_VENDOR_GUID), 1 byte 0x01, present ONLY in this store. With it
+# the stub performs the KeK-signed dbx write and consumes it; every
+# other store in this gate carries no trigger, so its own composed dbx
+# entry (revocation legs, probe) is never replaced. Composed through
+# virt-fw-vars' --set-json (name, GUID, attributes NV|BS|RT, hex data).
+cat > uefi/dist/dbx-update-trigger.json <<'JSON'
+{"variables": [{"name": "NyrqisDbxUpdate",
+                "guid": "6e1d14a1-2b4f-4b8a-9cd1-374ad1940f2b",
+                "attr": 7,
+                "data": "01"}]}
+JSON
+"$VIRT" --inplace "$STORE" --set-json uefi/dist/dbx-update-trigger.json > /dev/null
+echo "==> enrolled enforcing store: PK/KEK anchored on the carrier root, root+leaf in db, SecureBootEnable ON, leaf in MokList, dbx-update trigger present"
 echo "==> composed store shape (what the firmware will actually read):" && \
     "$VIRT" -i "$STORE" -p 2>/dev/null | grep -E "PK |KEK |db |MokList|SecureBoot" || true
 
@@ -248,6 +275,11 @@ if [[ "$POS_STATUS" -eq 33 ]]; then
        && grep -aq "carrier verify OK" target/qemu-uefi-ms-secboot-positive.log \
        && grep -aq "MokList: walked" target/qemu-uefi-ms-secboot-positive.log \
        && grep -aq "ALSO covers the just-verified chain" target/qemu-uefi-ms-secboot-positive.log \
+       && grep -aq "trigger present -- this store asks for the authenticated write" target/qemu-uefi-ms-secboot-positive.log \
+       && grep -aq "non-KeK-signed package REFUSED by the firmware" target/qemu-uefi-ms-secboot-positive.log \
+       && grep -aq "dbx-update: SetVariable(dbx) ACCEPTED" target/qemu-uefi-ms-secboot-positive.log \
+       && grep -aq "dbx-update: read-back VERIFIED" target/qemu-uefi-ms-secboot-positive.log \
+       && grep -aq "trigger consumed (deleted)" target/qemu-uefi-ms-secboot-positive.log \
        && grep -aq "boot phase = 7 (Ready)" target/qemu-uefi-ms-secboot-positive.log; then
         POS_OK=1
     else
@@ -553,7 +585,7 @@ fi
 set -e
 
 if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 && "$REV_OK" -eq 1 && "$REVC_OK" -eq 1 ]]; then
-    echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses both the unsigned one and the one-byte-tampered signed one, refuses the leaf-signed stub once its signer's To-Be-Signed hash is revoked BY HASH in dbx AND once its certificate is revoked in the whole-certificate dbx form, and the kernel reached Ready"
+    echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses both the unsigned one and the one-byte-tampered signed one, refuses the leaf-signed stub once its signer's To-Be-Signed hash is revoked BY HASH in dbx AND once its certificate is revoked in the whole-certificate dbx form, ACCEPTS a KeK-signed EFI_VARIABLE_AUTHENTICATION_2 dbx update at SetVariable time (read back byte-for-byte) while refusing its non-KeK-signed twin, and the kernel reached Ready"
     # The clause after the refusing party must match THAT path: only the
     # stub path reads the served bytes, so on the firmware path the claim
     # is the composed shape + the firmware's refusal, never "served".

@@ -15,9 +15,15 @@
 #
 #   - it BUILDS a real package: the new EFI_SIGNATURE_LIST, the 16-byte
 #     EFI_TIME stamp, and a WIN_CERTIFICATE_UEFI_GUID (dwLength =
-#     8 + 16 + PKCS7 length, revision 0x0200, type 0x0EF1,
-#     EFI_CERT_TYPE_PKCS7_GUID) whose CertData is a genuine DER PKCS7
-#     signature over the new list followed by that same EFI_TIME;
+#     8 + 16 + SignedData length, revision 0x0200, type 0x0EF1,
+#     EFI_CERT_TYPE_PKCS7_GUID) whose CertData is a BARE DER PKCS#7
+#     SignedData over the serialization edk2 actually signs (UEFI 2.10
+#     8.2.2): VariableName || VendorGuid || Attributes || EFI_TIME ||
+#     the new list. Both of those were wrong in this gate's first
+#     version (payload || stamp, ContentInfo-wrapped) and this gate
+#     verified itself green over bytes no firmware could accept --
+#     see tools/make_dbx_update_package.sh, which now owns the shape and
+#     records the two failures.
 #   - it VERIFIES the binding with openssl: the right KEK, the right
 #     list bytes, the right timestamp;
 #   - it proves the binding is LOAD-BEARING, not decorative: an altered
@@ -61,98 +67,18 @@ done
 TS_YEAR=2026
 STAMP="$TS_YEAR-01-01 00:00:00"
 
-echo "==> composing the signed content (new dbx list || auth-header EFI_TIME, stamp $STAMP)"
-python3 - "$PAYLOAD" "$TS_YEAR" "$OUT/content.bin" "$OUT/time.bin" "$OUT/list-size" <<'PY'
-import sys
-
-payload_path, year, content_path, time_path, size_path = sys.argv[1:6]
-payload = open(payload_path, "rb").read()
-if not payload:
-    raise SystemExit("FAIL: empty dbx payload")
-# EFI_TIME, UEFI 2.10 3.2.5: u16 year, u8 month/day/hour/minute/second,
-# u8 pad1, u32 nanosecond, i16 timezone (0 = UTC), u8 daylight, u8 pad2.
-time_bytes = (
-    int(year).to_bytes(2, "little")
-    + bytes([1, 1, 0, 0, 0, 0])
-    + bytes(4)
-    + bytes(2)
-    + bytes([0, 0])
-)
-if len(time_bytes) != 16:
-    raise SystemExit("FAIL: EFI_TIME is not 16 bytes")
-open(time_path, "wb").write(time_bytes)
-open(content_path, "wb").write(payload + time_bytes)
-open(size_path, "w").write(str(len(payload)))
-print(
-    f"patch: signed content = {len(payload)}-byte list || 16-byte EFI_TIME "
-    f"= {len(payload) + 16} bytes"
-)
-PY
-
-echo "==> signing with the KEK key (openssl cms, DER, detached)"
-openssl cms -sign -binary -noattr -in "$OUT/content.bin" \
-    -signer "$KEK_CERT" -inkey "$KEK_KEY" \
-    -outform DER -out "$OUT/update.p7.der" 2>"$OUT/sign.log" \
-    || { cat "$OUT/sign.log"; echo "FAIL: openssl cms could not sign the update content"; exit 1; }
-
-echo "==> assembling EFI_VARIABLE_AUTHENTICATION_2 (EFI_TIME + WIN_CERTIFICATE_UEFI_GUID + list)"
-python3 - "$OUT/time.bin" "$OUT/update.p7.der" "$PAYLOAD" "$OUT/auth2.bin" <<'PY'
-import sys
-import uuid
-
-time_path, sig_path, payload_path, out_path = sys.argv[1:5]
-stamp = open(time_path, "rb").read()
-sig = open(sig_path, "rb").read()
-payload = open(payload_path, "rb").read()
-if len(stamp) != 16:
-    raise SystemExit("FAIL: auth header EFI_TIME is not 16 bytes")
-if not sig:
-    raise SystemExit("FAIL: empty PKCS7 signature")
-# EFI_CERT_TYPE_PKCS7_GUID, canonical 4aafd29d-68df-49ee-8aa9-347d375665a7.
-# uuid.bytes_le is exactly the EFI_GUID wire layout (Data1-3 little-endian,
-# Data4 verbatim), so the bytes come from the spec string, not a table.
-pkcs7_type = uuid.UUID("4aafd29d-68df-49ee-8aa9-347d375665a7").bytes_le
-hdr_len = 8 + 16 + len(sig)
-blob = bytearray()
-blob += stamp
-blob += hdr_len.to_bytes(4, "little")        # dwLength
-blob += (0x0200).to_bytes(2, "little")       # wRevision
-blob += (0x0EF1).to_bytes(2, "little")       # wCertificateType
-blob += pkcs7_type
-blob += sig
-blob += payload
-open(out_path, "wb").write(bytes(blob))
-
-# The list must satisfy edk2 CheckSignatureListFormat's own table: one
-# EFI_CERT_X509_SHA256 list, SignatureHeaderSize 0, SignatureData 48
-# bytes (32-byte To-Be-Signed hash + EFI_TIME), entries tiling exactly.
-if payload[:16] != uuid.UUID("3bd2a492-96c0-4079-b420-fcf98ef103ed").bytes_le:
-    raise SystemExit("FAIL: the payload's list is not EFI_CERT_X509_SHA256")
-size = int.from_bytes(payload[16:20], "little")
-hdr = int.from_bytes(payload[20:24], "little")
-sig_size = int.from_bytes(payload[24:28], "little")
-if size != len(payload):
-    raise SystemExit(f"FAIL: list size {size} != payload {len(payload)}")
-# edk2's CheckSignatureListFormat compares SignatureSize - sizeof(EFI_GUID)
-# against mSupportSigItem's SigDataSize: 48 for EFI_CERT_X509_SHA256, so the
-# whole entry (16-byte owner GUID + 32-byte hash + EFI_TIME) is 64 bytes.
-if hdr != 0 or sig_size - 16 != 48:
-    raise SystemExit(
-        f"FAIL: list SignatureHeaderSize/SignatureSize {hdr}/{sig_size} are not "
-        f"the spec's 0/{16 + 48} (edk2 mSupportSigItem EFI_CERT_X509_SHA256 = 48)"
-    )
-print(
-    f"patch: package = 16-byte stamp + 8+16+{len(sig)}-byte win-certificate "
-    f"+ {len(payload)}-byte list = {len(blob)} bytes; "
-    f"list is one EFI_CERT_X509_SHA256 entry of {sig_size} bytes (hash+EFI_TIME)"
-)
-PY
+# ONE package builder for the whole repo: this gate and build.sh (which
+# embeds the packages the stub writes at boot) call the same tool, so a
+# package shape can never drift into two self-consistent variants. The
+# work dir keeps the intermediates the negatives below replay against.
+echo "==> composing the KeK-signed package (stamp $STAMP)"
+./tools/make_dbx_update_package.sh "$PAYLOAD" "$KEK_CERT" "$KEK_KEY" "$TS_YEAR" "$OUT/auth2.bin" "$OUT"
 
 echo "==> verifying the binding (KEK, list bytes, timestamp)"
 if openssl cms -verify -binary -inform DER -in "$OUT/update.p7.der" \
         -content "$OUT/content.bin" -certfile "$KEK_CERT" -noverify \
         -out /dev/null 2>"$OUT/verify.log"; then
-    echo "-- OK positive: the PKCS7 verifies against the KEK certificate over (list || EFI_TIME)"
+    echo "-- OK positive: the PKCS7 verifies against the KEK certificate over (VarName || VendorGuid || Attrs || EFI_TIME || list)"
 else
     cat "$OUT/verify.log"
     echo "FAIL: the update package's signature did not verify against the KEK certificate"
@@ -182,29 +108,118 @@ if openssl cms -verify -binary -inform DER -in "$OUT/update.p7.der" \
 fi
 echo "-- OK negative 1: a one-byte-altered dbx list fails verification"
 
-python3 - "$OUT/time.bin" "$OUT/time-rollback.bin" <<'PY'
-import sys
-stamp = bytearray(open(sys.argv[1], "rb").read())
-# Move the header stamp back a year: the classic rollback/replay attempt,
-# which only the timestamp's presence INSIDE the signed content stops.
-year = int.from_bytes(stamp[:2], "little") - 1
-stamp[:2] = year.to_bytes(2, "little")
-open(sys.argv[2], "wb").write(bytes(stamp))
-print(f"patch: header stamp moved back to {year}-01-01")
-PY
-python3 - "$PAYLOAD" "$OUT/time-rollback.bin" "$OUT/content-rollback.bin" <<'PY'
-import sys
-payload = open(sys.argv[1], "rb").read()
-stamp = open(sys.argv[2], "rb").read()
-open(sys.argv[3], "wb").write(payload + stamp)
-PY
+# The rollback attempt, built through the SAME builder so the only
+# difference from the real package is the stamp: content.bin is
+# byte-identical except inside the EFI_TIME field, so verifying the REAL
+# signature over it isolates exactly the timestamp.
+echo "==> negative 2: a backdated header EFI_TIME (the replay attempt)"
+./tools/make_dbx_update_package.sh "$PAYLOAD" "$KEK_CERT" "$KEK_KEY" \
+    "$((TS_YEAR - 1))" "$OUT/rollback/auth2.bin" "$OUT/rollback" > /dev/null
+if cmp -s "$OUT/content.bin" "$OUT/rollback/content.bin"; then
+    echo "FAIL: the backdated package's signed content is IDENTICAL to the real one -- the stamp is not in the signature"
+    exit 1
+fi
 if openssl cms -verify -binary -inform DER -in "$OUT/update.p7.der" \
-        -content "$OUT/content-rollback.bin" -certfile "$KEK_CERT" -noverify \
+        -content "$OUT/rollback/content.bin" -certfile "$KEK_CERT" -noverify \
         -out /dev/null 2>/dev/null; then
     echo "FAIL: an EARLIER header timestamp still verified -- the stamp is not bound into the signature"
     exit 1
 fi
-echo "-- OK negative 2: a backdated header EFI_TIME fails verification (the stamp is signed)"
+echo "-- OK negative 2: a backdated header EFI_TIME fails verification (the stamp is signed inside the content)"
+
+# The serialization itself is a pinned fact, not an implementation detail:
+# this asserts the bytes edk2's VerifyTimeBasedPayload builds, from the
+# SPEC's strings (the UTF-16LE name, the vendor GUID in wire order, the
+# u32 attribute word, the header stamp), not from the builder's code.
+echo "==> the signed content's layout: VarName || VendorGuid || Attrs || EFI_TIME || payload"
+python3 - "$OUT/content.bin" "$PAYLOAD" "$OUT/time.bin" <<'PY'
+import sys
+
+content = open(sys.argv[1], "rb").read()
+payload = open(sys.argv[2], "rb").read()
+stamp = open(sys.argv[3], "rb").read()
+name = "dbx".encode("utf-16-le")            # 64 00 62 00 78 00, no terminator
+guid = bytes.fromhex("cbb219d73a3d9645a3bcdad00e67656f")  # d719b2cb-... wire order
+attrs = (0x27).to_bytes(4, "little")       # NV|BS|RT|TIME_BASED_AUTHENTICATED
+expected = name + guid + attrs + stamp + payload
+errors = []
+if content != expected:
+    errors.append(f"content is {len(content)} bytes and does not equal name+GUID+attrs+stamp+payload ({len(expected)})")
+    for label, off, want in (
+        ("VariableName UTF-16LE", 0, name),
+        ("VendorGuid wire bytes", len(name), guid),
+        ("Attributes u32", len(name) + len(guid), attrs),
+        ("EFI_TIME", len(name) + len(guid) + 4, stamp),
+    ):
+        got = content[off:off + len(want)]
+        if got != want:
+            errors.append(f"{label} at {off}: {got.hex()} != {want.hex()}")
+    if content[len(name) + len(guid) + 4 + len(stamp):] != payload:
+        errors.append("the payload does not sit after the EFI_TIME")
+if errors:
+    raise SystemExit("FAIL: signed-content layout: " + "; ".join(errors))
+print(
+    f"patch: layout OK -- 'dbx'({len(name)}) || ISD GUID({len(guid)}) || attrs "
+    f"0x27(4) || EFI_TIME({len(stamp)}) || payload({len(payload)}) = {len(content)} bytes"
+)
+PY
+
+# INDEPENDENT ORACLE: sbsigntools' sbvarsign signs this same descriptor
+# shape, so its signature must verify over the content built from ITS
+# OWN stamp by the layout asserted above. A serialization this repo
+# invented would fail here even if the builder and the gate agreed on it
+# -- the ADR-0028/0029 self-consistency lesson, applied.
+if command -v sbvarsign >/dev/null 2>&1; then
+    echo "==> cross-checking the serialization against sbvarsign (sbsigntools)"
+    sbvarsign --key "$KEK_KEY" --cert "$KEK_CERT" \
+        --guid d719b2cb-3d3a-4596-a3bc-dad00e67656f \
+        --attr NON_VOLATILE,BOOTSERVICE_ACCESS,RUNTIME_ACCESS \
+        --output "$OUT/sbvarsign.auth2" dbx "$PAYLOAD" > /dev/null
+    python3 - "$OUT/sbvarsign.auth2" "$PAYLOAD" "$OUT" <<'PY'
+import sys
+import uuid
+
+blob = open(sys.argv[1], "rb").read()
+payload = open(sys.argv[2], "rb").read()
+out = sys.argv[3]
+stamp = blob[:16]
+dw = int.from_bytes(blob[16:20], "little")
+if blob[24:40] != uuid.UUID("4aafd29d-68df-49ee-8aa9-347d375665a7").bytes_le:
+    raise SystemExit("FAIL: sbvarsign's CertType is not EFI_CERT_TYPE_PKCS7_GUID")
+signed_data = blob[40:16 + dw]
+if blob[16 + dw:] != payload:
+    raise SystemExit("FAIL: sbvarsign's package does not carry the payload this gate passed")
+content = ("dbx".encode("utf-16-le")
+           + uuid.UUID("d719b2cb-3d3a-4596-a3bc-dad00e67656f").bytes_le
+           + (0x27).to_bytes(4, "little") + stamp + payload)
+# Re-wrap the bare SignedData in ContentInfo so `openssl cms` can verify
+# it (the descriptor itself carries no wrapper -- that is the point).
+oid = bytes.fromhex("06092a864886f70d010702")
+def der_len(n):
+    if n < 0x80:
+        return bytes([n])
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(raw)]) + raw
+inner = oid + b"\xA0" + der_len(len(signed_data)) + signed_data
+content_info = b"\x30" + der_len(len(inner)) + inner
+open(out + "/sbvarsign-content.bin", "wb").write(content)
+open(out + "/sbvarsign-contentinfo.der", "wb").write(content_info)
+print(f"patch: sbvarsign reference rebuilt -- stamp {int.from_bytes(stamp[:2], 'little')}-{stamp[2]:02d}-{stamp[3]:02d}, SignedData {len(signed_data)} bytes, payload {len(payload)} bytes")
+PY
+    if openssl cms -verify -binary -inform DER -in "$OUT/sbvarsign-contentinfo.der" \
+            -content "$OUT/sbvarsign-content.bin" -noverify \
+            -out /dev/null 2>/tmp/sbvarsign-verify.log; then
+        echo "-- OK oracle: sbvarsign's own signature verifies over the content rebuilt from the pinned layout"
+    else
+        cat /tmp/sbvarsign-verify.log
+        echo "FAIL: sbvarsign's signature does NOT verify over the layout this gate asserts -- the serialization is wrong, not sbvarsign's"
+        exit 1
+    fi
+    ORACLE_CLAIM="which is the serialization edk2 signs and sbvarsign independently reproduces"
+else
+    echo "note: sbvarsign absent -- the independent serialization cross-check was skipped (named fact)"
+    ORACLE_CLAIM="checked against the pinned spec layout only -- sbvarsign was absent, so nothing independent reproduced it here"
+fi
 
 openssl cms -sign -binary -noattr -in "$OUT/content.bin" \
     -signer "$STRANGER_CERT" -inkey "$STRANGER_KEY" \
@@ -234,4 +249,4 @@ if [[ -z "$STRANGER_SIGNER_SHA" || "$STRANGER_SIGNER_SHA" == "$KEK_DER_SHA" ]]; 
 fi
 echo "-- OK negative 3: a package signed by a non-KEK key carries a DIFFERENT signer certificate (${STRANGER_SIGNER_SHA:0:16}.. vs the KEK's ${KEK_DER_SHA:0:16}..), so it is not a KEK-authorised update"
 
-echo "PASS: the KEK-signed authenticated dbx-update package is well formed and its signature binds the list, the header EFI_TIME and the KEK key -- an altered list, a backdated stamp or a non-KEK signer each fail; firmware ACCEPTANCE at SetVariable time is not covered here (named in ADR-0029 as the platform's authenticated-update surface)"
+echo "PASS: the KEK-signed authenticated dbx-update package is well formed -- its bare PKCS#7 SignedData binds (VariableName, VendorGuid, Attributes, EFI_TIME, list), $ORACLE_CLAIM; an altered list, a backdated stamp or a non-KEK signer each fail. Firmware ACCEPTANCE at SetVariable time is proven by the .ms boot gate's dbx-update leg (a real firmware storing this package and reading it back), not by this host gate."

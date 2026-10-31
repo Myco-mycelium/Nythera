@@ -2196,6 +2196,29 @@ Process and tooling:
     nykernel/IMPLEMENTATION_STATUS.md` and ADR-0029's Implementation
     Note, which carry the probe transcripts and the correction.
 
+    **The UPDATE side's acceptance half is now measured too
+    (2026-10-31), and closing it corrected this repository's own
+    package builder.** A real firmware now verifies a KeK-signed
+    `EFI_VARIABLE_AUTHENTICATION_2` package at SetVariable time, stores
+    its `EFI_CERT_X509_SHA256` list and serves it back, while the same
+    list signed by a non-KeK key is refused -- both facts asserted in
+    the `.ms` positive boot, which carries a one-byte trigger variable
+    in the stub's vendor namespace so only that store performs the
+    write. Getting there found two defects that every host check had
+    passed: the signed content is
+    `VariableName‖VendorGuid‖Attributes‖EFI_TIME‖Data` (this repo
+    signed `Data‖EFI_TIME`), and the descriptor carries a BARE PKCS#7
+    `SignedData` (this repo embedded `openssl`'s `ContentInfo`
+    wrapper). Both are corrected in the one builder now shared by
+    `dbx_update_gate.sh` and `build.sh`, the gate pins the layout
+    byte-for-byte from the spec's strings, and it cross-checks the
+    serialization against `sbsigntools`' `sbvarsign` so builder and
+    gate can no longer agree with each other and nobody else. Still
+    uncovered and named as such: the signing/distribution ceremony and
+    firmware builds beyond the two in this tree. Evidence: the
+    2026-10-31 increment in `IMPLEMENTATION_STATUS.md` and ADR-0029
+    v1.3.0's Implementation Note.
+
 Resolved earlier this session, kept here for a complete record:
 - ~~Resolve shared ARM instruction-translation approach~~ — ADR-0015 (shared dynamic binary translation, JIT + hot-path cache).
 - ~~Scope VR integration~~ — explicitly deferred to a future milestone (NPS-012 §5.1).

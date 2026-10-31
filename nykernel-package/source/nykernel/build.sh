@@ -274,6 +274,29 @@ echo "==> recorded uefi/src/kernel.sha256 (the stub's Stage-2 expected digest)"
 # returning -- a broken signing chain fails the BUILD, never the boot.
 ./tools/make_carrier.sh target/kernel.elf uefi/src/carrier.der uefi/src/trusted-root.der
 echo "==> signed uefi/src/carrier.der + wrote uefi/src/trusted-root.der + the seven negative carriers + the three dbx negative blobs (the stub's ADR-0014 chain: one-hop root->leaf carrier)"
+# ADR-0029's UPDATE side, delivered where a real firmware verifies it: a
+# KeK-signed EFI_VARIABLE_AUTHENTICATION_2 package the stub writes to dbx
+# at boot, so firmware ACCEPTANCE at SetVariable time is covered and not
+# only the host-side binding (tools/dbx_update_gate.sh). Its twin is
+# signed by a NON-KeK key over the same list, so a difference in their
+# verdicts is attributable to the signer alone. The payload revokes the
+# negative-only stray certificate's To-Be-Signed hash -- an entry that
+# covers nothing this chain trusts, so the write is safe on a live boot.
+python3 tools/patch_carrier_negatives.py make-dbx-hashlist \
+    uefi/tools/trust/carrier-neg-stray-cert.der 2020 uefi/src/dbx-update-payload.der
+# Stamped 2027-01-01: edk2 accepts a time-based write only when its
+# stamp is not older than the stored variable's, and the enforcing
+# stores carry a dummy dbx entry (virt-fw-vars) whose own stamp the
+# firmware compares against. Deterministic, and newer than any dev
+# store's, so the verdict never depends on the build clock.
+./tools/make_dbx_update_package.sh uefi/src/dbx-update-payload.der \
+    uefi/tools/trust/carrier-dev-cert.pem uefi/tools/trust/carrier-dev-key.pem \
+    2027 uefi/src/dbx-update-kek.der
+echo "==> embedded a KeK-signed dbx update package (uefi/src/dbx-update-kek.der)"
+./tools/make_dbx_update_package.sh uefi/src/dbx-update-payload.der \
+    uefi/tools/trust/carrier-neg-stray-cert.pem uefi/tools/trust/carrier-neg-stray-key.pem \
+    2027 uefi/src/dbx-update-stranger.der
+echo "==> embedded the NON-KeK-signed twin (uefi/src/dbx-update-stranger.der) -- the refusal control"
 # The carrier set's gate, host-side: the stub's OWN walk code proves
 # the good carrier verifying over the real kernel image AND all seven
 # negatives refusing for their named reasons, then the dbx revocation

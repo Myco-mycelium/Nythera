@@ -905,16 +905,19 @@ jobs:
       - name: dbx update package (KEK-signed EFI_VARIABLE_AUTHENTICATION_2 binding)
         # The UPDATE side ADR-0029 names as "a separate surface": the
         # package a real revocation ships. Built here (EFI_TIME +
-        # WIN_CERTIFICATE_UEFI_GUID carrying a DER PKCS7 signature over
-        # the new list followed by that same EFI_TIME) and verified with
-        # openssl: signer identity against the KEK certificate, payload
-        # coverage, the signed timestamp, and the list's shape against
-        # edk2's own SignatureSize table. Negatives included, so a
-        # package that verifies over the wrong list, a backdated stamp
-        # or a stranger key fails the build rather than a ceremony.
-        # Firmware ACCEPTANCE at SetVariable time is NOT covered here
-        # (no provisioned PK/KEK store; the gates' stores are composed
-        # by virt-fw-vars, which bypasses the auth path by design).
+        # WIN_CERTIFICATE_UEFI_GUID carrying a BARE DER PKCS7 SignedData
+        # over VariableName || VendorGuid || Attributes || EFI_TIME ||
+        # list -- the serialization edk2 actually signs) and verified
+        # with openssl plus an independent sbvarsign cross-check: signer
+        # identity against the KEK certificate, payload coverage, the
+        # signed timestamp, and the list's shape against edk2's own
+        # SignatureSize table. Negatives included, so a package that
+        # verifies over the wrong list, a backdated stamp or a stranger
+        # key fails the build rather than a ceremony. Firmware
+        # ACCEPTANCE at SetVariable time is covered by the
+        # kernel-boot job's .ms gate instead: its positive store carries
+        # the trigger and the stub writes this package through real
+        # firmware, which stores it and the stub reads it back.
         run: |
           mkdir -p target
           set +e

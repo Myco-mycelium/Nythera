@@ -1,11 +1,11 @@
 ---
 title: Leaf Revocation by dbx TBS Hash — the Enforcement Semantics the Gates Enforce
 document_id: ADR-0029
-version: 1.2.0
+version: 1.3.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-10-29
-updated: 2026-10-30
+updated: 2026-10-31
 ai_assisted: true
 depends_on: [ADR-0014, ADR-0028]
 ---
@@ -116,8 +116,10 @@ the walk acting on them — not the UPDATE side. Production revocation is
 performed through the platform's authenticated dbx-update path (a
 KEK-signed EFI_VARIABLE_AUTHENTICATION_2 package at real SetVariable
 time, or the vendor's signed dbx distribution); that machinery is a
-separate surface, not weakened or faked by anything here, and no gate
-in this repo pretends to test it.
+separate surface, and nothing here weakens or fakes it. As of
+2026-10-31 its ACCEPTANCE half is no longer untested -- see "The UPDATE
+side reaches firmware ACCEPTANCE" below, which also records that
+closing it exposed two defects in this repository's own package builder.
 
 ## Implementation Note (2026-10-30)
 
@@ -232,6 +234,92 @@ failure class again, in the one place where two implementations of ours
 could agree with nobody else — and it is why the gates now compare
 against SPEC bytes (the type GUIDs, the served SigDB sizes) rather than
 against each other's constants.
+
+## Implementation Note (2026-10-31): the UPDATE side reaches firmware ACCEPTANCE
+
+The section above said the platform's authenticated-update machinery is
+"a separate surface, not weakened or faked by anything here, and no gate
+in this repo pretends to test it". The ACCEPTANCE half of that surface is
+now tested on real firmware, and getting there found two defects in this
+repository's own package builder -- each invisible to every host check
+because the builder and the gate agreed with each other, the ADR-0028
+failure class a third time.
+
+### What runs now
+
+`tools/make_dbx_update_package.sh` is the ONE builder: `build.sh` embeds
+a KeK-signed package and a non-KeK-signed twin over the same list (a
+hash-typed entry revoking the negative-only stray certificate, which
+covers nothing this chain trusts), and the `.ms` gate's positive store
+carries a one-byte trigger in the stub's own vendor namespace
+(`NyrqisDbxUpdate`). When the trigger is present the stub writes the KeK
+package to `dbx` with `EFI_VARIABLE_AUTHENTICATION_2`'s attributes, so
+the FIRMWARE verifies the signature and decides; it then reads the
+variable back and consumes the trigger. No other store carries the
+trigger, so the revocation and probe stores' composed dbx entries are
+never replaced.
+
+Asserted in the positive boot: the non-KeK-signed package is REFUSED by
+the firmware (first, so its stamp cannot explain the refusal), the
+KeK-signed package is ACCEPTED, the read-back carries the exact
+`EFI_CERT_X509_SHA256` entry the package signed, and the trigger is
+deleted so a re-boot does not replay a now-stale stamp.
+
+### Defect 1: the signed content is not (list || EFI_TIME)
+
+UEFI 2.10 8.2.2 (and edk2's `VerifyTimeBasedPayload`) serializes the
+signed bytes as
+
+    VariableName (CHAR16, NO terminator)
+    VendorGuid   (EFI wire order)
+    Attributes   (UINT32, the SetVariable call's word)
+    EFI_TIME     (the descriptor's stamp)
+    Data         (the new value)
+
+This ADR's earlier note, `dbx_update_gate.sh` and the first version of
+the builder all signed `Data || EFI_TIME`. `openssl cms -verify` agreed,
+because it was handed the same wrong content; `edk2` refused every
+package with `EFI_SECURITY_VIOLATION`, which is how the defect surfaced.
+The builder now signs the five-field serialization for `dbx` under
+`EFI_IMAGE_SECURITY_DATABASE_GUID` with attributes `0x27`
+(NV|BS|RT|TIME_BASED_AUTHENTICATED), and the gate asserts that layout
+byte-for-byte from the spec's strings rather than from the builder.
+
+### Defect 2: the descriptor carries a BARE PKCS#7 SignedData
+
+edk2 reads `WIN_CERTIFICATE_UEFI_GUID.CertData` as a PKCS#7
+**SignedData** SEQUENCE and checks the SHA-256 OID at a fixed `+13` into
+it. `openssl cms -sign` emits a `ContentInfo` wrapper, which shifts every
+offset by eight bytes (and the OID check fails). The builder now strips
+the `[0]` element's content and embeds the bare SignedData, keeping the
+wrapper only for its own `openssl` self-verification.
+
+### The independent oracle, and what the gate now pins
+
+Both defects survived because one implementation checked itself. The
+gate now (a) rebuilds the signed content from the spec strings and
+asserts every field's offset, and (b) cross-checks against
+`sbsigntools`' `sbvarsign`: that tool's own signature must verify over
+the content rebuilt from the pinned layout using ITS stamp. If this
+repository's serialization were an invention, the oracle would disagree.
+
+Measured verdict (the `.ms` gate's positive boot, real
+`OVMF_CODE_4M.ms.fd`):
+
+    dbx-update: trigger present -- this store asks for the authenticated write
+    dbx-update: non-KeK-signed package REFUSED by the firmware = 0x800000000000001a
+    dbx-update: SetVariable(dbx) ACCEPTED 0x5c6 bytes (KeK-signed auth2) -- EFI_SUCCESS
+    dbx-update: read-back VERIFIED -- the firmware's dbx now carries the 0x5c-byte entry the package signed
+    dbx-update: trigger consumed (deleted)
+
+### What this still does not claim
+
+The package is stamped deterministically (2027-01-01) rather than at
+build time, and the distribution path (who signs, how the packages reach
+an operator, how revocation is scheduled) is still the platform's
+business, as are real firmware builds beyond the two in this tree. What
+changed is that a firmware now verifies one of these packages and stores
+it: the acceptance half of the surface is measured, not asserted.
 
 ## Consequences
 

@@ -1000,7 +1000,7 @@ pub fn enroll_trusted_root_in_db(anchor_cert_der: &[u8]) {
         )
     };
     if pk_status != EFI_NOT_FOUND {
-        conout("  db-enroll: PK variable PRESENT (not SetupMode) -- db updates would need a KeK-signed AUTH package the stub does not fabricate; skipping (named fact)\r\n");
+        conout("  db-enroll: PK variable PRESENT (not SetupMode) -- an unauthenticated db write is not legal here; the KeK-signed authenticated path is exercised separately in dbx-update (named fact)\r\n");
         return;
     }
     conout("  db-enroll: PK absent -- SetupMode per UEFI 2.10 section 32.4.1 applies: the auth2-headed db write is legal, the PKCS7 signature content is simply not verified (the write itself may still be refused when this firmware image hosts no authenticated-variable service at all; that refusal is named below and is a capability fact, not a packet error)\r\n");
@@ -1128,5 +1128,191 @@ pub fn enroll_trusted_root_in_db(anchor_cert_der: &[u8]) {
         conout("  db-enroll: read-back ");
         conout_hex(rbs);
         conout(" -- the write could not be confirmed from the firmware, carried as a fact only\r\n");
+    }
+}
+
+/// The payload inside an EFI_VARIABLE_AUTHENTICATION_2 blob: the new
+/// variable contents that follow the descriptor. The descriptor is
+///   EFI_TIME TimeStamp                      (16 bytes)
+///   WIN_CERTIFICATE_UEFI_GUID               (dwLength bytes, at offset 16)
+/// so the payload starts at 16 + dwLength (UEFI 2.10 8.2.2 / 32.4.1).
+/// Returns None when the blob cannot be one: a package shorter than the
+/// stamp plus a minimal win-certificate, or a dwLength that runs past
+/// the end. Callers treat None as "not a package", never as empty.
+fn auth2_payload(pkg: &[u8]) -> Option<&[u8]> {
+    if pkg.len() < 16 + 24 {
+        return None;
+    }
+    let dw = u32::from_le_bytes([pkg[16], pkg[17], pkg[18], pkg[19]]) as usize;
+    if dw < 24 {
+        return None;
+    }
+    let start = 16 + dw;
+    if start > pkg.len() {
+        return None;
+    }
+    Some(&pkg[start..])
+}
+
+/// SetVariable("dbx", TIME_BASED_AUTHENTICATED, blob) -- the write a
+/// real revocation performs. edk2 routes every dbx update through its
+/// time-based path: the blob must carry the auth2 descriptor, the
+/// firmware verifies the PKCS7 against the enrolled KeK (or a key in
+/// db), compares the descriptor's EFI_TIME to the stored variable's,
+/// and only then stores the payload.
+fn set_dbx_authenticated(rs: *const RuntimeServices, blob: &[u8]) -> Status {
+    unsafe {
+        ((*rs).set_variable)(
+            wide_name(b"dbx").as_ptr(),
+            &IMAGE_SECURITY_DATABASE_GUID,
+            VARIABLE_ATTRIBUTE_NONVOLATILE
+                | VARIABLE_ATTRIBUTE_BOOTSERVICE
+                | VARIABLE_ATTRIBUTE_RUNTIME
+                | VARIABLE_ATTRIBUTE_TIME_BASED_AUTHENTICATED,
+            blob.len(),
+            blob.as_ptr() as *const c_void,
+        )
+    }
+}
+
+/// The gate's opt-in for the authenticated update below: a variable in
+/// this stub's own vendor namespace, composed into the store by the
+/// boot gate (virt-fw-vars --set-json). It exists so the write is a
+/// deliberate act of ONE store: the probe/revocation stores compose
+/// their own dbx entries and must not have them replaced by this step,
+/// and no store can trigger a write by accident.
+const DBX_UPDATE_TRIGGER_NAME: &[u8] = b"NyrqisDbxUpdate";
+/// 1 byte of 0x01, so the trigger is a datum and not just a name.
+const DBX_UPDATE_TRIGGER_DATA: [u8; 1] = [0x01];
+
+/// ADR-0029's UPDATE side, exercised against a REAL firmware at boot:
+/// write the embedded EFI_VARIABLE_AUTHENTICATION_2 package to `dbx`
+/// with the time-based-authenticated attribute, so the FIRMWARE -- not
+/// this stub -- verifies the PKCS7 against the enrolled KeK and decides.
+/// The `dbx_update_gate.sh` host gate proves the package's binding;
+/// this step covers the other half that gate names as uncovered: the
+/// firmware's ACCEPTANCE of it at SetVariable time.
+///
+/// The order is deliberate. The NON-KeK-signed twin goes FIRST, while
+/// the store still holds whatever it held at handoff, so its refusal
+/// cannot be a timestamp artefact of the successful write that follows:
+/// a package whose signer is not enrolled must be refused whatever the
+/// clock says. Then the KeK-signed package is attempted, and a success
+/// is believed only once the read-back carries the exact payload bytes
+/// the package signed. Both outcomes are named facts; neither votes the
+/// boot, whose enforcement path stays the stub's own carrier walk.
+pub fn dbx_update_via_kek(non_kek_package: &[u8], kek_package: &[u8]) {
+    let st = unsafe { &*SYSTEM_TABLE };
+    let rs = st.runtime_services;
+
+    // Only user mode has something for the firmware to authenticate: a
+    // PK-absent store is SetupMode, where the unauthenticated arm above
+    // owns the db write and there is no enrolled KeK to check against.
+    let mut attrs: u32 = 0;
+    let mut size: usize = 0;
+    let pk_status = unsafe {
+        ((*rs).get_variable)(
+            wide_name(b"PK").as_ptr(),
+            &GLOBAL_VARIABLE_GUID,
+            &mut attrs,
+            &mut size,
+            core::ptr::null_mut(),
+        )
+    };
+    if pk_status == EFI_NOT_FOUND {
+        conout("  dbx-update: PK absent (SetupMode) -- the SetupMode arm owns the db write; nothing for the firmware to authenticate\r\n");
+        return;
+    }
+
+    // The write is opt-in per store (see DBX_UPDATE_TRIGGER_NAME): other
+    // gates compose a dbx entry and rely on the stub NOT replacing it.
+    let (tq, trigger) = get_variable_bytes(DBX_UPDATE_TRIGGER_NAME, &VARCHK_VENDOR_GUID, rs);
+    if tq != EFI_SUCCESS || trigger.as_slice() != DBX_UPDATE_TRIGGER_DATA {
+        conout("  dbx-update: no update trigger in this store -- no authenticated write attempted (named fact)\r\n");
+        return;
+    }
+    conout("  dbx-update: trigger present -- this store asks for the authenticated write\r\n");
+
+    let Some(payload) = auth2_payload(kek_package) else {
+        conout("  dbx-update: the embedded KeK package is not a well-formed auth2 blob (stamp + win-certificate) -- skipping the authenticated write (named fact)\r\n");
+        return;
+    };
+    let Some(non_kek_payload) = auth2_payload(non_kek_package) else {
+        conout("  dbx-update: the embedded NON-KeK control is not a well-formed auth2 blob -- skipping the refusal control (named fact)\r\n");
+        return;
+    };
+    if payload.is_empty() || non_kek_payload != payload {
+        conout("  dbx-update: the two embedded packages do not carry the SAME list, so a difference in their verdicts would not be attributable to the signer -- skipping (named fact)\r\n");
+        return;
+    }
+
+    // Idempotency: a second boot on the same store must not confuse
+    // "already written" with "the firmware accepted a fresh write".
+    let (qdbx, current) = get_variable_bytes(b"dbx", &IMAGE_SECURITY_DATABASE_GUID, rs);
+    if qdbx == EFI_SUCCESS && contains_bytes(&current, payload) {
+        conout("  dbx-update: dbx already carries this package's ");
+        conout_hex(payload.len() as u64);
+        conout("-byte entry (idempotent -- no write attempted)\r\n");
+        return;
+    }
+
+    conout("  dbx-update: PK present (user mode) -- the firmware verifies the AUTH package against the enrolled KeK\r\n");
+
+    // ---- 1. the refusal control: a package signed by a non-KeK key ----
+    let ns = set_dbx_authenticated(rs, non_kek_package);
+    if ns == EFI_SUCCESS {
+        conout("  dbx-update: NON-KeK-SIGNED package ACCEPTED by the firmware -- the signer was not checked\r\n");
+    } else {
+        conout("  dbx-update: non-KeK-signed package REFUSED by the firmware = ");
+        conout_hex(ns);
+        conout(" (expected: its signer is not the enrolled KeK)\r\n");
+    }
+
+    // ---- 2. the KeK-signed package: accepted, or named by status ----
+    let set_status = set_dbx_authenticated(rs, kek_package);
+    if set_status != EFI_SUCCESS {
+        conout("  dbx-update: SetVariable(dbx, NV|BS|RT|TBA, ");
+        conout_hex(kek_package.len() as u64);
+        conout(" bytes) = ");
+        conout_hex(set_status);
+        conout(" -- REFUSED by the firmware (named fact)\r\n");
+        return;
+    }
+    conout("  dbx-update: SetVariable(dbx) ACCEPTED ");
+    conout_hex(kek_package.len() as u64);
+    conout(" bytes (KeK-signed auth2) -- EFI_SUCCESS\r\n");
+
+    // ---- 3. a write is only proven by its read-back ----
+    let (rbs, readback) = get_variable_bytes(b"dbx", &IMAGE_SECURITY_DATABASE_GUID, rs);
+    if rbs == EFI_SUCCESS && contains_bytes(&readback, payload) {
+        conout("  dbx-update: read-back VERIFIED -- the firmware's dbx now carries the ");
+        conout_hex(payload.len() as u64);
+        conout("-byte entry the package signed (variable ");
+        conout_hex(readback.len() as u64);
+        conout(" bytes)\r\n");
+        // Consume the trigger: a second boot of the same store must not
+        // re-run the write (and the package's timestamp would refuse it
+        // anyway, which would look like a firmware failure rather than
+        // the replay it is).
+        let del = unsafe {
+            ((*rs).set_variable)(
+                wide_name(DBX_UPDATE_TRIGGER_NAME).as_ptr(),
+                &VARCHK_VENDOR_GUID,
+                0,
+                0,
+                core::ptr::null(),
+            )
+        };
+        if del == EFI_SUCCESS {
+            conout("  dbx-update: trigger consumed (deleted) -- a second boot of this store will skip the write\r\n");
+        } else {
+            conout("  dbx-update: trigger delete = ");
+            conout_hex(del);
+            conout(" -- the write stands, but a re-boot would retry it (named fact)\r\n");
+        }
+    } else {
+        conout("  dbx-update: read-back ");
+        conout_hex(rbs);
+        conout(" -- the accepted write is NOT visible in dbx (named fact)\r\n");
     }
 }

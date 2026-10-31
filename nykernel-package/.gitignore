@@ -52,3 +52,7 @@ source/nykernel/uefi/src/moklist-*.der
 # wrapping), composed by the `.ms` gate itself at run time -- generated
 # state by the same policy as the blobs above, not source.
 source/nykernel/uefi/src/dbx-probe-*.der
+# The UPDATE side's embedded auth2 packages (the KeK-signed package and
+# its non-KeK-signed twin) plus their payload list, generated beside the
+# carriers by build.sh -> tools/make_dbx_update_package.sh.
+source/nykernel/uefi/src/dbx-update-*.der

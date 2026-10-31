@@ -4565,6 +4565,91 @@ firmware behaviour is recorded honestly rather than glossed.
   by virt-fw-vars (ADR-0029's composition boundary), while the stub's
   own db write is the SetupMode arm where edk2 verifies no signature.
 
+## Phase 10 increment (2026-10-31): firmware ACCEPTANCE of the revocation update -- the gap the update gate named -- and the two defects in our own builder that closing it exposed
+
+`tools/dbx_update_gate.sh` proved a KeK-signed
+`EFI_VARIABLE_AUTHENTICATION_2` package's binding with `openssl` and
+said, in its own PASS line, that firmware ACCEPTANCE at SetVariable time
+was NOT covered. That gap is closed here, and closing it found two
+real defects in this repository's UPDATE-side bytes -- each one fully
+self-consistent between our builder and our gate, and each one refused
+by the first real firmware that saw it (the ADR-0028
+"self-consistent-but-wrong" class, third occurrence).
+
+- **One builder for the whole repo.** `tools/make_dbx_update_package.sh`
+  composes and signs the package; `dbx_update_gate.sh`
+  and `build.sh` both call it, so the host gate and the boot path
+  cannot drift into two self-consistent package shapes.
+- **The boot path exercises it against real firmware.** `build.sh`
+  embeds two packages over the same list -- one signed by the carrier
+  root (the enrolled KeK in the enforcing stores' analogy), one by the
+  negative-only stray key -- revoking the stray certificate's
+  To-Be-Signed hash, which covers nothing this chain trusts. `boot.rs`'s
+  `dbx_update_via_kek` writes them to `dbx` with the
+  time-based-authenticated attribute, so the FIRMWARE verifies the
+  PKCS7 and decides; the write is opt-in per store through a one-byte
+  trigger variable (`NyrqisDbxUpdate`, in the stub's own
+  `VARCHK_VENDOR_GUID` namespace) that the `.ms` gate's POSITIVE store
+  composes with `virt-fw-vars --set-json`. No other store carries the
+  trigger, so the revocation and probe stores' own dbx entries are
+  never replaced; the trigger is deleted after a verified write so a
+  re-boot cannot replay a now-stale stamp.
+- **Defect 1 -- the signed content was wrong.** UEFI 2.10 8.2.2 and
+  edk2's `VerifyTimeBasedPayload` sign
+  `(VariableName, VendorGuid, Attributes, EFI_TIME, Data)`: the UTF-16LE
+  name WITHOUT its terminator, the vendor GUID in wire order, the u32
+  attribute word, the descriptor's stamp, then the payload. Every
+  earlier version of this repo's builder -- and `dbx_update_gate.sh`'s
+  own verification -- signed `payload || EFI_TIME`. `openssl cms
+  -verify` passed because it verified the same wrong content; edk2
+  answered `EFI_SECURITY_VIOLATION` (`0x800000000000001a`) for every
+  package, including the correctly-KeK-signed one. Fixed in
+  `make_dbx_update_package.sh` (which now documents the serialization
+  and the failure), with the attribute word 0x27
+  (NV|BS|RT|TIME_BASED_AUTHENTICATED) pinned to what the stub passes.
+- **Defect 2 -- the descriptor carried the wrong PKCS#7 shape.** edk2
+  reads `WIN_CERTIFICATE_UEFI_GUID.CertData` as a PKCS#7 **SignedData**
+  SEQUENCE and checks the SHA-256 OID at a fixed `+13`. `openssl cms
+  -sign` emits a `ContentInfo` wrapper, shifting every offset by eight
+  bytes. The builder now strips the `[0]` element and embeds the bare
+  `SignedData`, keeping the wrapper only for its own `openssl`
+  self-verification. Fixing only defect 1 would still have been
+  refused; the two were found by iterating against the firmware, each
+  refusal naming its status.
+- **An independent oracle replaced self-agreement.** The gate now
+  asserts the signed content's layout byte-for-byte from the SPEC's
+  strings (`dbx` UTF-16LE, the ISD GUID's wire bytes, attrs 0x27, the
+  header stamp, the payload) and cross-checks against `sbsigntools`'
+  `sbvarsign`: that tool's signature must verify over content rebuilt
+  from the pinned layout using ITS OWN stamp. A serialization invented
+  here would fail the oracle even with builder and gate agreeing --
+  measured: `-- OK oracle: sbvarsign's own signature verifies over the
+  content rebuilt from the pinned layout`.
+- **Measured on real firmware (`.ms` positive boot, OVMF_CODE_4M.ms):**
+
+  ```
+  dbx-update: trigger present -- this store asks for the authenticated write
+  dbx-update: PK present (user mode) -- the firmware verifies the AUTH package against the enrolled KeK
+  dbx-update: non-KeK-signed package REFUSED by the firmware = 0x800000000000001a (expected: its signer is not the enrolled KeK)
+  dbx-update: SetVariable(dbx) ACCEPTED 0x5c6 bytes (KeK-signed auth2) -- EFI_SUCCESS
+  dbx-update: read-back VERIFIED -- the firmware's dbx now carries the 0x5c-byte entry the package signed (variable 0x5c bytes)
+  dbx-update: trigger consumed (deleted) -- a second boot of this store will skip the write
+  ```
+
+  so the acceptance half of ADR-0029's surface is measured, not
+  asserted: a real firmware verified the PKCS7 over the signed
+  serialization, compared the stamp against the store's, stored the
+  list, and served it back; the same list signed by a non-KeK key was
+  refused with `EFI_SECURITY_VIOLATION` in the same boot, before the
+  accepted write, so the refusal cannot be a timestamp artefact.
+- **What remains uncovered, stated rather than implied:** the
+  distribution/signing ceremony (who signs, how packages reach an
+  operator, cadence) and real firmware beyond the two builds in this
+  tree; the package is stamped deterministically (2027-01-01) so it is
+  newer than any dev store's dummy dbx entry and independent of the
+  build clock. The host gate's PASS line now points at this boot leg
+  for acceptance instead of claiming coverage itself.
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is
