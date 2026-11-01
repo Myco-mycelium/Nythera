@@ -838,6 +838,18 @@ jobs:
         # virt-fw-vars is pipx-installed (the distro pip is PEP 668
         # locked); its binary lands in ~/.local/bin, which the gate
         # already covers with its own PATH fallback.
+        # On the weekly drift run the SAME trigger store and package are
+        # additionally booted against the other firmware build in the tree
+        # (the non-.ms OVMF), asserting the refusal there: measured
+        # 2026-10-31, that build has no time-based-auth surface and answers
+        # EFI_INVALID_PARAMETER (0x8000000000000002) to the KeK-signed
+        # package too, so the acceptance above is that firmware's SUPPORT
+        # rather than the gate assuming success. Kept off push runs because
+        # the distro's plain build is an external input (a build that starts
+        # enforcing flips this control red on the weekly run, which is the
+        # signal -- the gate's message says which leg it belongs to).
+        env:
+          SECBOOT_CROSS_BUILD_CODE: ${{ github.event_name == 'schedule' && 'uefi/tools/OVMF_CODE_4M.fd' || '' }}
         run: |
           mkdir -p target
           export PATH="$HOME/.local/bin:$PATH"
@@ -925,6 +937,22 @@ jobs:
           set -e
           if [[ $S -ne 0 ]]; then
             ./tools/ci_emit_annotations.sh target/dbx-update-gate.log DbxUpdate
+          fi
+          exit $S
+      - name: Revocation update signing ceremony (refusal paths)
+        # The SIGNING/DISTRIBUTION half ADR-0029 leaves to platform
+        # process: custody, target, signer, stamp, scope and binding
+        # checks, each of which must refuse rather than warn. The
+        # positive control runs a real ceremony first, so a negative
+        # cannot pass by "this script always fails". No QEMU, no
+        # network: a few seconds, so it runs on every push.
+        run: |
+          mkdir -p target
+          set +e
+          ./tools/update_ceremony_refusals_test.sh > target/update-ceremony-refusals.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/update-ceremony-refusals.log UpdateCeremony
           fi
           exit $S
 

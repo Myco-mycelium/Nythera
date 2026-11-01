@@ -4650,6 +4650,84 @@ by the first real firmware that saw it (the ADR-0028
   build clock. The host gate's PASS line now points at this boot leg
   for acceptance instead of claiming coverage itself.
 
+## Phase 10 increment (2026-10-31, second): the signing ceremony, a cross-build control for the acceptance claim, and ADR-0030's premise checked instead of asserted
+
+Three follow-ups from the increment above, each landed with its own
+measurement.
+
+- **Signing/distribution ceremony.** `tools/sign_dbx_update_ceremony.sh`
+  composes a revocation for a NAMED certificate and refuses to hand over
+  a package unless six properties hold: the KEK key's custody (no
+  group/world bits), the target is not the trust anchor, the signing
+  certificate IS the explicitly-named enrolled KEK (byte-for-byte DER
+  sha256 -- naming the signer as its own reference would be a
+  tautology), the stamp strictly advances over `--previous-stamp`, the
+  composed list carries exactly the target's To-Be-Signed hash once, and
+  the PKCS#7 binds over the signed serialization with the KEK's own
+  certificate. Every refusal is a named FAIL.
+  `tools/update_ceremony_refusals_test.sh` proves the checks bite: a
+  positive control plus five refusals (missing input, loose custody,
+  anchor target, non-enrolled signer, stale stamp), each asserting the
+  exit class AND the specific message. The ceremony writes an
+  `update-manifest.txt` (package sha256, revoked subject/serial/TBS hash,
+  stamp, signer, enrolled-KEK provenance, delivery note) and states what
+  it does NOT do: deliver or schedule.
+  ```
+  PASS: signing/distribution ceremony complete
+    package        : uefi/dist/dbx-update-ceremony/dbx-update.auth2 (1478 bytes)
+    revoking       : CN = Nyrqis dev carrier leaf, OU = Nyrqis bringup (serial 13452F6F..)
+    signer         : CN = Nyrqis dev trust anchor (enrolled KEK match verified byte-for-byte)
+    stamp          : 2027-01-01
+    custody        : key mode 600 (no group/world bits)
+  PASS: revocation update ceremony refusal paths verified -- the positive run passes, and a
+        missing input, loose custody, an anchor target, a non-enrolled signer and a stale stamp
+        each fail with their own named message
+  ```
+- **A cross-build control, so "acceptance" is firmware support rather
+  than a gate assuming success.** Running the SAME enrolled store and
+  the SAME package against the other firmware build in this tree
+  (`OVMF_CODE_4M.fd`, sha256 `ad23261d..`) measures:
+  ```
+  nyrqis ubld: stub alive under UEFI; SecureBoot=absent
+  dbx-update: trigger present -- this store asks for the authenticated write
+  dbx-update: non-KeK-signed package REFUSED by the firmware = 0x8000000000000002
+  dbx-update: SetVariable(dbx, NV|BS|RT|TBA, 0x5c6 bytes) = 0x8000000000000002 -- REFUSED by the firmware (named fact)
+  ```
+  i.e. that build has no time-based-auth variable surface and refuses
+  BOTH packages, the correctly-signatured one included, with
+  `EFI_INVALID_PARAMETER`. A full gate run against it therefore fails
+  its positive leg -- the correct verdict, since the build cannot
+  satisfy an enforcement claim -- so it is wired as an opt-in control
+  instead: `SECBOOT_CROSS_BUILD_CODE=<code image>` asserts the stub ran,
+  the store asked for the write, the KeK package was NOT accepted, and
+  the status is the measured `EFI_INVALID_PARAMETER`. It refuses to run
+  against the same image as the main leg, and it FAILS with a message
+  naming the resolution if a future build starts accepting. CI runs it
+  on the weekly drift schedule only (the distro's plain build is an
+  external input).
+- **The gate's dbx shape probe was computed and then ignored.** Writing
+  the cross-build control surfaced that the PASS condition tested
+  `POS_OK NEG_OK TAMPER_OK REV_OK REVC_OK` but not `PROBE_OK`: the probe
+  leg could print `FAIL: [probe] ...` and the gate still exited 0 -- the
+  silent-ignore class this repository keeps meeting. `PROBE_OK` and
+  `CROSS_OK` are now part of the condition and named in both the PASS
+  and FAIL summaries.
+- **ADR-0030's premise, measured.** `tools/dbx_inventory.py` parses a
+  real dbx artifact (auth2 package or bare signature lists) and reports
+  entry classes, sizes and counts. Against Microsoft's published
+  artifacts (2026-10-31): the current amd64 `DBXUpdate.bin` is **443
+  `EFI_CERT_SHA256` entries and nothing else**; `DBXUpdate2024.bin`
+  carries the CA revocation as ONE whole-certificate `EFI_CERT_X509`
+  entry plus 3 SHAs; `DBXUpdateSVN.bin` is 3 SHAs; and the inventory JSON
+  the artifacts are built from holds 677 image hashes across four
+  architectures, every one `SHA256`, one certificate, and the SVN
+  counters. No `EFI_CERT_X509_SHA384`/`512` and no TBS-hash form ships at
+  all. ADR-0030's Rejected decision therefore stands on evidence, and its
+  own claim that Microsoft CA revocations use `EFI_CERT_X509_SHA256` is
+  corrected: the shipped CA revocation is the whole-certificate form,
+  enforced by the walk's other branch, while `EFI_CERT_X509_SHA256` is
+  enforced because ADR-0028/0029's rotation issues it.
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is

@@ -175,6 +175,12 @@ cat > uefi/dist/dbx-update-trigger.json <<'JSON'
                 "data": "01"}]}
 JSON
 "$VIRT" --inplace "$STORE" --set-json uefi/dist/dbx-update-trigger.json > /dev/null
+# Snapshot the trigger store BEFORE the positive boot consumes the
+# trigger: the cross-build control below re-uses this exact store and
+# package against a different firmware, so it must still ask for the
+# write.
+CROSS_STORE=uefi/dist/VARS.ms-secboot-crossbuild.fd
+cp "$STORE" "$CROSS_STORE"
 echo "==> enrolled enforcing store: PK/KEK anchored on the carrier root, root+leaf in db, SecureBootEnable ON, leaf in MokList, dbx-update trigger present"
 echo "==> composed store shape (what the firmware will actually read):" && \
     "$VIRT" -i "$STORE" -p 2>/dev/null | grep -E "PK |KEK |db |MokList|SecureBoot" || true
@@ -241,12 +247,13 @@ mk_esp "$ESP_SIGNED" "$SIGNED_STUB"
 mk_esp "$ESP_UNSIGNED" "$STUB_EFI"
 mk_esp "$ESP_TAMPERED" "$TAMPERED_STUB"
 
-boot_qemu() { # $1 esp image, $2 serial log, $3 timeout seconds, $4 store (default: the enforcing store)
+boot_qemu() { # $1 esp image, $2 serial log, $3 timeout seconds, $4 store (default: the enforcing store), $5 firmware (default: the gate's)
     local STORE_ELSE="${4:-$STORE}"
+    local CODE_ELSE="${5:-$FAKECODE}"
     timeout "$3" qemu-system-x86_64 \
         -machine q35 \
         -m 256 \
-        -drive if=pflash,format=raw,readonly=on,file="$FAKECODE" \
+        -drive if=pflash,format=raw,readonly=on,file="$CODE_ELSE" \
         -drive if=pflash,format=raw,file="$STORE_ELSE" \
         -drive format=raw,file="$1" \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
@@ -582,9 +589,89 @@ else
     fi
 fi
 
+# --- cross-build control (opt-in): a firmware WITHOUT the auth surface ---
+# SECBOOT_CROSS_BUILD_CODE=<code image> runs the SAME store and the SAME
+# package against a second firmware build and asserts the refusal there.
+#
+# Why this is a CONTROL and not a second acceptance measurement, measured
+# 2026-10-31 on the other build in this tree (OVMF_CODE_4M.fd, sha256
+# ad23261d..): that build boots with SecureBoot=absent and answers
+# SetVariable with EFI_INVALID_PARAMETER (0x8000000000000002) for BOTH
+# packages, the correctly-KeK-signed one included -- it has no
+# time-based-auth variable surface at all. A full gate run against it
+# therefore FAILS the positive leg (measured: POS_OK=0, "boot reached
+# Ready but a required secboot marker line is missing"), which is the
+# correct verdict for a build that cannot satisfy an enforcement claim.
+# What it CAN prove is the other direction: acceptance is firmware
+# support, not the host gate inventing success -- the same bytes that
+# the .ms build accepts are refused by a build that lacks the surface.
+# Without this leg the acceptance claim is only ever observed on one
+# firmware image in the tree; with it, the claim is pinned from both
+# sides. It is opt-in because it needs a second CODE image on disk.
+CROSS_OK=1
+CROSS_CODE="${SECBOOT_CROSS_BUILD_CODE:-}"
+if [[ -n "$CROSS_CODE" ]]; then
+    if [[ ! -s "$CROSS_CODE" ]]; then
+        echo "FAIL: cross-build control: firmware image missing: $CROSS_CODE"
+        CROSS_OK=0
+    fi
+    CROSS_SHA="$(sha256sum "$CROSS_CODE" 2>/dev/null | cut -d' ' -f1)"
+    if [[ "$CROSS_SHA" == "$FIRMWARE_SHA" ]]; then
+        echo "FAIL: cross-build control names the same image as the main run ($CROSS_CODE) -- a control against itself proves nothing"
+        CROSS_OK=0
+    fi
+    if [[ "$CROSS_OK" -eq 1 ]]; then
+        echo "==> cross-build control: the same trigger store and KeK package against $CROSS_CODE (sha256 $CROSS_SHA)"
+        boot_qemu "$ESP_SIGNED" target/qemu-uefi-ms-secboot-crossbuild.log 480 "$CROSS_STORE" "$CROSS_CODE"
+        CROSS_STATUS=$?
+        CROSS_LOG=target/qemu-uefi-ms-secboot-crossbuild.log
+        # The control's subject is the WRITE verdict, not the boot's
+        # terminus. Measured 2026-10-31: the plain build runs the stub and
+        # produces exactly the refusal facts below, then the KERNEL panics
+        # in its own RTC wall-clock self-test (hour 22 read back as 10), so
+        # QEMU times out (124) with no Ready line. Failing the control on
+        # that would attribute a kernel-side signal to the firmware's auth
+        # surface; silently ignoring it would hide a panic. So: the dbx
+        # facts decide the control, status 33 additionally requires Ready,
+        # and any other terminus is named in the transcript.
+        CROSS_TERMINUS="exit $CROSS_STATUS"
+        if [[ "$CROSS_STATUS" -eq 33 ]] && grep -aq "boot phase = 7 (Ready)" "$CROSS_LOG"; then
+            CROSS_TERMINUS="Ready (exit 33)"
+        elif [[ "$CROSS_STATUS" -ne 124 ]]; then
+            echo "FAIL: cross-build control: the stub did not reach Ready and did not time out either (status $CROSS_STATUS)"
+            CROSS_OK=0
+        fi
+        if [[ "$CROSS_OK" -eq 0 ]]; then
+            :
+        elif ! grep -aq "SecureBoot=" "$CROSS_LOG"; then
+            echo "FAIL: cross-build control: the stub never ran on $CROSS_CODE -- no firmware-state line at all"
+            CROSS_OK=0
+        elif ! grep -aq "trigger present -- this store asks for the authenticated write" "$CROSS_LOG"; then
+            echo "FAIL: cross-build control: the store did not ask for the authenticated write -- the control never exercised the path"
+            CROSS_OK=0
+        elif grep -aq "SetVariable(dbx) ACCEPTED" "$CROSS_LOG"; then
+            echo "FAIL: cross-build control: $CROSS_CODE ACCEPTED the KeK package -- then this build enforces authenticated updates, and it belongs in the acceptance leg rather than the control"
+            CROSS_OK=0
+        elif ! grep -aq "= 0x8000000000000002 -- REFUSED by the firmware" "$CROSS_LOG"; then
+            echo "FAIL: cross-build control: $CROSS_CODE refused the KeK package with a status other than the measured EFI_INVALID_PARAMETER"
+            grep -a "dbx-update" "$CROSS_LOG" || true
+            CROSS_OK=0
+        else
+            echo "-- [cross-build] $CROSS_CODE refuses the KeK package with EFI_INVALID_PARAMETER (0x8000000000000002): a build without"
+            echo "   the time-based-auth surface refuses it outright, so the .ms acceptance is firmware SUPPORT measured, not the gate assuming success"
+            echo "-- [cross-build] boot terminus: $CROSS_TERMINUS (the control's subject is the write verdict, not the kernel's later state)"
+            if [[ "$CROSS_STATUS" -ne 33 ]]; then
+                LAST_KERNEL_LINE="$(grep -a "KERNEL PANIC\|panicked at\|FAILED" "$CROSS_LOG" | tail -1 || true)"
+                echo "   note: this boot did not reach Ready; kernel-side line: ${LAST_KERNEL_LINE:-<none>}"
+                echo "   that is a kernel/boot-gate signal, not a cross-build acceptance fact"
+            fi
+        fi
+    fi
+fi
+
 set -e
 
-if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 && "$REV_OK" -eq 1 && "$REVC_OK" -eq 1 ]]; then
+if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 && "$REV_OK" -eq 1 && "$REVC_OK" -eq 1 && "$PROBE_OK" -eq 1 && "$CROSS_OK" -eq 1 ]]; then
     echo "PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose signer is chained to the enrolled carrier root, refuses both the unsigned one and the one-byte-tampered signed one, refuses the leaf-signed stub once its signer's To-Be-Signed hash is revoked BY HASH in dbx AND once its certificate is revoked in the whole-certificate dbx form, ACCEPTS a KeK-signed EFI_VARIABLE_AUTHENTICATION_2 dbx update at SetVariable time (read back byte-for-byte) while refusing its non-KeK-signed twin, and the kernel reached Ready"
     # The clause after the refusing party must match THAT path: only the
     # stub path reads the served bytes, so on the firmware path the claim
@@ -602,7 +689,11 @@ if [[ "$POS_OK" -eq 1 && "$NEG_OK" -eq 1 && "$TAMPER_OK" -eq 1 && "$REV_OK" -eq 
     echo "     revocation leg (hash-typed): refused by $REV_PATH; $REV_CLAIM"
     echo "     revocation leg (whole-cert): refused by $REVC_PATH; $REVC_CLAIM"
     echo "     firmware under test: $FAKECODE (sha256 $FIRMWARE_SHA)"
+    echo "     dbx shape probe: $PROBE_OK (1 = the stub read the composed whole-cert entry byte-for-byte)"
+    if [[ -n "$CROSS_CODE" ]]; then
+        echo "     cross-build control: $CROSS_CODE (sha256 $CROSS_SHA) refuses this same package with EFI_INVALID_PARAMETER, so the acceptance above is that firmware's support, not the gate's assumption"
+    fi
     exit 0
 fi
-echo "FAIL: ms OVMF secboot test failed (positive status $POS_STATUS marker_ok=$POS_OK, unsigned refusal_ok=$NEG_OK, tampered refusal_ok=$TAMPER_OK, hash-typed revocation ok=$REV_OK refused_by=$REV_PATH served_shape=$REV_SHAPE, whole-cert revocation ok=$REVC_OK refused_by=$REVC_PATH served_shape=$REVC_SHAPE)"
+echo "FAIL: ms OVMF secboot test failed (positive status $POS_STATUS marker_ok=$POS_OK, unsigned refusal_ok=$NEG_OK, tampered refusal_ok=$TAMPER_OK, hash-typed revocation ok=$REV_OK refused_by=$REV_PATH served_shape=$REV_SHAPE, whole-cert revocation ok=$REVC_OK refused_by=$REVC_PATH served_shape=$REVC_SHAPE, dbx shape probe=$PROBE_OK, cross-build control=$CROSS_OK)"
 exit 1

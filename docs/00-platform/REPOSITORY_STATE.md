@@ -2219,6 +2219,38 @@ Process and tooling:
     2026-10-31 increment in `IMPLEMENTATION_STATUS.md` and ADR-0029
     v1.3.0's Implementation Note.
 
+    **The signing ceremony and the cross-build control landed the same
+    day (ADR-0029 v1.4.0).**
+    `tools/sign_dbx_update_ceremony.sh` is the operator step: it composes
+    a revocation for a named certificate and refuses unless custody is
+    clean, the target is not the trust anchor, the signer IS the
+    explicitly-named enrolled KEK, the stamp advances, the list carries
+    exactly the target's To-Be-Signed hash, and the PKCS#7 binds -- with
+    a manifest that states what it does not do (deliver, schedule).
+    `tools/update_ceremony_refusals_test.sh` proves each refusal path
+    bites (positive control + five named refusals), and CI runs it on
+    every push. Separately, running the gate against the tree's OTHER
+    firmware build measured that build answering
+    `EFI_INVALID_PARAMETER` to BOTH packages -- it has no time-based-auth
+    surface -- so the acceptance claim is now pinned as that firmware's
+    SUPPORT via an opt-in `SECBOOT_CROSS_BUILD_CODE` control (weekly CI,
+    since the distro build is an external input). Writing that control
+    exposed a gate defect worth naming: the dbx shape probe's `PROBE_OK`
+    was computed and never included in the PASS condition, so a probe
+    FAIL still exited 0.
+
+    **ADR-0030's premise is measured now, not argued.**
+    `tools/dbx_inventory.py` over Microsoft's published artifacts shows
+    the current amd64 dbx update is 443 `EFI_CERT_SHA256` entries and
+    nothing else, the 2024 CA revocation is one whole-certificate
+    `EFI_CERT_X509` entry, and the inventory JSON is 677 SHA-256 image
+    hashes across four architectures -- no SHA-384/512 and no TBS-hash
+    form anywhere. The Rejected decision stands, and the ADR's own claim
+    that Microsoft CA revocations use `EFI_CERT_X509_SHA256` is
+    corrected: that type is enforced because ADR-0028/0029's rotation
+    issues it, while the shipped CA revocation rides the whole-certificate
+    branch.
+
 Resolved earlier this session, kept here for a complete record:
 - ~~Resolve shared ARM instruction-translation approach~~ — ADR-0015 (shared dynamic binary translation, JIT + hot-path cache).
 - ~~Scope VR integration~~ — explicitly deferred to a future milestone (NPS-012 §5.1).

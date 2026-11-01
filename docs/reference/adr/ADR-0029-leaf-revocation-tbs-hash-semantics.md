@@ -1,7 +1,7 @@
 ---
 title: Leaf Revocation by dbx TBS Hash — the Enforcement Semantics the Gates Enforce
 document_id: ADR-0029
-version: 1.3.0
+version: 1.4.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-10-29
@@ -315,11 +315,88 @@ Measured verdict (the `.ms` gate's positive boot, real
 ### What this still does not claim
 
 The package is stamped deterministically (2027-01-01) rather than at
-build time, and the distribution path (who signs, how the packages reach
-an operator, how revocation is scheduled) is still the platform's
-business, as are real firmware builds beyond the two in this tree. What
-changed is that a firmware now verifies one of these packages and stores
-it: the acceptance half of the surface is measured, not asserted.
+build time, delivery and rollout scheduling are still the platform's
+business, and acceptance is measured on the one firmware build in this
+tree that implements the surface (see the cross-build control below).
+What changed is that a firmware now verifies one of these packages and
+stores it: the acceptance half of the surface is measured, not asserted.
+
+## Implementation Note (2026-10-31, second): the signing ceremony, and a
+## cross-build control that keeps the acceptance claim honest
+
+### The signing/distribution ceremony
+
+`tools/sign_dbx_update_ceremony.sh` is the step between "a package can be
+built" and "an operator ships it". It composes the revocation list for a
+named certificate, signs it with the KEK, and then refuses to hand a
+package over unless six properties hold:
+
+1. **custody** -- the KEK private key has no group/world permission bits
+   (the same first control `rotate_leaf_ceremony.sh` applies to the root);
+2. **target** -- the certificate being revoked is not the trust anchor,
+   because revoking the anchor refuses every carrier including the
+   replacements a rotation is about to issue;
+3. **signer** -- the signing certificate IS the enrolled KEK, compared
+   byte for byte, where the enrolled KEK is named explicitly rather than
+   assumed to be the signer (otherwise the check is a tautology);
+4. **stamp** -- the new stamp is strictly newer than `--previous-stamp`
+   when one is given, since firmware rejects a non-increasing time-based
+   stamp;
+5. **scope** -- the composed `EFI_CERT_X509_SHA256` list carries exactly
+   the target's To-Be-Signed hash, once, owner-less, at the ceremony's
+   stamp, pinned from the spec's list/entry sizes rather than from this
+   repository's generator;
+6. **binding** -- the PKCS#7 verifies over the signed serialization and
+   the package's signer certificate is the KEK certificate.
+
+Each refusal is a named FAIL, and `tools/update_ceremony_refusals_test.sh`
+exercises all six paths plus a positive control, asserting the exit class
+AND the specific message, so a check that silently stopped firing cannot
+look like a passing ceremony. The ceremony writes a manifest beside the
+package (package sha256, target subject/serial/TBS hash, stamp, signer,
+delivery note) and states in that manifest what it does not do: deliver
+or schedule.
+
+### The cross-build control: acceptance is firmware SUPPORT
+
+Measured 2026-10-31 by running the gate against the other firmware build
+in this tree (`OVMF_CODE_4M.fd`, sha256 `ad23261d..`) with the same
+enrolled store and the same package:
+
+    nyrqis ubld: stub alive under UEFI; SecureBoot=absent
+    dbx-update: trigger present -- this store asks for the authenticated write
+    dbx-update: non-KeK-signed package REFUSED by the firmware = 0x8000000000000002
+    dbx-update: SetVariable(dbx, NV|BS|RT|TBA, 0x5c6 bytes) = 0x8000000000000002 -- REFUSED by the firmware (named fact)
+
+That build has no time-based-auth variable surface at all -- it answers
+`EFI_INVALID_PARAMETER` to BOTH packages, the correctly-KeK-signed one
+included -- so a full gate run there fails the positive leg, which is the
+correct verdict for a build that cannot satisfy an enforcement claim.
+Consequently:
+
+- Acceptance is **firmware support measured**, not a property of the
+  host gate: the bytes the `.ms` build accepts are refused outright by a
+  build that lacks the surface.
+- The gate carries this as an opt-in control
+  (`SECBOOT_CROSS_BUILD_CODE=<code image>`), asserting on the second
+  build: the stub ran, the store asked for the write, the KeK package was
+  REFUSED (not accepted), and the status is the measured
+  `EFI_INVALID_PARAMETER`. If a future build starts accepting, the
+  control fails with the message that such a build belongs in the
+  acceptance leg -- a red that names its own resolution.
+- The control refuses to run against the same image as the main leg, so
+  "a control against itself" cannot pass.
+
+CI runs it on the weekly drift schedule only, because the distro's plain
+OVMF build is an external input whose behaviour can change without a push
+to this repository.
+
+### What remains open (unchanged in kind)
+
+Delivery, scheduling and fleet verification are platform process; real
+firmware beyond the two builds in this tree; and the `.ms` build remains
+the only acceptance measurement available here. None of that is claimed
+as covered anywhere.
 
 ## Consequences
 
