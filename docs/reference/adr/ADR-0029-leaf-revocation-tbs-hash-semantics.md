@@ -1,7 +1,7 @@
 ---
 title: Leaf Revocation by dbx TBS Hash — the Enforcement Semantics the Gates Enforce
 document_id: ADR-0029
-version: 1.4.0
+version: 1.5.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-10-29
@@ -393,10 +393,110 @@ to this repository.
 
 ### What remains open (unchanged in kind)
 
-Delivery, scheduling and fleet verification are platform process; real
-firmware beyond the two builds in this tree; and the `.ms` build remains
-the only acceptance measurement available here. None of that is claimed
-as covered anywhere.
+Delivery, rollout scheduling and a fleet inventory are platform process;
+real firmware beyond the builds measured here; and the `.ms` surface
+remains the only acceptance measurement available. None of that is
+claimed as covered anywhere.
+
+## Implementation Note (2026-11-01, third): the fleet end, and a third
+## firmware build carrying the same assertions
+
+### The fleet end: a store that CARRIES a revocation vs a machine that
+### ENFORCES one
+
+Composition and acceptance were covered. What was still missing is the
+observation an operator actually needs after a rollout: does THIS store
+refuse THAT certificate. `tools/verify_dbx_store.py` answers it for an
+edk2 varstore (read through `virt-fw-vars --output-json`) or for a bare
+list / auth2 package, and it distinguishes the verdicts that mean
+different things operationally rather than collapsing them into a
+boolean:
+
+- **revoked, effective** -- an enforced entry exists and its revocation
+  date is not later than `--at` (default: today);
+- **revoked, not yet** -- the entry exists but firmware will only start
+  refusing from its `EFI_TIME`. REFUSED by default, because "we revoked
+  it" is false today; `--allow-pending` accepts a deliberate schedule;
+- **present, not enforced** -- the target's hash sits in a class the
+  kernel's walk does not read (an `EFI_CERT_SHA256` image-hash list, or
+  the SHA-1/224/384/512 forms ADR-0030 reports). REFUSED, naming
+  ADR-0030: a store can look like it carries the revocation while no
+  machine refuses anything;
+- **absent** -- no enforced entry, including the case of no dbx variable
+  at all.
+
+`--absent <cert>` is the other direction: assert the certificate the
+rotation issued is NOT revoked in that store, which is how an over-broad
+revocation is caught before it is discovered as a fleet outage.
+
+The To-Be-Signed hash is derived by the verifier's own DER walk, NOT by
+calling the helper the ceremony signs with: a checker that shares the
+signer's implementation can only restate it, and this repository has
+already shipped one defect (the `EFI_CERT_X509_SHA256` field order) that
+was exactly that. `tools/verify_dbx_store_test.sh` proves every verdict
+bites (both enforced forms pass; absent, scheduled, ignored-class,
+unreadable and over-broad each fail with their own named message) and
+cross-checks the derived hash against `patch_carrier_negatives.py`, a
+different implementation on purpose. It runs in CI on every push.
+
+Measured on the gate's own stores, which is the cross-check that matters
+most (firmware-composed data, not this tool's idea of it):
+
+    $ ./tools/verify_dbx_store.py --store uefi/dist/VARS.ms-secboot-dbxrev.fd \
+          --cert uefi/tools/trust/carrier-dev-leaf-cert.pem
+      match: EFI_CERT_X509_SHA256 -- To-Be-Signed sha256, revoked 2020-01-01
+      effective: 1 enforced entry(ies) revoke CN = Nyrqis dev carrier leaf ... at 2026-11-01
+    PASS
+
+    $ ./tools/verify_dbx_store.py --store uefi/dist/VARS.ms-secboot-dbxcert.fd \
+          --cert uefi/tools/trust/carrier-dev-leaf-cert.pem
+      match: EFI_CERT_X509 -- whole-certificate byte match
+    PASS
+
+and the dev ceremony's package, whose stamp is deliberately in the
+future, is refused until that date as designed (`revoked only FROM
+2027-01-01 ... pass --allow-pending`).
+
+The operator sequence (custody, ceremony, artifact check, delivery,
+fleet check, and a table mapping each refusal to its remedy) is
+`docs/how-to/revoke-a-secure-boot-carrier.md`, which states the two
+limits plainly: delivery/scheduling are platform process, and a firmware
+without the time-based-auth surface answers `EFI_INVALID_PARAMETER` to a
+correct package, which looks like a verification failure and is really
+unsupported firmware.
+
+### A third firmware build, same assertions
+
+The cross-build control above measured a build that LACKS the surface.
+The complementary question -- do the acceptance assertions hold on a
+different build that HAS it -- was open, and the two images in this tree
+cannot answer it: both are Ubuntu's `ovmf 2024.02` package, byte for
+byte (`OVMF_CODE_4M.ms.fd` `1286f2a3..` is that package's `secboot`
+image). Measured 2026-11-01 against Debian trixie's edk2 **2025.02**
+(`OVMF_CODE_4M.ms.fd`, sha256 `1a462955..`, with that package's own
+`OVMF_VARS_4M.fd` template) via the gate's existing overrides:
+
+    OVMF_CODE_OVERRIDE=.../OVMF_CODE_4M.ms.fd \
+    OVMF_VARS_OVERRIDE=.../OVMF_VARS_4M.fd \
+        ./tools/qemu_uefi_ms_secboot_test.sh     ->  EXIT=0
+
+Every leg held, including the acceptance sequence on the third build's
+real firmware:
+
+    dbx-update: non-KeK-signed package REFUSED by the firmware = 0x800000000000001a
+    dbx-update: SetVariable(dbx) ACCEPTED 0x5c6 bytes (KeK-signed auth2) -- EFI_SUCCESS
+    dbx-update: read-back VERIFIED
+    dbx-update: trigger consumed (deleted)
+
+so the acceptance claim is not an artefact of one edk2 version: a
+2025.02 build verifies the same bare PKCS#7 `SignedData` over the same
+signed serialization and stores it. The gate needed no change to run
+there -- `OVMF_CODE_OVERRIDE`/`OVMF_VARS_OVERRIDE` already existed, and
+the transcript names the firmware's sha256 in every verdict.
+
+Not claimed: this is still one build per measurement, not a matrix; a
+fleet may carry firmware older than 2024.02 or otherwise patched, and
+that remains unknown until measured on that firmware.
 
 ## Consequences
 
@@ -406,6 +506,13 @@ as covered anywhere.
   gate's firmware-served leg. A parser drift fails at least one of
   them; a GUID-classification drift fails the ADR-apparatus from
   ADR-0028's record (the spec-canonical fixture check) in addition.
+- The fleet end has a verifier that is deliberately a SECOND
+  implementation of the To-Be-Signed hash (`tools/verify_dbx_store.py`),
+  cross-checked against the signing path rather than sharing it, so a
+  defect of the "generator and parser agree with each other" class cannot
+  hide behind the audit that is supposed to catch it. Its "present, not
+  enforced" verdict is ADR-0030 made operational: a store may carry the
+  identity in a class the walk ignores and thereby revoke nothing.
 - A caught-in-the-wild compromise procedure is now concrete: issue the
   replacement leaf (ADR-0028 rotation), compose a dbx entry carrying
   the dead leaf's TBS hash (the `make-dbx-hashlist` tooling shape),

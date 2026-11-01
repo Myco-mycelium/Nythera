@@ -1,7 +1,7 @@
 ---
 title: Reject extra dbx hash types in the enforced revocation surface
 document_id: ADR-0030
-version: 1.1.0
+version: 1.2.0
 status: Rejected
 owners: [Nyrqis Architecture]
 created: 2026-10-31
@@ -148,3 +148,18 @@ extended from width-fillers to real SHA-384/512 To-Be-Signed hashes.
   is firmware behaviour, measured per build by the boot gates (which now
   print the firmware image's sha256 with every verdict), not code this
   repository owns.
+
+## Recheck (2026-11-01): the decision is now enforced at the fleet end
+
+`tools/verify_dbx_store.py` (ADR-0029 v1.5.0) makes this ADR operational
+for an operator: when a certificate's hash appears in a store only under
+one of the seven report-only classes, the verifier's verdict is
+**present, not enforced** and it FAILS, naming this ADR. That is the
+distinction that matters in a fleet audit — the store carries something
+that looks like a revocation and no machine refuses anything — and it is
+now a named refusal rather than a fact an operator has to notice.
+
+The decision itself is unchanged and unopened: the reopen condition
+(`EFI_CERT_X509_SHA384`/`512` for CA revocation in practice) is still
+unmet, and the recheck above measured the shipped artifacts that would
+satisfy it.

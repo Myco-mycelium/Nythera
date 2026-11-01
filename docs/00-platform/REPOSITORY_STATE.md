@@ -2251,6 +2251,28 @@ Process and tooling:
     issues it, while the shipped CA revocation rides the whole-certificate
     branch.
 
+    **The fleet end and a third firmware build (ADR-0029 v1.5.0).**
+    `tools/verify_dbx_store.py` answers "does this store refuse that
+    certificate" for an edk2 varstore or a bare list/auth2 package, and
+    keeps four verdicts apart that mean different things operationally:
+    effective, scheduled-but-not-yet, present-in-a-class-the-walk-ignores
+    (ADR-0030), and absent -- including a store with no dbx at all.
+    `--absent` catches an over-broad revocation that would take out the
+    rotation's replacement. Its To-Be-Signed walk is a second
+    implementation, cross-checked against the signing path rather than
+    sharing it, because a checker that shares the signer's code can only
+    restate it. Verified against the gate's own firmware-composed stores
+    in both enforced forms; the refusal test (nine verdict cases plus a
+    cross-check of the derived hash) runs in CI.
+    The operator sequence is `docs/how-to/revoke-a-secure-boot-carrier.md`.
+    Separately, the acceptance assertions were measured on a THIRD
+    firmware build -- Debian trixie's edk2 2025.02 (`1a462955..`), with
+    that package's own vars template -- and the full `.ms` gate returned
+    `EXIT=0` with the same ACCEPTED/read-back/non-KeK-refused sequence.
+    Both in-tree images turn out to be byte-identical to Ubuntu's 2024.02
+    package, so this is the first build measured beyond it. Still not
+    claimed: a firmware matrix, delivery/scheduling, or fleet inventory.
+
 Resolved earlier this session, kept here for a complete record:
 - ~~Resolve shared ARM instruction-translation approach~~ — ADR-0015 (shared dynamic binary translation, JIT + hot-path cache).
 - ~~Scope VR integration~~ — explicitly deferred to a future milestone (NPS-012 §5.1).

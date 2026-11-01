@@ -70,6 +70,7 @@ nav:
       - Choose an Implementation Language: how-to/choose-an-implementation-language.md
       - Tune Endpoint IPC Rate Limits: how-to/tune-endpoint-rate-limits.md
       - Boot the Live Demo ISO: how-to/boot-the-live-demo.md
+      - Revoke a Secure Boot Carrier: how-to/revoke-a-secure-boot-carrier.md
   - Reference:
       - ADRs:
           - Index: reference/adr/README.md

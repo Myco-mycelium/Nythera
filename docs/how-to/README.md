@@ -10,6 +10,7 @@ NPC-003 §3: each one solves a specific problem in the fewest steps.
 | [Run the Linux Backend Tests](run-linux-backend-tests.md) | Verify the only current implementation, locally, without trusting its own claims |
 | [Tune Endpoint IPC Rate Limits](tune-endpoint-rate-limits.md) | Inspect and size the fair token buckets every IPC endpoint enforces (ADR-0009) |
 | [Verify the Docs Dependency Graph](check-dependency-cycles.md) | Run the cycle checker and understand what it enforces |
+| [Revoke a Secure Boot Carrier](revoke-a-secure-boot-carrier.md) | Take a certificate from "still trusted" to "these machines refuse it", and verify the fleet store actually carries the revocation |
 
 New how-tos **SHOULD** be written only for tasks that can actually be
 performed today; a guide for a not-yet-implemented feature belongs in

@@ -955,4 +955,24 @@ jobs:
             ./tools/ci_emit_annotations.sh target/update-ceremony-refusals.log UpdateCeremony
           fi
           exit $S
+      - name: Fleet dbx verification (both directions)
+        # The other end of the same pipeline: a store that CARRIES a
+        # revocation and a firmware that ENFORCES it are different
+        # facts, and only the second one is enforcement. Exercises every
+        # verdict the fleet verifier can reach -- both enforced forms,
+        # absent, scheduled, present-in-an-ignored-class, unreadable, and
+        # an over-broad revocation caught by --absent -- each asserting
+        # the named line, plus a cross-check of the verifier's DER walk
+        # against the signing path's independent implementation. Hermetic
+        # (throwaway certs, a copy of the varstore template), no QEMU, no
+        # network.
+        run: |
+          mkdir -p target
+          set +e
+          ./tools/verify_dbx_store_test.sh > target/dbx-store-verify.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/dbx-store-verify.log DbxStoreVerify
+          fi
+          exit $S
 

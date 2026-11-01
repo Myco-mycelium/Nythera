@@ -4728,6 +4728,84 @@ measurement.
   enforced by the walk's other branch, while `EFI_CERT_X509_SHA256` is
   enforced because ADR-0028/0029's rotation issues it.
 
+## Phase 10 increment (2026-11-01): the FLEET end of revocation, and the same
+## acceptance assertions on a third firmware build
+
+Three follow-ups from the increment above, each landed with a measurement.
+
+- **The fleet end: a verifier for a store, not for a package.**
+  `tools/verify_dbx_store.py` answers the operator's real question --
+  does THIS store refuse THAT certificate -- for an edk2 varstore (read
+  through `virt-fw-vars --output-json`, the same tooling the gates
+  compose with) or for a bare list / auth2 package. Its verdicts are
+  kept distinct because they mean different things:
+  **revoked, effective**; **revoked, not yet** (the entry's `EFI_TIME`
+  is later than `--at`, so firmware does not refuse it yet -- REFUSED by
+  default, since "we revoked it" would be false); **present, not
+  enforced** (the identity sits in a class the kernel's walk does not
+  read, i.e. ADR-0030's report-only set -- REFUSED, because a store can
+  look revoked while no machine refuses anything); **absent**, including
+  a store with no dbx variable at all. `--absent CERT` asserts the
+  rotation's replacement is NOT revoked, which is how an over-broad
+  revocation is caught before it becomes a fleet outage.
+  The To-Be-Signed hash comes from the verifier's OWN DER walk rather
+  than from the helper the ceremony signs with: a checker that shares
+  the signer's implementation can only restate it, and this repo has
+  already shipped one defect of exactly that shape (`EFI_CERT_X509_SHA256`'s
+  field order, 2026-10-30). `tools/verify_dbx_store_test.sh` proves every
+  verdict bites -- both enforced forms pass; absent, scheduled,
+  ignored-class, unreadable and over-broad each fail with their own named
+  message -- and cross-checks the derived hash against
+  `patch_carrier_negatives.py`'s independent implementation. CI runs it
+  on every push.
+  Real-data check (the one that matters, because the data comes from
+  firmware rather than from this tool):
+  ```
+  $ ./tools/verify_dbx_store.py --store uefi/dist/VARS.ms-secboot-dbxrev.fd \
+        --cert uefi/tools/trust/carrier-dev-leaf-cert.pem
+    match: EFI_CERT_X509_SHA256 -- To-Be-Signed sha256, revoked 2020-01-01
+    effective: 1 enforced entry(ies) revoke ... at 2026-11-01
+  PASS
+  $ ./tools/verify_dbx_store.py --store uefi/dist/VARS.ms-secboot-dbxcert.fd \
+        --cert uefi/tools/trust/carrier-dev-leaf-cert.pem
+    match: EFI_CERT_X509 -- whole-certificate byte match
+  PASS
+  ```
+  and the ceremony's package (stamped 2027-01-01 by design) is refused as
+  `revoked only FROM 2027-01-01 ... pass --allow-pending`, which is the
+  scheduled-not-effective verdict doing its job.
+- **The operator sequence is written down.**
+  `docs/how-to/revoke-a-secure-boot-carrier.md` runs from custody through
+  ceremony, artifact check, delivery and fleet check, with a table that
+  maps each refusal to its remedy. Two limits are stated there rather
+  than implied: delivery and scheduling are platform process, and a
+  firmware without the time-based-auth surface answers
+  `EFI_INVALID_PARAMETER` to a CORRECT package -- which looks like a
+  verification failure and is really unsupported firmware.
+- **A third firmware build carries the same assertions.** The two
+  images in this tree are both Ubuntu `ovmf 2024.02`, byte for byte
+  (`OVMF_CODE_4M.ms.fd` `1286f2a3..`), so the cross-build control's
+  earlier measurement was "a build WITHOUT the surface". Measured
+  2026-11-01 against Debian trixie's edk2 **2025.02**
+  (`OVMF_CODE_4M.ms.fd` sha256 `1a462955..`, with that package's own
+  vars template), full gate:
+  ```
+  OVMF_CODE_OVERRIDE=.../OVMF_CODE_4M.ms.fd \
+  OVMF_VARS_OVERRIDE=.../OVMF_VARS_4M.fd \
+      ./tools/qemu_uefi_ms_secboot_test.sh   ->  EXIT=0
+  ```
+  with the acceptance sequence reproduced on that firmware:
+  ```
+  dbx-update: non-KeK-signed package REFUSED by the firmware = 0x800000000000001a
+  dbx-update: SetVariable(dbx) ACCEPTED 0x5c6 bytes (KeK-signed auth2) -- EFI_SUCCESS
+  dbx-update: read-back VERIFIED
+  dbx-update: trigger consumed (deleted)
+  ```
+  No gate change was needed -- `OVMF_CODE_OVERRIDE`/`OVMF_VARS_OVERRIDE`
+  already existed -- and every verdict in the transcript names the
+  firmware's sha256. Not claimed: one build per measurement, not a
+  matrix; firmware older than 2024.02 or otherwise patched is unmeasured.
+
 ## Bugs found and fixed during Phase 1 bring-up
 
 Documented because each one is a real, non-obvious pitfall, and this is
