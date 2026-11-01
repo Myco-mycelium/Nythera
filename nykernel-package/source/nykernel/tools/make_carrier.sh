@@ -152,6 +152,17 @@ if [[ ! -s "$STRAY_CRT" ]] || [[ "$(mod_of_cert "$STRAY_CRT")" != "$(mod_of_key 
         -addext keyUsage=critical,keyCertSign,cRLSign \
         -out "$STRAY_CRT"
 fi
+# build.sh composes the stray's To-Be-Signed hash dbx blob from a DER form
+# of this certificate, and only the PEM was generated here: on a fresh tree
+# (no trust/ directory) build.sh died with FileNotFoundError on
+# carrier-neg-stray-cert.der, so a checkout could not be built from nothing.
+# Derived here, from the PEM that was just ensured, and re-derived whenever
+# the PEM is newer than the DER.
+STRAY_DER=uefi/tools/trust/carrier-neg-stray-cert.der
+if [[ ! -s "$STRAY_DER" ]] || [[ "$STRAY_CRT" -nt "$STRAY_DER" ]]; then
+    echo "==> exporting the stray certificate in DER (uefi/tools/trust/carrier-neg-stray-cert.der)"
+    openssl x509 -in "$STRAY_CRT" -outform DER -out "$STRAY_DER"
+fi
 echo "==> signing the neg-anchor negative carrier with the STRAY pair"
 openssl cms -sign -binary -md sha256 -noattr \
     -in "$KERNEL" -signer "$STRAY_CRT" -inkey "$STRAY_KEY" \

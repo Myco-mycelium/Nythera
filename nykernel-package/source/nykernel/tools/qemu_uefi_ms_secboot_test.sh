@@ -272,7 +272,15 @@ echo "==> positive boot: signed stub under enforcement"
 boot_qemu "$ESP_SIGNED" target/qemu-uefi-ms-secboot-positive.log 480
 POS_STATUS=$?
 echo "--- positive serial (key lines) ---"
-grep -a -E "SecureBoot|PK variable|carrier verify|Ready|Access Denied" \
+# `dbx-update` is in this pattern because the POS_OK check below asserts
+# those exact lines: without them in the transcript, a leg that fails the
+# check gives a reader no evidence of WHICH line was missing, and an
+# external consumer (tools/firmware_matrix.sh classifies a build without
+# the auth surface by the SetVariable status printed here) cannot see the
+# fact the gate judged on. Measured 2026-11-01: the matrix's first run
+# reported two builds as "unclassifiable" purely because this pattern
+# omitted the lines, not because their behaviour was unknown.
+grep -a -E "SecureBoot|PK variable|carrier verify|Ready|Access Denied|dbx-update" \
     target/qemu-uefi-ms-secboot-positive.log || true
 echo "-----------------------------------"
 POS_OK=0

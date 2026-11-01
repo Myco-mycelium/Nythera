@@ -134,27 +134,51 @@ is why step 2 names the enrolled KEK explicitly.
 
 ## 6. Verify the machines, in both directions
 
-Point the verifier at a store collected from the fleet (`virt-fw-vars`
-reads edk2 varstores) or at a whole fleet directory:
+Point the verifier at one store (`virt-fw-vars` reads edk2 varstores) or
+at the whole collection in one call:
 
 ```
-for s in collected/*.fd; do
-    ./tools/verify_dbx_store.py --store "$s" \
-        --cert path/to/dead-leaf.pem \
-        --absent path/to/replacement-leaf.pem
-done
+./tools/verify_dbx_store.py --fleet collected/ \
+    --cert path/to/dead-leaf.pem \
+    --absent path/to/replacement-leaf.pem
 ```
+
+Every file in `collected/` matching `--fleet-glob` (default `*.fd`) is one
+machine's store; the machine is named by its file. The run ends with a
+per-machine line and a distribution, which is the part you report:
+
+```
+== fleet summary: 1 collection(s), 3 machine(s), target CN = Nyrqis dev carrier leaf
+   PASS  machine-01.fd                  enforcing (EFI_CERT_X509_SHA256)
+   PASS  machine-02.fd                  enforcing (EFI_CERT_X509_SHA256)
+   FAIL  machine-03.fd                  no-dbx-variable: no enforced revocation entry for ...
+   3 machine(s): 2 enforcing, 1 no-dbx-variable
+FAIL: 1 of 3 artifact(s) do not revoke ... (each fact above is named)
+```
+
+The categories are what make the report usable at fleet scale: `enforcing`,
+`scheduled`, `no-dbx-variable`, `absent`, `ignored-class`, `over-broad`,
+`unreadable`. `--json` carries the same category per machine.
+
+An empty directory is refused (`auditing an empty fleet proves nothing`)
+rather than reported as a clean audit, and the run exits non-zero if any
+machine is not enforcing.
+
+If the revocation is scheduled for a later date, audit as of that date
+with `--at 2027-01-01` instead of `--allow-pending`: `--allow-pending`
+says "the schedule is intended", `--at` says "here is the date this
+question is being asked about".
 
 `--absent` is the cheap check that catches an over-broad revocation: it
 asserts the replacement certificate is **not** revoked in that store. A
 revocation that covers the replacement breaks the rotation, and it is
 invisible if you only check the dead leaf.
 
-A passing store reports the facts it was decided on:
+A passing run reports the facts it was decided on:
 
 ```
-PASS: 1 artifact(s) revoke CN = Nyrqis dev carrier leaf (serial 13452F6F..) through
-      an enforced dbx form, effective at 2026-11-01, and do not revoke the 1
+PASS: 2 artifact(s) revoke CN = Nyrqis dev carrier leaf (serial 13452F6F..) through
+      an enforced dbx form, effective at 2027-01-01, and do not revoke the 1
       certificate(s) named --absent
 ```
 
@@ -171,6 +195,8 @@ PASS: 1 artifact(s) revoke CN = Nyrqis dev carrier leaf (serial 13452F6F..) thro
 | `... appears as <class> ... the kernel's revocation walk does not read` | The store carries the identity in a class we ignore (ADR-0030) | The machine will **not** refuse the carrier; re-issue in an enforced form |
 | `... is revoked only FROM <date>, later than --at` | Scheduled, not in force | Correct if intended (`--allow-pending`); otherwise move the stamp |
 | `absent-check ... this store revokes it too` | The revocation covers the replacement | Stop: check the composed list against the intended certificate |
+| `--fleet ...: no files match '*.fd'` | The collection directory is empty or the glob is wrong | Point `--fleet` at the stores, or pass `--fleet-glob`; an empty audit is not a clean audit |
+| `FAIL  1 of N artifact(s) do not revoke` | At least one machine in the fleet is not enforcing | Read the per-machine lines and the distribution above it; the categories say what to fix |
 
 ## What this does not do
 
@@ -183,6 +209,9 @@ PASS: 1 artifact(s) revoke CN = Nyrqis dev carrier leaf (serial 13452F6F..) thro
   in this tree by the `.ms` gate; a machine whose firmware lacks it refuses
   the update with `EFI_INVALID_PARAMETER` (`0x8000000000000002`), which
   looks like a verification failure and is really an unsupported firmware.
+  To measure several firmware builds at once instead of one per session,
+  `tools/firmware_matrix.sh` runs the same gate against each build you name
+  and writes one table of firmware sha256 → expected → measured verdict.
 - It does not check the revocation is effective in the stub's own walk as
   well: `verify_dbx_store.py` reads the *store*, and the kernel's walk is
   the second line of defence, not a substitute for the firmware's.
@@ -192,3 +221,9 @@ PASS: 1 artifact(s) revoke CN = Nyrqis dev carrier leaf (serial 13452F6F..) thro
 - [ADR-0029: leaf revocation by dbx TBS hash](../reference/adr/ADR-0029-leaf-revocation-tbs-hash-semantics.md) — the semantics, the two enforced forms, and the composition-vs-update boundary
 - [ADR-0030: reject extra dbx hash types](../reference/adr/ADR-0030-dbx-hash-type-scope.md) — why the other classes are reported and not enforced
 - [ADR-0028: real keys for ADR-0014](../reference/adr/ADR-0028-real-keys-and-moklist-content.md) — the offline-root hierarchy this ceremony's KEK belongs to
+
+This page is rehearsed: `tools/runbook_rehearsal.sh` runs every step above
+on a freshly generated chain (anchor refusal, ceremony, manifest sha256,
+scheduled-vs-in-force artifact check, store composition, a clean and a
+mixed fleet audit) and fails when the page and the tools stop agreeing.
+It runs in CI on every push.

@@ -15,7 +15,16 @@ This tool reads the second fact:
     ./tools/verify_dbx_store.py --store VARS.fd --cert leaf.pem
     ./tools/verify_dbx_store.py --store a.fd --store b.fd --cert leaf.pem \
                                 --absent replacement.pem
+    ./tools/verify_dbx_store.py --fleet collected/ --cert leaf.pem
     ./tools/verify_dbx_store.py --dbx composed-list.der --cert leaf.pem
+
+`--fleet DIR` audits a whole collected fleet in one call: every file in
+DIR matching `--fleet-glob` (default `*.fd`) is a machine's store, and
+the run ends with a per-machine summary line plus a count of how many
+machines hold each kind of refusal, so a rollout can be reported as "412
+of 480 enforcing, 68 with no dbx variable" instead of a wall of blocks.
+The machine name is the store's file name, prefixed with the directory it
+was collected into.
 
 A `--store` is an edk2/OVMF variable store image (what `virt-fw-vars`
 reads and writes); the dbx bytes come out of it via
@@ -63,6 +72,7 @@ Requires: virt-fw-vars on PATH (or in ~/.local/bin) for `--store`.
 
 import base64
 import datetime
+import fnmatch
 import hashlib
 import json
 import os
@@ -279,14 +289,17 @@ def scan(lists, ents, der, tbs_bytes):
 
 
 def check(store, dbx_bytes, der, label, at, allow_pending, absent):
-    """Returns (facts, failures) -- facts are what was seen, failures are
-    named statements about why this store does not satisfy the request."""
+    """Returns (facts, failures). Facts are what was seen; a failure is a
+    (category, message) pair -- the message is the named statement, the
+    category is what makes a fleet summary answer "why" for 480 machines
+    without a human reading 480 blocks."""
     if dbx_bytes is None:
         return (
             [f"store {store} has no dbx variable under the image-security-database "
              f"GUID {IMAGE_SECURITY_DB}"],
-            [f"no enforced revocation entry for {label}: this store has no dbx "
-             f"variable at all, so it revokes no certificate"])
+            [("no-dbx-variable",
+              f"no enforced revocation entry for {label}: this store has no dbx "
+              f"variable at all, so it revokes no certificate")])
     lists, ents = entries(dbx_bytes)
     tbs = cert_tbs(der)
     tbs_sha256 = hashlib.sha256(tbs).hexdigest()
@@ -301,15 +314,17 @@ def check(store, dbx_bytes, der, label, at, allow_pending, absent):
     if not found:
         if unenforced:
             for u in unenforced:
-                failures.append(
+                failures.append((
+                    "ignored-class",
                     f"target {label} appears as {u['form']} ({u['detail']}) -- a class "
                     f"the kernel's revocation walk does not read (ADR-0030), so this "
-                    f"store does NOT revoke it")
+                    f"store does NOT revoke it"))
         else:
-            failures.append(
+            failures.append((
+                "absent",
                 f"no enforced revocation entry for {label} in this store: neither an "
                 f"EFI_CERT_X509 whole-certificate match nor an EFI_CERT_X509_SHA256 "
-                f"entry over this certificate's To-Be-Signed sha256")
+                f"entry over this certificate's To-Be-Signed sha256"))
     else:
         for m in found:
             facts.append(f"  match: {m['form']} -- {m['detail']}")
@@ -321,11 +336,12 @@ def check(store, dbx_bytes, der, label, at, allow_pending, absent):
                 continue
             when, _ = efi_time(m["stamp"])
             if when is None:
-                failures.append(
+                failures.append((
+                    "bad-stamp",
                     f"target {label}: an enforced {m['form']} entry carries an "
                     f"unreadable EFI_TIME ({fmt_time(m['stamp'])}) -- firmware's "
                     f"comparison against it is undefined, so this is not a usable "
-                    f"revocation")
+                    f"revocation"))
             elif when <= at:
                 effective.append(m)
             else:
@@ -335,11 +351,12 @@ def check(store, dbx_bytes, der, label, at, allow_pending, absent):
                 facts.append(f"  pending: {m['form']} becomes effective {when.isoformat()} "
                              f"(--allow-pending)")
             else:
-                failures.append(
+                failures.append((
+                    "scheduled",
                     f"target {label} is revoked only FROM {when.isoformat()} "
                     f"({m['form']}), which is later than --at {at.isoformat()}: firmware "
                     f"does not revoke early, so this store does not revoke it yet "
-                    f"(pass --allow-pending if the schedule is intended)")
+                    f"(pass --allow-pending if the schedule is intended)"))
         if effective:
             facts.append(f"  effective: {len(effective)} enforced entry(ies) revoke "
                          f"{label} at {at.isoformat()}")
@@ -358,16 +375,18 @@ def check(store, dbx_bytes, der, label, at, allow_pending, absent):
                     facts.append(f"  absent-check {alabel}: scheduled from "
                                  f"{when.isoformat()} (--allow-pending)")
                 else:
-                    failures.append(
+                    failures.append((
+                        "absent-scheduled",
                         f"absent-check {alabel}: an enforced {m['form']} entry revokes it "
                         f"from {when.isoformat()}, later than --at {at.isoformat()} -- "
                         f"a scheduled revocation of a certificate that must stay valid "
-                        f"(pass --allow-pending to accept the schedule)")
+                        f"(pass --allow-pending to accept the schedule)"))
         for when, m in live:
-            failures.append(
+            failures.append((
+                "over-broad",
                 f"absent-check {alabel} FAILED: this store revokes it too "
                 f"({m['form']}, {m['detail']}) -- a revocation that covers the "
-                f"replacement certificate is an over-broad revocation")
+                f"replacement certificate is an over-broad revocation"))
         if not afound and aunenforced:
             facts.append(f"  absent-check {alabel}: present only in a non-enforced class "
                          f"({aunenforced[0]['form']}), which does not revoke it")
@@ -375,10 +394,11 @@ def check(store, dbx_bytes, der, label, at, allow_pending, absent):
 
 
 def main(argv):
-    stores, dbxs, certs, absents = [], [], [], []
+    stores, dbxs, certs, absents, fleets = [], [], [], [], []
     at = datetime.date.today()
     allow_pending = False
     as_json = False
+    fleet_glob = "*.fd"
     args = list(argv[1:])
     while args:
         a = args.pop(0)
@@ -386,6 +406,14 @@ def main(argv):
             if not args:
                 return usage("--store needs a path")
             stores.append(args.pop(0))
+        elif a == "--fleet":
+            if not args:
+                return usage("--fleet needs a directory")
+            fleets.append(args.pop(0))
+        elif a == "--fleet-glob":
+            if not args:
+                return usage("--fleet-glob needs a pattern")
+            fleet_glob = args.pop(0)
         elif a == "--dbx":
             if not args:
                 return usage("--dbx needs a path")
@@ -417,9 +445,29 @@ def main(argv):
 
     if len(certs) != 1:
         return usage("exactly one --cert is required")
+
+    # A fleet directory expands into one store per machine, sorted so two
+    # runs over the same collection report in the same order. An empty (or
+    # unreadable) directory is refused rather than reported as "0 failures":
+    # auditing nothing and auditing everything successfully are not the same
+    # verdict, and a summary that conflates them is worse than no summary.
+    groups = {}
+    for d in fleets:
+        if not os.path.isdir(d):
+            return usage(f"--fleet {d}: not a directory")
+        found = sorted(f for f in os.listdir(d)
+                       if fnmatch.fnmatch(f, fleet_glob)
+                       and os.path.isfile(os.path.join(d, f)))
+        if not found:
+            return usage(f"--fleet {d}: no files match '{fleet_glob}' -- auditing an "
+                         f"empty fleet proves nothing")
+        for f in found:
+            p = os.path.join(d, f)
+            groups[p] = {"group": d, "machine": f}
+            stores.append(p)
     targets = stores + dbxs
     if not targets:
-        return usage("one or more --store or --dbx paths are required")
+        return usage("one or more --store, --fleet or --dbx paths are required")
 
     try:
         der = load_cert(certs[0])
@@ -432,6 +480,7 @@ def main(argv):
     results = []
     rc = 0
     for path in targets:
+        where = groups.get(path, {})
         try:
             if path in stores:
                 dbx_bytes, attr = dbx_from_store(path)
@@ -451,13 +500,17 @@ def main(argv):
                 facts.insert(0, f"package {path} (form {doc['form']}"
                                 + (f", stamp {doc['stamp']}" if doc["stamp"] else "") + ")")
         except (OSError, ValueError, RuntimeError, struct.error) as exc:
-            results.append({"path": path, "ok": False,
-                            "facts": [], "failures": [f"cannot read {path}: {exc}"]})
+            results.append({"path": path, "ok": False, "facts": [],
+                            "failures": [{"category": "unreadable",
+                                          "message": f"cannot read {path}: {exc}"}],
+                            **where})
             rc = 1
             continue
         ok = not failures
         rc = rc or (0 if ok else 1)
-        results.append({"path": path, "ok": ok, "facts": facts, "failures": failures})
+        results.append({"path": path, "ok": ok, "facts": facts,
+                        "failures": [{"category": c, "message": m}
+                                     for c, m in failures], **where})
 
     if as_json:
         print(json.dumps({"target": certs[0], "label": label,
@@ -469,7 +522,39 @@ def main(argv):
         for f in r["facts"]:
             print(f"   {f}" if not f.startswith("  ") else f"   {f}")
         for f in r["failures"]:
-            print(f"   FAIL: {f}")
+            print(f"   FAIL: {f['message']}")
+
+    # The fleet view: one line per machine, then how many machines hold
+    # each KIND of refusal. A rollout report needs the distribution, not
+    # 480 blocks; the blocks above stay for whoever has to fix one.
+    if fleets:
+        print()
+        print(f"== fleet summary: {len(fleets)} collection(s), "
+              f"{len(results)} machine(s), target {label}")
+        for r in results:
+            name = r["machine"] if "machine" in r else r["path"]
+            if r["ok"]:
+                line = "enforcing"
+                for f in r["facts"]:
+                    if "match: " in f:
+                        line = "enforcing (" + f.split("match: ")[1].split(" -- ")[0] + ")"
+                        break
+                print(f"   PASS  {name:32} {line}")
+            else:
+                first = r["failures"][0]
+                print(f"   FAIL  {name:32} {first['category']}: "
+                      f"{shorten(first['message'], 96)}")
+        counts = {}
+        for r in results:
+            if r["ok"]:
+                counts["enforcing"] = counts.get("enforcing", 0) + 1
+            else:
+                for c in {f["category"] for f in r["failures"]}:
+                    counts[c] = counts.get(c, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        print(f"   {len(results)} machine(s): "
+              + ", ".join(f"{n} {name}" for name, n in ranked))
+
     bad = [r for r in results if not r["ok"]]
     if bad:
         print(f"FAIL: {len(bad)} of {len(results)} artifact(s) do not revoke {label} "
@@ -480,6 +565,15 @@ def main(argv):
           + (f", and do not revoke the {len(absents)} certificate(s) named --absent"
              if absents else ""))
     return 0
+
+
+def shorten(text, limit):
+    """Cut at a word boundary -- a summary line that ends mid-word reads as
+    a corrupted record rather than a truncated one."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return (cut or text[:limit]) + " .."
 
 
 def cert_label(path, der):

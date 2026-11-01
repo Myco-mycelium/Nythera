@@ -955,7 +955,7 @@ jobs:
             ./tools/ci_emit_annotations.sh target/update-ceremony-refusals.log UpdateCeremony
           fi
           exit $S
-      - name: Fleet dbx verification (both directions)
+      - name: Fleet dbx verification (both directions, one machine at a time and as a fleet)
         # The other end of the same pipeline: a store that CARRIES a
         # revocation and a firmware that ENFORCES it are different
         # facts, and only the second one is enforcement. Exercises every
@@ -963,9 +963,12 @@ jobs:
         # absent, scheduled, present-in-an-ignored-class, unreadable, and
         # an over-broad revocation caught by --absent -- each asserting
         # the named line, plus a cross-check of the verifier's DER walk
-        # against the signing path's independent implementation. Hermetic
-        # (throwaway certs, a copy of the varstore template), no QEMU, no
-        # network.
+        # against the signing path's independent implementation. Also the
+        # --fleet path: a mixed collection must report one verdict per
+        # machine and count each refusal kind once, a clean collection
+        # must pass, and an EMPTY one must fail rather than come back as
+        # a clean audit of nothing. Hermetic (throwaway certs, a copy of
+        # the varstore template), no QEMU, no network.
         run: |
           mkdir -p target
           set +e
@@ -973,6 +976,50 @@ jobs:
           set -e
           if [[ $S -ne 0 ]]; then
             ./tools/ci_emit_annotations.sh target/dbx-store-verify.log DbxStoreVerify
+          fi
+          exit $S
+      - name: Firmware matrix driver (verdict logic, no QEMU)
+        # tools/firmware_matrix.sh turns N gate runs into one artifact:
+        # firmware sha256 -> expected verdict -> measured verdict. Its own
+        # logic is what this step tests, against a stub gate, so a broken
+        # driver cannot hide behind a slow green boot: both verdicts pass
+        # through, and a mislabelled expectation (a pass expected from a
+        # build that refuses the auth surface, or the inverse), an
+        # unclassifiable failure, a firmware listed twice, a missing
+        # image, a transcript that does not name the image it claims, an
+        # inherited cross-build control and both usage errors each fail
+        # with their own named message. The matrix ITSELF (real boots) is
+        # a scheduled measurement, not a push-time job.
+        run: |
+          mkdir -p target
+          set +e
+          ./tools/firmware_matrix_test.sh > target/firmware-matrix-driver.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/firmware-matrix-driver.log FirmwareMatrix
+          fi
+          exit $S
+      - name: Runbook rehearsal (the revocation how-to, executed end to end)
+        # docs/how-to/revoke-a-secure-boot-carrier.md is a claim about
+        # tools, and claims about tools rot. This step DELETES the
+        # generated trust directory, rebuilds the dev chain, and then
+        # walks the page's own sequence: the anchor refusal, the ceremony
+        # and its manifest sha256, the future-stamp artifact check (both
+        # the scheduled refusal and --allow-pending), a store composed
+        # from the package, and a clean vs mixed fleet audit through
+        # --fleet, plus the over-broad --absent refusal. It finishes by
+        # checking the page still documents the flags it exercised and no
+        # longer shows the superseded per-store loop, so the page cannot
+        # drift from the tools. Last in this job because it regenerates
+        # the chain the gates above composed stores from.
+        run: |
+          mkdir -p target
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          ./tools/runbook_rehearsal.sh > target/runbook-rehearsal.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/runbook-rehearsal.log RunbookRehearsal
           fi
           exit $S
 

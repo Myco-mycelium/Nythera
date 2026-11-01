@@ -2271,7 +2271,44 @@ Process and tooling:
     `EXIT=0` with the same ACCEPTED/read-back/non-KeK-refused sequence.
     Both in-tree images turn out to be byte-identical to Ubuntu's 2024.02
     package, so this is the first build measured beyond it. Still not
-    claimed: a firmware matrix, delivery/scheduling, or fleet inventory.
+    claimed: delivery/scheduling or fleet inventory.
+
+    **The cross dimension is an artifact now, and the runbook runs itself
+    (ADR-0029 v1.6.0).** `tools/firmware_matrix.sh` runs the `.ms` gate
+    against several firmware builds in one invocation and writes a table of
+    firmware sha256 -> expected -> measured verdict (`matrix-summary.txt`,
+    `matrix-summary.json`). Each entry carries an expectation (`pass` or
+    `refuse-auth`, the measured unsupported-surface verdict for a build
+    without the time-based-auth variable surface), byte-identical entries
+    are refused (one build measured twice is not two builds), each leg's
+    transcript is pinned to the image and sha256 it claims, and an
+    inherited `SECBOOT_CROSS_BUILD_CODE` is cleared because inside a matrix
+    the matrix IS the cross dimension. Its verdict logic is tested against a
+    stub gate in CI on every push; the matrix itself is a scheduled
+    measurement. The fleet verifier gained `--fleet DIR`: one verdict per
+    machine (named by file) plus a distribution by refusal category
+    (`2 machine(s): 1 enforcing, 1 no-dbx-variable`), `--json` carrying the
+    same categories, and an EMPTY collection refused rather than reported as
+    a clean audit of nothing. `tools/runbook_rehearsal.sh` executes
+    `docs/how-to/revoke-a-secure-boot-carrier.md` end to end on a deleted,
+    freshly rebuilt chain -- and the rehearsal found a defect unrelated to
+    revocation: `build.sh` failed on a fresh tree with `FileNotFoundError`
+    for `carrier-neg-stray-cert.der`, because `make_carrier.sh` generated the
+    stray certificate only as PEM while `build.sh` composed a dbx blob from
+    its DER form. "A built tree" was therefore reachable only for someone
+    who already had one; the DER is now derived from the PEM. All three
+    (matrix driver test, fleet cases, rehearsal) run in CI on every push.
+    The first real matrix run (`MATRIX EXIT=0`, four builds, one artifact)
+    passed on both enforcing builds -- Ubuntu 2024.02 `.ms` (`1286f2a3217d`)
+    and Debian 2025.02 `.ms` (`1a4629557443`), both ACCEPTING the KeK-signed
+    package with the read-back verified -- and both builds WITHOUT the
+    surface (`ad23261d4311`, `624e06de18b4`) answered
+    `EFI_INVALID_PARAMETER` to the non-KeK control AND to the correctly
+    signed package. That run also found a transcript defect: the gate's
+    positive-leg key-line `grep` omitted `dbx-update`, so the two facts its
+    own POS_OK check asserts were judged but never shown -- the matrix could
+    not see the refusal evidence and first reported those two builds as
+    unclassifiable. The pattern includes `dbx-update` now.
 
 Resolved earlier this session, kept here for a complete record:
 - ~~Resolve shared ARM instruction-translation approach~~ — ADR-0015 (shared dynamic binary translation, JIT + hot-path cache).

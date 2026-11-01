@@ -498,6 +498,120 @@ Not claimed: this is still one build per measurement, not a matrix; a
 fleet may carry firmware older than 2024.02 or otherwise patched, and
 that remains unknown until measured on that firmware.
 
+## Implementation Note (2026-11-01, fourth): the cross dimension becomes an
+## artifact, the fleet check becomes a report, and the runbook runs itself
+
+### The matrix: which firmware builds were measured is now recorded, not
+### remembered
+
+Every acceptance measurement above was one gate run against one image.
+The claim that travelled with it -- "acceptance holds on this firmware" --
+could not be widened by re-reading any file, because the cross dimension
+lived in whichever shell session ran the second build. `tools/firmware_matrix.sh`
+turns that into an artifact: each entry is `<image>[:<expect>[:<vars>]]`,
+each leg is the gate unmodified with `OVMF_CODE_OVERRIDE` set, and the run
+ends with a table of firmware sha256 -> expected -> measured verdict, plus
+`matrix-summary.json` for machine consumption.
+
+The driver adds the accounting the single-image run cannot do, and each
+piece is a way a matrix can lie:
+
+- **one sha256 per entry, duplicates refused.** Two paths to byte-identical
+  firmware would report two verdicts for one build and imply coverage that
+  did not happen;
+- **an expectation per entry.** Not every build in a matrix is expected to
+  enforce. A build without the time-based-auth surface answers
+  `EFI_INVALID_PARAMETER` to a correctly KeK-signed package, which is a
+  real verdict (`refuse-auth`) and not a failure to be hidden or a pass to
+  be mislabelled. A pass expected from such a build, or the inverse, is
+  named as the mislabel it is rather than counted as a matrix failure of
+  unknown kind;
+- **the transcript is pinned to the entry.** The gate prints `firmware
+  under test: <path> (sha256 <sha>)`, so a stale or shared log cannot
+  satisfy a leg;
+- **an inherited `SECBOOT_CROSS_BUILD_CODE` is cleared per leg.** Inside a
+  matrix the matrix IS the cross dimension; inheriting the single-image
+  control would re-run one build inside every leg and report it as
+  coverage.
+
+The driver's own verdict logic is tested hermetically against a stub gate
+(`tools/firmware_matrix_test.sh`): both verdicts pass through, and a
+mislabelled expectation, an unclassifiable failure, a duplicated build, a
+missing image, an unpinned transcript, an inherited cross-build control and
+both usage errors each fail with their own named message. It runs in CI on
+every push; the matrix itself boots, so it is a scheduled measurement.
+
+Measured 2026-11-01, four distinct builds, one run, `MATRIX EXIT=0` (the
+two in-tree images are Ubuntu's `ovmf 2024.02` package and are named for
+what they are):
+
+    FIRMWARE                                     SHA256       EXPECTED     MEASURED     RESULT
+    uefi/tools/OVMF_CODE_4M.ms.fd                1286f2a3217d pass         pass         OK
+    .../root13/.../OVMF_CODE_4M.ms.fd (2025.02)  1a4629557443 pass         pass         OK
+    uefi/tools/OVMF_CODE_4M.fd                   ad23261d4311 refuse-auth  refuse-auth  OK
+    .../root13/.../OVMF_CODE_4M.fd    (2025.02)   624e06de18b4 refuse-auth  refuse-auth  OK
+
+So the acceptance claim spans two enforcing builds of different edk2
+versions -- both ACCEPT the KeK-signed package and verify the read-back --
+and the refusal claim spans two builds of different versions that lack the
+surface, both answering `0x8000000000000002` (`EFI_INVALID_PARAMETER`) to
+the non-KeK control AND to the correctly-signed package. One run, one
+artifact naming all four.
+
+The first matrix run reported the two plain builds as *unclassifiable*, and
+that was a real defect rather than an unknown: the gate's positive-leg
+transcript printed only the lines its key-line `grep` selected, which did
+not include `dbx-update` -- so the two facts POS_OK asserts (the SetVariable
+status of each package) were judged but never shown. A consumer could not
+see what the gate saw, and the driver's `refuse-auth` classification had
+nothing to match. The pattern now includes `dbx-update`, which is why the
+lines above are quotable from the transcript rather than from a re-run.
+
+Not claimed: a fleet's firmware. Two builds with the surface and two
+without say nothing about an OEM's 2019 build; the matrix makes adding it a
+line, not a claim.
+
+### The fleet report: one verdict per machine, and the distribution
+
+`--fleet DIR` audits a whole collection in one call (`--fleet-glob`,
+default `*.fd`; the machine is named by its file) and ends with a
+per-machine line plus a count of how many machines hold each kind of
+refusal, which is the sentence a rollout report needs:
+
+    2 machine(s): 1 enforcing, 1 no-dbx-variable
+
+Each failure carries a category (`enforcing`, `scheduled`, `no-dbx-variable`,
+`absent`, `ignored-class`, `over-broad`, `unreadable`) so the summary counts
+kinds rather than repeating prose, and `--json` carries the same category
+per machine. Two accounting decisions are deliberate: an EMPTY collection is
+refused (`auditing an empty fleet proves nothing`) instead of passing as a
+clean audit of nothing, and a non-store file in the directory is ignored by
+the glob rather than read as a machine.
+
+### The runbook, executed
+
+`docs/how-to/revoke-a-secure-boot-carrier.md` is a claim about tools, so
+`tools/runbook_rehearsal.sh` executes it: it DELETES the generated trust
+directory, rebuilds the chain, and then walks the page's own sequence --
+the anchor refusal, the ceremony, the manifest's sha256 recomputed against
+the artifact, the future-stamp artifact check in both directions, a store
+composed from the package, a clean and a mixed fleet audit through
+`--fleet`, and the over-broad `--absent` refusal. It closes by checking the
+page still documents the flags it exercised and no longer shows the
+superseded per-store loop, so the page cannot drift silently. It runs in CI
+on every push.
+
+Rehearsing it found a defect that had nothing to do with revocation:
+`build.sh` failed on a fresh tree with `FileNotFoundError:
+uefi/tools/trust/carrier-neg-stray-cert.der`. `tools/make_carrier.sh`
+generated the stray certificate only as PEM, while `build.sh` composed a dbx
+blob from its DER form -- so "a built tree", the page's first precondition,
+was reachable only by someone who already had one. `make_carrier.sh` now
+derives the DER from the PEM it just ensured (and re-derives it when the PEM
+is newer), so a checkout builds from nothing. The rehearsal also caught its
+own vacuity: a consistency grep against a wrong path passes silently, so
+the page is resolved and checked before any grep runs.
+
 ## Consequences
 
 - `dbx.rs`'s hash-typed branch semantics are pinned three ways: the

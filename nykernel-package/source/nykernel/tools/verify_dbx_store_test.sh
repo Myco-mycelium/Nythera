@@ -21,6 +21,14 @@
 #   unreadable              a dbx payload that does not parse     -> FAIL
 #   over-broad              the replacement is revoked too        -> FAIL
 #                           on --absent replacement
+#   fleet                   three machines with three different
+#                           verdicts in ONE directory             -> FAIL,
+#                           with the per-machine summary counting
+#                           each refusal kind once; a clean fleet of
+#                           two -> PASS; an EMPTY directory -> FAIL
+#                           (auditing nothing is not a clean audit)
+#   fleet JSON              the category behind each machine's
+#                           verdict is machine-readable
 #
 # Each case asserts the exit class AND a named line, so an unrelated
 # crash cannot satisfy it. Hermetic: two throwaway RSA-2048 certificates,
@@ -182,6 +190,55 @@ expect_case overbroad fail "revokes it too" \
 expect_case overbroad-clean ok "do not revoke the 1 certificate(s) named --absent" \
     "$VERIFY" --store "$TMP/store-tbs.fd" --cert "$TMP/dead.der" \
     --absent "$TMP/replacement.der"
+
+# --- fleet mode: one call, one verdict per machine, one distribution ----
+# The counts are the point: "3 machine(s): 1 enforcing, 1 ignored-class,
+# 1 no-dbx-variable" is the report an operator needs after a rollout, and
+# it must not be reachable by a run that silently audited nothing.
+mkdir -p "$TMP/fleet" "$TMP/fleet-clean" "$TMP/fleet-empty"
+cp "$TMP/store-tbs.fd" "$TMP/fleet/machine-a.fd"
+cp "$TMP/base.fd" "$TMP/fleet/machine-b.fd"
+cp "$TMP/store-ignored.fd" "$TMP/fleet/machine-c.fd"
+printf 'not a store\n' >"$TMP/fleet/README.txt"   # must be ignored
+cp "$TMP/store-tbs.fd" "$TMP/fleet-clean/machine-a.fd"
+cp "$TMP/store-tbs.fd" "$TMP/fleet-clean/machine-b.fd"
+
+expect_case fleet-mixed fail \
+    "3 machine(s): 1 enforcing, 1 ignored-class, 1 no-dbx-variable" \
+    "$VERIFY" --fleet "$TMP/fleet" --cert "$TMP/dead.der"
+
+# ... and the per-machine lines must name the machine, not the blob.
+"$VERIFY" --fleet "$TMP/fleet" --cert "$TMP/dead.der" >"$TMP/fleet-mixed.log" 2>&1
+if grep -qF "FAIL  machine-c.fd" "$TMP/fleet-mixed.log" \
+   && grep -qF "PASS  machine-a.fd" "$TMP/fleet-mixed.log" \
+   && ! grep -qF "README.txt" "$TMP/fleet-mixed.log"; then
+    ok "fleet-mixed: every machine named (non-store files ignored by --fleet-glob)"
+else
+    bad "fleet-mixed: the per-machine lines do not name each machine as required"
+    sed 's/^/        /' "$TMP/fleet-mixed.log" | tail -12
+fi
+
+expect_case fleet-clean ok "2 machine(s): 2 enforcing" \
+    "$VERIFY" --fleet "$TMP/fleet-clean" --cert "$TMP/dead.der"
+
+expect_case fleet-empty fail "auditing an empty fleet proves nothing" \
+    "$VERIFY" --fleet "$TMP/fleet-empty" --cert "$TMP/dead.der"
+
+# The category is the part of a fleet verdict a report can be built on.
+"$VERIFY" --fleet "$TMP/fleet" --cert "$TMP/dead.der" --json >"$TMP/fleet.json" 2>&1
+if python3 - "$TMP/fleet.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+cats = {r["machine"]: [f["category"] for f in r["failures"]] for r in doc["results"]}
+assert cats["machine-a.fd"] == [], cats
+assert cats["machine-c.fd"] == ["ignored-class"], cats
+assert cats["machine-b.fd"] == ["no-dbx-variable"], cats
+PY
+then
+    ok "fleet-json: each machine's failure category is machine-readable"
+else
+    bad "fleet-json: the JSON verdict does not carry the categories the summary counts"
+fi
 
 echo
 if [[ "$FAILS" -ne 0 ]]; then
