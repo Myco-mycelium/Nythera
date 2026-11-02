@@ -31,8 +31,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub mod acpi;
 pub mod ata;
 pub mod boot_phase;
+pub mod cursor;
 pub mod device_mode;
 pub mod ps2_aux;
+pub mod service84;
 
 /// The Material 3 home screen from release 1-71's `shell/src/ui.rs`,
 /// compiled straight out of the staged port tree rather than copied, so
@@ -427,12 +429,36 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     // The aux driver's own proof (decoder arithmetic, packet assembler,
     // stray-ID handling) runs on every boot; whether a mouse answered on
     // IRQ12 is a per-machine fact already carried by the bind row.
+    // The `0x84` gfx/input surface: the answers this kernel can actually
+    // give (pointer state, display mode) and a named refusal for every
+    // call it cannot. See `crate::service84` for what that is not.
+    let service_ok = service84::self_test();
+    assert!(
+        service_ok,
+        "service-0x84 self-test failed: a served call returned the wrong value, or an unported call was not refused"
+    );
+
     let aux_selftest_ok = ps2_aux::self_test();
     assert!(
         aux_selftest_ok,
         "ps2-aux self-test failed: the mouse packet decoder or assembler is wrong"
     );
     devices::report(&devices);
+
+    // ---- the pointer: hardware motion -> a drawn, verified pixel --------
+    // Deliberately AFTER the transcript above: the session's two-second
+    // listen window must not sit between a gate's trigger line (the
+    // render) and the facts it reads (the autoload report). The first
+    // version ran it inside the render and `device_mode_test.sh` -- which
+    // screenshots the moment it sees the render line -- raced the report
+    // and failed on a log that was merely late.
+    if let Some(fb) = devices.framebuffer.as_mut() {
+        let pointer_ok = cursor::boot_session(fb);
+        assert!(
+            pointer_ok,
+            "cursor self-test failed: a known motion packet did not move the pointer to the expected pixels"
+        );
+    }
 
     advance(BootPhase::Ready);
     serial_println!("nyrqis kernel: phase 1+2+3-prep complete, boot phase = {} (Ready)", boot_phase::current());

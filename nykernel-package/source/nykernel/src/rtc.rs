@@ -159,7 +159,7 @@ fn bcd_decode(v: u8) -> u8 {
 /// One bounded UIP-wait + read of a single time register. The wait is
 /// bounded so a firmware stuck with UIP set can't hang the boot -- the
 /// caller treats a timeout as a self-test failure rather than a hang.
-unsafe fn read_time_reg(reg: u8, binary: bool) -> Result<u8, &'static str> {
+unsafe fn read_time_reg(reg: u8) -> Result<u8, &'static str> {
     // Bounded UIP wait: ~1 ms worst case in real hardware terms; the
     // bound here is just " visibly bounded", large enough for the real
     // update cycle (~244 us for the whole second rollover, of which the
@@ -171,8 +171,40 @@ unsafe fn read_time_reg(reg: u8, binary: bool) -> Result<u8, &'static str> {
             return Err("UIP never cleared");
         }
     }
-    let raw = cmos_read(reg);
-    Ok(if binary { raw } else { bcd_decode(raw) })
+    Ok(cmos_read(reg))
+}
+
+/// Decodes one register byte for the hardware's reported data mode.
+/// Callers that carry a flag in the top bit (the hour's PM bit in 12-hour
+/// mode) must strip that bit themselves BEFORE decoding -- a previous
+/// version decoded the whole byte and then tested bit 7 of the decoded
+/// value, which is a different number once BCD decoding has run.
+fn decode_field(raw: u8, binary: bool) -> u8 {
+    if binary {
+        raw
+    } else {
+        bcd_decode(raw)
+    }
+}
+
+/// Normalizes a 12-hour register value to 0..=23.
+///
+/// The two noon/midnight values are where a naive `h % 12` decode goes
+/// wrong, and this kernel hit exactly that: at 12:31 the hour register
+/// reads 12 with the PM bit set, `12 % 12` is 0, and noon decoded as
+/// midnight. The table below is the specification's mapping, not an
+/// arithmetic shortcut: 12 AM is 0, 12 PM is 12, everything else is
+/// `h + 12` when PM.
+fn hour_12h_to_24h(hour12: u8, pm: bool) -> Option<u8> {
+    if hour12 == 0 || hour12 > 12 {
+        return None;
+    }
+    Some(match (hour12, pm) {
+        (12, false) => 0,
+        (12, true) => 12,
+        (h, false) => h,
+        (h, true) => h + 12,
+    })
 }
 
 /// Reads the wall-clock time (seconds/minutes/hours), decoding each
@@ -188,31 +220,57 @@ unsafe fn read_time_reg(reg: u8, binary: bool) -> Result<u8, &'static str> {
 /// only ports 0x70/0x71, which no other module here claims, and holds
 /// no locks. Called from `kernel_main`'s self-test.
 pub unsafe fn read_time() -> Result<RtcTime, &'static str> {
-    let status_b = cmos_read(REG_STATUS_B);
-    let binary = status_b & REG_B_BINARY != 0;
-    let hour24 = status_b & REG_B_24HOUR != 0;
+    // Three attempts, then a typed error: the RTC's registers are only
+    // reliably read as a set if nothing updates underneath the walk, and
+    // a mode-register read that disagrees with itself means we cannot
+    // know which decode applies. Retrying is what makes the difference
+    // between "the clock is odd" and "this read failed" visible.
+    let mut last_error = "clock registers did not read consistently";
+    for _ in 0..3 {
+        let status_b = cmos_read(REG_STATUS_B);
+        if cmos_read(REG_STATUS_B) != status_b {
+            last_error = "the mode register read disagreed with itself";
+            continue;
+        }
+        let binary = status_b & REG_B_BINARY != 0;
+        let hour24 = status_b & REG_B_24HOUR != 0;
 
-    // Second then minute then hour (ascending order so a boundary
-    // rollover mid-read carries "forward" -- the low field changing
-    // under us is detectable in self_test via the re-read, and a
-    // second rollover can't move an hour we read AFTER it).
-    let second = read_time_reg(REG_SECONDS, binary)?;
-    let minute_raw = read_time_reg(REG_MINUTES, binary)?;
-    let hour_raw = read_time_reg(REG_HOURS, binary)?;
+        // Ascending field order, plus a second read of the seconds at the
+        // end: if the seconds moved, a rollover happened during the walk
+        // and the fields may belong to two different instants.
+        let second_raw = read_time_reg(REG_SECONDS)?;
+        let minute_raw = read_time_reg(REG_MINUTES)?;
+        let hour_raw = read_time_reg(REG_HOURS)?;
+        let second_again = read_time_reg(REG_SECONDS)?;
+        if second_again != second_raw {
+            last_error = "the clock rolled over during the read";
+            continue;
+        }
 
-    let minute = minute_raw;
-    let hour = if hour24 {
-        hour_raw & 0x3F
-    } else {
-        // 12-hour mode: register bit 7 is PM (raw, pre-decode in
-        // binary mode; post-decode in BCD mode the bit survives to
-        // here either way since bcd_decode clears nothing above
-        // nibble 1) -- normalize to 0..=23.
-        let pm = hour_raw & 0x80 != 0;
-        let base = (hour_raw & 0x7F) % 12;
-        if pm { base + 12 } else { base }
-    };
-    Ok(RtcTime { second, minute, hour })
+        let second = decode_field(second_raw, binary);
+        let minute = decode_field(minute_raw, binary);
+        let hour = if hour24 {
+            decode_field(hour_raw & 0x3F, binary)
+        } else {
+            // Split the PM flag off the RAW byte before decoding: BCD
+            // decoding a byte with bit 7 set yields a value whose bit 7
+            // means something else entirely.
+            let pm = hour_raw & 0x80 != 0;
+            match hour_12h_to_24h(decode_field(hour_raw & 0x7F, binary), pm) {
+                Some(h) => h,
+                None => {
+                    last_error = "12-hour mode reported an hour outside 1..=12";
+                    continue;
+                }
+            }
+        };
+        if second > 59 || minute > 59 || hour > 23 {
+            last_error = "a decoded field is outside its clock range";
+            continue;
+        }
+        return Ok(RtcTime { second, minute, hour });
+    }
+    Err(last_error)
 }
 
 /// Every-boot wall-clock self-test (prints its own results; returns
@@ -236,7 +294,35 @@ pub unsafe fn read_time() -> Result<RtcTime, &'static str> {
 /// 4. **Tick-correlation bound**: the second read happens after
 ///    visibly more periodic ticks than the first (via `ticks()`),
 ///    so the wall clock AND the periodic interrupt are both alive.
+/// The 12-hour decode table, checked against the boundary values that a
+/// naive `h % 12` gets wrong. This runs every boot because it is cheap
+/// and because the alternative is finding out at noon: the first version
+/// of `read_time` reported 12:31 PM as 00:31, and nothing in the boot
+/// chain noticed until a wall-clock self-test happened to run in the
+/// afternoon.
+fn decode_12h_self_test() -> bool {
+    let cases: [(u8, bool, Option<u8>); 7] = [
+        (12, false, Some(0)),  // 12 AM = midnight
+        (12, true, Some(12)),  // 12 PM = noon
+        (1, false, Some(1)),
+        (1, true, Some(13)),
+        (11, true, Some(23)),
+        (0, false, None),  // hour 0 is not a 12-hour value
+        (13, true, None),  // neither is 13
+    ];
+    let mut all = true;
+    for (hour12, pm, want) in cases {
+        all &= hour_12h_to_24h(hour12, pm) == want;
+    }
+    serial_println!(
+        "  rtc 12-hour decode self-test: 12 AM -> 0, 12 PM -> 12, 1 PM -> 13, 11 PM -> 23, and 0/13 refused -- {}",
+        if all { "OK" } else { "FAILED" }
+    );
+    all
+}
+
 pub fn self_test_time_registers() -> bool {
+    let decode_ok = decode_12h_self_test();
     let ticks_before = ticks();
     let t1 = unsafe { read_time() };
     let t1_ok = matches!(t1, Ok(_));
@@ -286,7 +372,7 @@ pub fn self_test_time_registers() -> bool {
         if ticks_ok { "OK" } else { "FAILED" }
     );
 
-    let summary = all_ok_1 && all_ok_2 && order_ok && ticks_ok;
+    let summary = decode_ok && all_ok_1 && all_ok_2 && order_ok && ticks_ok;
     serial_println!(
         "  rtc wall-clock self-test: wall-clock reads decode via the hardware's reported modes and order monotonically -- {}",
         if summary { "OK" } else { "FAILED" }

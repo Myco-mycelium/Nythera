@@ -17,6 +17,8 @@
 //! open Phase 7 work, and FIND-KERNEL-002 (GPU memory clearing between
 //! containers) is untouched by a framebuffer driver.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use x86_64::structures::paging::mapper::MapToError;
 use x86_64::structures::paging::{
     Mapper, OffsetPageTable, Page, PageTableFlags, PhysFrame, Size4KiB,
@@ -34,6 +36,22 @@ pub enum FbError {
     /// would fight the huge-page entries boot.s installed.
     AddressTooLow,
     MapFailed,
+}
+
+/// The bound display mode, published for the `0x84` gfx call: `(w << 32) |
+/// h` semantics without either field needing a lock. Zero means no
+/// framebuffer is bound, which is a different fact from a 0x0 display.
+static BOUND_W: AtomicU32 = AtomicU32::new(0);
+static BOUND_H: AtomicU32 = AtomicU32::new(0);
+
+pub fn bound_mode() -> Option<(u32, u32)> {
+    let w = BOUND_W.load(Ordering::Relaxed);
+    let h = BOUND_H.load(Ordering::Relaxed);
+    if w == 0 || h == 0 {
+        None
+    } else {
+        Some((w, h))
+    }
 }
 
 pub struct Framebuffer {
@@ -91,6 +109,8 @@ pub unsafe fn init(
             Err(_) => return Err(FbError::MapFailed),
         }
     }
+    BOUND_W.store(info.width, Ordering::Relaxed);
+    BOUND_H.store(info.height, Ordering::Relaxed);
     Ok(Framebuffer {
         base: info.addr as *mut u32,
         width: info.width,

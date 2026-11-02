@@ -5,6 +5,54 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-02 (sixth entry) — **a real RTC decode bug the day exposed**: running
+the gates at 12:31 failed the wall-clock self-test on every boot, and the
+cause was ours, not the clock's. `read_time` decoded the hour register's
+whole byte (PM flag included) and only then tested bit 7, and normalized
+12-hour values with `h % 12` — so the noon hour decoded as 0 and 12:31 was
+reported as 00:31. Two fixes: the PM bit is split off the RAW byte before
+BCD decoding (`decode_field`), and the noon/midnight mapping is an explicit
+table (`hour_12h_to_24h`: 12 AM -> 0, 12 PM -> 12, `h + 12` otherwise, 0 and
+13 refused) instead of modulo arithmetic. `read_time` also became a bounded
+3-attempt read that retries when the mode register disagrees with itself or
+the seconds move mid-walk, and rejects an out-of-range decoded field; a
+pure decode self-test (seven boundary cases) now runs every boot, so the
+noon case can never silently regress again.
+
+2026-11-02 (fifth entry) — **the pointer, the `0x84` gfx/input calls, and the
+UEFI live disc** (ADR-0031 v1.3.0).
+
+`src/cursor.rs` is the first consumer of input in this tree: PS/2 packets
+move a drawn 12x18 arrow whose covered pixels are saved and restored per
+move, clamped on-screen, with the hardware's +y-up flipped to screen +y
+down in one place. Every boot proves the synthetic path end to end
+(packet -> assembler -> cursor -> read-back of the arrow's own fill), then
+applies host-driven packets in a 2 s window. `tools/cursor_test.sh` drives
+QEMU's emulated mouse through the monitor and measured 6 host-driven
+packets, the pointer moving (512,384) -> (902,444) with the screendumps
+differing. Not a window-system cursor: no hit testing, no click routing, no
+compositing.
+
+`src/service84.rs` installs the release's `int 0x84` gate at DPL 3 and
+serves the two calls whose answers this kernel owns -- `GFX_MODE` (bound
+framebuffer geometry) and `INPUT_STATE` (pointer position/buttons) --
+refusing every other call, including the release's IPC/capability/process/
+shm calls, with `-ENOSYS`. Pointer-taking calls are deliberately not
+served: this kernel has no user-range validator, so writing to a user
+buffer would be unvalidated. Verified every boot at the dispatch level; a
+real ring-3 caller is still unexercised because no user-space shell process
+owns the display.
+
+`tools/make_live_iso.sh` now emits both media from one build:
+`dist/nyrqis-live.iso` (GRUB/Multiboot2, BIOS/CSM) and
+`dist/nyrqis-live-uefi.iso`, whose El Torito EFI boot image is the ESP with
+our SIGNED stub, so firmware loads the stub, the stub walks the carrier
+(ADR-0014/0028/0029), and only then the kernel. Measured under OVMF: stub
+alive, SecureBoot=absent on template vars (as expected), GOP handed over,
+shell rendered and verified. `tools/check_live_iso.sh --uefi-boot` codifies
+that and states its own limit -- the UEFI disc's attribution is its build,
+not a digest extracted from inside the stub.
+
 2026-11-02 (fourth entry) — **the merge's input increment and the live ISO**
 (ADR-0031 v1.2.0). The `ps2-aux` row is now BOUND rather than reported
 unbound: release 1-71's `input.rs` kernel half is `src/ps2_aux.rs`, which

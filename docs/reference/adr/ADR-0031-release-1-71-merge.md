@@ -1,7 +1,7 @@
 ---
 title: Merge release 1-71 into this kernel — boot path stays, shell ported in, four device modes, driver autoload
 document_id: ADR-0031
-version: 1.2.0
+version: 1.3.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-11-02
@@ -160,6 +160,48 @@ framebuffer and `ps2-aux`, and verify the display. Measured: 22 MiB image,
 GRUB-EFI El Torito image would load the kernel through GRUB and bypass the
 signed-stub carrier chain (ADR-0014/0028/0029), so the UEFI live medium
 remains the ESP, not this ISO.
+
+## Implementation Note — the pointer, the `0x84` calls, and the UEFI disc (v1.3.0)
+
+**Input now has a consumer.** `src/cursor.rs` turns PS/2 packets into a
+drawn pointer: a 12x18 arrow whose covered pixels are saved and restored on
+each move, clamped on-screen, with hardware `+y` (up) flipped to screen `y`
+(down) in exactly one place. Two proofs run every boot: a synthetic packet
+through the real assembler pins decode -> cursor -> pixels (with a read-back
+of the arrow's own fill), and a 2 s listen window applies host-driven
+packets. `tools/cursor_test.sh` closes the last gap by driving QEMU's
+emulated mouse through the monitor: measured 6 host-driven packets, the
+pointer moved from (512,384) to (902,444), and the two screendumps differ.
+What this is not: a window-system cursor -- no hit testing, no click
+routing, no compositing, and moves are consumed by the boot session, not by
+a user-space owner.
+
+**The `0x84` gate exists, and refuses what it cannot serve.** The release's
+shell stack calls `int $0x84`; this kernel now has that gate at DPL 3 with
+two calls whose answers it actually owns -- `GFX_MODE` (bound framebuffer
+geometry) and `INPUT_STATE` (pointer position and buttons) -- and `-ENOSYS`
+for everything else, including the release's IPC, capability, process and
+shared-memory calls. That refusal is the point: a shell receiving zeroes
+from an unported service cannot tell "nothing happened" from "this kernel
+cannot do that". The ABI is register-only on purpose: every pointer-taking
+call needs a user-range validator, which this kernel does not have yet, so
+serving one would be an unvalidated kernel write into a user buffer. The
+gate's dispatch logic is verified on every boot; the privilege transition
+for a real ring-3 caller is NOT yet exercised, because nothing in this tree
+owns a user-space shell process. So: the surface exists, the session does
+not.
+
+**The UEFI live medium is the signed stub's.** `tools/make_live_iso.sh` now
+emits two discs from one build: `dist/nyrqis-live.iso` (GRUB/Multiboot2,
+BIOS/CSM) and `dist/nyrqis-live-uefi.iso`, whose El Torito EFI boot image
+IS the ESP carrying our stub -- so firmware loads the stub, the stub walks
+the carrier, and only then the kernel. GRUB-EFI is deliberately not used:
+it would load the kernel directly and skip the chain. Measured under OVMF:
+`stub alive`, `SecureBoot=absent` (template vars, as expected), GOP handed
+over, shell rendered. `tools/check_live_iso.sh --uefi-boot` codifies it,
+and states its own limit: the UEFI disc has no extracted-kernel attribution
+because the kernel lives inside the stub binary, so its attribution is the
+build, not a digest read back out of the image.
 
 ## Consequences
 

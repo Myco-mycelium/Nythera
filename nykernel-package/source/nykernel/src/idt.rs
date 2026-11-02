@@ -139,6 +139,11 @@ pub fn init() {
             .set_handler_fn(syscall_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
 
+        // The `0x84` service gate: the vector the release's shell stack
+        // calls, here serving the gfx/input calls this kernel can answer
+        // and refusing the rest by name (crate::service84).
+        crate::service84::install(&mut idt);
+
         // A second ring-3-callable vector, dedicated to
         // experimental::ring3_scheduler's real trap-based task
         // switching -- kept separate from SYSCALL_VECTOR (which

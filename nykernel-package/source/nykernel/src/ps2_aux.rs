@@ -77,6 +77,13 @@ pub struct Facts {
     pub last: Motion,
 }
 
+/// How many complete packets the assembler has produced. A consumer
+/// polls this plus `facts().last` to take motion without a second
+/// callback path.
+pub fn packets() -> u64 {
+    PACKETS.load(Ordering::Relaxed)
+}
+
 pub fn facts() -> Facts {
     Facts {
         acks: ACKS.load(Ordering::Relaxed),

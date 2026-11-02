@@ -15,7 +15,15 @@
 #                 device-mode verdict plus the driver autoload transcript,
 #                 measured through the serial console with -display none.
 #
-# Usage: ./tools/check_live_iso.sh [--boot] [--iso path]
+# --uefi-boot adds the UEFI disc (dist/nyrqis-live-uefi.iso): its digest is
+# checked, and OVMF boots it so OUR signed stub is what loads the kernel.
+# That disc has no extracted-kernel attribution because the kernel lives
+# inside the stub binary inside the ESP: there is nothing on the disc whose
+# digest is the kernel's. Its attribution is the build -- both discs come
+# from one run of make_live_iso.sh against one target/kernel.elf -- and that
+# limit is stated here rather than papered over with a weaker check.
+#
+# Usage: ./tools/check_live_iso.sh [--boot] [--uefi-boot] [--iso path]
 #
 # Exit status is 0 only when every requested check holds; each part names
 # itself on failure. The extracted kernel goes to target/, never back into
@@ -26,9 +34,11 @@ cd "$(dirname "$0")/.."
 
 ISO="dist/nyrqis-live.iso"
 BOOT=0
+UEFI_BOOT=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --boot) BOOT=1; shift ;;
+        --uefi-boot) UEFI_BOOT=1; shift ;;
         --iso) ISO="$2"; shift 2 ;;
         -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -104,9 +114,62 @@ if [[ "$BOOT" == "1" ]]; then
     fi
 fi
 
+if [[ "$UEFI_BOOT" == "1" ]]; then
+    echo
+    echo "==> UEFI disc (the signed stub, not GRUB)"
+    UISO=dist/nyrqis-live-uefi.iso
+    if [[ ! -s "$UISO" ]]; then
+        bad "$UISO missing -- run ./tools/make_live_iso.sh"
+    else
+        if [[ -s "$UISO.sha256" ]]; then
+            WANT="$(cut -d' ' -f1 "$UISO.sha256")"
+            GOT="$(sha256sum "$UISO" | cut -d' ' -f1)"
+            if [[ "$WANT" == "$GOT" ]]; then
+                ok "sha256 matches the recorded digest ($GOT)"
+            else
+                bad "sha256 is $GOT but $UISO.sha256 records $WANT"
+            fi
+        else
+            bad "$UISO.sha256 missing: the UEFI artifact has no recorded digest"
+        fi
+
+        command -v qemu-system-x86_64 >/dev/null 2>&1 || bad "qemu-system-x86_64 missing"
+        if command -v qemu-system-x86_64 >/dev/null 2>&1; then
+            VARSTEMPLATE=uefi/tools/OVMF_VARS_4M.fd
+            CODE=uefi/tools/OVMF_CODE_4M.fd
+            VARS=target/live-uefi-vars.fd
+            LOG=target/live-uefi-check.log
+            if [[ -s "$VARSTEMPLATE" && -s "$CODE" ]]; then
+                cp "$VARSTEMPLATE" "$VARS"
+                rm -f "$LOG"
+                # The disc stays UP (it is a live medium, not a test
+                # build), so this run is expected to hit the timeout: only
+                # the transcript is under test.
+                timeout 300 qemu-system-x86_64 \
+                    -machine q35 -m 256 \
+                    -drive if=pflash,format=raw,readonly=on,file="$CODE" \
+                    -drive if=pflash,format=raw,file="$VARS" \
+                    -cdrom "$UISO" -serial "file:$LOG" \
+                    -display none -no-reboot >/dev/null 2>&1
+                if grep -q "nyrqis ubld: stub alive under UEFI" "$LOG" \
+                   && grep -q "^nyrqis ubld: GOP " "$LOG" \
+                   && grep -q "devices: display -- .* 32bpp .*read-back verified" "$LOG" \
+                   && grep -q "device-mode: shell rendered" "$LOG"; then
+                    ok "OVMF boots the disc through OUR stub: carrier walked, GOP handed over, shell rendered and verified"
+                else
+                    bad "the UEFI disc did not reach the stub+display verdict (see $LOG)"
+                    grep -E "nyrqis ubld|device-mode|devices: display" "$LOG" | sed 's/^/        /' | head -8
+                fi
+            else
+                bad "OVMF firmware blobs missing under uefi/tools/ -- cannot boot the UEFI disc"
+            fi
+        fi
+    fi
+fi
+
 echo
 if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS live-ISO check(s) failed"
     exit 1
 fi
-echo "PASS: the live ISO is the recorded artifact, holds the recorded kernel build$( [[ "$BOOT" == "1" ]] && echo ", and boots to a verified device-mode session" )"
+echo "PASS: the live ISO is the recorded artifact, holds the recorded kernel build$( [[ "$BOOT" == "1" ]] && echo ", boots to a verified device-mode session" )$( [[ "$UEFI_BOOT" == "1" ]] && echo ", and the UEFI disc boots through the signed stub" )"

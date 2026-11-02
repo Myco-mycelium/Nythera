@@ -25,7 +25,7 @@ Provenance, so the copy can be re-derived rather than trusted:
 | `src/experimental/pci.rs` | **ported** | `src/devices/pci.rs`, widened from the USB-controller mask to the inventory the autoloader reports |
 | `src/experimental/input.rs` | **ported (kernel half)** | `src/ps2_aux.rs`: i8042 aux enable, IRQ12 handler (vector 0x2C, cascade unmasked), 3-byte packet assembler with signed deltas and button bits, device-ID/ACK protocol-word handling, and a boot self-test. Measured on QEMU: `ps2-aux input bound`, device id 0x00, reply bytes delivered by IRQ12. Two defects found while porting, both recorded in the module: the polled setup sequence lost its replies to the IRQ1 keyboard handler until it ran with interrupts off, and `0xFA` (bit 3 set) was being assembled as a packet start. The release's *decoders* stay in user space (`ps2dec.inc`), so nothing is delivered to a shell yet |
 | `src/experimental/usb.rs`, `xhci.rs` | staged | USB HID pointer; the autoloader reports `usb-hid unbound` on machines that have a controller, rather than pretending |
-| `src/experimental/syscall_demo.rs` | staged — **blocking** | the `int 0x84` service surface (capability/IPC/process/gfx/input). See the gap below |
+| `src/experimental/syscall_demo.rs` | **partly ported** — still **blocking** for a session | the `int 0x84` gate exists (`src/service84.rs`, DPL 3) and serves the two gfx/input calls whose answers this kernel owns: `GFX_MODE` (the bound framebuffer's geometry) and `INPUT_STATE` (the pointer's position and buttons), with every unported call refused as `-ENOSYS` rather than answered with zeroes. The release's capability/IPC/process/shm calls and every pointer-taking call are NOT ported: this kernel has no `user_range_ok`, so a call that writes into a user buffer would be an unvalidated kernel write. See the gap below |
 | `src/experimental/capability.rs`, `shm.rs` | staged | used by the `0x84` surface |
 | `src/secure_boot.rs` | staged — **not** part of this merge | it is the release's BIOS/GRUB boot verification; this repository's UEFI chain (ADR-0014/0028/0029) stays authoritative |
 | `userprog/prog_shell.s`, `prog_livesh.s`, `prog_kbdrt.s` | staged | the shell UI, its live session and the keyboard router |
@@ -78,6 +78,12 @@ in `rax` (0–3, 10, 20–22 in `prog_gfxsvc.s` / `prog_inputsvc.s` /
 
 Porting order that keeps every step verifiable:
 
+0a. ~~the pointer~~ — **done**: `ps2_aux` packets move a drawn cursor
+   (`src/cursor.rs`), proven with QEMU-driven motion;
+0b. ~~the gfx/input service calls~~ — **done as far as answers exist**:
+   `int 0x84` serves `GFX_MODE` and `INPUT_STATE` and refuses the rest by
+   name. The pointer-taking and IPC/process calls wait for a user-range
+   validator and a process that owns the display;
 0. ~~the shell's renderer~~ — **done** (see above). It was possible before
    step 2 because `ui.rs` draws into a caller's buffer and makes no calls;
    the ordering that remains is about *input and a session*, not pixels;
