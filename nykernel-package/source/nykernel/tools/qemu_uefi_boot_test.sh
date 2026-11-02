@@ -104,7 +104,26 @@ echo "----------------------------"
 # success() writes 0x10 -> host exit code 33. Same contract as the
 # BIOS path's qemu_boot_test.sh, asserted on the UEFI handoff now.
 if [[ "$QEMU_STATUS" -eq 33 ]]; then
-    echo "PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited cleanly"
+    # The GOP handoff is a required fact on this path now, not something
+    # the gate merely tolerates. Before it existed the kernel booted to
+    # console mode here while the BIOS path got graphics -- the same
+    # kernel behaving differently by boot path, which the exit status
+    # alone could not see. These three lines pin it: the stub found a
+    # mode, the kernel's driver bound it, and the shell drew into it.
+    MISSING=""
+    grep -q "^nyrqis ubld: GOP " target/qemu-uefi-test-stdout.log \
+        || MISSING="$MISSING stub-did-not-report-a-GOP-mode"
+    grep -q "devices: display -- .* 32bpp .*read-back verified" target/qemu-uefi-test-stdout.log \
+        || MISSING="$MISSING kernel-did-not-bind-and-verify-the-framebuffer"
+    grep -q "device-mode: shell rendered .* read-back verified" target/qemu-uefi-test-stdout.log \
+        || MISSING="$MISSING shell-did-not-render-into-the-pane"
+    if [[ -n "$MISSING" ]]; then
+        echo "FAIL: the UEFI path reached Ready but its display handoff is incomplete:$MISSING"
+        echo "      A boot that reaches Ready in console mode is exactly the regression this asserts against."
+        grep -E "GOP|device-mode|devices: display" target/qemu-uefi-test-stdout.log | head -6
+        exit 1
+    fi
+    echo "PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited cleanly; the GOP framebuffer was handed over, bound, and the shell rendered into it"
     exit 0
 elif [[ "$QEMU_STATUS" -eq 124 ]]; then
     echo "FAIL: UEFI boot test timed out (firmware, stub, or kernel hung before Ready)"
