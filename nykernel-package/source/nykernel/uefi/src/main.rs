@@ -402,9 +402,15 @@ pub extern "efiapi" fn efi_main(image_handle: Handle, system_table: *const Syste
         }
         None => boot::conout("nyrqis ubld: rsdp ABSENT (no config-table entry)\r\n"),
     }
+    // GOP handoff: the firmware's current graphics mode becomes the
+    // kernel's framebuffer tag, so the SAME `devices::framebuffer`
+    // driver binds on UEFI and BIOS. Absent or unsupported GOP is stated
+    // on the console and the kernel falls back to console mode -- never
+    // silently, and never with a guessed pixel order.
+    let gop = boot::locate_gop();
     let _synth_facts = {
         let page = unsafe { core::slice::from_raw_parts_mut(hp_phys as *mut u8, 4096) };
-        match mb2::synthesize(page, &map.descriptors, map.desc_size, rsdp, sb.digit()) {
+        match mb2::synthesize(page, &map.descriptors, map.desc_size, rsdp, sb.digit(), gop) {
             Ok(f) => f,
             Err(e) => boot::die(e),
         }

@@ -29,6 +29,17 @@ multiboot_header:
     .long MB2_ARCH_I386
     .long MB2_HEADER_LEN
     .long MB2_CHECKSUM
+    # Framebuffer request tag (type=5, flags=0, size=20): ask the loader
+    # for a linear graphics mode. Required for the display driver to bind
+    # at all -- without it GRUB supplies no framebuffer tag (type 8) and
+    # `devices::framebuffer` correctly reports `absent`.
+    .align 8
+    .word 5
+    .word 0
+    .long 20
+    .long 1024
+    .long 768
+    .long 32
     # end tag (type=0, flags=0, size=8) -- required, terminates the tag list
     .align 8
     .word 0

@@ -822,6 +822,25 @@ jobs:
             ./tools/ci_emit_annotations.sh target/bios-gate.log BIOSgate
           fi
           exit $S
+      - name: Device modes + driver autoload (real framebuffer, screendumps)
+        # The merge's first phase, measured on the real boot path: the
+        # framebuffer driver binds from the loader's tag, the autoload
+        # transcript reports this machine's hardware (including the rows
+        # it does NOT drive), and the four device modes each render a
+        # distinct layout. The kernel asserts its own read-back; this
+        # gate ALSO takes QEMU screendumps and re-checks every mode's
+        # layout landmarks from outside the guest, so "the mode rendered"
+        # is not just RAM that was written. Headless (-display none),
+        # no network.
+        run: |
+          mkdir -p target
+          set +e
+          ./tools/device_mode_test.sh > target/device-mode.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/device-mode.log DeviceMode
+          fi
+          exit $S
       - name: UEFI gate (OVMF boots the stub natively, same exit contract)
         run: |
           mkdir -p target
@@ -976,6 +995,31 @@ jobs:
           set -e
           if [[ $S -ne 0 ]]; then
             ./tools/ci_emit_annotations.sh target/dbx-store-verify.log DbxStoreVerify
+          fi
+          exit $S
+      - name: Rollout plan (per-machine delivery preconditions, no QEMU)
+        # The DELIVERY end ADR-0029 leaves to platform process: given a
+        # signed package and collected stores, which machines need it,
+        # which can take it, and from what date each enforces. Every
+        # verdict must bite: apply and skip pass; a KEK that does not
+        # carry the signer, a dbx newer than the package's stamp, a store
+        # whose entries the package would UN-revoke (an auth2 write
+        # replaces the variable), an unreadable store, a bare list with
+        # no EFI_TIME, a package for another certificate, an over-broad
+        # package, a mis-named signer, a canary that is absent or does
+        # not receive the package, and an empty fleet each refuse with
+        # their own named message. Also asserts the artifact properties:
+        # read-only (no store changes while planning), deterministic for
+        # a given --at, and pinned by a plan sha256 that recomputes from
+        # the JSON it ships with. Hermetic: throwaway certs, a copy of
+        # the varstore template, no network.
+        run: |
+          mkdir -p target
+          set +e
+          ./tools/rollout_plan_test.sh > target/rollout-plan.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/rollout-plan.log RolloutPlan
           fi
           exit $S
       - name: Firmware matrix driver (verdict logic, no QEMU)

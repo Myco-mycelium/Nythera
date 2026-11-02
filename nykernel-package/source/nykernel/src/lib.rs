@@ -31,6 +31,26 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub mod acpi;
 pub mod ata;
 pub mod boot_phase;
+pub mod device_mode;
+
+/// The Material 3 home screen from release 1-71's `shell/src/ui.rs`,
+/// compiled straight out of the staged port tree rather than copied, so
+/// there is exactly ONE copy of the design contract in this repository
+/// and the host checker (`porting/release-1-71/shell/host/hostrender.rs`)
+/// checks the same source the kernel renders.
+///
+/// This works without the `0x84` port because `ui.rs` is a pure
+/// renderer: it draws into a caller-supplied pixel buffer and makes no
+/// syscalls. What it needs from us is a buffer, so the framebuffer
+/// driver hands it the pane its layout contract reserved.
+///
+/// `ui.rs` refers to `crate::font_data`, which is why that module is at
+/// the crate root and not nested under `shell`.
+#[path = "../porting/release-1-71/shell/src/font_data.rs"]
+pub mod font_data;
+#[path = "../porting/release-1-71/shell/src/ui.rs"]
+pub mod shell;
+pub mod devices;
 pub mod experimental;
 pub mod gdt;
 pub mod idt;
@@ -350,6 +370,60 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
             serial_println!("  ata: no IDE device on either channel -- IRQ14/IRQ15 handlers installed but left masked (nothing to prove)");
         }
     }
+
+    // ---- device modes + driver autoload ---------------------------------
+    // The machine decides which drivers bind and which of the four form
+    // factors the session presents. Both decisions are printed WITH their
+    // source, so a boot log answers "why did this machine come up as a
+    // phone?" instead of leaving it to guesswork. The autoload transcript
+    // names unbound hardware too -- a controller found and not driven is
+    // a limit that must be visible, not silent.
+    let cmdline = multiboot.cmdline();
+    let hardware = devices::probe(&multiboot);
+    let mut devices = devices::autoload(hardware, &mut mapper, &mut frame_allocator);
+    let (mode, mode_source, mode_problem) = device_mode::select(&devices.hardware, cmdline);
+    if let Some(problem) = mode_problem {
+        serial_println!(
+            "  device-mode: {} -- falling back to {} (display class)",
+            problem,
+            mode.as_str()
+        );
+    }
+    match devices.framebuffer.as_mut() {
+        Some(fb) => {
+            let rendered = device_mode::render(mode, fb);
+            devices.display_verified = Some(rendered.probes_ok);
+            let l = rendered.layout;
+            serial_println!(
+                "  device-mode: {} (source: {}) on {}x{} -- status {}px, appbar {}px, columns {}, content <= {}px, touch >= {}px",
+                mode.as_str(), mode_source, fb.width, fb.height,
+                l.status, l.appbar, l.columns, l.content_w, l.touch_min
+            );
+            if let Some(s) = rendered.shell {
+                serial_println!(
+                    "  device-mode: shell rendered -- pane {}x{} at ({},{}), size class {:?}, {} column(s), {} row(s), {} quick-setting tile(s), surface hash {:#010x}, read-back {}",
+                    s.pane.2, s.pane.3, s.pane.0, s.pane.1,
+                    s.class, s.cols, s.rows, s.tiles, s.hash,
+                    if s.verified { "verified" } else { "MISMATCH" }
+                );
+            }
+            serial_println!(
+                "  device-mode: chrome drawn, content checksum {:#010x}, read-back {}",
+                rendered.checksum,
+                if rendered.probes_ok { "verified" } else { "MISMATCH" }
+            );
+            assert!(
+                rendered.probes_ok,
+                "device-mode render self-test failed: the framebuffer did not read back the pixels drawn"
+            );
+        }
+        None => serial_println!(
+            "  device-mode: {} (source: {}) -- no framebuffer bound, geometry reported but not rendered",
+            mode.as_str(),
+            mode_source
+        ),
+    }
+    devices::report(&devices);
 
     advance(BootPhase::Ready);
     serial_println!("nyrqis kernel: phase 1+2+3-prep complete, boot phase = {} (Ready)", boot_phase::current());

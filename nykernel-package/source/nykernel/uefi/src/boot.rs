@@ -8,6 +8,88 @@ use core::ffi::c_void;
 use crate::efi::*;
 use crate::{IDENTITY_LIMIT, IMAGE_HANDLE, SYSTEM_TABLE};
 
+// ---- display ----
+
+/// Reads the firmware's current Graphics Output Protocol mode, if the
+/// firmware offers one. Returns the linear-framebuffer facts the kernel's
+/// `devices::framebuffer` driver needs, in the same shape the BIOS path
+/// gets from Multiboot2 tag 8 -- so there is ONE driver and ONE pixel
+/// contract on both boot paths.
+///
+/// Only the two direct-colour 32bpp formats are accepted (0 RGBX,
+/// 1 BGRX; a BitMask format is decoded from its masks when they are the
+/// conventional ones). Everything else -- palette, BLT-only, exotic
+/// masks -- returns None, and the stub says so on the console: a guessed
+/// pixel format turns the first frame into garbage and blames the
+/// driver later.
+pub fn locate_gop() -> Option<crate::mb2::GopFb> {
+    let st = unsafe { &*SYSTEM_TABLE };
+    let bs = unsafe { &*st.boot_services };
+    let locate: unsafe extern "efiapi" fn(*const Guid, *mut c_void, *mut *mut c_void) -> Status =
+        unsafe { core::mem::transmute(bs.locate_protocol) };
+    let mut iface: *mut c_void = core::ptr::null_mut();
+    let status = unsafe { locate(&GOP_GUID, core::ptr::null_mut(), &mut iface) };
+    if status != EFI_SUCCESS || iface.is_null() {
+        conout("nyrqis ubld: GOP absent (status 0x");
+        conout_hex(status as u64);
+        conout(") -- no framebuffer tag will be written\r\n");
+        return None;
+    }
+    let gop = unsafe { &*(iface as *const GraphicsOutputProtocol) };
+    if gop.mode.is_null() {
+        conout("nyrqis ubld: GOP has no current mode -- no framebuffer tag\r\n");
+        return None;
+    }
+    let mode = unsafe { &*gop.mode };
+    if mode.info.is_null() {
+        conout("nyrqis ubld: GOP mode has no info block -- no framebuffer tag\r\n");
+        return None;
+    }
+    let info = unsafe { &*mode.info };
+    let order: u8 = match info.pixel_format {
+        0 => 1, // PixelRedGreenBlueReserved8BitPerColor -> R,G,B,X
+        1 => 0, // PixelBlueGreenRedReserved8BitPerColor -> B,G,R,X
+        2 => {
+            // PixelBitMask: only the conventional 8-bit layouts are
+            // accepted, and the mask says which one it is.
+            if info.red_mask == 0x00ff_0000 {
+                1
+            } else if info.red_mask == 0x0000_00ff {
+                0
+            } else {
+                conout("nyrqis ubld: GOP bit-mask pixel layout unsupported -- no framebuffer tag\r\n");
+                return None;
+            }
+        }
+        _ => {
+            conout("nyrqis ubld: GOP mode is not direct-colour (BltOnly?) -- no framebuffer tag\r\n");
+            return None;
+        }
+    };
+    let pitch = match info.pixels_per_scan_line.checked_mul(4) {
+        Some(p) => p,
+        None => return None,
+    };
+    if mode.frame_buffer_base == 0 || info.horizontal_resolution == 0 || info.vertical_resolution == 0 {
+        conout("nyrqis ubld: GOP mode geometry is empty -- no framebuffer tag\r\n");
+        return None;
+    }
+    conout("nyrqis ubld: GOP ");
+    conout_hex(info.horizontal_resolution as u64);
+    conout("x");
+    conout_hex(info.vertical_resolution as u64);
+    conout(" @ ");
+    conout_hex(mode.frame_buffer_base);
+    conout(if order == 1 { " RGBX\r\n" } else { " BGRX\r\n" });
+    Some(crate::mb2::GopFb {
+        addr: mode.frame_buffer_base,
+        pitch,
+        width: info.horizontal_resolution,
+        height: info.vertical_resolution,
+        order,
+    })
+}
+
 // ---- console ----
 
 /// ASCII -> UTF-16 over the firmware console. Falls back to a raw halt

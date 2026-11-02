@@ -1,0 +1,20 @@
+[package]
+name = "desk"
+version = "0.1.0"
+edition = "2021"
+description = "AndroWin desktop shell: a USER-SPACE display client (no_std, no allocation) that interprets build-time display lists (increment 1-54)"
+
+[lib]
+name = "desk"
+crate-type = ["staticlib"]
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+debug = false
+lto = true
+codegen-units = 1
+overflow-checks = false
+
+[profile.dev]
+panic = "abort"

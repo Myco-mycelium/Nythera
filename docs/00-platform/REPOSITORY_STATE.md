@@ -5,6 +5,62 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-02 (third entry) — **the release 1-71 merge, phase 1b: the display
+handoff and the shell render** (ADR-0031 v1.1.0, Implementation Note). Two
+follow-ons close gaps the phase-1 entry below named as future work.
+
+(1) The UEFI path now hands the kernel a framebuffer. The stub reads the
+firmware's current Graphics Output Protocol mode and writes the standard
+Multiboot2 type-8 tag plus the project's scan-out-order vendor tag
+(`0x7d2`), refusing to write either when GOP is absent, has no current
+mode or mode info, is `BltOnly` or palette-based, uses a bit-mask layout
+other than the two conventional 8-bit ones, or has empty geometry — each
+refusal is printed with its reason. Measured on the OVMF gate:
+`GOP 1280x800 @ 0x80000000 BGRX`, driver bound, shell rendered into a
+1280x684 tablet pane, read-back verified. The kernel's framebuffer driver
+applies the scan-out order in one place (R/B swap for RGBX, no-op for the
+BGRX the BIOS path gets), so one renderer serves both boot paths.
+
+(2) The Material 3 home screen renders: `porting/release-1-71/shell/src/
+ui.rs` and `font_data.rs` are compiled into the kernel (`#[path]`, one copy)
+and drawn into the content pane each device mode reserves, so the shell's own
+window-size-class logic produces a different real layout per mode (measured
+on 1024x768: phone's 480-px pane = `Compact`, 4 columns, 0 quick-setting
+tiles; desktop's 920-px pane = `Expanded`, 6 columns, 3 tiles). Verified by
+kernel read-back AND by the QEMU screendump check looking for the clock
+widget's `container` fill — a colour nothing else on screen uses, after the
+first probe choice (the pane corner) was found to equal the mode renderer's
+background and would have passed on an empty pane. Still not claimed: the
+shell as a session — no input is routed into it and no user-space process
+owns it until the `0x84` gfx/input and process calls are ported (manifest
+steps 1-4).
+
+2026-11-02 (second entry) — **the release 1-71 merge, phase 1** (ADR-0031,
+v1.0.0 Accepted): the kernel in this repository stays the base and keeps
+the UEFI/Secure Boot chain (ADR-0014/0028/0029); release 1-71's shell,
+services, `desk`, input/USB drivers, asset tooling and NDL-1 design contract
+are imported in-tree under `nykernel-package/source/nykernel/porting/
+release-1-71/` with a per-file `PORT_MANIFEST.md` that names each file's port
+status and the measured ABI gap (`int 0x84`, the release's capability/IPC/
+gfx/input service surface, which this kernel does not have). Landed as real
+code on this kernel: a hardware probe + driver-autoload registry
+(framebuffer and PCI ported from the release, PS/2 keyboard and ATA PIO
+registered, PS/2 aux and USB HID reported `unbound` with the reason), the
+Multiboot2 framebuffer request/tag-8 decode, and four device modes
+(desktop/tablet/phone/console) as one renderer with four layout contracts,
+selected per machine by `nyrqis.mode=` or display class. Verified by
+`tools/device_mode_test.sh` (four headless boots, QEMU screendumps
+re-checked outside the guest, distinct screenshots, automatic selection and
+invalid-token paths) and the existing BIOS boot gate. Not claimed: the
+Material shell running on this kernel — that is the manifest's port order,
+step 2 onward. Records in the same changeset: ADR-0031, adr/README, NPC-005
+v1.36.0, CI (the new device-mode gate), this file.
+2026-11-02 — the secure-boot revocation arc's ROLLOUT dimension (ADR-0029
+v1.7.0, the "Process and tooling" entry below): a per-machine rollout plan
+that reports why a signed package cannot land on a machine, and the
+finding that a dbx update REPLACES the variable rather than appending to
+it. The last whole-repository snapshot entry remains the 2026-10-11
+(thirteenth round) one that follows.
 2026-10-11 (thirteenth round), **the J1/J2 follow-up rows (owner direction
 via the recorded session, the same-day shape): NPS-005 Accepted** (v1.1.0 —
 the transitive ADR-0007 gate discharged: ADR-0007 has been Accepted since
@@ -2306,9 +2362,72 @@ Process and tooling:
     `EFI_INVALID_PARAMETER` to the non-KeK control AND to the correctly
     signed package. That run also found a transcript defect: the gate's
     positive-leg key-line `grep` omitted `dbx-update`, so the two facts its
-    own POS_OK check asserts were judged but never shown -- the matrix could
-    not see the refusal evidence and first reported those two builds as
+    own POS_OK check asserts were judged but never shown -- the matrix    could not see the refusal evidence and first reported those two builds as
     unclassifiable. The pattern includes `dbx-update` now.
+
+    **The rollout plan, and the artifact's real replacement semantics
+    (ADR-0029 v1.7.0).** `tools/rollout_plan.py` answers the question the
+    fleet round left open -- will THIS signed package land on THAT machine,
+    and from when does the machine enforce it -- from the store images an
+    operator already collects, and it delivers nothing. Per machine it
+    reports `apply`, `skip` (the fleet verifier's own verdict evaluated at
+    the package's stamp, so plan and audit cannot disagree), or
+    `blocked:<category>`: `kek-mismatch` / `no-kek-variable` (the package's
+    PKCS#7 is verified against `--kek-cert` and that signer must appear in
+    THIS store's KEK), `stale-stamp` (the package's `EFI_TIME` is not
+    strictly newer than the store's dbx timestamp, compared field by field
+    the way edk2 compares it), `unreadable`, and
+    `would-drop-existing-entries`. That last one is the finding: an
+    `EFI_VARIABLE_AUTHENTICATION_2` write REPLACES the dbx variable -- the
+    gate's own byte-exact read-back and Microsoft's complete 443-entry
+    update both show it -- so the ceremony's one-entry package is
+    destructive on a machine that already carries other revocations. The
+    plan names the count and the classes the write would un-revoke instead
+    of calling that machine deliverable; the superset composition it would
+    take is recorded as untooled, and the ceremony's one-entry scope check
+    is deliberately not widened. `--canary` makes the schedule two waves
+    (canaries, then the rest) with the audit command as each wave's gate;
+    `--out` writes a deterministic plan whose `plan sha256` recomputes from
+    its own contents; every store is opened read-only and the test asserts
+    it. `tools/rollout_plan_test.sh` (CI, every push) proves every action
+    and refusal with named lines, plus the waves, determinism and the
+    read-only property, and `tools/runbook_rehearsal.sh` now executes the
+    how-to's new step 5 on the freshly generated chain (an applicable store,
+    a skip machine, a canary wave, and a `no-kek-variable` refusal). Pointed
+    at this tree's own stores, the planner reported a true fact immediately:
+    `VARS.ms.fd`'s KEK does not carry the dev anchor, so the dev package
+    cannot land there.
+
+    **The release 1-71 merge, phase 1 (ADR-0031).** The two kernel forks
+    were measured against each other before anything moved: this tree has
+    the UEFI/Secure Boot chain and the larger ELF/PE/scheduler/ring-3 work,
+    release 1-71 has the Material shell stack and the display/input/bus
+    drivers, and neither is a superset. Decision: this kernel stays the
+    base; the release's `secure_boot.rs` (BIOS-side verification) is
+    imported for reference only, because a second trust anchor beside
+    ADR-0014's is a liability, not a feature. The shell stack is imported
+    in-tree under `porting/release-1-71/` with `PORT_MANIFEST.md`: per-file
+    port status, provenance (the release zip's sha256) and the measured ABI
+    blocking gap -- the shell programs call `int 0x84`, the release's
+    118 KiB capability/IPC/gfx/input surface, while this kernel has `0x80`,
+    `0x81` and its PIE/PE trap vectors only. Landed on this kernel in the
+    same changeset: `src/devices/` (a probe/autoload registry over the
+    loader's framebuffer tag, the i8042, ATA IDENTIFY and a PCI scan, with
+    the framebuffer and PCI drivers ported from the release and every
+    undriven controller reported `unbound`), the Multiboot2 framebuffer
+    request in `boot/boot.s` + tag-8 decode in `src/multiboot.rs`, and
+    `src/device_mode.rs` -- `desktop`, `tablet`, `phone` and `console` as
+    four layout contracts drawn by one renderer, chosen by `nyrqis.mode=`
+    or by display class and printed with the rule that fired. Evidence:
+    `tools/device_mode_test.sh` boots each mode headless, takes QEMU's own
+    screendump and re-checks the layout landmarks outside the guest (the
+    kernel's read-back alone cannot prove the pixels reached the display),
+    asserts four distinct screenshots, the automatic 1024x768 -> tablet
+    selection and the named invalid-token fallback; the BIOS boot gate still
+    passes with the display path in it. Honest remaining: the shell itself,
+    typography and the Material components (port order in the manifest), the
+    `desk` port against this tree's reworked scheduler/IPC, and USB HID on
+    real hardware.
 
 Resolved earlier this session, kept here for a complete record:
 - ~~Resolve shared ARM instruction-translation approach~~ — ADR-0015 (shared dynamic binary translation, JIT + hot-path cache).

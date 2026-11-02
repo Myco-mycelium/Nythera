@@ -30,7 +30,19 @@ use alloc::vec::Vec;
 // MB2 tag types (the subset written here).
 const TAG_TYPE_END: u32 = 0;
 const TAG_TYPE_MEMORY_MAP: u32 = 6;
+/// Linear framebuffer (spec §3.6.9). On the BIOS path GRUB writes this
+/// because `boot.s` requests it; on this path there is no Multiboot2
+/// loader, so the stub writes it from the firmware's Graphics Output
+/// Protocol. Same tag, same kernel parser: no second boot contract.
+const TAG_TYPE_FRAMEBUFFER: u32 = 8;
 const TAG_TYPE_ACPI_NEW_RSDP: u32 = 15;
+/// Vendor tag carrying the scan-out byte order, which Multiboot2's
+/// direct-RGB framebuffer tag does NOT carry. One byte: 0 = B,G,R,X
+/// (GOP PixelBlueGreenRedReserved8BitPerColor), 1 = R,G,B,X
+/// (PixelRedGreenBlueReserved8BitPerColor). The kernel only uses it to
+/// decide whether to swap R/B on write; without the tag it writes the
+/// BGRX order it has always written.
+const TAG_TYPE_SCANOUT_ORDER: u32 = 0x7d2;
 /// Multiboot2 reserves 0x7d1..=0x9ff for custom vendor tags; the type
 /// used is recorded alongside the format in multiboot.rs on the
 /// kernel's side. One stub, one vendor tag, one kernel parser: the two
@@ -108,12 +120,26 @@ pub struct SynthFacts {
     pub rsdp_revision: u8,
 }
 
+/// The firmware's linear framebuffer, as the stub found it. `order` is 0
+/// for BGRX, 1 for RGBX -- the only two the kernel's driver accepts, so
+/// anything else is reported by the stub and not turned into a guessed
+/// pixel format.
+#[derive(Clone, Copy)]
+pub struct GopFb {
+    pub addr: u64,
+    pub pitch: u32,
+    pub width: u32,
+    pub height: u32,
+    pub order: u8,
+}
+
 pub fn synthesize(
     buf: &mut [u8],
     map: &[MemoryDescriptor],
     _desc_size: usize,
     rsdp: Option<(&[u8], u8)>, // (rsdp bytes, revision)
     secure_boot: u8,
+    fb: Option<GopFb>,
 ) -> Result<SynthFacts, &'static str> {
     let mut w = Writer { buf, pos: 0 };
 
@@ -154,6 +180,19 @@ pub fn synthesize(
     // ---- the vendor tag, tiny and early ----
     let src = source_string(secure_boot);
     w.tag(TAG_TYPE_NYRQIS_BOOT_SOURCE, &src)?;
+
+    // ---- linear framebuffer (type 8) + scan-out order (vendor) ----
+    if let Some(f) = fb {
+        let mut payload = [0u8; 24];
+        payload[0..8].copy_from_slice(&f.addr.to_le_bytes());
+        payload[8..12].copy_from_slice(&f.pitch.to_le_bytes());
+        payload[12..16].copy_from_slice(&f.width.to_le_bytes());
+        payload[16..20].copy_from_slice(&f.height.to_le_bytes());
+        payload[20] = 32; // bpp: the driver accepts 32bpp direct RGB only
+        payload[21] = 1; // framebuffer_type: 1 = direct RGB
+        w.tag(TAG_TYPE_FRAMEBUFFER, &payload)?;
+        w.tag(TAG_TYPE_SCANOUT_ORDER, &[f.order])?;
+    }
 
     // ---- ACPI RSDP (type 15) ----
     let mut rsdp_revision = 0u8;

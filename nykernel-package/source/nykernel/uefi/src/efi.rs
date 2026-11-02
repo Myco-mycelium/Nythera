@@ -175,6 +175,54 @@ pub const CERT_X509_SHA256_GUID: Guid =
 /// shim's vendor GUID -- the namespace shim's own MokList (and
 /// MokListX etc.) variables live under; the stub's MOK trust
 /// extension reads `MokList` there (mok.rs).
+/// EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID (9042a9de-23dc-4a38-96fb-7aded080516a).
+/// Located BEFORE ExitBootServices so the kernel can bind its framebuffer
+/// driver on this boot path too (the BIOS path gets the same fact from
+/// Multiboot2 tag 8; here there is no Multiboot2 loader, so the stub
+/// writes the tag itself).
+pub const GOP_GUID: Guid = Guid::new(
+    0x9042_a9de,
+    0x23dc,
+    0x4a38,
+    [0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a],
+);
+
+/// EFI_GRAPHICS_OUTPUT_PROTOCOL, typed only as far as the mode pointer.
+#[repr(C)]
+pub struct GraphicsOutputProtocol {
+    pub query_mode: usize,
+    pub set_mode: usize,
+    pub blt: usize,
+    pub mode: *const GraphicsOutputMode,
+}
+
+#[repr(C)]
+pub struct GraphicsOutputMode {
+    pub max_mode: u32,
+    pub mode: u32,
+    pub info: *const GraphicsOutputModeInfo,
+    pub size_of_info: usize,
+    pub frame_buffer_base: u64,
+    pub frame_buffer_size: usize,
+}
+
+/// EFI_GRAPHICS_OUTPUT_MODE_INFORMATION. `pixel_format` is 0 for
+/// PixelRedGreenBlueReserved8BitPerColor, 1 for the blue-first variant,
+/// 2 for PixelBitMask, 3 for PixelBltOnly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GraphicsOutputModeInfo {
+    pub version: u32,
+    pub horizontal_resolution: u32,
+    pub vertical_resolution: u32,
+    pub pixel_format: u32,
+    pub red_mask: u32,
+    pub green_mask: u32,
+    pub blue_mask: u32,
+    pub reserved_mask: u32,
+    pub pixels_per_scan_line: u32,
+}
+
 pub const MOK_SHIM_GUID: Guid =
     Guid::new(0x605dab50, 0xe046, 0x4300, [0xab, 0xb6, 0x3d, 0xd8, 0x10, 0xdd, 0x8b, 0x23]);
 

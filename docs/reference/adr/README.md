@@ -37,6 +37,7 @@ directory; this index tracks status only.
 | [ADR-0028](ADR-0028-real-keys-and-moklist-content.md) | Real keys for ADR-0014 — one-hop hierarchy, MokList carries the leaf | **Accepted** (2026-10-29) |
 | [ADR-0029](ADR-0029-leaf-revocation-tbs-hash-semantics.md) | Leaf revocation by dbx TBS hash — the enforcement semantics the gates enforce | **Accepted** (2026-10-29) |
 | [ADR-0030](ADR-0030-dbx-hash-type-scope.md) | Reject extra dbx hash types in the enforced revocation surface | **Rejected** |
+| [ADR-0031](ADR-0031-release-1-71-merge.md) | Merge release 1-71 into this kernel — boot path stays, shell renderer compiled in (session staged), four device modes, driver autoload | **Accepted** (2026-11-02) |
 
 ## Blocked Statuses
 

@@ -19,11 +19,28 @@
 use core::mem;
 
 const TAG_TYPE_END: u32 = 0;
+/// The loader's kernel command line (spec §3.6.3): a NUL-terminated
+/// UTF-8 string. This is how boot-time device selection reaches the
+/// kernel (`nyrqis.mode=...`), the same way the Linux backend's demo
+/// wrapper reads `nyrqis.variant=` from the kernel cmdline.
+const TAG_TYPE_CMDLINE: u32 = 1;
 const TAG_TYPE_MEMORY_MAP: u32 = 6;
+/// Linear-framebuffer information (spec §3.6.9), provided only when the
+/// Multiboot2 header requested a graphics mode. Ported with the display
+/// stack that needs it (see `crate::devices`).
+const TAG_TYPE_FRAMEBUFFER: u32 = 8;
 /// Multiboot2's ACPI RSDP tags: type 14 carries the ACPI 1.0 RSDP, type 15
 /// the ACPI 2.0+ (extended) one. Either is enough to reach the table set.
 const TAG_TYPE_ACPI_OLD_RSDP: u32 = 14;
 const TAG_TYPE_ACPI_NEW_RSDP: u32 = 15;
+/// This project's own vendor tag (0x7d2, shared with the UEFI stub's
+/// `mb2.rs`): one payload byte, the scan-out order of the loader's
+/// framebuffer -- 0 for BGRX (Multiboot2's direct-RGB convention, which
+/// is what GRUB gives us) and 1 for RGBX (what a GOP mode with
+/// PixelRedGreenBlueReserved reports). The framebuffer tag itself
+/// carries no channel order, so without this the UEFI path would draw
+/// red and blue swapped and call the result a display driver.
+const TAG_TYPE_SCANOUT_ORDER: u32 = 0x7d2;
 
 /// Multiboot2 memory region types (spec §3.6.8). Only `Available` is
 /// usable by the frame allocator; everything else (ACPI
@@ -98,6 +115,38 @@ struct MemoryMapEntry {
     reserved: u32,
 }
 
+#[repr(C)]
+struct FramebufferTag {
+    header: TagHeader,
+    addr: u64,
+    pitch: u32,
+    width: u32,
+    height: u32,
+    bpp: u8,
+    /// 0 = indexed palette, 1 = direct RGB, 2 = EGA text.
+    kind: u8,
+    reserved: u16,
+}
+
+/// The loader's framebuffer description, copied out of tag 8. `addr` is
+/// the framebuffer's physical address; under this kernel's identity map
+/// (and the page-table entries `devices::framebuffer` adds for the part
+/// above 1GiB) that address is directly addressable.
+#[derive(Debug, Clone, Copy)]
+pub struct FramebufferInfo {
+    pub addr: u64,
+    pub pitch: u32,
+    pub width: u32,
+    pub height: u32,
+    pub bpp: u8,
+    pub kind: u8,
+    /// True when the loader's pixels are R,G,B,X in memory (RGBX);
+    /// false for the Multiboot2 default, B,G,R,X (BGRX). Every colour
+    /// the renderer hands the driver is 0x00RRGGBB, so the driver needs
+    /// this one bit to write the right channel order.
+    pub rgb_first: bool,
+}
+
 /// A conservative upper bound on total_size we're willing to trust
 /// without corroborating evidence -- guards against a wildly bogus
 /// value causing us to scan gigabytes of unrelated memory looking for
@@ -159,6 +208,67 @@ impl MultibootInfo {
             // tags are 8-byte aligned; advance and round up
             cursor = (tag_end + 7) & !7;
         }
+    }
+
+    /// The loader's kernel command line (tag 1), without the trailing
+    /// NUL; empty when the loader supplied none. Returned as bytes, not
+    /// `str`: a cmdline is untrusted input, and the callers that parse
+    /// it (`crate::device_mode`) compare ASCII tokens explicitly rather
+    /// than assuming valid UTF-8.
+    pub fn cmdline(&self) -> &'static [u8] {
+        let mut found: &'static [u8] = b"";
+        self.walk_tags(|typ, start, end| {
+            if typ != TAG_TYPE_CMDLINE || !found.is_empty() {
+                return;
+            }
+            let payload = start + mem::size_of::<TagHeader>();
+            if end <= payload {
+                return;
+            }
+            let raw = unsafe { core::slice::from_raw_parts(payload as *const u8, end - payload) };
+            let n = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            found = &raw[..n];
+        });
+        found
+    }
+
+    /// The loader's linear framebuffer (tag 8), if the header asked for
+    /// a graphics mode and the loader granted one. Geometry is decoded
+    /// exactly as the tag carries it; nothing is guessed (a palette or
+    /// text mode is returned as `kind` 0 or 2 and refused by the
+    /// framebuffer driver rather than drawn into blindly).
+    pub fn framebuffer(&self) -> Option<FramebufferInfo> {
+        let mut found = None;
+        let mut rgb_first = false;
+        self.walk_tags(|typ, start, end| {
+            if typ == TAG_TYPE_SCANOUT_ORDER {
+                let payload = start + mem::size_of::<TagHeader>();
+                if end > payload {
+                    rgb_first = unsafe { *(payload as *const u8) } == 1;
+                }
+                return;
+            }
+            if found.is_some() || typ != TAG_TYPE_FRAMEBUFFER {
+                return;
+            }
+            if end - start < mem::size_of::<FramebufferTag>() {
+                return;
+            }
+            let t = unsafe { &*(start as *const FramebufferTag) };
+            found = Some(FramebufferInfo {
+                addr: t.addr,
+                pitch: t.pitch,
+                width: t.width,
+                height: t.height,
+                bpp: t.bpp,
+                kind: t.kind,
+                rgb_first: false,
+            });
+        });
+        found.map(|mut info| {
+            info.rgb_first = rgb_first;
+            info
+        })
     }
 
     /// Walks the tag list looking for the memory map tag, calling
