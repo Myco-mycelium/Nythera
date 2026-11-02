@@ -33,6 +33,10 @@
 #   fleet check          a clean 2-machine fleet passes with a per-machine
 #                        summary; a fleet holding one store without dbx FAILS
 #                        and the summary counts the refusal kind
+#   rollout plan         the planner accepts the package and schedules it as
+#                        a canary wave then the rest, writes its pinned
+#                        artifact, and refuses a machine whose KEK does not
+#                        carry the signer
 #   --absent             the stray (replacement-shaped) cert is not revoked
 #   page consistency     the page contains the flags exercised here and no
 #                        longer contains the superseded loop
@@ -169,8 +173,8 @@ expect_case artifact-scheduled fail "revoked only FROM 2027-01-01" \
 expect_case artifact-pending-ok ok "PASS: 1 artifact(s) revoke" \
     ./tools/verify_dbx_store.py --dbx "$PACKAGE" --cert "$LEAF" --allow-pending
 
-# --- the page's steps 5-6: a store that carries it, and a fleet audit ------
-echo "==> steps 5-6: compose a store carrying the package, then audit a fleet"
+# --- the page's steps 6-7: a store that carries it, and a fleet audit ------
+echo "==> steps 6-7: compose a store carrying the package, then audit a fleet"
 VARS_TMPL=uefi/tools/OVMF_VARS_4M.fd
 if [[ -s "$VARS_TMPL" ]]; then
     GOOD="$WORK/store-enforcing.fd"
@@ -209,13 +213,41 @@ if [[ -s "$VARS_TMPL" ]]; then
     else
         bad "absent-check: could not compose the over-broad store"
     fi
+
+    # --- the page's step 5: the rollout plan, and its wave schedule ------
+    echo "==> step 5: the rollout plan (canary wave, then the fleet)"
+    PLAN_FLEET="$WORK/fleet-plan"
+    mkdir -p "$PLAN_FLEET"
+    APPLICABLE="$WORK/store-applicable.fd"
+    cp "$VARS_TMPL" "$APPLICABLE"
+    if "$VIRT" --inplace "$APPLICABLE" --set-true SecureBootEnable -l ERROR >/dev/null 2>&1 \
+       && "$VIRT" --inplace "$APPLICABLE" --add-kek 8be4df61-93ca-11d2-aa0d-00e098032b8c "$ROOTCERT" -l ERROR >/dev/null 2>&1; then
+        ok "plan: composed a store whose KEK carries the ceremony's signer"
+    else
+        bad "plan: could not compose an applicable store"
+    fi
+    cp "$APPLICABLE" "$PLAN_FLEET/machine-01.fd"
+    cp "$GOOD" "$PLAN_FLEET/machine-02.fd"          # already enforces -> skip
+    expect_case plan ok "wave 1 (canary wave -- verify before the rest): machine-01.fd" \
+        ./tools/rollout_plan.py --package "$PACKAGE" --cert "$LEAF" \
+        --kek-cert "$ROOTCERT" --fleet "$PLAN_FLEET" --canary machine-01.fd \
+        --at 2027-01-01 --absent "$STRAY" --out "$WORK/plan"
+    if [[ -s "$WORK/plan/rollout-plan.json" && -s "$WORK/plan/rollout-plan.txt" ]]; then
+        ok "plan: pinned artifact written (rollout-plan.json + .txt)"
+    else
+        bad "plan: --out did not write the plan artifact"
+    fi
+    # A machine whose KEK does not carry the signer is refused, not planned.
+    expect_case plan-kek-mismatch fail "no-kek-variable" \
+        ./tools/rollout_plan.py --package "$PACKAGE" --cert "$LEAF" \
+        --kek-cert "$ROOTCERT" --fleet "$WORK/fleet-mixed" --at 2027-01-01
 else
-    bad "store: $VARS_TMPL missing -- the page's step 6 cannot be rehearsed"
+    bad "store: $VARS_TMPL missing -- the page's steps 6-7 cannot be rehearsed"
 fi
 
 # --- the page still shows what the tools now do --------------------------
 echo "==> page consistency: the runbook documents the commands exercised here"
-for needle in "--fleet" "--enrolled-kek" "--allow-pending" "--absent" "--previous-stamp"; do
+for needle in "--fleet" "--enrolled-kek" "--allow-pending" "--absent" "--previous-stamp" "--canary" "rollout_plan.py"; do
     if grep -qF -- "$needle" "$DOC"; then
         ok "page: documents $needle"
     else
@@ -233,5 +265,5 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS runbook step(s) did not behave as the page claims -- the page and the tools have drifted (logs in $TMP_OUT)"
     exit 1
 fi
-echo "PASS: runbook rehearsed on a fresh chain -- anchor refusal, ceremony, manifest sha256, scheduled-vs-in-force artifact check, a store that carries the package, a clean and a mixed fleet audit with per-machine summaries, the over-broad --absent refusal, and the page's own command text all hold"
+echo "PASS: runbook rehearsed on a fresh chain -- anchor refusal, ceremony, manifest sha256, scheduled-vs-in-force artifact check, a store that carries the package, a clean and a mixed fleet audit with per-machine summaries, the over-broad --absent refusal, the rollout plan with its canary wave and its KEK refusal, and the page's own command text all hold"
 exit 0

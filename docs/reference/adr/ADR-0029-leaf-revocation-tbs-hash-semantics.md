@@ -1,11 +1,11 @@
 ---
 title: Leaf Revocation by dbx TBS Hash — the Enforcement Semantics the Gates Enforce
 document_id: ADR-0029
-version: 1.5.0
+version: 1.7.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-10-29
-updated: 2026-10-31
+updated: 2026-11-02
 ai_assisted: true
 depends_on: [ADR-0014, ADR-0028]
 ---
@@ -611,6 +611,108 @@ derives the DER from the PEM it just ensured (and re-derives it when the PEM
 is newer), so a checkout builds from nothing. The rehearsal also caught its
 own vacuity: a consistency grep against a wrong path passes silently, so
 the page is resolved and checked before any grep runs.
+
+## Implementation Note (2026-11-02, fifth): the rollout plan, and what the
+## artifact actually REPLACES
+
+### The boundary moved by one step, without moving the claim
+
+"Delivery and rollout scheduling are platform process" stays true. What the
+fleet round left unanswerable was narrower and checkable: given a signed
+package and a collected store, will THIS package land on THAT machine, and
+from what date will it enforce. Nobody could answer it without trying on
+the machine. `tools/rollout_plan.py` answers it from the store images an
+operator already collects, and it delivers nothing:
+
+    ./tools/rollout_plan.py --package dbx-update.auth2 \
+        --cert dead-leaf.pem --kek-cert kek.pem --fleet collected/ \
+        [--canary machine-01.fd] [--absent replacement.pem] [--out plan/]
+
+Four facts decide each machine, and each is a way a rollout fails:
+
+- **STATE** -- already revoking at the package's stamp? Then nothing is
+  written: `skip`. The state is the FLEET VERIFIER's own verdict (its
+  `check()` is imported, not re-implemented), so a plan and a post-delivery
+  audit cannot disagree about what "enforcing" means.
+- **KEK** -- the package's PKCS#7 is verified against `--kek-cert` (the
+  bare `SignedData` is re-wrapped in a `ContentInfo` for `openssl cms`,
+  which only parses the wrapped form), the signer certificate must BE that
+  certificate, and it must appear in this store's `KEK` variable.
+  `kek-mismatch` / `no-kek-variable` otherwise: firmware would refuse the
+  write on the machine, during the rollout.
+- **STAMP** -- the package's `EFI_TIME` must be strictly newer than this
+  store's `dbx` variable timestamp, compared field by field rather than by
+  date (edk2 compares the structure, so a same-day earlier time is a
+  refusal). `stale-stamp` otherwise.
+- **REPLACEMENT** -- see below.
+
+The canary is the schedule half: `--canary` names machines from the fleet,
+wave 1 is the canaries and wave 2 the rest, and the plan prints the audit
+command that gates each wave. A canary that is not in the fleet, already
+enforces, or is blocked refuses the plan rather than being planned.
+
+### The finding: the write REPLACES, it does not append
+
+An `EFI_VARIABLE_AUTHENTICATION_2` write replaces the variable's value. The
+evidence is already in this record: the `.ms` gate's acceptance leg asserts
+that the read-back carries the exact entry the package signed (`read-back
+VERIFIED`), with no trace of the value the store held before it, and
+ADR-0030's inventory measured Microsoft's shipped amd64 update carrying
+the complete 443-entry `EFI_CERT_SHA256` list rather than one new entry --
+because a partial list would un-revoke whatever it omitted.
+
+`tools/sign_dbx_update_ceremony.sh` composes exactly ONE entry (its scope
+check is load-bearing: one entry is what makes the hash form revoke the
+dead leaf without covering a re-issued one). So the artifact is safe on a
+store with no `dbx`, or one already carrying exactly that entry, and
+DESTRUCTIVE on a machine that already carries other revocations: delivering
+it would silently un-revoke them. The plan therefore reports
+`would-drop-existing-entries` with the number of entries and the classes
+(by `EFI_SIGNATURE_LIST` type) the write would remove, and refuses to call
+that machine deliverable. The remedy -- compose a superset list over the
+store's own entries and re-sign it for that class of machine -- is NOT
+tooled, and the ceremony's one-entry scope check is deliberately NOT
+widened here: a per-class superset artifact is a composition decision with
+its own review, not a flag.
+
+This is the first time the artifact's replacement semantics is stated as a
+property a rollout has to handle, and it is the reason the plan exists at
+all: the fleet verifier answers "does this machine revoke the target",
+which after a destructive write can be true while 443 image-hash
+revocations are gone.
+
+### The artifact: deterministic, pinned, read-only
+
+`--out` writes `rollout-plan.txt` and `rollout-plan.json`; the JSON is
+deterministic for a given `--at`, carries one `action` and `category` per
+machine plus the waves, and ends with a `plan sha256` computed over its own
+canonical contents (everything but the digest), which the `.txt` repeats.
+The plan an operator approves is therefore the plan that gets run. Every
+store is opened read-only and its sha256 is asserted unchanged by the test
+that plans over it.
+
+### Verification
+
+`tools/rollout_plan_test.sh` (CI, every push) builds one package and nine
+stores and asserts each verdict with a named line: apply (no `dbx`) and
+apply (all existing entries carried) pass; `kek-mismatch`,
+`no-kek-variable`, `stale-stamp`, `would-drop-existing-entries`,
+`unreadable`, and a bare-list package, a package for the wrong
+certificate, an over-broad package, a mis-named signer, an absent or
+already-enforcing canary and an empty fleet each refuse; the canary waves,
+determinism, the recomputed plan digest and the read-only property are
+asserted in the same run. `tools/runbook_rehearsal.sh` now executes the
+page's new step 5 on the fresh chain (an applicable store, a skip machine,
+a canary wave and a `no-kek-variable` refusal), and the page's
+consistency check requires it to document `--canary` and the tool.
+
+Not claimed: the plan delivers nothing, schedules nothing and picks no
+channel; a fleet's actual firmware is still unknown until measured (the
+matrix); and the superset composition above does not exist. Measured on
+this tree's own artifacts, the planner immediately reported a true fact
+about the non-`.ms` store (`VARS.ms.fd`): its KEK does not carry the dev
+anchor, so the dev package cannot land there -- `kek-mismatch`, on a
+machine whose dbx is where the mini-trust store lives.
 
 ## Consequences
 

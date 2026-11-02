@@ -100,7 +100,7 @@ was composed deliberately.
     --cert path/to/dead-leaf.pem
 ```
 
-This is the same verifier you will point at fleet stores in step 6, run on
+This is the same verifier you will point at fleet stores in step 7, run on
 the artifact itself: it parses the signature list, derives the
 certificate's To-Be-Signed hash with its **own** DER walk, and compares.
 
@@ -117,7 +117,87 @@ the carrier. A package dated in the future does not protect anyone today.
 Either move the stamp (`--stamp-year`) or acknowledge the schedule with
 `--allow-pending`.
 
-## 5. Deliver it
+## 5. Plan the rollout, machine by machine
+
+Delivery is not in this repository, but whether THIS package can land on
+THIS machine is not a matter of opinion: it follows from the store image
+you already collect. `tools/rollout_plan.py` reads a directory of stores
+and answers it per machine, without writing anything:
+
+```
+./tools/rollout_plan.py \
+    --package /secure/revocation-2026-11/dbx-update.auth2 \
+    --cert path/to/dead-leaf.pem \
+    --kek-cert path/to/kek.pem \
+    --fleet collected/ \
+    --canary machine-01.fd \
+    --absent path/to/replacement-leaf.pem \
+    --at 2026-11-02 \
+    --out /secure/revocation-2026-11/plan
+```
+
+`--kek-cert` is the certificate the package was signed with, and the tool
+verifies the package's PKCS#7 against it before planning anything, so a
+plan can never name one key and carry a package signed by another.
+
+```
+== rollout plan: 4 machine(s), target CN = Nyrqis dev carrier leaf ...
+   package  : /secure/revocation-2026-11/dbx-update.auth2 (1478 bytes, sha256 ...)
+   signer   : path/to/kek.pem (sha256 ...) -- the package's PKCS#7 verifies against it
+   stamp    : 2027-01-01 -- firmware starts refusing FROM this date, never earlier
+   prepared : 2026-11-02 (--at; the plan claims no enforcement before the stamp)
+   wave 1 (canary wave -- verify before the rest): machine-01.fd
+   wave 2 (fleet): machine-02.fd
+   apply   machine-01.fd   revokes the target from 2027-01-01 and the package can land here
+           no dbx variable: nothing to advance past, nothing to lose
+           KEK carries the signer
+   apply   machine-02.fd   revokes the target from 2027-01-01 and the package can land here
+           KEK carries the signer
+           the store's 1 existing entrie(s) are all carried by the package (a non-destructive write)
+   skip    machine-04.fd   already revokes the target through EFI_CERT_X509_SHA256 ...
+   blocked machine-03.fd   kek-mismatch: this store's KEK does not carry the ...
+   4 machine(s): 2 apply, 1 already-enforcing, 1 blocked (kek-mismatch)
+   after each wave: ./tools/verify_dbx_store.py --fleet collected/ --cert path/to/dead-leaf.pem --at 2027-01-01
+   plan sha256: 4f1c...
+FAIL: 1 of 4 machine(s) cannot take this package as it stands (each reason above is named)
+```
+
+Four facts decide each machine, and each is a way a rollout fails:
+
+| Fact | Refusal |
+|---|---|
+| The package's PKCS#7 is verified, and the signer certificate must appear in THIS store's `KEK` | `kek-mismatch` / `no-kek-variable` — firmware refuses an update signed by a key it does not carry, at `SetVariable` time |
+| The package's stamp must be strictly newer than this store's `dbx` timestamp | `stale-stamp` — firmware rejects a non-increasing `EFI_TIME`, so the package is already spent there |
+| The write must not un-revoke anything the store already carries | `would-drop-existing-entries` — see below |
+| The store must be readable and hold an effective revocation | `unreadable` |
+
+**The one that surprises people:** an `EFI_VARIABLE_AUTHENTICATION_2` write
+**replaces** the `dbx` variable; it does not append to it. That is why
+Microsoft's shipped dbx update carries the complete list (443 entries at
+the time of writing, ADR-0030's inventory) rather than one new entry. The
+revocation ceremony in step 2 composes exactly one entry, by its own scope
+check, so the package is safe on a store with no `dbx` — or one already
+carrying exactly that entry — and destructive on a machine that already
+carries other revocations. The plan says so, names how many entries and of
+which classes the write would drop, and refuses to call that machine
+deliverable. The remedy is a superset list composed over that store's own
+entries and re-signed for that class of machine, which is a composition
+step this repository does not yet tool; the plan is what makes it visible
+before a rollout rather than after it.
+
+`--canary` is the schedule: the named machines form wave 1, the rest wave
+2, and after each wave the audit command printed at the bottom is the
+gate. A canary that is not in the fleet, already enforces the revocation,
+or is itself blocked refuses the plan — a canary the package does not
+reach proves nothing.
+
+`--out` writes `rollout-plan.txt` and `rollout-plan.json`. The JSON is
+deterministic for a given `--at`, carries one `action` and `category` per
+machine, and ends with a `plan sha256` that recomputes from its own
+contents: the plan a second person approves is the plan that gets run.
+Nothing is written to any store, and nothing is scheduled.
+
+## 6. Deliver it
 
 Delivery is platform process and deliberately not in this repository: which
 channel an OS or OEM update service uses, how a rollout is scheduled, and
@@ -132,7 +212,7 @@ verifies the AUTH package against the enrolled KEK at `SetVariable` time.
 A package signed by a key the store does not trust is refused there — which
 is why step 2 names the enrolled KEK explicitly.
 
-## 6. Verify the machines, in both directions
+## 7. Verify the machines, in both directions
 
 Point the verifier at one store (`virt-fw-vars` reads edk2 varstores) or
 at the whole collection in one call:
@@ -200,10 +280,18 @@ PASS: 2 artifact(s) revoke CN = Nyrqis dev carrier leaf (serial 13452F6F..) thro
 
 ## What this does not do
 
-- It does not deliver, schedule, or roll back anything. There is no
-  "undo" for a revocation that reached a fleet: firmware does not re-trust
-  what dbx refuses, so treat step 4 as the last cheap moment.
-- It does not enumerate a fleet. You supply the store images.
+- It does not deliver, schedule, or roll back anything. `rollout_plan.py`
+  plans a rollout from store images and stops there: it writes no store,
+  queues no update and picks no channel. There is no "undo" for a
+  revocation that reached a fleet: firmware does not re-trust what dbx
+  refuses, so treat step 5 as the last cheap moment.
+- It does not enumerate a fleet. You supply the store images, and
+  `rollout_plan.py` — like the verifier — reads them read-only.
+- It does not compose a non-destructive update for a machine that already
+  carries other dbx entries. The ceremony's scope check is exactly one
+  entry, so such a machine is reported `would-drop-existing-entries`
+  rather than planned; composing the superset list and re-signing it is
+  the named open work.
 - It does not prove the *firmware* on a machine implements the time-based
   auth surface — acceptance is firmware support, measured for the builds
   in this tree by the `.ms` gate; a machine whose firmware lacks it refuses
@@ -225,5 +313,7 @@ PASS: 2 artifact(s) revoke CN = Nyrqis dev carrier leaf (serial 13452F6F..) thro
 This page is rehearsed: `tools/runbook_rehearsal.sh` runs every step above
 on a freshly generated chain (anchor refusal, ceremony, manifest sha256,
 scheduled-vs-in-force artifact check, store composition, a clean and a
-mixed fleet audit) and fails when the page and the tools stop agreeing.
-It runs in CI on every push.
+mixed fleet audit, and the rollout plan with its canary wave and its
+`kek-mismatch` refusal) and fails when the page and the tools stop
+agreeing. It runs in CI on every push; `tools/rollout_plan_test.sh` proves
+each of the planner's own refusals.
