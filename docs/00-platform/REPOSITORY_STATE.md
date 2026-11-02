@@ -5,6 +5,32 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-02 (fourth entry) — **the merge's input increment and the live ISO**
+(ADR-0031 v1.2.0). The `ps2-aux` row is now BOUND rather than reported
+unbound: release 1-71's `input.rs` kernel half is `src/ps2_aux.rs`, which
+enables the i8042 aux port, installs IRQ12 (vector 0x2C, cascade unmasked),
+assembles the 3-byte packets into signed deltas and button bits, and proves
+the line by asking the device for its ID — the device's own reply, with no
+host input. Measured on QEMU: `ps2-aux input bound`, device id 0x00, reply
+bytes delivered by IRQ12; autoload now reports 6 drivers, 5 bound, 0
+unbound, 1 absent. Porting it exposed two defects in my own first version,
+both fixed and documented: the polled setup replies were being consumed by
+the IRQ1 keyboard handler (the output buffer is shared, so that half must
+run with interrupts off), and `0xFA` has bit 3 set, so assembling the
+acknowledge as packet data swallowed the device ID. Not claimed: no event
+reaches a shell — the release's decoders are user-space code.
+
+The **live ISO** is now a build artifact with a verifier rather than a
+manual qemu invocation: `tools/make_live_iso.sh` builds a GRUB El Torito
+disc with one menu entry per device mode (plus automatic), recording both
+the ISO's digest and the digest of the kernel it carries;
+`tools/check_live_iso.sh` checks integrity, attribution (a stale image
+fails) and, with `--boot`, that the disc reaches the device-mode verdict,
+binds framebuffer and ps2-aux and verifies the display. Measured: 22 MiB
+image, all three PASS. The disc is BIOS/CSM only by decision — a GRUB-EFI
+El Torito image would bypass the signed-stub chain (ADR-0014/0028/0029).
+Operator page: `docs/how-to/boot-the-live-iso.md`.
+
 2026-11-02 (third entry) — **the release 1-71 merge, phase 1b: the display
 handoff and the shell render** (ADR-0031 v1.1.0, Implementation Note). Two
 follow-ons close gaps the phase-1 entry below named as future work.

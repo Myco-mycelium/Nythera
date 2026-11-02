@@ -111,6 +111,12 @@ pub fn init() {
         let keyboard_vector = (pic::PIC1_OFFSET + crate::keyboard::IRQ_KEYBOARD) as u8;
         idt[keyboard_vector].set_handler_fn(keyboard_interrupt_handler);
 
+        // The PS/2 aux port (IRQ12, slave PIC -- vector 0x2C): the
+        // mouse driver's interrupt. Installed here, before
+        // `crate::ps2_aux::init` unmasks the line.
+        let aux_vector = (pic::PIC2_OFFSET + (crate::ps2_aux::IRQ_MOUSE - 8)) as u8;
+        idt[aux_vector].set_handler_fn(aux_interrupt_handler);
+
         // The ATA/ATAPI IDE channels (IRQ14 primary, IRQ15 secondary,
         // both on the slave PIC so their vectors follow PIC2_OFFSET).
         // Real handlers are installed here before `crate::ata` ever
@@ -348,6 +354,14 @@ extern "x86-interrupt" fn rtc_interrupt_handler(_stack_frame: InterruptStackFram
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     crate::keyboard::handle();
     pic::end_of_interrupt(crate::keyboard::IRQ_KEYBOARD);
+}
+
+/// IRQ12 (PS/2 aux port). `crate::ps2_aux::handle` reads the byte out of
+/// the controller (deasserting the line) and assembles packets; IRQ12 is
+/// on the slave PIC, so the EOI acknowledges both PICs.
+extern "x86-interrupt" fn aux_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    crate::ps2_aux::handle();
+    pic::end_of_interrupt(crate::ps2_aux::IRQ_MOUSE);
 }
 
 /// IRQ14 (primary IDE channel). `crate::ata::handle` acknowledges the

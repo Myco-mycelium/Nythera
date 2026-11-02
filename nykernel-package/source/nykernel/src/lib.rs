@@ -32,6 +32,7 @@ pub mod acpi;
 pub mod ata;
 pub mod boot_phase;
 pub mod device_mode;
+pub mod ps2_aux;
 
 /// The Material 3 home screen from release 1-71's `shell/src/ui.rs`,
 /// compiled straight out of the staged port tree rather than copied, so
@@ -423,6 +424,14 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
             mode_source
         ),
     }
+    // The aux driver's own proof (decoder arithmetic, packet assembler,
+    // stray-ID handling) runs on every boot; whether a mouse answered on
+    // IRQ12 is a per-machine fact already carried by the bind row.
+    let aux_selftest_ok = ps2_aux::self_test();
+    assert!(
+        aux_selftest_ok,
+        "ps2-aux self-test failed: the mouse packet decoder or assembler is wrong"
+    );
     devices::report(&devices);
 
     advance(BootPhase::Ready);

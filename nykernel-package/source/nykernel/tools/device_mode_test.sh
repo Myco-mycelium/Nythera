@@ -263,8 +263,9 @@ fi
 echo "==> autoload transcript"
 if grep -q "devices: autoload -- 6 driver(s) in the registry" "$WORK/desktop/serial.log" \
    && grep -q "devices:   framebuffer    display  bound" "$WORK/desktop/serial.log" \
-   && grep -q "devices:   ps2-aux        input    unbound" "$WORK/desktop/serial.log"; then
-    ok "autoload: registry reported, framebuffer bound, ps2-aux honestly unbound"
+   && grep -q "devices:   ps2-aux        input    bound" "$WORK/desktop/serial.log" \
+   && grep -q "devices: ps2-aux -- device id 0x00" "$WORK/desktop/serial.log"; then
+    ok "autoload: registry reported, framebuffer bound, ps2-aux bound with its IRQ12 evidence (device id read)"
 else
     bad "autoload: the boot log does not carry the registry transcript"
     grep "devices:" "$WORK/desktop/serial.log" | sed 's/^/        /' | head -10

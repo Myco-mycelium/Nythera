@@ -841,6 +841,24 @@ jobs:
             ./tools/ci_emit_annotations.sh target/device-mode.log DeviceMode
           fi
           exit $S
+      - name: Live ISO artifact (integrity, attribution, one headless boot)
+        # dist/nyrqis-live.iso is a binary in the repository, so it needs a
+        # gate that can tell the recorded artifact from a stale one: the
+        # file must match its own sha256, the kernel INSIDE it must match
+        # the recorded kernel digest (a rebuilt kernel with an un-rebuilt
+        # image fails here instead of passing quietly), and the disc must
+        # boot to the kernel's device-mode verdict with framebuffer and
+        # ps2-aux bound. No network, no display.
+        run: |
+          mkdir -p target
+          set +e
+          (cd nykernel-package/source/nykernel && ./tools/check_live_iso.sh --boot) > target/live-iso.log 2>&1; S=$?
+          set -e
+          if [[ $S -ne 0 ]]; then
+            ./tools/ci_emit_annotations.sh target/live-iso.log LiveIso || true
+          fi
+          cat target/live-iso.log
+          exit $S
       - name: UEFI gate (OVMF boots the stub natively, same exit contract)
         run: |
           mkdir -p target

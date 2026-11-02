@@ -1,7 +1,7 @@
 ---
 title: Merge release 1-71 into this kernel — boot path stays, shell ported in, four device modes, driver autoload
 document_id: ADR-0031
-version: 1.1.0
+version: 1.2.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-11-02
@@ -129,6 +129,37 @@ and still the v1.0.0 decision: no input is routed into the shell, and no
 user-space process owns it until the `0x84` gfx/input and process calls are
 ported. `console` mode has no shell pane by construction (no pixel surface);
 that is a layout fact, not a failure.
+
+## Implementation Note — the aux driver and the live ISO (v1.2.0)
+
+**The `ps2-aux` row is bound, not promised.** Release 1-71's `input.rs`
+kernel half is `src/ps2_aux.rs`: it enables the i8042 aux port, takes IRQ12
+(vector 0x2C, cascade unmasked), assembles the 3-byte packets into signed
+deltas and button bits, and proves the line by asking the device for its ID
+-- the device's own reply is what makes the vector accountable, with no
+host input. Measured: `ps2-aux input bound`, device id 0x00, reply bytes
+delivered by IRQ12. Porting it exposed two defects in my own first version,
+both now fixed and documented in the module: the setup sequence's replies
+were being stolen by the IRQ1 keyboard handler (the output buffer is
+shared, so the polled half must run with interrupts off), and `0xFA` -- an
+acknowledge -- has bit 3 set and was therefore being assembled as the first
+byte of a packet, which silently ate the device ID. What is still not
+claimed: no event is delivered to a shell. The release's decoders live in
+user space (`ps2dec.inc`), so the driver's job today ends at "the packets
+are decoded correctly and the line is real".
+
+**A live ISO is a build artifact with a verifier.** `tools/make_live_iso.sh`
+builds a bootable GRUB El Torito disc with one menu entry per device mode
+(plus an automatic one), and `tools/check_live_iso.sh` answers the three
+questions a committed binary otherwise leaves open: does the file still
+match its recorded sha256, does the `kernel.elf` *inside* it match the
+recorded kernel digest (so a stale image fails instead of passing), and
+(with `--boot`) does the disc reach the device-mode verdict, bind
+framebuffer and `ps2-aux`, and verify the display. Measured: 22 MiB image,
+`PASS` on all three. It is deliberately **not** a UEFI-bootable disc: a
+GRUB-EFI El Torito image would load the kernel through GRUB and bypass the
+signed-stub carrier chain (ADR-0014/0028/0029), so the UEFI live medium
+remains the ESP, not this ISO.
 
 ## Consequences
 

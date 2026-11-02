@@ -23,7 +23,7 @@ Provenance, so the copy can be re-derived rather than trusted:
 |---|---|---|
 | `src/experimental/framebuffer.rs` | **ported** | `src/devices/framebuffer.rs` (owned by the autoloader, not a demo), plus the Multiboot2 tag-8 decoder in `src/multiboot.rs` and the header request in `boot/boot.s` |
 | `src/experimental/pci.rs` | **ported** | `src/devices/pci.rs`, widened from the USB-controller mask to the inventory the autoloader reports |
-| `src/experimental/input.rs` | staged | PS/2 aux (mouse) setup + the raw-byte ring; the release's own note says the decoders moved to user space (`ps2dec.inc`) |
+| `src/experimental/input.rs` | **ported (kernel half)** | `src/ps2_aux.rs`: i8042 aux enable, IRQ12 handler (vector 0x2C, cascade unmasked), 3-byte packet assembler with signed deltas and button bits, device-ID/ACK protocol-word handling, and a boot self-test. Measured on QEMU: `ps2-aux input bound`, device id 0x00, reply bytes delivered by IRQ12. Two defects found while porting, both recorded in the module: the polled setup sequence lost its replies to the IRQ1 keyboard handler until it ran with interrupts off, and `0xFA` (bit 3 set) was being assembled as a packet start. The release's *decoders* stay in user space (`ps2dec.inc`), so nothing is delivered to a shell yet |
 | `src/experimental/usb.rs`, `xhci.rs` | staged | USB HID pointer; the autoloader reports `usb-hid unbound` on machines that have a controller, rather than pretending |
 | `src/experimental/syscall_demo.rs` | staged — **blocking** | the `int 0x84` service surface (capability/IPC/process/gfx/input). See the gap below |
 | `src/experimental/capability.rs`, `shm.rs` | staged | used by the `0x84` surface |

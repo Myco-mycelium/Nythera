@@ -87,6 +87,11 @@ pub struct BindRecord {
 pub struct Devices {
     pub hardware: Hardware,
     pub framebuffer: Option<framebuffer::Framebuffer>,
+    /// The PS/2 aux driver's measured facts, when a device answered on
+    /// IRQ12. `None` means no mouse answered -- which is a different
+    /// fact from "this machine has no 8042", and the transcript says
+    /// which one it is.
+    pub aux: Option<crate::ps2_aux::Facts>,
     pub binds: alloc::vec::Vec<BindRecord>,
     /// The read-back result of the display self-test: `Some(true)` when
     /// the mapped framebuffer returned the pixels just written.
@@ -135,18 +140,43 @@ pub fn autoload(
         },
     });
 
-    // 3. PS/2 aux (mouse): the controller is there, the driver is not.
-    //    Named, not hidden -- release 1-71's `input.rs` owns that driver
-    //    and it is part of the shell/input port, not of this increment.
+    // 3. PS/2 aux (mouse): release 1-71's `input.rs` driver, ported as
+    //    `crate::ps2_aux`. Binding it is a real device operation (enable
+    //    the port, take IRQ12, ask the device for its ID), so it happens
+    //    here and not in the side-effect-free probe. Three outcomes are
+    //    kept distinct: no controller, controller but no device
+    //    answering, and bound with the facts it reported.
+    let aux_bind = if hardware.ps2 {
+        unsafe { crate::ps2_aux::init() }
+    } else {
+        crate::ps2_aux::Bind::Absent
+    };
+    let (aux_bind_kind, aux, aux_detail) = match aux_bind {
+        crate::ps2_aux::Bind::Bound(f) => (
+            Bind::Bound,
+            Some(f),
+            "i8042 aux enabled, IRQ12 unmasked (with the cascade), device answered a 0xF2 request",
+        ),
+        crate::ps2_aux::Bind::PolledOnly(f) => (
+            Bind::Refused,
+            None,
+            "the device answers a polled request but nothing arrived on IRQ12 -- the interrupt path is broken, not the hardware",
+        ),
+        crate::ps2_aux::Bind::Absent => (
+            if hardware.ps2 { Bind::Absent } else { Bind::Absent },
+            None,
+            if hardware.ps2 {
+                "i8042 aux enabled but neither IRQ12 nor a poll got a reply -- no mouse on this machine"
+            } else {
+                "no PS/2 controller"
+            },
+        ),
+    };
     binds.push(BindRecord {
         driver: "ps2-aux",
         class: "input",
-        bind: if hardware.ps2 { Bind::Unbound } else { Bind::Absent },
-        detail: if hardware.ps2 {
-            "i8042 aux port present; mouse driver is in the shell/input port (release 1-71 input.rs)"
-        } else {
-            "no PS/2 controller"
-        },
+        bind: aux_bind_kind,
+        detail: aux_detail,
     });
 
     // 4. USB HID: report the controller class, never a driver we do not
@@ -207,6 +237,7 @@ pub fn autoload(
     Devices {
         hardware,
         framebuffer,
+        aux,
         binds,
         display_verified: None,
     }
@@ -243,6 +274,28 @@ pub fn report(devices: &Devices) {
         pci.display,
         pci.usb_names()
     );
+    if let Some(aux) = &devices.aux {
+        if aux.device_id < 0 {
+            serial_println!(
+                "  devices: ps2-aux -- device id not reported, {} byte(s) on IRQ12, {} packet(s), last motion ({}, {}) buttons {:#05b}",
+                aux.bytes,
+                aux.packets,
+                aux.last.dx,
+                aux.last.dy,
+                aux.last.buttons
+            );
+        } else {
+            serial_println!(
+                "  devices: ps2-aux -- device id {:#04x}, {} byte(s) on IRQ12, {} packet(s), last motion ({}, {}) buttons {:#05b}",
+                aux.device_id,
+                aux.bytes,
+                aux.packets,
+                aux.last.dx,
+                aux.last.dy,
+                aux.last.buttons
+            );
+        }
+    }
     if let Some(fb) = &devices.framebuffer {
         serial_println!(
             "  devices: display -- {}x{} 32bpp {}, read-back {}",
