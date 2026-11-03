@@ -2,7 +2,7 @@
 //! stack uses, as much of them as this kernel can honestly serve today.
 //!
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
-//! `rax`, argument in `rdi`, result in `rax`) that serves four calls:
+//! `rax`, argument in `rdi`, result in `rax`) that serves five calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -10,12 +10,25 @@
 //! | 1 | `GFX_MODE` | — | `(width << 32) | height` of the bound framebuffer |
 //! | 2 | `GFX_MODE_INTO` | user pointer | writes `(u32 width, u32 height)` there; `0`, or `-EFAULT` |
 //! | 3 | `PROOF_DONE` | user pointer | the ring-3 proof's read-back check (see below) |
+//! | 4 | `PROCESS_SELF` | — | the running scheduler task's id (`experimental::scheduler`); `0` = the kernel itself |
 //!
-//! and answers `-ENOSYS` for everything else, including the release's IPC,
-//! capability, process and shared-memory calls. A call that is not served
-//! must say so: a shell that silently receives zeroes from an unported
-//! service has no way to tell "nothing happened" from "this kernel cannot
-//! do that".
+//! and answers `-ENOSYS` for everything else. The port ledger for what that
+//! "everything else" is: the release's full process machine -- SEND/RECV
+//! over endpoints, capability rights and transfers, spawn, shared memory
+//! (`porting/release-1-71/src/experimental/syscall_demo.rs` and its
+//! `capability.rs`/`shm.rs`) -- is one connected surface, not five
+//! independent calls: SEND requires capability tables, RECV requires
+//! block-and-reschedule with a saved trap, either requires a process
+//! identity (which `PROCESS_SELF` now answers from this tree's own task
+//! model, as the surface's first scheduler-backed process call) and
+//! sessions the PORT_MANIFEST parks for its last steps. The ABI shape those
+//! calls will need when they land is staged in the entry stub: `rdi` is
+//! served today; `rsi/rdx/r10/r8` (payload, payload length, transfer,
+//! rights) are already SAVED there but not yet passed to `dispatch`, and
+//! widening that pass is where the SEND port starts. A call that is not
+//! served must say so: a shell that silently receives zeroes from an
+//! unported service has no way to tell "nothing happened" from "this
+//! kernel cannot do that".
 //!
 //! What this is NOT, stated as plainly as the manifest does: this is not
 //! the release's `0x84` surface (118 KiB of capability/IPC/process/gfx/
@@ -48,6 +61,15 @@ pub const CALL_INPUT_STATE: u64 = 0;
 pub const CALL_GFX_MODE: u64 = 1;
 pub const CALL_GFX_MODE_INTO: u64 = 2;
 pub const CALL_PROOF_DONE: u64 = 3;
+
+/// The first process-side answer: the id of the `experimental::scheduler`
+/// task running the caller, read-only (task 0 = the kernel itself). Today
+/// every ring-3 caller is scheduler-unowned, so the honest answer is 0 --
+/// served rather than refused because the release's shell protocol asks
+/// "who am I" first, and answering a REAL id from our OWN task model is
+/// truthful regardless of what kind of caller asks. The richer process
+/// calls (spawn, capabilities, IPC) stay refused: see the ledger above.
+pub const CALL_PROCESS_SELF: u64 = 4;
 
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
@@ -137,19 +159,23 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
             0
         }
         CALL_PROOF_DONE => {
-            if !crate::memory::paging::user_range_ok(arg, 32, false) {
+            if !crate::memory::paging::user_range_ok(arg, 40, false) {
                 return EFAULT;
             }
-            // Read the four results back OUT OF USER MEMORY: this is the
+            // Read the FIVE results back OUT OF USER MEMORY: this is the
             // part the registers alone cannot prove, because it shows the
             // ring-3 program actually received and stored them.
-            let mut stored = [0i64; 4];
+            let mut stored = [0i64; 5];
             for (i, slot) in stored.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((arg as *const i64).add(i)) };
             }
             let want_gfx = RET_GFX.load(Ordering::Relaxed);
             let want_input = RET_INPUT.load(Ordering::Relaxed);
             let want_enosys = RET_ENOSYS.load(Ordering::Relaxed);
+            // The identity answer is compared against the scheduler's OWN
+            // live value at read-back time, so a future session that makes
+            // the program a real task changes both sides together.
+            let want_self = crate::experimental::scheduler::current_task() as i64;
             let wrote_ok = crate::devices::framebuffer::bound_mode()
                 .map(|(w, h)| {
                     // The geometry was written at BUF+24 (the program's own
@@ -164,27 +190,42 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
                     }
                 })
                 .unwrap_or(true);
+            // stored[3] is NOT the validated write's ack: BUF+24 is where
+            // the write PUT the geometry (the first version of this check
+            // read it as "== 0" and failed every boot with a verdict whose
+            // per-field pieces all said matches). The write's side is
+            // already covered by `wrote_ok`, which re-reads BUF+24+8.
             let stored_ok = stored[0] == want_gfx
                 && stored[1] == want_input
                 && stored[2] == want_enosys
-                && stored[2] == ENOSYS;
+                && stored[2] == ENOSYS
+                && stored[4] == want_self;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
             crate::serial_println!(
-                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} -- {}",
+                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} -- {}",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
                 want_input as u64,
                 want_enosys as u64,
                 WROTE_W.load(Ordering::Relaxed),
                 WROTE_H.load(Ordering::Relaxed),
+                want_self as u64,
                 if stored[0] == want_gfx { "matches" } else { "MISMATCH" },
                 if stored[1] == want_input { "matches" } else { "MISMATCH" },
                 if stored[2] == want_enosys { "matches" } else { "MISMATCH" },
                 if wrote_ok { "matches" } else { "MISMATCH" },
+                if stored[4] == want_self { "matches" } else { "MISMATCH" },
                 if ok { "OK" } else { "FAILED" }
             );
             0
+        }
+        CALL_PROCESS_SELF => {
+            // The scheduler's own answer, not a canned one: when a real
+            // scheduler task ever owns a ring-3 caller, this call starts
+            // naming it without this file changing. No bookkeeping beyond
+            // what the proof's read-back uses -- identity is not a resource.
+            crate::experimental::scheduler::current_task() as i64
         }
         _ => {
             if from_ring3 {
@@ -296,13 +337,19 @@ pub fn self_test() -> bool {
     let null_refused = dispatch(CALL_GFX_MODE_INTO, 0, 0) == EFAULT;
     let validator_ok = kernel_refused && null_refused;
 
-    let ok = gfx_ok && input_ok && refused && validator_ok;
+    // The identity call's answer must BE the scheduler's own running-task
+    // id -- task 0 (the kernel) while no ring-3 session owns the gate.
+    let self_ok = dispatch(CALL_PROCESS_SELF, 0, 0)
+        == crate::experimental::scheduler::current_task() as i64;
+
+    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok;
     crate::serial_println!(
-        "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {} ; gate installed at DPL3 -- {}",
+        "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {}, process SELF names the running task {} ; gate installed at DPL3 -- {}",
         if gfx_ok { "OK" } else { "FAILED" },
         if input_ok { "OK" } else { "FAILED" },
         if refused { "OK" } else { "FAILED" },
         if validator_ok { "OK" } else { "FAILED" },
+        if self_ok { "OK" } else { "FAILED" },
         if ok { "OK" } else { "FAILED" }
     );
     ok

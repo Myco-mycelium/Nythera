@@ -7,7 +7,7 @@
  * not about the privilege transition a real program performs.
  *
  * It runs only when the boot line asks for it (`nyrqis.proof=svc84`), in
- * its own address space, and it does four things in order:
+ * its own address space, and it does five things in order:
  *
  *   1. GFX_MODE      (rax = 1)             -> result stored at BUF+0
  *   2. INPUT_STATE   (rax = 0)             -> result stored at BUF+8
@@ -19,9 +19,14 @@
  *      -- a POINTER-taking call: the kernel must validate BUF+24 with the
  *      user-range walker before writing 8 bytes there, and it writes the
  *      display geometry into the program's own memory.
+ *   5. PROCESS_SELF  (rax = 4)             -> result stored at BUF+32
+ *      -- the first process-side answer: the running scheduler task's id
+ *      (0 = the kernel itself, while no ring-3 task owns the gate). The
+ *      kernel's read-back compares it against the scheduler's OWN live
+ *      value, so a real session changes both sides together.
  *
  * Then it asks the kernel to close the proof (rax = 3, rdi = BUF): the
- * kernel reads the four stored results back OUT OF USER MEMORY and
+ * kernel reads the five stored results back OUT OF USER MEMORY and
  * compares them with what it returned, so the check covers the round trip
  * through ring-3 writes rather than trusting the registers alone.
  *
@@ -65,6 +70,13 @@ _start:
     add $24, %rdi
     mov $2, %rax
     int $0x84
+
+    /* 5. PROCESS_SELF: the first process-side answer -- the running
+       scheduler task's id (0 = the kernel itself; nothing owns this gate
+       yet). The stored copy is what the kernel reads back. */
+    mov $4, %rax
+    int $0x84
+    mov %rax, 32(%rbx)
 
     /* Close the proof: the kernel reads BUF back through the validator. */
     mov %rbx, %rdi

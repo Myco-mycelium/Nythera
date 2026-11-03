@@ -16,7 +16,9 @@
 #   - GFX_MODE and INPUT_STATE answered, and the program's stored copies match;
 #   - an UNPORTED call answered -ENOSYS rather than zeroes;
 #   - the pointer-taking call passed the user-range validator, wrote the
-#     geometry, and the program's memory reads back that exact geometry.
+#     geometry, and the program's memory reads back that exact geometry;
+#   - the PROCESS_SELF identity call answered the scheduler's own running-
+#     task id and that value reads back from the program's memory.
 #
 # The proof mode does not return to the kernel (it ends in a ring-3 spin),
 # so this harness waits for the verdict line and then stops QEMU.
@@ -110,6 +112,11 @@ else
     else
         bad "the pointer-taking call's write did not read back"
     fi
+    if [[ "$VERDICT" == *"SELF matches"* ]]; then
+        ok "the identity call answered the running scheduler task id and it read back"
+    else
+        bad "the PROCESS_SELF result did not read back from user memory"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -124,4 +131,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, and had a validated write land in its buffer"
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, and the identity call answered the scheduler's own running-task id"
