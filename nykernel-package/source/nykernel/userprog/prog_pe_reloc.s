@@ -31,7 +31,7 @@ _start:
     mov ptr(%rip), %rbx          /* rbx = relocated absolute pointer */
     movabs $0xFEEDFACECAFEBEEF, %rax
     mov %rax, (%rbx)             /* write the magic through it */
-    int $0x84                    /* dedicated trap vector -> pe_reloc_demo::on_trap */
+    int $0x85                    /* dedicated trap vector -> pe_reloc_demo::on_trap */
 .hang:
     pause
     jmp .hang

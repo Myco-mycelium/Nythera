@@ -50,8 +50,14 @@ done
 command -v grub-mkrescue >/dev/null 2>&1 || { echo "FAIL: grub-mkrescue not found (install grub-pc-bin / grub-common)" >&2; exit 1; }
 
 if [[ "$BUILD" == "1" ]]; then
-    echo "==> building the kernel (./build.sh)"
-    ./build.sh
+    # The discs embed the kernel twice over (the stub `include_bytes!`es it,
+    # and GRUB loads it), so the DEBUG symbols are pure weight here: the
+    # image the stub verifies is the stripped one, produced before the
+    # carrier and the digest are computed, so nothing is pinned to bytes
+    # that no longer exist. Symbols are kept (`--strip-debug`), which the
+    # stub needs to resolve `uefi_entry` by name.
+    echo "==> building the kernel, stripped for the image (./build.sh)"
+    NYKERNEL_STRIP_DEBUG=1 ./build.sh
 fi
 [[ -s target/kernel.elf ]] || { echo "FAIL: target/kernel.elf missing -- run ./build.sh or drop --no-build" >&2; exit 1; }
 
@@ -145,13 +151,16 @@ if [[ "$UEFI" == "1" ]]; then
     # sha256 at boot), so the ESP cannot be smaller than that. Report the
     # stub's size rather than letting a too-small image surface later as
     # an mcopy failure.
+    # Size the ESP to the stub instead of always reserving 32 MiB: an image
+    # padded to a fixed size is most of what a committed artifact costs, and
+    # the only thing in this one is one .efi file. Rounded up to whole MiB
+    # plus 3 MiB of FAT/directory slack, and never below 4 MiB.
     STUB_BYTES="$(stat -c %s "$STUB_EFI")"
-    ESP_BYTES=$((32 * 1024 * 1024))
-    if (( STUB_BYTES > ESP_BYTES - 1024 * 1024 )); then
-        echo "FAIL: the stub is $STUB_BYTES bytes, too large for a 32 MiB ESP" >&2
-        exit 1
-    fi
-    mformat -i "$ESP" -C -T 65536
+    ESP_MIB=$(( (STUB_BYTES / 1024 / 1024) + 3 ))
+    (( ESP_MIB < 4 )) && ESP_MIB=4
+    ESP_BYTES=$(( ESP_MIB * 1024 * 1024 ))
+    echo "==> ESP ${ESP_MIB} MiB for a $((STUB_BYTES / 1024)) KiB stub"
+    mformat -i "$ESP" -C -T $(( ESP_BYTES / 512 ))
     mmd -i "$ESP" ::EFI ::EFI/BOOT
     mcopy -i "$ESP" "$STUB_EFI" ::EFI/BOOT/BOOTX64.EFI
     [[ -s "$ESP" ]] || { echo "FAIL: ESP image generation produced nothing" >&2; exit 1; }

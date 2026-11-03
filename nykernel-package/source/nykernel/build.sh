@@ -58,6 +58,8 @@ as --64 userprog/prog.s -o userprog/prog.o
 ld -n -T userprog/linker.ld -o userprog/userprog.elf userprog/prog.o
 as --64 userprog/prog_b.s -o userprog/prog_b.o
 ld -n -T userprog/linker.ld -o userprog/userprog_b.elf userprog/prog_b.o
+as --64 userprog/prog_svc84.s -o userprog/prog_svc84.o
+ld -n -T userprog/linker_svc84.ld -o userprog/userprog_svc84.elf userprog/prog_svc84.o
 as --64 userprog/prog_yield.s -o userprog/prog_yield.o
 ld -n -T userprog/linker_yield.ld -o userprog/userprog_yield.elf userprog/prog_yield.o
 as --64 userprog/prog_spin.s -o userprog/prog_spin.o
@@ -254,6 +256,19 @@ LIBDIR="target/x86_64-nyrqis-kernel/${PROFILE}"
 echo "==> linking kernel.elf"
 ld -n --gc-sections -T linker.ld -o target/kernel.elf target/boot.o \
     "${LIBDIR}/libnykernel.a"
+
+# Optional debug-info strip. THIS MUST HAPPEN BEFORE THE CARRIER AND THE
+# DIGEST ARE COMPUTED: the stub verifies both the embedded image and the
+# carrier's signed digest, so stripping afterwards would leave an image
+# whose two pins describe different bytes. `--strip-debug` keeps the symbol
+# table -- the UEFI stub resolves `uefi_entry` by name -- and drops only the
+# DWARF, which is most of the file. `make_live_iso.sh` sets this so the
+# committed discs do not carry ~5 MiB of symbols each.
+if [[ "${NYKERNEL_STRIP_DEBUG:-0}" == "1" ]]; then
+    before="$(stat -c %s target/kernel.elf)"
+    strip --strip-debug target/kernel.elf
+    echo "==> stripped debug info: $((before / 1024)) KiB -> $(( $(stat -c %s target/kernel.elf) / 1024 )) KiB (NYKERNEL_STRIP_DEBUG=1)"
+fi
 
 echo "==> done: target/kernel.elf"
 # Stage-2 integrity pin (the ADR-0014 chain's first landed link): record

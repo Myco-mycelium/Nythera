@@ -145,6 +145,14 @@ pub fn page_flags_of(
     _mapper: &OffsetPageTable<'static>,
     addr: VirtAddr,
 ) -> Option<Result<PageTableFlags, ()>> {
+    page_flags_active(addr)
+}
+
+/// The same walk as [`page_flags_of`], without asking for a mapper
+/// reference it never uses -- needed by code that runs inside a trap
+/// handler, where no mapper is borrowed but the ACTIVE tables are exactly
+/// the ones the caller is using (CR3 is authoritative during the trap).
+pub fn page_flags_active(addr: VirtAddr) -> Option<Result<PageTableFlags, ()>> {
     use x86_64::structures::paging::PageTable;
 
     let page: Page<Size4KiB> = Page::containing_address(addr);
@@ -186,6 +194,47 @@ pub fn page_flags_of(
     }
     Some(Ok(p1e.flags()))
 }
+/// Whether `[addr, addr+len)` is safe for the kernel to touch on behalf of
+/// a ring-3 caller, checked against the ACTIVE page tables before any
+/// access happens.
+///
+/// This is the validator every pointer-taking service call needs, and the
+/// reason the `0x84` surface was register-only until now: writing into a
+/// user address the caller merely *claimed* is how a syscall becomes an
+/// arbitrary kernel write primitive. A page qualifies only when it is
+/// PRESENT, USER_ACCESSIBLE, and (for writes) WRITABLE; a huge-page leaf at
+/// an unexpected level, an absent intermediate table, or a range that
+/// wraps the address space all refuse. The check is conservative by
+/// design: it answers "definitely safe to touch", and anything it cannot
+/// observe answers `false`.
+pub fn user_range_ok(addr: u64, len: usize, write: bool) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let end = match addr.checked_add(len as u64) {
+        Some(e) => e,
+        None => return false, // wraps: refuse rather than walk forever
+    };
+    let mut page_addr = addr & !0xfff;
+    while page_addr < end {
+        match page_flags_active(VirtAddr::new(page_addr)) {
+            Some(Ok(flags)) => {
+                let user = flags.contains(PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE);
+                if !user {
+                    return false;
+                }
+                if write && !flags.contains(PageTableFlags::WRITABLE) {
+                    return false;
+                }
+            }
+            // Unmapped, or a shape this walker refuses to interpret.
+            _ => return false,
+        }
+        page_addr += 4096;
+    }
+    true
+}
+
 /// Unmaps the 4 KiB page containing `addr` and invalidates its TLB
 /// entry. Returns `true` when a mapping existed and was removed.
 ///

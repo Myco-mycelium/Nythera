@@ -21,7 +21,16 @@ use crate::memory::frame_allocator::BumpFrameAllocator;
 use crate::memory::paging;
 use crate::serial_println;
 
-pub const TRAP_VECTOR: u8 = 0x84;
+/// Moved off 0x84 when the merge brought the release's `0x84` SERVICE
+/// GATE into this kernel: that vector is externally meaningful (release
+/// 1-71's user-space shell binaries issue `int $0x84` with a call number
+/// in `rax`), while this demo's vector is purely internal. Two handlers
+/// cannot share a gate -- `idt::init` installed the service gate first and
+/// this demo's handler second, so the service silently disappeared and a
+/// ring-3 shell call executed this demo's trap instead. The failure looked
+/// like a page fault in this file, which is why the vector is now a
+/// documented constant rather than a literal.
+pub const TRAP_VECTOR: u8 = 0x85;
 
 /// A real, separately-built, RELOCATABLE PE32+ executable
 /// (`userprog/prog_pe_reloc.s`). Its `.data` holds `ptr`, an absolute

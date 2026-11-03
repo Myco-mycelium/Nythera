@@ -35,6 +35,7 @@ pub mod cursor;
 pub mod device_mode;
 pub mod ps2_aux;
 pub mod service84;
+pub mod svc84_proof;
 
 /// The Material 3 home screen from release 1-71's `shell/src/ui.rs`,
 /// compiled straight out of the staged port tree rather than copied, so
@@ -458,6 +459,17 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
             pointer_ok,
             "cursor self-test failed: a known motion packet did not move the pointer to the expected pixels"
         );
+    }
+
+    // ---- ring-3 proof of the 0x84 gate (opt-in boot mode) ----------------
+    // Every other check of this surface runs in ring 0. This one loads a
+    // real user program that calls `int 0x84`, so the privilege transition
+    // and the round trip through user memory are measured rather than
+    // assumed. It never returns: the verdict is read off the console, like
+    // the kernel's other ring-3 proofs, and a normal boot is untouched.
+    if svc84_proof::requested(cmdline) {
+        serial_println!("  service-0x84 proof: nyrqis.proof=svc84 requested");
+        unsafe { svc84_proof::run(&mut frame_allocator) }
     }
 
     advance(BootPhase::Ready);
