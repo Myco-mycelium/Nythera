@@ -14,7 +14,14 @@
  *   3. an UNPORTED call (rax = 10)         -> result stored at BUF+16
  *      (the expected answer is -ENOSYS; a service that answered 0 here
  *       would be indistinguishable from "did nothing", which is exactly
- *       the lie the refusal exists to prevent)
+ *       the lie the refusal exists to prevent). Its four WIDENED argument
+ *       registers -- rsi, rdx, r10, r8 -- carry the recognisable markers
+ *       0x1111/0x2222/0x3333/0x4444, each stored to BUF+40..+64 after the
+ *       call returns (the trap preserves and restores them): the kernel
+ *       compares what its dispatcher ACTUALLY received against THESE
+ *       stored copies, so the stub's widened pass through the trap
+ *       boundary is proven with before/after values, not by reading the
+ *       assembly and nodding.
  *   4. GFX_MODE_INTO (rax = 2, rdi = BUF+24)
  *      -- a POINTER-taking call: the kernel must validate BUF+24 with the
  *      user-range walker before writing 8 bytes there, and it writes the
@@ -60,10 +67,22 @@ _start:
     int $0x84
     mov %rax, 8(%rbx)
 
-    /* 3. an unported call -- must be refused, not answered */
+    /* 3. an unported call -- must be refused, not answered. The four
+       widened argument registers carry recognisable markers; what the
+       kernel's dispatcher SAW is what the read-back is judged against.
+       rsi/rdx/r10/r8 are saved and restored across the trap, so the
+       stores after the int capture exactly what the program sent. */
+    mov $0x1111, %rsi
+    mov $0x2222, %rdx
+    mov $0x3333, %r10
+    mov $0x4444, %r8
     mov $10, %rax
     int $0x84
     mov %rax, 16(%rbx)
+    mov %rsi, 40(%rbx)
+    mov %rdx, 48(%rbx)
+    mov %r10, 56(%rbx)
+    mov %r8, 64(%rbx)
 
     /* 4. GFX_MODE_INTO: the validated-write path */
     mov %rbx, %rdi

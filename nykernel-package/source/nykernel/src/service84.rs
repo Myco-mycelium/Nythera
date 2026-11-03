@@ -2,7 +2,9 @@
 //! stack uses, as much of them as this kernel can honestly serve today.
 //!
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
-//! `rax`, argument in `rdi`, result in `rax`) that serves five calls:
+//! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
+//! reach `dispatch` (only `rdi` is consumed by a served call today), the
+//! result goes back in `rax` -- that serves five calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -21,14 +23,15 @@
 //! block-and-reschedule with a saved trap, either requires a process
 //! identity (which `PROCESS_SELF` now answers from this tree's own task
 //! model, as the surface's first scheduler-backed process call) and
-//! sessions the PORT_MANIFEST parks for its last steps. The ABI shape those
-//! calls will need when they land is staged in the entry stub: `rdi` is
-//! served today; `rsi/rdx/r10/r8` (payload, payload length, transfer,
-//! rights) are already SAVED there but not yet passed to `dispatch`, and
-//! widening that pass is where the SEND port starts. A call that is not
-//! served must say so: a shell that silently receives zeroes from an
-//! unported service has no way to tell "nothing happened" from "this
-//! kernel cannot do that".
+//! sessions the PORT_MANIFEST parks for its last steps. What those calls
+//! need from THIS file is already here: the entry stub passes the full
+//! five-argument shape to `dispatch` (`rsi/rdx/r10/r8` = payload, payload
+//! length, transfer, rights, with the caller's CPL behind them), and the
+//! ring-3 proof proves that pass through the trap boundary by before/after
+//! values -- the missing pieces are the capability tables and the
+//! sessions, not the registers. A call that is not served must say so: a
+//! shell that silently receives zeroes from an unported service has no
+//! way to tell "nothing happened" from "this kernel cannot do that".
 //!
 //! What this is NOT, stated as plainly as the manifest does: this is not
 //! the release's `0x84` surface (118 KiB of capability/IPC/process/gfx/
@@ -87,6 +90,16 @@ static LAST_CALLER_CPL: AtomicU64 = AtomicU64::new(0xFF);
 static RET_GFX: AtomicI64 = AtomicI64::new(0);
 static RET_INPUT: AtomicI64 = AtomicI64::new(0);
 static RET_ENOSYS: AtomicI64 = AtomicI64::new(0);
+/// The widened ABI's differential check: the caller's `rsi/rdx/r10/r8` as
+/// the dispatcher actually received them, recorded ONLY on a ring-3 caller
+/// of an UNPORTED number (the proof's one junk-arg call). PROOF_DONE
+/// compares these against copies the program stored in its own buffer,
+/// so the stub's widened pass is verified across the trap boundary and
+/// not by reading the assembly and nodding.
+static JUNK_ARG_RSI: AtomicU64 = AtomicU64::new(0);
+static JUNK_ARG_RDX: AtomicU64 = AtomicU64::new(0);
+static JUNK_ARG_R10: AtomicU64 = AtomicU64::new(0);
+static JUNK_ARG_R8: AtomicU64 = AtomicU64::new(0);
 static WROTE_W: AtomicU32 = AtomicU32::new(0);
 static WROTE_H: AtomicU32 = AtomicU32::new(0);
 /// 0 = not finished, 1 = passed, 2 = failed.
@@ -117,8 +130,12 @@ fn pack_gfx() -> i64 {
 
 /// The dispatcher. `cpl` is the caller's privilege level, read from the
 /// saved CS by the entry stub -- without it, a kernel-side call and a
-/// ring-3 call look identical, and the proof would be worthless.
-pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
+/// ring-3 call look identical, and the proof would be worthless. The
+/// release's five-argument shape arrives whole: `a0..=a2` (`rdi/rsi/rdx`)
+/// and `a_xfer`/`a_rights` (`r10/r8`) -- only `a0` is consumed by a served
+/// call today, the rest by the ledger (nothing reads what was never
+/// passed).
+pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, cpl: u64) -> i64 {
     let from_ring3 = cpl == 3;
     if from_ring3 {
         LAST_CALLER_CPL.store(cpl, Ordering::Relaxed);
@@ -141,7 +158,7 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
         }
         CALL_GFX_MODE_INTO => {
             // The validator decides. Nothing is written before it agrees.
-            if !crate::memory::paging::user_range_ok(arg, 8, true) {
+            if !crate::memory::paging::user_range_ok(a0, 8, true) {
                 return EFAULT;
             }
             let (w, h) = match crate::devices::framebuffer::bound_mode() {
@@ -149,8 +166,8 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
                 None => return ENOSYS,
             };
             unsafe {
-                core::ptr::write_unaligned(arg as *mut u32, w);
-                core::ptr::write_unaligned((arg + 4) as *mut u32, h);
+                core::ptr::write_unaligned(a0 as *mut u32, w);
+                core::ptr::write_unaligned((a0 + 4) as *mut u32, h);
             }
             if from_ring3 {
                 WROTE_W.store(w, Ordering::Relaxed);
@@ -159,15 +176,17 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
             0
         }
         CALL_PROOF_DONE => {
-            if !crate::memory::paging::user_range_ok(arg, 40, false) {
+            // Nine qwords: the five call results plus the four widened-arg
+            // markers the program stored at BUF+40..+64.
+            if !crate::memory::paging::user_range_ok(a0, 72, false) {
                 return EFAULT;
             }
-            // Read the FIVE results back OUT OF USER MEMORY: this is the
-            // part the registers alone cannot prove, because it shows the
+            // Read the results back OUT OF USER MEMORY: this is the part
+            // the registers alone cannot prove, because it shows the
             // ring-3 program actually received and stored them.
-            let mut stored = [0i64; 5];
+            let mut stored = [0i64; 9];
             for (i, slot) in stored.iter_mut().enumerate() {
-                *slot = unsafe { core::ptr::read_unaligned((arg as *const i64).add(i)) };
+                *slot = unsafe { core::ptr::read_unaligned((a0 as *const i64).add(i)) };
             }
             let want_gfx = RET_GFX.load(Ordering::Relaxed);
             let want_input = RET_INPUT.load(Ordering::Relaxed);
@@ -176,6 +195,13 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
             // live value at read-back time, so a future session that makes
             // the program a real task changes both sides together.
             let want_self = crate::experimental::scheduler::current_task() as i64;
+            // The widened pass is judged the same way as the answers:
+            // against what the dispatcher ACTUALLY received from the ring-3
+            // caller, not against constants compiled into this file.
+            let want_rsi = JUNK_ARG_RSI.load(Ordering::Relaxed);
+            let want_rdx = JUNK_ARG_RDX.load(Ordering::Relaxed);
+            let want_r10 = JUNK_ARG_R10.load(Ordering::Relaxed);
+            let want_r8 = JUNK_ARG_R8.load(Ordering::Relaxed);
             let wrote_ok = crate::devices::framebuffer::bound_mode()
                 .map(|(w, h)| {
                     // The geometry was written at BUF+24 (the program's own
@@ -183,7 +209,7 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
                     // this check read BUF+0 -- where GFX_MODE's low dword
                     // lives -- and reported a MISMATCH that was the check's
                     // own bug, not the call's.
-                    let at = unsafe { (arg + 24) as *const u32 };
+                    let at = unsafe { (a0 + 24) as *const u32 };
                     unsafe {
                         core::ptr::read_unaligned(at) == w
                             && core::ptr::read_unaligned(at.add(1)) == h
@@ -199,11 +225,15 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
                 && stored[1] == want_input
                 && stored[2] == want_enosys
                 && stored[2] == ENOSYS
-                && stored[4] == want_self;
+                && stored[4] == want_self
+                && stored[5] == want_rsi as i64
+                && stored[6] == want_rdx as i64
+                && stored[7] == want_r10 as i64
+                && stored[8] == want_r8 as i64;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
             crate::serial_println!(
-                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} -- {}",
+                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} -- {}",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
                 want_input as u64,
@@ -211,11 +241,24 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
                 WROTE_W.load(Ordering::Relaxed),
                 WROTE_H.load(Ordering::Relaxed),
                 want_self as u64,
+                want_rsi,
+                want_rdx,
+                want_r10,
+                want_r8,
                 if stored[0] == want_gfx { "matches" } else { "MISMATCH" },
                 if stored[1] == want_input { "matches" } else { "MISMATCH" },
                 if stored[2] == want_enosys { "matches" } else { "MISMATCH" },
                 if wrote_ok { "matches" } else { "MISMATCH" },
                 if stored[4] == want_self { "matches" } else { "MISMATCH" },
+                if stored[5] == want_rsi as i64
+                    && stored[6] == want_rdx as i64
+                    && stored[7] == want_r10 as i64
+                    && stored[8] == want_r8 as i64
+                {
+                    "matches"
+                } else {
+                    "MISMATCH"
+                },
                 if ok { "OK" } else { "FAILED" }
             );
             0
@@ -230,6 +273,15 @@ pub fn dispatch(nr: u64, arg: u64, cpl: u64) -> i64 {
         _ => {
             if from_ring3 {
                 RET_ENOSYS.store(ENOSYS, Ordering::Relaxed);
+                // The proof's junk-arg call is the ONLY ring-3 caller of an
+                // unported number in a proof boot, so these hold exactly the
+                // wide-arg values its sent -- until PROOF_DONE reads them.
+                // If a later legitimate unported ring-3 call preceded it,
+                // the compare would fail the proof instead of lying.
+                JUNK_ARG_RSI.store(a1, Ordering::Relaxed);
+                JUNK_ARG_RDX.store(a2, Ordering::Relaxed);
+                JUNK_ARG_R10.store(a_xfer, Ordering::Relaxed);
+                JUNK_ARG_R8.store(a_rights, Ordering::Relaxed);
             }
             ENOSYS
         }
@@ -247,25 +299,31 @@ pub fn install(idt: &mut InterruptDescriptorTable) {
 }
 
 /// The trap entry. `rax` carries the call number in and the result out;
-/// `rdi` carries the argument in (and survives, because it is saved);
-/// `rdx` carries the caller's CS out of the hardware frame.
+/// the caller's `rdi/rsi/rdx/r10/r8` arrive whole as `dispatch`'s first
+/// five widened arguments (only `rdi` is consumed by a served call today);
+/// the caller's CS is read out of the hardware frame.
 ///
 /// The hardware frame (pushed by the CPU only when the privilege level
 /// CHANGES) sits at `rbx + 72` after the nine pushes: RIP, CS, RFLAGS,
 /// RSP, SS. CS's low two bits are the caller's CPL, which is why this stub
 /// reads it from the frame instead of asking the current ring -- inside the
 /// handler we are always ring 0, and that would make every call look
-/// privileged.
+/// privileged. Saved-register slots under it: rbx+0 r11, +8 r10, +16 r9,
+/// +24 r8, +32 saved rbx, +40 rdi, +48 rsi, +56 rdx, +64 rcx.
 ///
-/// RSP is kept in **rbx**, a callee-saved register, and rounded down for
-/// the `call` rather than padded by a counted amount (the frame differs
-/// between a ring-3 and a ring-0 caller, and a pad that is right for one is
-/// wrong for the other). The first version of this stub kept RSP in r11 --
+/// RSP is kept in **rbx**, a callee-saved register; the seven `call`
+/// arguments are built in the SysV register order with the seventh (the
+/// CPL) on the stack at [rsp] when `call` runs -- an even 16-byte gap, so
+/// the callee's alignment is preserved. RSP is rounded down once, still
+/// rather than padded by a counted amount (the frame differs between a
+/// ring-3 and a ring-0 caller, and a pad that is right for one is wrong
+/// for the other). The first version of this stub kept RSP in r11 --
 /// caller-saved -- so the Rust dispatcher was free to clobber it, and the
 /// epilogue's `mov rsp, r11` restored a garbage stack pointer. That showed
 /// up as a double fault *after* two successful calls, which is exactly what
 /// a corrupted stack looks like when the first pushes and pops happen to
-/// land on valid pages.
+/// land on valid pages. The widened pass itself is proven, not read and
+/// admired: see `dispatch`'s JUNK_ARG statics.
 #[unsafe(naked)]
 pub unsafe extern "C" fn service_entry() {
     naked_asm!(
@@ -279,11 +337,18 @@ pub unsafe extern "C" fn service_entry() {
         "push r10",
         "push r11",
         "mov rbx, rsp",        // callee-saved: the dispatch cannot clobber it
-        "mov rsi, rdi",       // arg = the caller's rdi
-        "mov rdx, [rbx + 80]", // caller CS, from the hardware frame
+        "mov rsi, rdi",       // a0 = the caller's rdi
+        "mov rdx, [rbx + 48]", // a1 = the caller's rsi
+        "mov rcx, [rbx + 56]", // a2 = the caller's rdx
+        "mov r8, [rbx + 8]",   // a_xfer = the caller's r10
+        "mov r9, [rbx + 24]",  // a_rights = the caller's r8
         "mov rdi, rax",       // nr = the caller's rax
+        "mov r10, [rbx + 80]", // caller CS, from the hardware frame
         "and rsp, -16",
+        "sub rsp, 16",
+        "mov [rsp], r10",      // 7th SysV arg: cpl, keeping the 16-byte alignment
         "call {dispatch}",
+        "add rsp, 16",
         "mov rsp, rbx",
         "pop r11",
         "pop r10",
@@ -299,9 +364,18 @@ pub unsafe extern "C" fn service_entry() {
     );
 }
 
-/// C half of the entry stub: SysV arguments `(nr, arg, cs)`.
-extern "C" fn service_dispatch_c(nr: u64, arg: u64, cs: u64) -> i64 {
-    dispatch(nr, arg, cs & 3)
+/// C half of the entry stub: SysV arguments `(nr, a0..=a2, transfer,
+/// rights, cs)`.
+extern "C" fn service_dispatch_c(
+    nr: u64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+    a_xfer: u64,
+    a_rights: u64,
+    cs: u64,
+) -> i64 {
+    dispatch(nr, a0, a1, a2, a_xfer, a_rights, cs & 3)
 }
 
 /// The boot proof for this surface's ABI, called from ring 0. It checks the
@@ -310,13 +384,13 @@ extern "C" fn service_dispatch_c(nr: u64, arg: u64, cs: u64) -> i64 {
 /// proven separately by `svc84_proof`, which runs a real ring-3 program
 /// (`userprog/prog_svc84.s`) and closes via `PROOF_DONE`.
 pub fn self_test() -> bool {
-    let gfx = dispatch(CALL_GFX_MODE, 0, 0);
+    let gfx = dispatch(CALL_GFX_MODE, 0, 0, 0, 0, 0, 0);
     let gfx_ok = match crate::devices::framebuffer::bound_mode() {
         Some((w, h)) => gfx == (((w as i64) << 32) | h as i64),
         None => gfx == ENOSYS,
     };
 
-    let input = dispatch(CALL_INPUT_STATE, 0, 0);
+    let input = dispatch(CALL_INPUT_STATE, 0, 0, 0, 0, 0, 0);
     let (px, py) = crate::cursor::last_position();
     let input_ok = input
         == ((px.clamp(0, 0xffff) as i64)
@@ -325,21 +399,22 @@ pub fn self_test() -> bool {
 
     // Every call this kernel does not serve must be refused with the named
     // error, not answered with zeroes.
-    let refused = dispatch(10, 0, 0) == ENOSYS
-        && dispatch(20, 0, 0) == ENOSYS
-        && dispatch(u64::MAX, 0, 0) == ENOSYS;
+    let refused = dispatch(10, 0, 0, 0, 0, 0, 0) == ENOSYS
+        && dispatch(20, 0, 0, 0, 0, 0, 0) == ENOSYS
+        && dispatch(u64::MAX, 0, 0, 0, 0, 0, 0) == ENOSYS;
 
     // The validator: a kernel stack address must be refused (it is not
     // USER_ACCESSIBLE), and a null page certainly is. Writing through the
     // call must therefore be refused before anything is touched.
     let mut scratch = [0u32; 2];
-    let kernel_refused = dispatch(CALL_GFX_MODE_INTO, scratch.as_mut_ptr() as u64, 0) == EFAULT;
-    let null_refused = dispatch(CALL_GFX_MODE_INTO, 0, 0) == EFAULT;
+    let kernel_refused =
+        dispatch(CALL_GFX_MODE_INTO, scratch.as_mut_ptr() as u64, 0, 0, 0, 0, 0) == EFAULT;
+    let null_refused = dispatch(CALL_GFX_MODE_INTO, 0, 0, 0, 0, 0, 0) == EFAULT;
     let validator_ok = kernel_refused && null_refused;
 
     // The identity call's answer must BE the scheduler's own running-task
     // id -- task 0 (the kernel) while no ring-3 session owns the gate.
-    let self_ok = dispatch(CALL_PROCESS_SELF, 0, 0)
+    let self_ok = dispatch(CALL_PROCESS_SELF, 0, 0, 0, 0, 0, 0)
         == crate::experimental::scheduler::current_task() as i64;
 
     let ok = gfx_ok && input_ok && refused && validator_ok && self_ok;
