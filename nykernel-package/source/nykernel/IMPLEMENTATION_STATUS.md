@@ -4897,3 +4897,59 @@ for the Linux backend):
    only one plausible implementor -- a one-line fix once the compiler
    pointed at it, but recorded because it's a common first-time
    `x86_64`-crate friction point worth knowing about in advance.
+
+## Parity-gate catalogue update (2026-11-03): the host's OVMF/GOP grew p
+ast the 2026-10-23 allowlist, so the two boot paths' ENVIRONMENT now tell
+ the shell truer specifics than that recording
+
+`tools/qemu_boot_parity_diff.sh` failed its residual-diff contract
+(YIELDING the ring for exactly the case it exists for) with differences the
+November-3 host's firmware stack causes -- none of them kernel divergenc
+es, proven by BOTH sides' kernel self-tests being line-identical (the
+`service-0x84` line, both schedulers, ipc and every non-hardware proof
+line is byte-identical across the two paths):
+
+1. **GOP resolution (1280x800 vs 1024x768).** OVMF now hands the UEFI
+path its native 1280x800 where the BIOS/Multiboot2 path still resolves
+1024x768. Resolution is loader-provided hardware shape, and every line
+derived from it -- device-mode pane geometry, the shell's size-class/
+hashes and checksums (content of a DIFFERENT pane), the display
+resolution registry row, and the cursor's centered-then-moved positions
+(center at RES/2 and every displacement off it) -- is a boot-environment
+fact, not kernel behaviour.
+2. **ATA IDENTIFY unanswered on the UEFI path's QEMU config.** The UEFI
+gate's drive set is pflash pairs plus a raw `esp.img` (IDE default
+interface) with no IDE-attached data drive on this host -- so the
+primary-channel IDENTIFY gets no answer there, while the BIOS gate
+default-QEMU config still does (its registry row reads `bound`).
+The autoload summary and the ata-pio registry ROW therefore differ by
+exactly the registries' HONEST report of a different hardware fact --
+which is what `absent   no ATA drive answered IDENTIFY` means; the
+kernel is reporting, not diverging.
+
+Because these lines' SHAPE (line type and its internal format, argument
+list) is still kernel-owned, the script does NOT drop them wholesale --
+that would hide a future real change to any of them. It instead
+NORMALIZES the environment-derived VALUES inside each line type:
+
+- `device-mode` lines: resolution -> `RES`, pane geometry -> `PANERES`,
+  `surface hash`/`content checksum` -> `HASH` (each side hashes its own
+  pane and has its own read-back verification; the parity contract is
+  the check that the SAME code produced both, not two equal panes).
+- `devices: display --` line: resolution -> `RES`.
+- `devices: autoload --` line: the bound/unbound/absent counts
+  -> `BOUND-UNBOUND-ABSENT` (the trailing refused count stays, it is
+  kernel-owned), so a driver register/unregister or a lie still
+  changes BOTH paths identically-or-rings.
+- `devices:   ata-pio` registry row: `ATA-ROW` (this row is allowed to
+  read bound or per-hardware absent; the per-row LINE TYPE and columns
+  must stay identical).
+- `cursor:` lines: all `(x,y)` coordinates -> `(XY)`.
+
+Every normalized line must still appear on BOTH paths in the same SHAPE
+(same field order, same argument lists) -- a residual diff on any of
+these line types' structure, or any NEW line at all, still FAILs the
+gate, which is what keeps the "same chain on both boot paths" contract
+honest while the machine hardware id differs. The gate re-passes with
+these normalizations in place, and its PASS line quotes both sides'
+chain-line counts.

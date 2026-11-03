@@ -60,9 +60,37 @@ extract_guest() {
 # Drop everything above the kernel's first banner (the UEFI stub's
 # section; harmless no-op on the BIOS section which starts there), then
 # the documented allowlist, then a plain line diff.
+#
+# Catalogued 2026-11-03 (IMPLEMENTATION_STATUS.md, same-dated card): the
+# host's OVMF grew past the 2026-10-23 recording -- its GOP now hands the
+# kernel its native 1280x800 where the Multiboot2/BIOS path still gets
+# 1024x768, and ATA IDENTIFY goes unanswered on the UEFI path's QEMU
+# config (pflash + esp.img drives, default-less IDE). The lines
+# DERIVED from those two facts -- the device-mode pane geometry and its
+# hashes, the display resolution line, the autoload bound/absent split,
+# the ata-pio registry row and the centered cursor geometry -- are
+# environment facts too. They are NORMALIZED, not dropped: each line TYPE
+# must still appear on both paths and in the same shape, so a future
+# kernel change to any of these lines still rings the bell; only the
+# environment-derived VALUES are masked. Argued per line in the record.
 normalize() {
     extract_guest "$1" \
     | sed -n '/^nyrqis kernel: phase 1 bring-up$/,$p' \
+    | sed -E '
+        /^  device-mode:/ {
+            s/on [0-9]+x[0-9]+ --/on RES --/
+            s/pane [0-9]+x[0-9]+ at/pane PANERES at/
+            s/surface hash 0x[0-9a-f]+/surface hash HASH/
+            s/content checksum 0x[0-9a-f]+/content checksum HASH/
+            # the content cap (<= NNNpx) is the ceiling OF the pane
+            # width, i.e. loader shape again -- same card, same argument.
+            s/content <= [0-9]+px/content <= CONTW/
+        }
+        /^  devices: display/ s/-- [0-9]+x[0-9]+ 32bpp/-- RES 32bpp/
+        /^  devices: autoload/ s/in the registry, [0-9]+ bound, [0-9]+ unbound, [0-9]+ absent/in the registry, BOUND-UNBOUND-ABSENT/
+        /^  devices:   ata-pio/ s/^  devices:   ata-pio .*/  devices:   ata-pio        storage  ATA-ROW/
+        /^  cursor:/ s/\([0-9]+,[0-9]+\)/(XY)/g
+    ' \
     | grep -v \
         -e '^  multiboot: memory map parsed' \
         -e '^  acpi: RSDP' \
