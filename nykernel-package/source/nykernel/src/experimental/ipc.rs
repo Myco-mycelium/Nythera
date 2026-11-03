@@ -164,6 +164,39 @@ pub fn try_receive(dest: usize) -> Option<IpcMessage> {
     })
 }
 
+/// How many endpoints exist. Read-only, for callers that must tell
+/// "endpoint does not exist" apart from "endpoint exists and is empty" --
+/// [`try_receive`] returns `None` for BOTH, and a surface that answers a
+/// nonexistent endpoint with its empty answer is conflating two different
+/// conditions (the `0x84` gate refuses the nonexistent one with ENOENT and
+/// answers only real empty ones with ENODATA).
+pub fn endpoint_count() -> usize {
+    unsafe { (*&raw const MAILBOXES).len() }
+}
+
+/// The `nyrqis.proof=svc84` boot drives `send`/`try_receive` through
+/// endpoint 0; make that endpoint exist (a proof boot can reach this
+/// before the ordinary `init`/demo phases have ever built the table) and
+/// be EMPTY (earlier phases may have queued -- but the proof enters ring 3
+/// and never returns, so anything still in flight is unreachable and
+/// nothing waits for it: draining here loses nothing observable). NOT a
+/// general-purpose reset: a caller of this documents why its path is
+/// boot-terminal, as the proof's is.
+pub fn prepare_endpoint0_for_proof() {
+    interrupts::without_interrupts(|| unsafe {
+        let boxes = &mut *(&raw mut MAILBOXES);
+        if boxes.is_empty() {
+            boxes.push(Mailbox {
+                queue: VecDeque::new(),
+                capacity: DEFAULT_CAPACITY,
+                revoked: Vec::new(),
+            });
+        } else if let Some(m) = boxes.get_mut(0) {
+            m.queue.clear();
+        }
+    })
+}
+
 /// Blocking receive, added 2026-10-11 as the next NPS-003 conformance
 /// increment (NPS-003 §3: `receive` "blocks the calling thread until a
 /// message arrives at an endpoint it owns"). Cooperative-blocking:

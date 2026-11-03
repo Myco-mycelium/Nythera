@@ -22,7 +22,14 @@
 #   - the four WIDENED argument registers (rsi/rdx/r10/r8, the release's
 #     five-argument ABI shape) survived the trap boundary into the
 #     dispatcher exactly as the program sent them -- the differential
-#     check of the stub's widened pass.
+#     check of the stub's widened pass;
+#   - the IPC rows (SEND 0x45 / RECV 0x46) round-trip ONE message through
+#     the kernel's real mailbox primitive (experimental::ipc): queued in
+#     ring 0, drained in ring 3, and the program's stored copy of the
+#     (sender << 32) | seq return matches what the drain unpacked. The
+#     shape refusal (-EINVAL) and the empty-endpoint answer (-ENODATA,
+#     distinct from the self-test's -ENOENT for a nonexistent endpoint)
+#     are each observed by the program.
 #
 # The proof mode does not return to the kernel (it ends in a ring-3 spin),
 # so this harness waits for the verdict line and then stops QEMU.
@@ -126,6 +133,11 @@ else
     else
         bad "the widened argument pass did not round-trip through the trap boundary"
     fi
+    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x7"* ]] && [[ "$VERDICT" == *"want 0x7"* ]]; then
+        ok "one sent message round-tripped through the kernel's real mailbox (sender=0 seq=7 -> 0x7) and the shape/empty refusals were observed by name"
+    else
+        bad "the IPC rows' round trip or refusals failed their read-back"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -140,4 +152,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, and the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent"
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, and one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name."

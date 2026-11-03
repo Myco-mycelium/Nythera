@@ -31,9 +31,28 @@
  *      (0 = the kernel itself, while no ring-3 task owns the gate). The
  *      kernel's read-back compares it against the scheduler's OWN live
  *      value, so a real session changes both sides together.
+ *   6. the IPC rows, exercising THE KERNEL'S REAL MAILBOX PRIMITIVE
+ *      (experimental::ipc) end to end:
+ *        a. IPC_SEND (rax = 0x45, rdi = 0 endpoint, rsi = 7 seq)
+ *           -> ack stored at BUF+72. The kernel must queue
+ *           (sender = current task, seq = 7) through the primitive.
+ *        b. IPC_RECV (rax = 0x46, rdi = 0) -> value stored at BUF+80.
+ *           The expected answer is (sender << 32) | seq = 7 (sender is
+ *           0 here, not zero-by-default): proving ONE SENT message came
+ *           back WHOLE, from KERNEL memory across the trap boundary.
+ *        c. IPC_RECV with a shape claim (rdx = 0x51) -> stored at
+ *           BUF+88; expected -EINVAL (a shape the primitive cannot own).
+ *        d. IPC_RECV on the now-EMPTY endpoint 0 -> stored at BUF+96;
+ *           expected -ENODATA -- the real-and-empty answer, NOT a
+ *           refusal. (The nonexistent-endpoint case, -ENOENT, is asserted
+ *           by the boot self-test, whose zero-table state IS the
+ *           nonexistent case.)
+ *      The read-back compares BUF+80 against what the drain actually
+ *      unpacked, so the queue/unpack path through kernel memory is
+ *      proven with values, not assumptions.
  *
  * Then it asks the kernel to close the proof (rax = 0x43, rdi = BUF): the
- * kernel reads the five stored results back OUT OF USER MEMORY and
+ * kernel reads the nine stored results back OUT OF USER MEMORY and
  * compares them with what it returned, so the check covers the round trip
  * through ring-3 writes rather than trusting the registers alone.
  *
@@ -103,6 +122,65 @@ _start:
     mov $0x44, %rax
     int $0x84
     mov %rax, 32(%rbx)
+
+    /* 6. The IPC rows. Every argument except the one a call consumes is
+       ZEROED before it: the trap restores caller registers, so the junk
+       markers step 3 left in rsi/rdx/r10/r8 would otherwise be read as
+       shape claims and (wrongly) refused before anything is sent. That
+       is exactly the class of call-site bug a proof should catch -- and
+       the first run of this program lost the whole round trip to it. */
+    /* 6a. IPC_SEND (0x45): endpoint 0, seq 7 -> ack at BUF+72. The
+       transfer register carries the release's OWN "no transfer" claim
+       (u64::MAX): a zero there is NOT "no transfer" on this row, it is
+       a shape this primitive does not own every other value of, and
+       sending 0 in r10 is refused EINVAL (the first run of this
+       program tripped exactly that). */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $7, %rsi
+    movabs $-1, %r10
+    mov $0x45, %rax
+    int $0x84
+    mov %rax, 72(%rbx)
+    /* 6b. IPC_RECV (0x46): drain endpoint 0 -> (sender << 32) | 7 at
+       BUF+80, proving the queued message came back WHOLE. (%rsi still
+       holds 6a's seq -- it must be re-zeroed or the RECV is refused.) */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 80(%rbx)
+    /* 6c. a shape claim RECV must refuse (payload pointer rdx) */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x51, %rdx
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 88(%rbx)
+    /* 6d. Endpoint 0 is now EMPTY -- real and empty -- so the honest
+       answer is -ENODATA, the distinct ("exists, but bare now") value,
+       NOT a refusal. The NONEXISTENT case (-ENOENT) is asserted by the
+       kernel's own boot self-test on this call, whose zero-state IS the
+       nonexistent-table state; one refused-value slot here (BUF+96) is
+       where that difference is pinned. The shape claim 6c left in
+       %rdx MUST be cleared: the trap preserves caller registers, so a
+       leftover payload claim here would be answered EINVAL, not
+       ENODATA, and the       proof would catch the mistake -- 6c zeroed everything but %rdx,
+       so this only has one register to clear. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 96(%rbx)
 
     /* Close the proof (0x43): the kernel reads BUF back through the
        validator. */

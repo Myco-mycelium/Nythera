@@ -91,6 +91,15 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     assert_eq!(buf_mapped, 1, "svc84 proof: results page not mapped");
     assert_eq!(stack_mapped, 1, "svc84 proof: stack page not mapped");
 
+    // The proof drives the IPC rows through endpoint 0 (the program's
+    // SEND/RECV choice): make that endpoint exist and be EMPTY. A proof
+    // boot reaches this before the ordinary ipc::init/demo phases have
+    // built a table, so it may not exist at all yet; and, since the proof
+    // enters ring 3 and never returns, anything some earlier phase had
+    // queued there is unreachable and no one waits for it -- draining
+    // loses nothing observable. See ipc::prepare_endpoint0_for_proof.
+    crate::experimental::ipc::prepare_endpoint0_for_proof();
+
     // The ring-0 stack the CPU will switch to on the first trap: if it is
     // not mapped in THIS address space, the first `int 0x84` faults while
     // the CPU is pushing the frame, which looks like a kernel fault at a

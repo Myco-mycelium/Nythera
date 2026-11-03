@@ -3,8 +3,8 @@
 //!
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
-//! reach `dispatch` (only `rdi` is consumed by a served call today), the
-//! result goes back in `rax` -- that serves five calls:
+//! reach `dispatch` (the arguments each row consumes are named in the
+//! table), the result goes back in `rax` -- that serves seven calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -13,6 +13,20 @@
 //! | 0x42 | `GFX_MODE_INTO` | user pointer | writes `(u32 width, u32 height)` there; `0`, or `-EFAULT` |
 //! | 0x43 | `PROOF_DONE` | user pointer | the ring-3 proof's read-back check (see below) |
 //! | 0x44 | `PROCESS_SELF` | — | the running scheduler task's id (`experimental::scheduler`); `0` = the kernel itself |
+//! | 0x45 | `IPC_SEND` | a0=endpoint, a1=seq | queues `(sender = current task, seq)` through `experimental::ipc`; `0`, or the arbiter's errno |
+//! | 0x46 | `IPC_RECV` | a0=endpoint | drains one queued message -> `(sender << 32) | seq`; `-ENODATA` when real-and-empty, `-ENOENT` when it does not exist |
+//!
+//! The IPC rows are the release-typed SEND/RECV door, as far as THIS tree's
+//! own primitive can honestly serve it: `ipc::send`/`try_receive` model the
+//! message body as `(sender, seq)`, so a caller claiming a payload pointer
+//! (`a2`), a transfer token other than the release's "no transfer"
+//! (`a_xfer`) or rights (`a_rights`), or a `seq` wider than u32, claims a
+//! shape this primitive does not own and is refused (`EINVAL`/`ERANGE`)
+//! rather than served truncated. The blocking form (`a_xfer == 1` on RECV)
+//! is refused `-ENOSYS` BY NAME: block-and-reschedule from a trap handler
+//! needs the saved-trap session machine the manifest parks, and "not here
+//! yet" must not be indistinguishable from "empty right now" (which is
+//! `-ENODATA`, a real answer).
 //!
 //! The numbers are ALL OUR OWN, in `0x40..`, and they must be: the
 //! release's ledger spans `0..28` contiguously (yield=0, SEND=1, RECV=2,
@@ -28,11 +42,13 @@
 //! build.sh.
 //!
 //! and answers `-ENOSYS` for everything else. The port ledger for what that
-//! "everything else" is: the release's full process machine -- SEND/RECV
-//! over endpoints, capability rights and transfers, spawn, shared memory
+//! "everything else" is: the release's full process machine -- the payload/
+//! transfer/capability shape of SEND and the BLOCKING form of RECV,
+//! capability rights and transfers, spawn, shared memory
 //! (`porting/release-1-71/src/experimental/syscall_demo.rs` and its
 //! `capability.rs`/`shm.rs`) -- is one connected surface, not five
-//! independent calls: SEND requires capability tables, RECV requires
+//! independent calls: full SEND requires capability tables, blocking RECV
+//! requires
 //! block-and-reschedule with a saved trap, either requires a process
 //! identity (which `PROCESS_SELF` now answers from this tree's own task
 //! model, as the surface's first scheduler-backed process call) and
@@ -42,7 +58,10 @@
 //! length, transfer, rights, with the caller's CPL behind them), and the
 //! ring-3 proof proves that pass through the trap boundary by before/after
 //! values -- the missing pieces are the capability tables and the
-//! sessions, not the registers. A call that is not served must say so: a
+//! sessions, not the registers. The IPC rows land the one slice of that
+//! machine this tree already owns -- the `(sender, seq)` mailbox primitive
+//! -- and refuse the shape claims it cannot own. A call that is not served
+//! must say so: a
 //! shell that silently receives zeroes from an unported service has no
 //! way to tell "nothing happened" from "this kernel cannot do that".
 //!
@@ -51,7 +70,10 @@
 //! input), and it does not make the shell a session. There is no
 //! user-space process owning the display, no input delivery to a
 //! foreground container, no capability-managed framebuffer window and no
-//! IPC. The calls here are the ones whose answers exist in this kernel: the
+//! capability-mediated IPC: the endpoint rows serve `experimental::ipc`'s own
+//! `(sender, seq)` mailbox primitive, which is NOT the release's
+//! payload/transfer/capability shape and refuses that shape rather than
+//! answering it falsely. The calls here are the ones whose answers exist in this kernel: the
 //! pointer is where the PS/2 driver says it is, and the display is the mode
 //! the framebuffer driver bound.
 //!
@@ -94,10 +116,40 @@ pub const CALL_PROOF_DONE: u64 = 0x43;
 /// calls (spawn, capabilities, IPC) stay refused: see the ledger above.
 pub const CALL_PROCESS_SELF: u64 = 0x44;
 
+/// The release-typed IPC door, served through THIS tree's own mailbox
+/// primitive (`experimental::ipc`), not the release's capability tables:
+/// the message body is the primitive's `(sender, seq)`, and the
+/// payload-pointer / transfer-token / rights parts of the release's shape
+/// are refused (`EINVAL`) rather than silently dropped -- serving a shape
+/// you do not own by eating half of it is a lie, not a shortcut.
+pub const CALL_IPC_SEND: u64 = 0x45;
+pub const CALL_IPC_RECV: u64 = 0x46;
+
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
 /// Bad user pointer: the validator refused the range.
 pub const EFAULT: i64 = -14;
+/// Linux `EINVAL`: the call's SHAPE claims something this primitive does
+/// not own (a payload pointer, rights, a transfer token on SEND). Refused,
+/// never half-served.
+pub const EINVAL: i64 = -22;
+/// Linux `ERANGE`: `seq` is a u32 in the primitive's message body; a wider
+/// value is refused rather than truncated.
+pub const ERANGE: i64 = -34;
+/// Linux `ENOENT`: the endpoint does not exist (distinct from ENODATA).
+pub const ENOENT: i64 = -2;
+/// Linux `ENODATA`: the endpoint exists and is empty. Distinguishable from
+/// ENOENT precisely because the surface refuses the nonexistent one and
+/// answers the empty one.
+pub const ENODATA: i64 = -61;
+/// Linux `EPERM`: the arbiter refused the send's sender claim.
+pub const EPERM: i64 = -1;
+/// Linux `EAGAIN`: endpoint back pressure (the primitive's "backpressure,
+/// not data loss" MailboxFull -- the caller retries, nothing is dropped).
+pub const EAGAIN: i64 = -11;
+/// Linux `EACCES`: this sender's access to the endpoint is revoked (the
+/// primitive's §4.3 revocation cut).
+pub const EACCES: i64 = -13;
 
 // ---- proof bookkeeping -------------------------------------------------
 //
@@ -122,6 +174,14 @@ static JUNK_ARG_R10: AtomicU64 = AtomicU64::new(0);
 static JUNK_ARG_R8: AtomicU64 = AtomicU64::new(0);
 static WROTE_W: AtomicU32 = AtomicU32::new(0);
 static WROTE_H: AtomicU32 = AtomicU32::new(0);
+/// What the IPC arms ACTUALLY sent (queue side) and what the drain
+/// RETURNED (unpack side), recorded only for ring-3 calls of the good
+/// shapes. PROOF_DONE compares the program's stored RECV result against
+/// the record, so the round trip through kernel memory and back across
+/// the trap boundary is verified with values, not constants.
+static IPC_SENT_DEST: AtomicU64 = AtomicU64::new(0);
+static IPC_SENT_SEQ: AtomicU64 = AtomicU64::new(0);
+static RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
 /// 0 = not finished, 1 = passed, 2 = failed.
 static PROOF_STATE: AtomicU8 = AtomicU8::new(0);
 
@@ -196,15 +256,18 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             0
         }
         CALL_PROOF_DONE => {
-            // Nine qwords: the five call results plus the four widened-arg
-            // markers the program stored at BUF+40..+64.
-            if !crate::memory::paging::user_range_ok(a0, 72, false) {
+            // Thirteen qwords: the five older results (gfx, input, enosys,
+            // (unused), self), the four widened-arg markers at BUF+40..+64,
+            // and the IPC records: the SEND ack (BUF+72), the RECV value
+            // (BUF+80), one shape refusal (BUF+88), and the now-empty
+            // endpoint's real answer (BUF+96).
+            if !crate::memory::paging::user_range_ok(a0, 104, false) {
                 return EFAULT;
             }
             // Read the results back OUT OF USER MEMORY: this is the part
             // the registers alone cannot prove, because it shows the
             // ring-3 program actually received and stored them.
-            let mut stored = [0i64; 9];
+            let mut stored = [0i64; 13];
             for (i, slot) in stored.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 as *const i64).add(i)) };
             }
@@ -222,6 +285,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             let want_rdx = JUNK_ARG_RDX.load(Ordering::Relaxed);
             let want_r10 = JUNK_ARG_R10.load(Ordering::Relaxed);
             let want_r8 = JUNK_ARG_R8.load(Ordering::Relaxed);
+            // The IPC round trip is judged against what the drain actually
+            // unpacked (the queue-side and return-side record the same
+            // message's two halves): the program's stored SEND ack must be
+            // 0, its stored RECV result must equal THIS value (nonzero by
+            // construction -- sender 0, seq 7), and the two shape refusals
+            // must have arrived by name.
+            let want_ipc = RECVD_VALUE.load(Ordering::Relaxed) as i64;
             let wrote_ok = crate::devices::framebuffer::bound_mode()
                 .map(|(w, h)| {
                     // The geometry was written at BUF+24 (the program's own
@@ -241,6 +311,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // read it as "== 0" and failed every boot with a verdict whose
             // per-field pieces all said matches). The write's side is
             // already covered by `wrote_ok`, which re-reads BUF+24+8.
+            let ipc_ok = stored[9] == 0
+                && stored[10] == want_ipc
+                && want_ipc != 0
+                && stored[11] == EINVAL
+                && stored[12] == ENODATA; // exists-but-empty, a REAL answer
             let stored_ok = stored[0] == want_gfx
                 && stored[1] == want_input
                 && stored[2] == want_enosys
@@ -249,11 +324,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[5] == want_rsi as i64
                 && stored[6] == want_rdx as i64
                 && stored[7] == want_r10 as i64
-                && stored[8] == want_r8 as i64;
+                && stored[8] == want_r8 as i64
+                && ipc_ok;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(
-                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} -- {}",
+            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} -- {}",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
                 want_input as u64,
@@ -265,6 +340,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 want_rdx,
                 want_r10,
                 want_r8,
+                stored[9] as u64,
+                stored[10] as u64,
+                want_ipc as u64,
+                stored[11] as u64,
+                stored[12] as u64,
                 if stored[0] == want_gfx { "matches" } else { "MISMATCH" },
                 if stored[1] == want_input { "matches" } else { "MISMATCH" },
                 if stored[2] == want_enosys { "matches" } else { "MISMATCH" },
@@ -279,6 +359,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 } else {
                     "MISMATCH"
                 },
+                if ipc_ok { "matches" } else { "MISMATCH" },
                 if ok { "OK" } else { "FAILED" }
             );
             0
@@ -289,6 +370,78 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // naming it without this file changing. No bookkeeping beyond
             // what the proof's read-back uses -- identity is not a resource.
             crate::experimental::scheduler::current_task() as i64
+        }
+        CALL_IPC_SEND => {
+            // The release's SEND shape arrives with a payload pointer
+            // (a2), a transfer token (a_xfer) and rights (a_rights); the
+            // primitive this serves models messages as (sender, seq)
+            // ONLY, so all of those must claim "none" here and the seq
+            // must fit the primitive's u32. Refusing the shape claims is
+            // what makes "served" an HONEST word on this row: a gate that
+            // accepted them and sent nothing but the seq would answer a
+            // message the other end never receives.
+            if a2 != 0 || a_rights != 0 {
+                return EINVAL;
+            }
+            if a_xfer != u64::MAX {
+                return EINVAL;
+            } // the release's own "no transfer" claim
+            if a1 > u32::MAX as u64 {
+                return ERANGE;
+            }
+            let dest = a0 as usize;
+            // The arbiter (ipc::send) demands the sender claim name the
+            // actually-running task; this gate supplies the scheduler's
+            // OWN answer, so a ring-3 caller cannot forge it.
+            let msg = crate::experimental::ipc::IpcMessage {
+                sender: crate::experimental::scheduler::current_task(),
+                seq: a1 as u32,
+            };
+            let r = crate::experimental::ipc::send(dest, msg);
+            if from_ring3 {
+                IPC_SENT_DEST.store(dest as u64, Ordering::Relaxed);
+                IPC_SENT_SEQ.store(msg.seq as u64, Ordering::Relaxed);
+            }
+            match r {
+                Ok(()) => 0,
+                Err(crate::experimental::ipc::IpcError::NotRunningTask) => EPERM,
+                Err(crate::experimental::ipc::IpcError::Revoked) => EACCES,
+                Err(crate::experimental::ipc::IpcError::MailboxFull) => EAGAIN,
+                Err(crate::experimental::ipc::IpcError::NoSuchMailbox) => ENOENT,
+                Err(crate::experimental::ipc::IpcError::ReceiveTimedOut) => EINVAL,
+            }
+        }
+        CALL_IPC_RECV => {
+            if a2 != 0 || a_rights != 0 {
+                return EINVAL;
+            }
+            if a1 != 0 {
+                return EINVAL;
+            }
+            match a_xfer {
+                0 => {}            // The release-typed BLOCKING form. Refused BY NAME (see the
+            // module docs): serving it needs the session machine, and
+            // answering it with ENODATA would let a caller spin believing
+            // "not here yet" meant "empty".
+                1 => return ENOSYS,
+                _ => return EINVAL,
+            }
+            // A nonexistent endpoint is refused, not answered as empty:
+            // try_receive returns None for both, and the two differ.
+            let dest = a0 as usize;
+            if dest >= crate::experimental::ipc::endpoint_count() {
+                return ENOENT;
+            }
+            match crate::experimental::ipc::try_receive(dest) {
+                Some(m) => {
+                    let v = ((m.sender as u64) << 32) | m.seq as u64;
+                    if from_ring3 {
+                        RECVD_VALUE.store(v, Ordering::Relaxed);
+                    }
+                    v as i64
+                }
+                None => ENODATA,
+            }
         }
         _ => {
             if from_ring3 {
@@ -437,14 +590,32 @@ pub fn self_test() -> bool {
     let self_ok = dispatch(CALL_PROCESS_SELF, 0, 0, 0, 0, 0, 0)
         == crate::experimental::scheduler::current_task() as i64;
 
-    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok;
+    // The IPC rows' ring-0 side: SHAPE refusals only. The good path is
+    // proven in ring 3 by svc84_proof (and a self-test send here would
+    // queue a self-addressed message, which exactly what the primitive's
+    // arbiter forbids); what ring 0 must prove is that a shape claim the
+    // (sender, seq) primitive does not own is refused without touching
+    // any queue, and that a nonexistent endpoint is ENOENT, not ENODATA.
+    // (Endpoint counts differ per boot phase -- 0 before ipc::init -- so
+    // anything above the largest real table is nonexistent on every boot.)
+    let ipc_shape_ok = dispatch(CALL_IPC_SEND, 0, 7, 8, u64::MAX, 0, 0) == EINVAL // payload claim
+        && dispatch(CALL_IPC_SEND, 0, 7, 0, 9, 0, 0) == EINVAL // transfer-token claim
+        && dispatch(CALL_IPC_SEND, 0, 7, 0, u64::MAX, 5, 0) == EINVAL // rights claim
+        && dispatch(CALL_IPC_SEND, 0, u32::MAX as u64 + 1, 0, u64::MAX, 0, 0) == ERANGE
+        && dispatch(CALL_IPC_SEND, 0x4000, 7, 0, u64::MAX, 0, 0) == ENOENT
+        && dispatch(CALL_IPC_RECV, 0x4000, 0, 0, 0, 0, 0) == ENOENT
+        && dispatch(CALL_IPC_RECV, 0, 0, 0, 1, 0, 0) == ENOSYS // the BLOCKING form
+        && dispatch(CALL_IPC_RECV, 0, 7, 0, 0, 0, 0) == EINVAL; // RECV takes no message
+
+    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok && ipc_shape_ok;
     crate::serial_println!(
-        "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {}, process SELF names the running task {} ; gate installed at DPL3 -- {}",
+        "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {}, process SELF names the running task {} , IPC shape claims refused by name {} ; gate installed at DPL3 -- {}",
         if gfx_ok { "OK" } else { "FAILED" },
         if input_ok { "OK" } else { "FAILED" },
         if refused { "OK" } else { "FAILED" },
         if validator_ok { "OK" } else { "FAILED" },
         if self_ok { "OK" } else { "FAILED" },
+        if ipc_shape_ok { "OK" } else { "FAILED" },
         if ok { "OK" } else { "FAILED" }
     );
     ok
