@@ -9,9 +9,9 @@
  * It runs only when the boot line asks for it (`nyrqis.proof=svc84`), in
  * its own address space, and it does five things in order:
  *
- *   1. GFX_MODE      (rax = 1)             -> result stored at BUF+0
- *   2. INPUT_STATE   (rax = 0)             -> result stored at BUF+8
- *   3. an UNPORTED call (rax = 10)         -> result stored at BUF+16
+ *   1. GFX_MODE      (rax = 0x41)          -> result stored at BUF+0
+ *   2. INPUT_STATE   (rax = 0x40)          -> result stored at BUF+8
+ *   3. an UNPORTED call (rax = 10, a RELEASE number on purpose) -> BUF+16
  *      (the expected answer is -ENOSYS; a service that answered 0 here
  *       would be indistinguishable from "did nothing", which is exactly
  *       the lie the refusal exists to prevent). Its four WIDENED argument
@@ -22,20 +22,27 @@
  *       stored copies, so the stub's widened pass through the trap
  *       boundary is proven with before/after values, not by reading the
  *       assembly and nodding.
- *   4. GFX_MODE_INTO (rax = 2, rdi = BUF+24)
+ *   4. GFX_MODE_INTO (rax = 0x42, rdi = BUF+24)
  *      -- a POINTER-taking call: the kernel must validate BUF+24 with the
  *      user-range walker before writing 8 bytes there, and it writes the
  *      display geometry into the program's own memory.
- *   5. PROCESS_SELF  (rax = 4)             -> result stored at BUF+32
+ *   5. PROCESS_SELF  (rax = 0x44)          -> result stored at BUF+32
  *      -- the first process-side answer: the running scheduler task's id
  *      (0 = the kernel itself, while no ring-3 task owns the gate). The
  *      kernel's read-back compares it against the scheduler's OWN live
  *      value, so a real session changes both sides together.
  *
- * Then it asks the kernel to close the proof (rax = 3, rdi = BUF): the
+ * Then it asks the kernel to close the proof (rax = 0x43, rdi = BUF): the
  * kernel reads the five stored results back OUT OF USER MEMORY and
  * compares them with what it returned, so the check covers the round trip
  * through ring-3 writes rather than trusting the registers alone.
+ *
+ * The served calls are numbered in the surface's OWN range, 0x40..: the
+ * release's ledger spans 0..28 (yield=0, SEND=1, RECV=2, exit=3,
+ * spawn=4, ...), and the first version's numbering collided at every
+ * served call -- a release-typed program's yield would have been
+ * ANSWERED, not refused -- which is why these are 0x40-plus and why
+ * tools/check_svc84_ledger.py refuses any drift back.
  *
  * The program then parks in a spin loop. It deliberately never returns to
  * the kernel: this is a proof mode, and the boot ends when the gate reads
@@ -57,13 +64,13 @@ _start:
        is the same expression). */
     movabs $BUF, %rbx
 
-    /* 1. GFX_MODE */
-    mov $1, %rax
+    /* 1. GFX_MODE (0x41) */
+    mov $0x41, %rax
     int $0x84
     mov %rax, 0(%rbx)
 
-    /* 2. INPUT_STATE */
-    mov $0, %rax
+    /* 2. INPUT_STATE (0x40) */
+    mov $0x40, %rax
     int $0x84
     mov %rax, 8(%rbx)
 
@@ -84,22 +91,23 @@ _start:
     mov %r10, 56(%rbx)
     mov %r8, 64(%rbx)
 
-    /* 4. GFX_MODE_INTO: the validated-write path */
+    /* 4. GFX_MODE_INTO (0x42): the validated-write path */
     mov %rbx, %rdi
     add $24, %rdi
-    mov $2, %rax
+    mov $0x42, %rax
     int $0x84
 
-    /* 5. PROCESS_SELF: the first process-side answer -- the running
+    /* 5. PROCESS_SELF (0x44): the first process-side answer -- the running
        scheduler task's id (0 = the kernel itself; nothing owns this gate
        yet). The stored copy is what the kernel reads back. */
-    mov $4, %rax
+    mov $0x44, %rax
     int $0x84
     mov %rax, 32(%rbx)
 
-    /* Close the proof: the kernel reads BUF back through the validator. */
+    /* Close the proof (0x43): the kernel reads BUF back through the
+       validator. */
     mov %rbx, %rdi
-    mov $3, %rax
+    mov $0x43, %rax
     int $0x84
 
 .hang:

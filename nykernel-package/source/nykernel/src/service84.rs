@@ -8,11 +8,24 @@
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
-//! | 0 | `INPUT_STATE` | — | `(x & 0xffff) | (y & 0xffff) << 16 | buttons << 32` |
-//! | 1 | `GFX_MODE` | — | `(width << 32) | height` of the bound framebuffer |
-//! | 2 | `GFX_MODE_INTO` | user pointer | writes `(u32 width, u32 height)` there; `0`, or `-EFAULT` |
-//! | 3 | `PROOF_DONE` | user pointer | the ring-3 proof's read-back check (see below) |
-//! | 4 | `PROCESS_SELF` | — | the running scheduler task's id (`experimental::scheduler`); `0` = the kernel itself |
+//! | 0x40 | `INPUT_STATE` | — | `(x & 0xffff) | (y & 0xffff) << 16 | buttons << 32` |
+//! | 0x41 | `GFX_MODE` | — | `(width << 32) | height` of the bound framebuffer |
+//! | 0x42 | `GFX_MODE_INTO` | user pointer | writes `(u32 width, u32 height)` there; `0`, or `-EFAULT` |
+//! | 0x43 | `PROOF_DONE` | user pointer | the ring-3 proof's read-back check (see below) |
+//! | 0x44 | `PROCESS_SELF` | — | the running scheduler task's id (`experimental::scheduler`); `0` = the kernel itself |
+//!
+//! The numbers are ALL OUR OWN, in `0x40..`, and they must be: the
+//! release's ledger spans `0..28` contiguously (yield=0, SEND=1, RECV=2,
+//! exit=3, spawn=4 ... SYSINFO=26, PROCINFO=27, PROC_KILL=28), and the
+//! surface's first version numbered itself `0..4` -- colliding at EVERY
+//! served number. A release-typed program's `yield` (0) would have been
+//! ANSWERED with `INPUT_STATE` instead of refused with `-ENOSYS` -- the
+//! exact lie the refusal convention exists to prevent, invisible until a
+//! release-typed program actually ran through the gate. The step-3 shell
+//! survey found it; `tools/check_svc84_ledger.py` pins both shapes --
+//! disjoint from the release's ledger, and the proof exercises every
+//! served number -- so neither can drift back into the other; it runs in
+//! build.sh.
 //!
 //! and answers `-ENOSYS` for everything else. The port ledger for what that
 //! "everything else" is: the release's full process machine -- SEND/RECV
@@ -60,10 +73,17 @@ use x86_64::{PrivilegeLevel, VirtAddr};
 /// The vector the release's shell stack calls.
 pub const VECTOR: u8 = 0x84;
 
-pub const CALL_INPUT_STATE: u64 = 0;
-pub const CALL_GFX_MODE: u64 = 1;
-pub const CALL_GFX_MODE_INTO: u64 = 2;
-pub const CALL_PROOF_DONE: u64 = 3;
+// All five numbers are the surface's OWN, in `0x40..`: the release's
+// ledger spans `0..28` contiguously, so the first version's `0..4`
+// collided at every served number (a release-typed program's `yield` = 0
+// would have been answered with INPUT_STATE instead of refused -- see the
+// module docs above). The ledger gate (tools/check_svc84_ledger.py) runs
+// in build.sh and refuses a number that wanders back into the release's
+// range.
+pub const CALL_INPUT_STATE: u64 = 0x40;
+pub const CALL_GFX_MODE: u64 = 0x41;
+pub const CALL_GFX_MODE_INTO: u64 = 0x42;
+pub const CALL_PROOF_DONE: u64 = 0x43;
 
 /// The first process-side answer: the id of the `experimental::scheduler`
 /// task running the caller, read-only (task 0 = the kernel itself). Today
@@ -72,7 +92,7 @@ pub const CALL_PROOF_DONE: u64 = 3;
 /// "who am I" first, and answering a REAL id from our OWN task model is
 /// truthful regardless of what kind of caller asks. The richer process
 /// calls (spawn, capabilities, IPC) stay refused: see the ledger above.
-pub const CALL_PROCESS_SELF: u64 = 4;
+pub const CALL_PROCESS_SELF: u64 = 0x44;
 
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;

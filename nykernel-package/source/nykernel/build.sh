@@ -238,6 +238,9 @@ python3 tools/patch_pe_res.py userprog/userprog_pe_res_good.exe userprog/userpro
 echo "==> readelf LAYOUT GATE: every embedded userprog artifact is fact-checked (SONAMEs, version tables, NEEDED chains, PLT/JUMP_SLOT, WEAK dynsym, PE edata/idata) BEFORE kernel code ever sees them"
 ./tools/verify_prog_layout.sh
 
+echo "==> svc84 ledger GATE: the surface's call numbers stay out of the release's ledger (0..28), and the ring-3 proof exercises every served call -- the surface's first version numbered itself 0..4 and colliding there would have ANSWERED a release-typed program's yield instead of refusing it"
+python3 tools/check_svc84_ledger.py || exit 1
+
 echo "==> assembling boot/boot.s"
 as --64 boot/boot.s -o target/boot.o --gdwarf-2 2>/dev/null || {
     as --64 boot/boot.s -o target/boot.o
