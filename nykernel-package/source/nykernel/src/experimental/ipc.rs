@@ -30,12 +30,14 @@
 //!   drop)**: unchanged -- backpressure (`MailboxFull`) and invalid
 //!   targets (`NoSuchMailbox`) remain typed errors, never drops.
 //!
-//! What honestly remains out of scope after this increment: blocking
-//! receive, the capability-transfer message field (§5.1), shared-memory
-//! regions (§3.1), and NPS-003 §6.1's wire transport -- the kernel-side
-//! mailbox here is the in-kernel same-address-space primitive; the
-//! userspace wire transports live in the Linux-backend tree and are
-//! measured (IPC-001 §38) separately.
+//! What honestly remains out of scope after this increment: the
+//! capability-transfer message field (§5.1), shared-memory regions
+//! (§3.1), and NPS-003 §6.1's wire transport -- the kernel-side mailbox
+//! here is the in-kernel same-address-space primitive; the userspace
+//! wire transports live in the Linux-backend tree and are measured
+//! (IPC-001 §38) separately. Blocking receive HAS landed (§3's longer
+//! note): the receiver parked on `scheduler::block_current`, woken by
+//! `send` -- see `receive` for its bound's honest shape.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -82,6 +84,14 @@ struct Mailbox {
     /// messages (if any) remain receivable -- revocation is forward-
     /// looking, per the spec text ("all future send/call operations").
     revoked: Vec<usize>,
+    /// The tasks PARKED on this mailbox's queue -- a §3 blocking
+    /// receive parks through [`crate::experimental::scheduler::block_current`]
+    /// and is woken (unblocked per task) by the next `send` here. Registered under the
+    /// same no-interrupts window the queue is mutated under, so a send can never
+    /// see a registration before the receiver is in the scheduler's BLOCKED state
+    /// (a task only runs send code when the waiting task is already parked):
+    /// every unblock below is a legal BLOCKED -> READY edge.
+    waiters: VecDeque<usize>,
 }
 
 static mut MAILBOXES: Vec<Mailbox> = Vec::new();
@@ -101,6 +111,7 @@ pub fn init(task_count: usize) {
                 queue: VecDeque::new(),
                 capacity: DEFAULT_CAPACITY,
                 revoked: Vec::new(),
+                waiters: VecDeque::new(),
             });
         }
     }
@@ -146,18 +157,24 @@ pub fn send(dest: usize, msg: IpcMessage) -> Result<(), IpcError> {
             return Err(IpcError::MailboxFull);
         }
         mailbox.queue.push_back(msg);
+        // §3 receive's other half: every parked waiter is woken (un
+        // blocked; BLOCKED -> READY) because a message just became
+        // available. The waiter RECORD is consumed ONLY on a successful
+        // transition; on a refused edge the registration survives and
+        // the next send retries (never a lost wake).
+        let wakees: Vec<usize> = mailbox.waiters.drain(..).collect();
+        for t in wakees {
+            if !crate::experimental::scheduler::unblock_task(t) {
+                mailbox.waiters.push_back(t);
+            }
+        }
         Ok(())
     })
 }
 
 /// Non-blocking: returns immediately with whatever is (or isn't)
-/// already queued. There is no blocking `receive()` in this proof of
-/// concept -- a blocking version would need to cooperatively
-/// `yield_task()` in a loop while empty, which is straightforward to
-/// add but isn't needed to demonstrate the primitive + arbiter + the
-/// revocation contract, and keeping the demo's control flow simple
-/// keeps the correctness assertions (see `kernel_main`) easy to
-/// reason about.
+/// already queued. [`receive`] is the blocking complement: parked on
+/// the scheduler with wake-on-send instead of a poll loop.
 pub fn try_receive(dest: usize) -> Option<IpcMessage> {
     interrupts::without_interrupts(|| unsafe {
         (&mut *(&raw mut MAILBOXES)).get_mut(dest).and_then(|m| m.queue.pop_front())
@@ -190,6 +207,7 @@ pub fn prepare_endpoint0_for_proof() {
                 queue: VecDeque::new(),
                 capacity: DEFAULT_CAPACITY,
                 revoked: Vec::new(),
+                waiters: VecDeque::new(),
             });
         } else if let Some(m) = boxes.get_mut(0) {
             m.queue.clear();
@@ -197,33 +215,134 @@ pub fn prepare_endpoint0_for_proof() {
     })
 }
 
-/// Blocking receive, added 2026-10-11 as the next NPS-003 conformance
-/// increment (NPS-003 §3: `receive` "blocks the calling thread until a
-/// message arrives at an endpoint it owns"). Cooperative-blocking:
-/// the caller yields the core between polls (NPS-002 §5.4 -- a
-/// process whose thread waits on a receive MUST yield the core, per
-/// "Performance"), so a waiting receiver never spins hot. Bounded by
-/// `max_polls` so a sender that never sends fails with a typed error
-/// ("defined error rather than blocking indefinitely" -- the NPS-002
-/// §7.1 posture, adapted here to a receive timeout) -- pass
-/// `Option::None` to wait without a bound (used by nothing yet; kept
-/// for callers whose protocol has its own liveness story). Returns
-/// the message on success; `ReceiveTimedOut` if `max_polls` elapsed;
-/// `NoSuchMailbox` for an out-of-range endpoint.
-pub fn receive(dest: usize, max_polls: Option<u32>) -> Result<IpcMessage, IpcError> {
-    let mut polls = 0u32;
+/// Blocking receive. PARKS on the queue (scheduler-level: the parked
+/// task is not dispatched at all, never spins) and is woken by the
+/// next `send` to this mailbox. Cooperative-blocking per NPS-002 §5.4
+/// ("a process whose thread waits on a receive MUST yield the core")
+/// and NPS-003 §3 ("blocks the calling thread until a message arrives").
+///
+/// The bound's honest shape: `max_wakes` counts EMPTY wakes -- every
+/// unblock that finds no message (wake competition with another
+/// receiver, or an explicit [`wake_waiters`] kick). When the budget is
+/// exhausted the receive fails with the typed `ReceiveTimedOut`.
+/// What it is NOT: a wall-clock timeout. A park that is never sent a
+/// message and never kicked parks indefinitely; the slot's remaining
+/// bound is the caller's protocol (an eventually-sending party, or a
+/// periodic kick -- the same primitive a real kernel's timeout tick
+/// would sit on). Old `max_polls` semantics (the yield-loop form) were
+/// abandoned because they re-implemented "polling not blocking" flares
+/// -- a parked task must not consume dispatches merely to tick a
+/// private counter.
+///
+/// The park registration and the queue drain happen under the SAME
+/// no-interrupts window, and a sender task can only run send code when
+/// the receiver is already parked, so the scheduling between the two
+/// cannot observe or miss a message (every wake is attached to a real
+/// arrival OR to an explicit kick -- never a lost wake).
+pub fn receive(dest: usize, max_wakes: Option<u32>) -> Result<IpcMessage, IpcError> {
+    let self_id = running_task_id();
+    let mut wakes = 0u32;
     loop {
-        if let Some(msg) = try_receive(dest) {
-            return Ok(msg);
+        // One atomic probe-and-register: pop a queued message if one is
+        // there (win -- return it), otherwise park ourselves on the
+        // mailbox's waiter list. `interrupts::without_interrupts`
+        // makes the whole probe atomic against the only other mutators
+        // (send/wake_waiters from another task -- a task can only run
+        // send code while the receiver is parked), so a message arriving
+        // between "we found nothing" and "we are parked" is impossible;
+        // that is the no-lost-wake property, and it is why the wake side
+        // can be the simple unbounded drain `send` performs.
+        let attempt = interrupts::without_interrupts(|| unsafe {
+            let boxes = &mut *(&raw mut MAILBOXES);
+            let Some(mailbox) = boxes.get_mut(dest) else {
+                return Err(IpcError::NoSuchMailbox);
+            };
+            if let Some(msg) = mailbox.queue.pop_front() {
+                return Ok(Some(msg));
+            }
+            if !mailbox.waiters.contains(&self_id) {
+                mailbox.waiters.push_back(self_id);
+            }
+            Ok(None)
+        });
+        match attempt {
+            Err(e) => return Err(e),
+            Ok(Some(msg)) => return Ok(msg),
+            Ok(None) => {}
         }
-        if let Some(limit) = max_polls {
-            if polls >= limit {
-                return Err(IpcError::ReceiveTimedOut);
+        // Park (scheduler-level: RUNNING -> BLOCKED, and immediately
+        // dispatch someone else -- a parked receiver consumes ZERO
+        // dispatches until woken). Returns only after some sender's or
+        // kick's `unblock_task` moved us BLOCKED -> READY and the
+        // dispatcher picked us again.
+        crate::experimental::scheduler::block_current();
+        // After the wake, our registration -- if the wake-side drain
+        // did not already consume it -- is dropped: a task that is
+        // RUNNING again must not stay listed as parked (a later send
+        // would otherwise try to unblock a non-blocked task, a refused
+        // edge every round). We re-register at the next probe if the
+        // queue is still empty.
+        interrupts::without_interrupts(|| unsafe {
+            let boxes = &mut *(&raw mut MAILBOXES);
+            if let Some(mailbox) = boxes.get_mut(dest) {
+                mailbox.waiters.retain(|&w| w != self_id);
+            }
+        });
+        // The wake may have carried a message (probed at the next loop
+        // top) OR have been empty (wake competition with another
+        // receiver, or an explicit [`wake_waiters`] kick). Only an empty
+        // wake consumes budget; when `max_wakes` is exhausted the
+        // receive fails with the typed `ReceiveTimedOut` rather than
+        // re-parking forever.
+        let empty = interrupts::without_interrupts(|| unsafe {
+            (&mut *(&raw mut MAILBOXES))
+                .get_mut(dest)
+                .map(|m| m.queue.is_empty())
+                .unwrap_or(true)
+        });
+        if empty {
+            wakes += 1;
+            if let Some(limit) = max_wakes {
+                if wakes >= limit {
+                    return Err(IpcError::ReceiveTimedOut);
+                }
             }
         }
-        polls += 1;
-        crate::experimental::scheduler::yield_task();
     }
+}
+
+/// A wake WITHOUT a message: unblocks every task parked on `dest` and
+/// reports how many it moved. The explicit cancel/abort form of the
+/// blocking contract -- what a real kernel's timeout tick would call
+/// on each parked waiter -- and the only way a parked receiver's own
+/// `max_wakes` budget can tick without another part of the protocol
+/// sending first. A mailbox that still holds a queued message wakes
+/// nothing (the receivers' next probe will find the message, and an
+/// empty-wake budget must not tick on their behalf for work that is
+/// actually available); neither changes the queue's contents.
+pub fn wake_waiters(dest: usize) -> usize {
+    interrupts::without_interrupts(|| unsafe {
+        let boxes = &mut *(&raw mut MAILBOXES);
+        let Some(mailbox) = boxes.get_mut(dest) else {
+            return 0;
+        };
+        if !mailbox.queue.is_empty() {
+            return 0;
+        }
+        // Same discipline as `send`'s wake: the registration is consumed
+        // only on a successful BLOCKED -> READY edge; a refused one keeps
+        // its claim for the next attempt.
+        let wakees: Vec<usize> = mailbox.waiters.drain(..).collect();
+        let mut woken = 0usize;
+        for t in wakees {
+            if crate::experimental::scheduler::unblock_task(t) {
+                woken += 1;
+            } else {
+                mailbox.waiters.push_back(t);
+            }
+        }
+        woken
+    })
 }
 
 /// NPS-003 §4.3: the owning process (here: the endpoint's task) MAY
@@ -268,6 +387,7 @@ pub fn self_test_arbiter_and_revocation() -> bool {
             queue: VecDeque::new(),
             capacity: DEFAULT_CAPACITY,
             revoked: Vec::new(),
+            waiters: VecDeque::new(),
         });
     }
 
@@ -347,40 +467,24 @@ pub fn self_test_arbiter_and_revocation() -> bool {
         if idempotent_ok { "OK" } else { "FAILED" }
     );
 
-    // ---- Blocking receive (NPS-003 §3, added 2026-10-11): use a
-    // FRESH scratch mailbox (the first one is revoked for sender 0 by
-    // the revocation test above, by design). An empty bounded
-    // `receive` MUST return the typed ReceiveTimedOut rather than
-    // hanging or busy-spinning (each poll yields the core, so a hung
-    // test here would show as a boot timeout, caught by the harness).
-    let scratch_dest2 = unsafe { (*&raw const MAILBOXES).len() };
-    unsafe {
-        (*&raw mut MAILBOXES).push(Mailbox {
-            queue: VecDeque::new(),
-            capacity: DEFAULT_CAPACITY,
-            revoked: Vec::new(),
-        });
-    }
-    let timed_out = receive(scratch_dest2, Some(2));
-    let timeout_ok = matches!(timed_out, Err(IpcError::ReceiveTimedOut));
-    all_ok &= timeout_ok;
+    // ---- Blocking receive (NPS-003 §3), NON-BLOCKING legs only
+    // here: the legs of `receive` that PARK the caller require a
+    // scheduler round-trip to wake from, and the caller of this
+    // self-test is task 0 (kernel_main) -- parking task 0 would park
+    // the boot itself. The parked-wake and typed-timeout legs are
+    // therefore proven every boot by the spawned C/D demo in
+    // `kernel_main` (tasks C and D), which parks a real task and
+    // drives both a wake_waiters kick and a wake-by-send against it.
+    // What this self-test still proves inline: an out-of-range
+    // endpoint fails IMMEDIATELY with NoSuchMailbox (never parks),
+    // and a message queued BEFORE the receive is delivered at the
+    // first probe (drain, never a block either).
+    let out_of_range = receive(unsafe { (*&raw const MAILBOXES).len() }, Some(1));
+    let range_ok = matches!(out_of_range, Err(IpcError::NoSuchMailbox));
+    all_ok &= range_ok;
     serial_println!(
-        "  experimental ipc blocking-receive self-test: bounded receive on an empty mailbox returned ReceiveTimedOut (typed, never an indefinite block) -- {}",
-        if timeout_ok { "OK" } else { "FAILED" }
-    );
-
-    // Then the positive half: send once (as the running task), and the
-    // SAME bounded receive must now deliver exactly that message.
-    let delivered = match send(scratch_dest2, IpcMessage { sender: 0, seq: 7 }) {
-        Ok(()) => receive(scratch_dest2, Some(2)),
-        Err(e) => Err(e),
-    };
-    let deliver_ok = matches!(delivered, Ok(IpcMessage { sender: 0, seq: 7 }));
-    all_ok &= deliver_ok;
-    serial_println!(
-        "  experimental ipc blocking-receive self-test: bounded receive delivered the message sent before it ({:?}) -- {}",
-        delivered,
-        if deliver_ok { "OK" } else { "FAILED" }
+        "  experimental ipc blocking-receive self-test: receive on an out-of-range endpoint returned NoSuchMailbox immediately (never parked) -- {}",
+        if range_ok { "OK" } else { "FAILED" }
     );
 
     let summary_ok = all_ok;

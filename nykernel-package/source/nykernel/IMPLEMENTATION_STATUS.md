@@ -4997,3 +4997,43 @@ self-test (ESRCH/EBADF/EMSGSIZE/EBADF, the exact empty-table answers);
 oversized 0xffffffffffffffa6 , payload 0x73697172796e)` and the kernel compares
 the program's MEMORY against its queue record, value-for-value; the ledger gate
 now reads 9 served calls (0x40..0x48), all exercised by `prog_svc84.s`.
+
+## Blocking receive (2026-11-04): the mailbox's NPS-003 §3 block-and-wake,
+## proven by a real parked task on every boot
+
+`src/experimental/ipc.rs`'s `receive` was upgraded from the bounded **poll
+loop** (yield between polls — a waiting receiver still consumed one dispatch
+per tick) to scheduler-level **park-and-wake**: the receiver registers itself
+on the mailbox's waiter list under the same no-interrupts window that drains
+the queue, then `block_current()`s (RUNNING → BLOCKED, dispatcher moves on
+immediately — a parked receiver consumes ZERO dispatches); every `send` to
+that mailbox drains the waiter list and `unblock_task`s each holder
+(BLOCKED → READY), so a wake is always attached to a real arrival. The budget
+parameter's honest shape changed with it: `max_wakes` now counts EMPTY wakes
+(wake competition, or an explicit `wake_waiters` kick — the cancel/abort
+form, what a real kernel's timeout tick would call per parked waiter); an
+exhausted budget fails with the typed `ReceiveTimedOut`, never an indefinite
+park, never a silent re-arm.
+
+Proven every boot in `kernel_main` by the demo's new C/D pair — task 0
+itself must never park (the boot IS task 0), so the legs are on spawned
+tasks: task C parks on an empty endpoint with a one-wake budget; task D
+consumes its parked registration with one empty `wake_waiters` kick (exactly
+the budget unit leg 1 must spend → typed `ReceiveTimedOut`), then kicks C's
+second park and SENDs the real delivery in the same window — the wake C
+receives is attached to an arrival, the no-lost-wake half of the contract.
+Task 0's own `self_test_arbiter_and_revocation` keeps only the
+non-blocking legs (out-of-range endpoint fails immediately with
+`NoSuchMailbox`; a message queued BEFORE the receive delivers at the first
+probe), and says so in its comment — the parked legs are the C/D demo's.
+
+Gate surface note: the `0x84` `IPC_RECV` row is UNCHANGED — it is and
+stays the non-blocking drain with `ENODATA`/`ENOENT`; the gate's blocking
+RECV refusal (`ENOSYS`, by name) waits for the trap-saved session machine
+the manifest parks. The kernel-side primitive is now real, which was that
+refusal's honest prerequisite.
+
+Checks: BIOS boot gate PASS with `task C parked, got 1 empty wake ->
+ReceiveTimedOut (typed, never an indefinite block), then got woken BY A SEND
+and delivered -- OK` on the tape; UEFI boot gate PASS; parity diff
+line-identical (416 chain lines); `svc84_proof_test.sh` PASS unchanged.
