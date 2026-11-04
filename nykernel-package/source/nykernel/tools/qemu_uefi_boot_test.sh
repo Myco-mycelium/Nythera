@@ -123,7 +123,22 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         grep -E "GOP|device-mode|devices: display" target/qemu-uefi-test-stdout.log | head -6
         exit 1
     fi
-    echo "PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited cleanly; the GOP framebuffer was handed over, bound, and the shell rendered into it"
+    # Same pinning as the BIOS gate: the NPS-003 §3 park-and-wake demo's
+    # OWN lines must appear on this boot path too (the exit code proves
+    # Ready, not that every self-test ran with an OK verdict).
+    for needle in \
+        "blocking receive leg 1: parked empty, 1 empty wake, budget exhausted -> ReceiveTimedOut -- OK" \
+        "wakes raced against C: consumed the race message" \
+        "blocking receive leg 2: woken BY A SEND" \
+        "experimental ipc blocking-receive proof: task C parked, got 1 empty wake" \
+    ; do
+        if ! grep -aqF -- "$needle" target/qemu-uefi-test-stdout.log; then
+            echo "FAIL: blocking-receive demo line missing or out of contract (UEFI path): $needle"
+            grep -a "task C\|task D\|task E\|blocking-receive" target/qemu-uefi-test-stdout.log | head -10
+            exit 1
+        fi
+    done
+    echo "PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited cleanly; the GOP framebuffer was handed over, bound, and the shell rendered into it; the C/D/E blocking-receive tape is pinned and matched"
     exit 0
 elif [[ "$QEMU_STATUS" -eq 124 ]]; then
     echo "FAIL: UEFI boot test timed out (firmware, stub, or kernel hung before Ready)"

@@ -494,6 +494,7 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     experimental::scheduler::spawn(experimental_terminating_task, &mut mapper, &mut frame_allocator);
     experimental::scheduler::spawn(experimental_task_c, &mut mapper, &mut frame_allocator);
     experimental::scheduler::spawn(experimental_task_d, &mut mapper, &mut frame_allocator);
+    experimental::scheduler::spawn(experimental_task_e, &mut mapper, &mut frame_allocator);
     serial_println!(
         "  experimental scheduler: {} tasks registered (lifecycle-enforcing, NPS-002 §5)",
         experimental::scheduler::task_count()
@@ -510,15 +511,16 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         "experimental caps: capability semantics do not hold"
     );
 
-    // 6 tasks = main + A + B + J + C + D. Round-robin is strict, so
+    // 7 tasks = main + A + B + J + C + D + E. Round-robin is strict, so
     // exactly TARGET_ROUNDS yields from main give A and B TARGET_ROUNDS
     // runs each, and J -- which terminates on its first activation --
     // runs EXACTLY ONCE and then is skipped forever (a dispatcher that
     // picked terminated tasks would give J more runs and the asserts
-    // below would fire). C and D exercise the blocking receive: C parks
-    // (BLOCKED tasks are also skipped, which is the point -- a parked
-    // receiver consumes ZERO dispatches) and is driven by D's kick and
-    // send; both terminate within the first 3 rounds.
+    // below would fire). C, D and E exercise the blocking receive: C
+    // parks (BLOCKED tasks are also skipped, which is the point -- a
+    // parked receiver consumes ZERO dispatches) and is driven by D's
+    // kick and sends; it and E race for the race send; both terminate
+    // within the first 5 rounds.
     const TARGET_ROUNDS: u32 = 6;
     for _ in 0..TARGET_ROUNDS {
         experimental::scheduler::yield_task();
@@ -577,24 +579,31 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     assert!(arbiter_ok, "the NPS-003 arbiter/revocation contract self-test failed");
 
     // ---- experimental: NPS-003 §3 blocking receive (park + wake) ----
-    // Proven on a real spawn during the rounds above: task C parked on
+    // Proven on real spawns during the rounds above: task C parked on
     // an empty endpoint with a one-wake budget and was driven through
     // BOTH halves of the contract by task D -- one empty `wake_waiters`
     // kick (the budget unit that must end in the typed
-    // ReceiveTimedOut) and one real SEND (the wake that must deliver).
+    // ReceiveTimedOut) and two real SENDs: the RACE send (which woke
+    // C AND E parked on the same endpoint -- E won, C's wake was empty
+    // and it re-parked for budget, exactly one receiver per send) and
+    // the real DELIVERY send (which woke C's re-park and delivered).
     assert!(
         BLOCKED_TIMEOUT_OK.load(Ordering::Relaxed),
         "blocking receive's empty-wake budget did not end in the typed ReceiveTimedOut (NPS-003 §3)"
     );
     assert!(
-        TASK_D_SENT.load(Ordering::Relaxed),
-        "the blocking-receive demo's sender did not deliver its message (it must wake the parked receiver with a real one)"
+        TASK_D_SENT.load(Ordering::Relaxed) && TASK_D_SENT_DELIVERY.load(Ordering::Relaxed),
+        "the blocking-receive demo's sender did not deliver both its messages (race + delivery)"
+    );
+    assert!(
+        BLOCKED_RACE_WON_E.load(Ordering::Relaxed),
+        "task E did not consume the race send from the parked pair (one send must wake N receivers, EXACTLY one delivering)"
     );
     assert!(
         BLOCKED_DELIVERED.load(Ordering::Relaxed),
-        "blocking receive was not woken by the send -- the no-lost-wake contract (park registration + wake-on-send) is broken"
+        "blocking receive was not woken by the delivery send -- the no-lost-wake contract (park registration + wake-on-send) is broken"
     );
-    serial_println!("  experimental ipc blocking-receive proof: task C parked, got 1 empty wake -> ReceiveTimedOut (typed, never an indefinite block), then got woken BY A SEND and delivered -- OK");
+    serial_println!("  experimental ipc blocking-receive proof: task C parked, got 1 empty wake -> ReceiveTimedOut (typed, never an indefinite block); the delivery send then woke BOTH parked receivers, exactly one (E) consumed the message, C re-parked and was delivered by D's own next send -- OK");
 
     // (The shared-object loader proofs run inside the ring-3 demo
     // CHAIN: pie_demo's trap hands to elf_dyn_demo (in-object
@@ -676,19 +685,23 @@ const TASK_B_ID: usize = 2;
 const TASK_J_ID: usize = 3;
 const TASK_C_ID: usize = 4;
 const TASK_D_ID: usize = 5;
+const TASK_E_ID: usize = 6;
 
-// ---- the blocking-receive (NPS-003 §3) demo's C/D pair ----
-// Endpoints reuse the per-task mailbox indices (task_count is 6, so
-// indices 0..=5 all exist): C parks on its own mailbox for the timeout
-// leg and on D's for the delivery leg.
+// ---- the blocking-receive (NPS-003 §3) demo's C/D/E trio ----
+// Endpoints reuse the per-task mailbox indices (task_count is 7, so
+// indices 0..=6 all exist): C parks on its own mailbox for the timeout
+// leg, and C AND E both park on D's for the delivery/race leg.
 const BLOCKED_TIMEOUT_EP: usize = TASK_C_ID;
 const BLOCKED_DELIVERY_EP: usize = TASK_D_ID;
+const BLOCKED_RACE_SEQ: u32 = 76;
 const BLOCKED_DELIVERY_SEQ: u32 = 77;
 
 static BLOCKED_TIMEOUT_OK: AtomicBool = AtomicBool::new(false);
 static BLOCKED_DELIVERED: AtomicBool = AtomicBool::new(false);
+static BLOCKED_RACE_WON_E: AtomicBool = AtomicBool::new(false);
 static TASK_D_KICKED: AtomicBool = AtomicBool::new(false);
 static TASK_D_SENT: AtomicBool = AtomicBool::new(false);
+static TASK_D_SENT_DELIVERY: AtomicBool = AtomicBool::new(false);
 
 /// Task C: the blocking receive's receiver. Leg 1 parks on an empty
 /// endpoint with a ONE-wake budget -- its only wake is an empty
@@ -719,15 +732,19 @@ extern "C" fn experimental_task_c() -> ! {
     experimental::scheduler::terminate_current()
 }
 
-/// Task D: the blocking receive's kicker/sender. Its two actions are
+/// Task D: the blocking receive's kicker/sender. Its THREE actions are
 /// gated on the scheduler state (strict round-robin visits C's slot
-/// before D's every round, so each gate decides deterministically):
+/// before D's and E's every round, so each gate decides
+/// deterministically):
 /// activation 1 kicks C's parked timeout leg ONCE (that empty wake is
-/// exactly the budget unit leg 1 spends); the next activation kicks
-/// C's parked delivery leg and, inside the same wake discipline,
-/// SENDS the delivery -- the wake C receives is attached to a real
-/// arrival, which is the no-lost-wake half of the contract. Then it
-/// terminates.
+/// exactly the budget unit leg 1 spends);
+/// the next activation wakes BOTH parked delivery-leg receivers (C
+/// and E: `wake_waiters` returns 2) and SENDS the RACE message in the
+/// same window -- one send wakes N parked receivers, and exactly one
+/// of them can consume it;
+/// the next then re-parks-C-aware: it kicks C (E is gone by now) and
+/// SENDs the real DELIVERY -- the wake C receives is attached to a
+/// real arrival, the no-lost-wake half of the contract. Terminates.
 extern "C" fn experimental_task_d() -> ! {
     loop {
         if !TASK_D_KICKED.load(Ordering::Relaxed) {
@@ -739,20 +756,55 @@ extern "C" fn experimental_task_d() -> ! {
             continue;
         }
         if !TASK_D_SENT.load(Ordering::Relaxed) {
+            if experimental::ipc::wake_waiters(BLOCKED_DELIVERY_EP) >= 1 {
+                let sent = experimental::ipc::send(
+                    BLOCKED_DELIVERY_EP,
+                    experimental::ipc::IpcMessage { sender: TASK_D_ID, seq: BLOCKED_RACE_SEQ },
+                );
+                TASK_D_SENT.store(matches!(sent, Ok(())), Ordering::Relaxed);
+                serial_println!("    [experimental task D] woke BOTH parked delivery-leg receivers and sent the race message in the same window");
+            }
+            experimental::scheduler::yield_task();
+            continue;
+        }
+        if !TASK_D_SENT_DELIVERY.load(Ordering::Relaxed) {
             if experimental::ipc::wake_waiters(BLOCKED_DELIVERY_EP) == 1 {
                 let sent = experimental::ipc::send(
                     BLOCKED_DELIVERY_EP,
                     experimental::ipc::IpcMessage { sender: TASK_D_ID, seq: BLOCKED_DELIVERY_SEQ },
                 );
-                TASK_D_SENT.store(matches!(sent, Ok(())), Ordering::Relaxed);
-                serial_println!("    [experimental task D] woke C's parked delivery leg and sent the real message in the same window");
+                TASK_D_SENT_DELIVERY.store(matches!(sent, Ok(())), Ordering::Relaxed);
+                serial_println!("    [experimental task D] woke C's re-parked delivery leg and sent the real delivery in the same window");
             }
             experimental::scheduler::yield_task();
             continue;
         }
-        serial_println!("    [experimental task D] terminating per NPS-002 §5.5/§5.6 (kick + send both delivered)");
+        serial_println!("    [experimental task D] terminating per NPS-002 §5.5/§5.6 (kick + race + delivery all sent)");
         experimental::scheduler::terminate_current()
     }
+}
+
+/// Task E: the blocking receive's RELAY winner. It parks on the SAME
+/// delivery endpoint as C's leg 2 from its FIRST activation -- before
+/// C ever parks there -- so when D's race send wakes the N=2 parked
+/// receivers, E is the one whose slot follows D's: it probes the queue
+/// FIRST and consumes the race message (that is the point -- N woken,
+/// exactly one delivered). C, whose slot runs BEFORE D's, re-probes
+/// after E has emptied the queue, finds it empty, and stays parked for
+/// the real delivery. E terminates after recording its win.
+extern "C" fn experimental_task_e() -> ! {
+    match experimental::ipc::receive(BLOCKED_DELIVERY_EP, Some(2)) {
+        Ok(msg) if msg.sender == TASK_D_ID && msg.seq == BLOCKED_RACE_SEQ => {
+            BLOCKED_RACE_WON_E.store(true, Ordering::Relaxed);
+            serial_println!(
+                "    [experimental task E] wakes raced against C: consumed the race message ({{sender: {}, seq: {}}}) -- OK (one send, N woken, exactly one delivered)",
+                msg.sender, msg.seq
+            );
+        }
+        other => serial_println!("    [experimental task E] UNEXPECTED result {:?}", other),
+    }
+    serial_println!("    [experimental task E] terminating per NPS-002 §5.5/§5.6");
+    experimental::scheduler::terminate_current()
 }
 
 extern "C" fn experimental_terminating_task() -> ! {

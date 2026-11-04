@@ -66,7 +66,28 @@ echo "----------------------------"
 # isa-debug-exit maps guest value V to host exit code (V << 1) | 1.
 # success() writes 0x10 -> host exit code 33.
 if [[ "$QEMU_STATUS" -eq 33 ]]; then
-    echo "PASS: kernel reached BootPhase::Ready and exited cleanly"
+    # Pin the blocking-receive demo's OWN lines as gate output: the exit
+    # code alone proves Ready was reached, not that every self-test ran
+    # with an OK verdict. These greps fail the gate if the NPS-003 §3
+    # park-and-wake proof (tasks C/D/E) deviates from its canonical
+    # tape -- broadly checked modulo variable-free substrings, in
+    # ORDER (the demo's sequence is part of the contract).
+    for needle in \
+        "blocking receive leg 1: parked empty, 1 empty wake, budget exhausted -> ReceiveTimedOut -- OK" \
+        "kicked C's parked timeout leg once" \
+        "woke BOTH parked delivery-leg receivers and sent the race message" \
+        "wakes raced against C: consumed the race message" \
+        "woke C's re-parked delivery leg and sent the real delivery" \
+        "blocking receive leg 2: woken BY A SEND" \
+        "experimental ipc blocking-receive proof: task C parked, got 1 empty wake" \
+    ; do
+        if ! grep -aqF -- "$needle" target/qemu-test-stdout.log; then
+            echo "FAIL: blocking-receive demo line missing or out of contract: $needle"
+            grep -a "task C\|task D\|task E\|blocking-receive" target/qemu-test-stdout.log | head -10
+            exit 1
+        fi
+    done
+    echo "PASS: kernel reached BootPhase::Ready and exited cleanly; the C/D/E blocking-receive tape is pinned and matched"
     exit 0
 elif [[ "$QEMU_STATUS" -eq 124 ]]; then
     echo "FAIL: boot test timed out (kernel hung or never reached Ready)"
