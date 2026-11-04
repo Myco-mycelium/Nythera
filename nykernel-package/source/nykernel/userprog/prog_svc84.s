@@ -7,7 +7,7 @@
  * not about the privilege transition a real program performs.
  *
  * It runs only when the boot line asks for it (`nyrqis.proof=svc84`), in
- * its own address space, and it does five things in order:
+ * its own address space, and it does seven things in order:
  *
  *   1. GFX_MODE      (rax = 0x41)          -> result stored at BUF+0
  *   2. INPUT_STATE   (rax = 0x40)          -> result stored at BUF+8
@@ -50,9 +50,32 @@
  *      The read-back compares BUF+80 against what the drain actually
  *      unpacked, so the queue/unpack path through kernel memory is
  *      proven with values, not assumptions.
+ *   7. the CAPABILITY rows, exercising THE KERNEL'S REAL HANDLE-TABLE
+ *      MACHINE (experimental::caps) end to end. The boot equip granted
+ *      task 0 (this program's identity on these rows) endpoint 0 with a
+ *      SEND|GRANT capability at slot 1 of its OWN table -- slot 0 holds
+ *      the endpoint's owner cap, the mint lands after it -- and the
+ *      kernel-side check panics on anything else, so the hardcoded
+ *      handle/endpoint pair below names the SAME granted capability:
+ *        a. CAP_SEND (0x47, rdi = HANDLE 1, rsi = payload, rdx = 6)
+ *           -> ack stored at BUF+104. The kernel must COPY the payload
+ *           out of THIS program's memory into the queue (kernel bytes
+ *           only -- a stale pointer can never be dereferenced at receive
+ *           time) and queue it tagged with the sender task id.
+ *        b. CAP_RECV (rax = 0x48, rdi = ENDPOINT 0, rsi = BUF+192,
+ *           rdx = 8) -> packed (sender << 32) | len stored at BUF+112
+ *           (expected 6), and the payload bytes written at BUF+192.
+ *           "nyrqis" is 6 bytes, so the first-8 read of BUF+192 is the
+ *           sentinel zero-tailed -- what the kernel's queue record must
+ *           match, value-for-value, not constant-for-constant.
+ *        c. CAP_SEND through a FORGED handle (rdi = 31, an empty slot of
+ *           the same table) -> stored at BUF+120; expected -EBADF.
+ *        d. CAP_SEND claiming a 65-byte payload -> stored at BUF+128;
+ *           expected -EMSGSIZE (the bound, refused before anything is
+ *           queued -- the release's backpressure, not truncation).
  *
  * Then it asks the kernel to close the proof (rax = 0x43, rdi = BUF): the
- * kernel reads the nine stored results back OUT OF USER MEMORY and
+ * kernel reads the seventeen stored results back OUT OF USER MEMORY and
  * compares them with what it returned, so the check covers the round trip
  * through ring-3 writes rather than trusting the registers alone.
  *
@@ -181,6 +204,65 @@ _start:
     mov $0x46, %rax
     int $0x84
     mov %rax, 96(%rbx)
+
+    /* 7. The capability rows (experimental::caps). Identity on these rows
+       is the running scheduler task -- task 0 in a proof boot -- and the
+       boot equip put a SEND|GRANT cap for endpoint 0 at slot 1 of task
+       0's own table. Zero what a call does not consume, for the same
+       trap-preservation reason step 6 documents. */
+    /* 7a. Stage the payload "nyrqis" + 2 zero bytes (little-endian qword:
+           n=0x6E y=0x79 r=0x72 q=0x71 i=0x69 s=0x73) at BUF+160, and
+           point CAP_SEND's payload pointer there. */
+    movabs $0x000073697172796E, %rcx
+    mov %rcx, 160(%rbx)
+    /* 7b. CAP_SEND (0x47): handle 1, payload BUF+160 len 6, no transfer
+       (r10 = u64::MAX -- zero is NOT "no transfer" on this row).
+       Expected ack 0. */
+    mov $1, %rdi
+    lea 160(%rbx), %rsi
+    mov $6, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x47, %rax
+    int $0x84
+    mov %rax, 104(%rbx)
+    /* 7c. CAP_RECV (0x48): ENDPOINT 0, receive buffer BUF+192 claiming
+       8 bytes (>= the queued 6). Expected (sender << 32) | 6, and the
+       payload bytes land at BUF+192. The tail is zeroed FIRST: this
+       freshly mapped page is not guaranteed zero-filled physical
+       memory, and the kernel's read-back reads BUF+192..200 as one
+       qword -- replicating payload bytes 6 and 7 as garbage would make
+       a correct kernel's copy MISMATCH by itself. */
+    movabs $0, %rcx
+    mov %rcx, 192(%rbx)
+    xor %rdi, %rdi
+    lea 192(%rbx), %rsi
+    mov $8, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x48, %rax
+    int $0x84
+    mov %rax, 112(%rbx)
+    /* 7d. A FORGED handle (31: a real index, an empty slot of the same
+       table) must be refused -EBADF, not answered with zero. */
+    mov $31, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x47, %rax
+    int $0x84
+    mov %rax, 120(%rbx)
+    /* 7e. An oversize payload claim (65 > the kernel's 64) must be
+       refused -EMSGSIZE BEFORE anything is queued. */
+    mov $1, %rdi
+    lea 160(%rbx), %rsi
+    mov $65, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x47, %rax
+    int $0x84
+    mov %rax, 128(%rbx)
 
     /* Close the proof (0x43): the kernel reads BUF back through the
        validator. */

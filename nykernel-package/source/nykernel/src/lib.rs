@@ -497,7 +497,16 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         experimental::scheduler::task_count()
     );
     experimental::ipc::init(experimental::scheduler::task_count());
-    serial_println!("  experimental ipc: {} mailboxes initialized (arbiter-checked, NPS-003 §5.4)", experimental::scheduler::task_count());
+    experimental::caps::init(experimental::scheduler::task_count());
+    serial_println!("  experimental ipc: {} mailboxes + {} capability tables initialized (arbiter-checked, NPS-003 §5.4)", experimental::scheduler::task_count(), experimental::scheduler::task_count());
+    // The capability machine's clause proof: every ported NPS-003 §4/§5
+    // behavior, positive AND negative, on its own self-built
+    // multi-holder system (see caps::run for why the multi-holder
+    // clauses are kernel-proven even before ring-3 sessions exist).
+    assert!(
+        experimental::caps::run(),
+        "experimental caps: capability semantics do not hold"
+    );
 
     // 4 tasks = main + A + B + J. Round-robin is strict, so exactly
     // TARGET_ROUNDS yields from main give A and B TARGET_ROUNDS runs

@@ -100,6 +100,26 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     // loses nothing observable. See ipc::prepare_endpoint0_for_proof.
     crate::experimental::ipc::prepare_endpoint0_for_proof();
 
+    // The capability rows' identity is `scheduler::current_task()` -- task 0
+    // in a proof boot -- so they drive task 0's own cap table. This equip
+    // (endpoint 0 owned by task 0; a fresh SEND|GRANT capability minted
+    // into its table) is the ONE kernel-only grant a proof boot performs,
+    // explicit and terminal-path-only exactly like the ipc equip above:
+    // normal boots never silently own endpoint capabilities (the boot
+    // self-test asserts the empty-table refusals BEFORE reaching here).
+    // The install order is deterministic: `create_endpoint`'s owner cap
+    // lands in slot 0 and the mint in slot 1, so the kernel-side record
+    // and the program's hardcoded handle are compared against the SAME
+    // granted index -- and the values are reported, so a drift fails
+    // visibly rather than silently sending through some other handle.
+    let (cap_ep, cap_handle) = crate::experimental::caps::prepare_task0_for_proof();
+    if cap_ep != 0 {
+        panic!("svc84 proof: caps equip produced endpoint {} -- the program names endpoint 0", cap_ep);
+    }
+    if cap_handle != 1 {
+        panic!("svc84 proof: caps equip produced handle {} -- the program names handle 1", cap_handle);
+    }
+
     // The ring-0 stack the CPU will switch to on the first trap: if it is
     // not mapped in THIS address space, the first `int 0x84` faults while
     // the CPU is pushing the frame, which looks like a kernel fault at a
@@ -108,12 +128,14 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     let rsp0 = space.kernel_stack_top();
     let rsp0_flags = paging::page_flags_active(VirtAddr::new(rsp0 - 8));
     serial_println!(
-        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; entering ring 3",
+        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; caps equip -- endpoint {} granted to task 0's cap table at handle {} ; entering ring 3",
         loaded.entry_point.as_u64(),
         PROOF_BUF,
         PROOF_STACK,
         rsp0,
-        rsp0_flags
+        rsp0_flags,
+        cap_ep,
+        cap_handle
     );
 
     usermode::enter_with_stack(loaded.entry_point, VirtAddr::new(PROOF_STACK + 4096 - 16))

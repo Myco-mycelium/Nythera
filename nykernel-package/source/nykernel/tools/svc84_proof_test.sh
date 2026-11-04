@@ -30,6 +30,15 @@
 #     shape refusal (-EINVAL) and the empty-endpoint answer (-ENODATA,
 #     distinct from the self-test's -ENOENT for a nonexistent endpoint)
 #     are each observed by the program.
+#   - the CAPABILITY rows (0x47 / 0x48) round-trip ONE payload through the
+#     kernel's real handle-table machine (experimental::caps): the boot
+#     equip granted task 0 (the program's identity on these rows) a
+#     SEND|GRANT capability for endpoint 0, the program sends "nyrqis"
+#     through HANDLE 1, receives it back whole into its own memory (first
+#     8 bytes zero-tailed), and the kernel compares the drained payload's
+#     record against what the program actually holds. A forged handle
+#     (empty slot 31) refuses -EBADF and an oversize payload claim refuses
+#     -EMSGSIZE, each observed by name in the program's own buffer.
 #
 # The proof mode does not return to the kernel (it ends in a ring-3 spin),
 # so this harness waits for the verdict line and then stops QEMU.
@@ -138,6 +147,11 @@ else
     else
         bad "the IPC rows' round trip or refusals failed their read-back"
     fi
+    if [[ "$VERDICT" == *"CAP matches"* ]] && [[ "$VERDICT" == *"caps (ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x6"* ]] && [[ "$VERDICT" == *"forged 0xfffffffffffffff7"* ]] && [[ "$VERDICT" == *"payload 0x73697172796e"* ]]; then
+        ok "one nyrqis payload round-tripped through the kernel's real capability machine (send via HANDLE 1, drained whole into the program's buffer) and the forged-handle/oversize refusals were observed by name"
+    else
+        bad "the capability rows' round trip or refusals failed their read-back"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -152,4 +166,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, and one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, and one capability-payload round-tripped through the kernel's real handle-table machine with the forged-handle and oversize refusals observed by name."

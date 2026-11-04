@@ -33,6 +33,7 @@
 //! boot-verified self-test discipline is unchanged.
 
 pub mod address_space;
+pub mod caps;
 pub mod chain;
 pub mod crypto;
 pub mod dex;

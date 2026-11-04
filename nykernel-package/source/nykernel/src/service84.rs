@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves seven calls:
+//! table), the result goes back in `rax` -- that serves nine calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -15,6 +15,20 @@
 //! | 0x44 | `PROCESS_SELF` | — | the running scheduler task's id (`experimental::scheduler`); `0` = the kernel itself |
 //! | 0x45 | `IPC_SEND` | a0=endpoint, a1=seq | queues `(sender = current task, seq)` through `experimental::ipc`; `0`, or the arbiter's errno |
 //! | 0x46 | `IPC_RECV` | a0=endpoint | drains one queued message -> `(sender << 32) | seq`; `-ENODATA` when real-and-empty, `-ENOENT` when it does not exist |
+//! | 0x47 | `CAP_SEND` | a0=handle, a1/a2=payload, a_xfer/a_rights | capability-checked send through `experimental::caps`; `0`, or its errno |
+//! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
+//!
+//! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
+//! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
+//! machine (`experimental::caps`): a send goes through a handle in the
+//! caller's OWN table -- never a raw endpoint number (§4.1), the payload
+//! is a kernel-validated, kernel-COPIED user read bounded at
+//! `caps::MAX_PAYLOAD`, a transfer travels only in the dedicated field
+//! and only ATTENUATES (§5.2/§5.3), generations make revocation O(1)
+//! and stale (§4.3), and every check happens before any queue is touched.
+//! The caller's identity is its scheduler task; while the session machine
+//! the manifest parks is not here, every un-sessioned ring-3 caller
+//! shares task 0's table -- documented, not hidden (caps's module docs).
 //!
 //! The IPC rows are the release-typed SEND/RECV door, as far as THIS tree's
 //! own primitive can honestly serve it: `ipc::send`/`try_receive` model the
@@ -125,6 +139,19 @@ pub const CALL_PROCESS_SELF: u64 = 0x44;
 pub const CALL_IPC_SEND: u64 = 0x45;
 pub const CALL_IPC_RECV: u64 = 0x46;
 
+/// The capability-shaped door (NPS-003 §4/§5), served through
+/// `experimental::caps` -- per-holder kernel-owned handle tables over
+/// endpoint capabilities. The release's shape: a0 = HANDLE (an index in
+/// the caller's OWN table; raw endpoint numbers are never taken on the
+/// send path, §3.2/§4.1), a1/a2 = payload pointer/length (a kernel-validated
+/// read from user memory, bounded at caps::MAX_PAYLOAD), a_xfer = the
+/// DEDICATED transfer field (u64::MAX = no transfer; else a handle being
+/// transferred attenuated to at most a_rights), only ever narrowing.
+/// Identity note: the caller's table is the table of its scheduler task;
+/// un-sessioned ring-3 callers share task 0's (see caps's module docs).
+pub const CALL_CAP_SEND: u64 = 0x47;
+pub const CALL_CAP_RECV: u64 = 0x48;
+
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
 /// Bad user pointer: the validator refused the range.
@@ -150,6 +177,31 @@ pub const EAGAIN: i64 = -11;
 /// Linux `EACCES`: this sender's access to the endpoint is revoked (the
 /// primitive's §4.3 revocation cut).
 pub const EACCES: i64 = -13;
+/// Linux `EBADF`: the handle (table index) is an empty slot -- not
+/// forgeable, just invalid.
+pub const EBADF: i64 = -9;
+/// Linux `ESRCH`: no such process / a dead endpoint owner.
+pub const ESRCH: i64 = -3;
+/// Linux `ESTALE`: the capability's generation is stale (§4.3 revocation
+/// went through under it).
+pub const ESTALE: i64 = -116;
+/// Linux `EMSGSIZE`: the payload exceeds the machine's bound, or the
+/// receive buffer cannot hold the queued message.
+pub const EMSGSIZE: i64 = -90;
+/// Linux `ENOSPC`: the holder's capability table is full.
+pub const ENOSPC: i64 = -28;
+
+fn map_cap_error(e: crate::experimental::caps::CapError) -> i64 {
+    use crate::experimental::caps::CapError::*;
+    match e {
+        BadProcess | TargetDead => ESRCH,
+        BadHandle => EBADF,
+        NoRight | Revoked | NotOwner => EACCES,
+        PayloadTooLarge | Widening => EMSGSIZE,
+        QueueFull => EAGAIN,
+        TableFull => ENOSPC,
+    }
+}
 
 // ---- proof bookkeeping -------------------------------------------------
 //
@@ -182,6 +234,12 @@ static WROTE_H: AtomicU32 = AtomicU32::new(0);
 static IPC_SENT_DEST: AtomicU64 = AtomicU64::new(0);
 static IPC_SENT_SEQ: AtomicU64 = AtomicU64::new(0);
 static RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
+/// The capability leg's differential records: what the drain actually
+/// handed back BEYOND what rax shows -- the received payload's first 8
+/// bytes (zero-padded) and the packed (sender<<32|len) return. The
+/// program's stored copies and its own memory are compared against THESE.
+static CAP_RECV_FIRST8: AtomicU64 = AtomicU64::new(0);
+static CAP_RECV_RAX: AtomicU64 = AtomicU64::new(0);
 /// 0 = not finished, 1 = passed, 2 = failed.
 static PROOF_STATE: AtomicU8 = AtomicU8::new(0);
 
@@ -256,18 +314,21 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             0
         }
         CALL_PROOF_DONE => {
-            // Thirteen qwords: the five older results (gfx, input, enosys,
+            // Seventeen qwords: the five older results (gfx, input, enosys,
             // (unused), self), the four widened-arg markers at BUF+40..+64,
-            // and the IPC records: the SEND ack (BUF+72), the RECV value
-            // (BUF+80), one shape refusal (BUF+88), and the now-empty
-            // endpoint's real answer (BUF+96).
-            if !crate::memory::paging::user_range_ok(a0, 104, false) {
+            // the IPC records (ack BUF+72, recv BUF+80, shape refusal
+            // BUF+88, empty-real BUF+96), and the capability records: the
+            // CAP_SEND ack (BUF+104), the CAP_RECV rax (BUF+112), the
+            // forged-handle refusal (BUF+120) and the oversize refusal
+            // (BUF+128). The received CAP PAYLOAD is separately compared
+            // at BUF+192..+198 (below).
+            if !crate::memory::paging::user_range_ok(a0, 136, false) {
                 return EFAULT;
             }
             // Read the results back OUT OF USER MEMORY: this is the part
             // the registers alone cannot prove, because it shows the
             // ring-3 program actually received and stored them.
-            let mut stored = [0i64; 13];
+            let mut stored = [0i64; 17];
             for (i, slot) in stored.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 as *const i64).add(i)) };
             }
@@ -292,6 +353,12 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // construction -- sender 0, seq 7), and the two shape refusals
             // must have arrived by name.
             let want_ipc = RECVD_VALUE.load(Ordering::Relaxed) as i64;
+            // The capability leg is judged the same differential way: the
+            // drain's actual answer (packed sender<<32|len, recorded when
+            // the ring-3 recv ran), the drained payload's first 8 bytes,
+            // and the payload bytes still in the program's buffer.
+            let want_cap_rax = CAP_RECV_RAX.load(Ordering::Relaxed) as i64;
+            let want_cap_first8 = CAP_RECV_FIRST8.load(Ordering::Relaxed);
             let wrote_ok = crate::devices::framebuffer::bound_mode()
                 .map(|(w, h)| {
                     // The geometry was written at BUF+24 (the program's own
@@ -316,6 +383,30 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && want_ipc != 0
                 && stored[11] == EINVAL
                 && stored[12] == ENODATA; // exists-but-empty, a REAL answer
+            // The capability leg: the ack, the round-trip rax, two
+            // refusals by name (a forged handle and an oversize claim),
+            // and the payload the program ACTUALLY holds matching both
+            // the drained message's record and the "nyrqis" sentinel.
+            // The sentinel compare is against the KERNEL's own image of
+            // the payload (CAP_RECV_FIRST8), so queue -> user-memory is
+            // covered with values, not constants.
+            // 6 bytes, zero tail: "nyrqis" as the payload copy leaves it
+            // in user memory -- an LE u64 read of [ny, rq, is, \0, \0] is
+            // 0x0000_7369_7172_796E, so both sides of the compare are the
+            // SAME representation.
+            const CAP_SENTINEL: u64 = 0x0000_7369_7172_796E;
+            let held_first8 = if crate::memory::paging::user_range_ok(a0 + 192, 8, false) {
+                unsafe { core::ptr::read_unaligned((a0 + 192) as *const u64) }
+            } else {
+                u64::MAX
+            };
+            let cap_ok = stored[13] == 0
+                && stored[14] == want_cap_rax
+                && want_cap_rax != 0
+                && stored[15] == EBADF
+                && stored[16] == EMSGSIZE
+                && held_first8 == want_cap_first8
+                && want_cap_first8 == CAP_SENTINEL;
             let stored_ok = stored[0] == want_gfx
                 && stored[1] == want_input
                 && stored[2] == want_enosys
@@ -325,10 +416,12 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[6] == want_rdx as i64
                 && stored[7] == want_r10 as i64
                 && stored[8] == want_r8 as i64
-                && ipc_ok;
+                && ipc_ok
+                && cap_ok;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} -- {}",
+            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} ,ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {}) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} -- {}
+",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
                 want_input as u64,
@@ -345,6 +438,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 want_ipc as u64,
                 stored[11] as u64,
                 stored[12] as u64,
+                stored[13] as u64,
+                stored[14] as u64,
+                stored[15] as u64,
+                stored[16] as u64,
+                held_first8,
                 if stored[0] == want_gfx { "matches" } else { "MISMATCH" },
                 if stored[1] == want_input { "matches" } else { "MISMATCH" },
                 if stored[2] == want_enosys { "matches" } else { "MISMATCH" },
@@ -360,6 +458,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     "MISMATCH"
                 },
                 if ipc_ok { "matches" } else { "MISMATCH" },
+                if cap_ok { "matches" } else { "MISMATCH" },
                 if ok { "OK" } else { "FAILED" }
             );
             0
@@ -419,10 +518,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 return EINVAL;
             }
             match a_xfer {
-                0 => {}            // The release-typed BLOCKING form. Refused BY NAME (see the
-            // module docs): serving it needs the session machine, and
-            // answering it with ENODATA would let a caller spin believing
-            // "not here yet" meant "empty".
+                0 => {}
+                // The release-typed BLOCKING form. Refused BY NAME (see the
+                // module docs): serving it needs the session machine, and
+                // answering it with ENODATA would let a caller spin believing
+                // "not here yet" meant "empty".
                 1 => return ENOSYS,
                 _ => return EINVAL,
             }
@@ -441,6 +541,108 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     v as i64
                 }
                 None => ENODATA,
+            }
+        }
+        CALL_CAP_SEND => {
+            // The capability rows' identity is the caller's SCHEDULER TASK;
+            // the un-sessioned ring-3 caller is task 0 (the caps module
+            // documents the honest consequence). The payload is COPIED out
+            // of user memory here -- the queues hold kernel bytes only, so
+            // a stale payload pointer can never be dereferenced at receive
+            // time -- and every check the machine makes happens BEFORE its
+            // queue is touched (caps::send preserves the release's
+            // oracle-proof ordering).
+            if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
+                return EMSGSIZE;
+            }
+            if a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, false) {
+                return EFAULT;
+            }
+            // Handles are u32 table indexes; anything that would TRUNCATE
+            // is not a valid handle claim. Endpoints' u8 right masks carry
+            // exactly SEND|GRANT today, so a wider rights claim is not a
+            // handle either.
+            if a0 > u32::MAX as u64 || a_rights > (crate::experimental::caps::rights::SEND | crate::experimental::caps::rights::GRANT) as u64 {
+                return EBADF;
+            }
+            if a_xfer != u64::MAX && a_xfer > u32::MAX as u64 {
+                return EBADF;
+            }
+            let mut bytes = [0u8; crate::experimental::caps::MAX_PAYLOAD];
+            if a2 != 0 {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(a1 as *const u8, bytes.as_mut_ptr(), a2 as usize);
+                }
+            }
+            let transfer = if a_xfer == u64::MAX {
+                if a_rights != 0 {
+                    return EBADF; // rights only make sense WITH a transfer
+                }
+                None
+            } else {
+                Some((a_xfer as u32, a_rights as u8))
+            };
+            match crate::experimental::caps::send_for(
+                crate::experimental::scheduler::current_task(),
+                a0 as u32,
+                &bytes[..a2 as usize],
+                transfer,
+            ) {
+                Ok(()) => 0,
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_RECV => {
+            if a_rights != 0 || a_xfer != u64::MAX {
+                return EBADF;
+            }
+            if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
+                return EMSGSIZE;
+            }
+            if a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, true) {
+                return EFAULT;
+            }
+            match crate::experimental::caps::receive_for(
+                crate::experimental::scheduler::current_task(),
+                a0 as u32,
+            ) {
+                Ok(None) => ENODATA,
+                Err(e) => map_cap_error(e),
+                Ok(Some(m)) => {
+                    if a2 < m.payload.len() as u64 {
+                        // The message STAYS queued: a buffer too small is
+                        // the caller's shape problem, not a consumed
+                        // message's -- backpressure, not data loss.
+                        return EMSGSIZE;
+                    }
+                    if !m.payload.is_empty() {
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                m.payload.as_ptr(),
+                                a1 as *mut u8,
+                                m.payload.len(),
+                            );
+                        }
+                    }
+                    if from_ring3 {
+                        // The PAYLOAD RECORD little-endian, because the
+                        // read-back compares it against a raw LE read of
+                        // the program's buffer: comparing a big-endian
+                        // packing against an LE memory read "works" only
+                        // when every byte coincidentally aligns -- the
+                        // first run of this compare MISMATCHED exactly
+                        // that way (the bytes' order differed), which is
+                        // the check's own bug, not the call's.
+                        let mut first8 = [0u8; 8];
+                        for (i, b) in m.payload.iter().take(8).enumerate() {
+                            first8[i] = *b;
+                        }
+                        CAP_RECV_FIRST8.store(u64::from_le_bytes(first8), Ordering::Relaxed);
+                        CAP_RECV_RAX
+                            .store(((m.sender as u64) << 32) | m.payload.len() as u64, Ordering::Relaxed);
+                    }
+                    (((m.sender as u64) << 32) | m.payload.len() as u64) as i64
+                }
             }
         }
         _ => {
@@ -607,15 +809,32 @@ pub fn self_test() -> bool {
         && dispatch(CALL_IPC_RECV, 0, 0, 0, 1, 0, 0) == ENOSYS // the BLOCKING form
         && dispatch(CALL_IPC_RECV, 0, 7, 0, 0, 0, 0) == EINVAL; // RECV takes no message
 
-    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok && ipc_shape_ok;
+    // The capability rows on a NORMAL boot: nothing was ever granted, and
+    // boots never silently create endpoint capabilities (the proof boot
+    // equips task 0 EXPLICITLY, terminal-path-only). So a handle claim
+    // from an un-sessioned caller, against an empty table, is ESRCH (no
+    // such holder table yet); a nonexistent cap endpoint is EBADF; an
+    // oversize payload claim is EMSGSIZE before anything is touched; and
+    // a rights claim wider than the endpoint kinds carry is not a handle
+    // claim at all (EBADF). Asserting this exact order here WAITS for a
+    // boot where granted caps exist and name-checks the empty-state
+    // answers -- a silent zero would be the "answered with nothing
+    // happened" lie again.
+    let caps_rows_ok = dispatch(CALL_CAP_SEND, 0, 0, 0, u64::MAX, 0, 0) == ESRCH
+        && dispatch(CALL_CAP_RECV, 0, 0, 0, u64::MAX, 0, 0) == EBADF
+        && dispatch(CALL_CAP_SEND, 0, 0, 65, u64::MAX, 0, 0) == EMSGSIZE
+        && dispatch(CALL_CAP_SEND, 0, 0, 0, u64::MAX, u32::MAX as u64, 0) == EBADF;
+
+    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok && ipc_shape_ok && caps_rows_ok;
     crate::serial_println!(
-        "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {}, process SELF names the running task {} , IPC shape claims refused by name {} ; gate installed at DPL3 -- {}",
+        "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {}, process SELF names the running task {} , IPC shape claims refused by name {} , capability rows refused by name on an empty table {} ; gate installed at DPL3 -- {}",
         if gfx_ok { "OK" } else { "FAILED" },
         if input_ok { "OK" } else { "FAILED" },
         if refused { "OK" } else { "FAILED" },
         if validator_ok { "OK" } else { "FAILED" },
         if self_ok { "OK" } else { "FAILED" },
         if ipc_shape_ok { "OK" } else { "FAILED" },
+        if caps_rows_ok { "OK" } else { "FAILED" },
         if ok { "OK" } else { "FAILED" }
     );
     ok

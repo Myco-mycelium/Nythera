@@ -4953,3 +4953,47 @@ gate, which is what keeps the "same chain on both boot paths" contract
 honest while the machine hardware id differs. The gate re-passes with
 these normalizations in place, and its PASS line quotes both sides'
 chain-line counts.
+
+## Capability rows on the 0x84 gate (2026-11-04): the release's endpoint-capability
+## half, served through our OWN handle-table machine and proven at both rings
+
+`src/experimental/caps.rs` ports `porting/release-1-71/src/experimental/capability.rs`'s
+ENDPOINT half to this tree's identity model: holders are scheduler task ids,
+handles are indexes into kernel-owned per-holder tables (never forgeable, never
+sharedable — §5.4), payloads are kernel-copied and bounded (§3.1), queues are
+bounded with a named refusal (backpressure, never a silent drop), transfers run
+only in the dedicated field and only ATTENUATE (§5.2/§5.3), and §4.3 revocation
+is a generation bump — O(1), outstanding caps dead with no holder cooperation.
+NOT ported, named in the module for checkability: the device kinds
+(BlockDevice/IoPort/FrameBuffer/Input/SharedMem/Reply), badges, containers,
+notify, blocking receive.
+
+The gate rows are `CAP_SEND` (0x47) and `CAP_RECV` (0x48); identity on these
+rows is `scheduler::current_task()`, so un-sessioned ring-3 callers share task
+0's table — documented in both modules, and the session machine the manifest
+parks flips this to isolation WITHOUT another ABI change. Every check the
+machine makes happens BEFORE any queue is touched (the release's oracle-proof
+ordering): a refused send leaks no queue depth.
+
+Three bugs were caught at first boot and fixed AT CAUSE, all in the proof and
+self-test, none in the machine's semantics: (1) the widening check demanded
+GRANT from a SEND-only cap and observed NoRight — the machine checks the
+transfer right before the subrange check, so the instrument now uses both a
+SEND-only holder (NoRight) and a GRANT-only holder (Widening), and the
+non-owner `mint` refusal became an explicit check instead of an accidental
+panic; (2) the payload read-back compared a BIG-endian packing of the drained
+payload against a LITTLE-endian read of the program's buffer — same bytes,
+wrong order, mismatch by construction; the record is now LE both sides;
+(3) the freshly mapped results page is not backed by zeroed memory, so the
+program zeroes the eight bytes the read-back covers before the receive —
+garbage tails would make a CORRECT kernel's copy mismatch. All three are
+commented at the emitting code.
+
+Checks: `experimental caps: 21 clause groups proven positive+negative` on every
+boot; `capability rows refused by name on an empty table OK` in the gate's boot
+self-test (ESRCH/EBADF/EMSGSIZE/EBADF, the exact empty-table answers);
+`tools/svc84_proof_test.sh` PASS — the verdict line now carries
+`caps (ack 0x0 , recv 0x6 , forged 0xfffffffffffffff7 ,
+oversized 0xffffffffffffffa6 , payload 0x73697172796e)` and the kernel compares
+the program's MEMORY against its queue record, value-for-value; the ledger gate
+now reads 9 served calls (0x40..0x48), all exercised by `prog_svc84.s`.
