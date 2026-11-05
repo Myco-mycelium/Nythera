@@ -146,7 +146,12 @@ pub fn send(dest: usize, msg: IpcMessage) -> Result<(), IpcError> {
         // refused -- the sender identity is validated before queue
         // state is even looked at, so a forged send cannot learn
         // anything about the endpoint's queue depth via error probing.
-        if msg.sender != running_task_id() {
+        // The claim must BE the kernel-declared caller identity: the
+        // running task, or the gate session the scheduler recorded at a
+        // ring-3 transition (a ring-3 caller's sends carry the
+        // session's id -- still kernel-declared, never forgeable; see
+        // `scheduler::session_identity`).
+        if msg.sender != crate::experimental::scheduler::session_identity() {
             return Err(IpcError::NotRunningTask);
         }
         let mailbox = (&mut *(&raw mut MAILBOXES)).get_mut(dest).ok_or(IpcError::NoSuchMailbox)?;

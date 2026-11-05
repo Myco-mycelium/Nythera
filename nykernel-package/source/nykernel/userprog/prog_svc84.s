@@ -62,7 +62,7 @@
  *           -> ack stored at BUF+104. The kernel must COPY the payload
  *           out of THIS program's memory into the queue (kernel bytes
  *           only -- a stale pointer can never be dereferenced at receive
- *           time) and queue it tagged with the sender task id.
+ *           time) and queue it tagged with the kernel-declared caller identity (the gate session's id).
  *        b. CAP_RECV (rax = 0x48, rdi = ENDPOINT 0, rsi = BUF+192,
  *           rdx = 8) -> packed (sender << 32) | len stored at BUF+112
  *           (expected 6), and the payload bytes written at BUF+192.

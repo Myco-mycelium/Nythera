@@ -57,12 +57,15 @@
 //! HOW CALLERS REACH IT: through the `0x84` gate's capability rows
 //! (`service84::CALL_CAP_SEND`/`CALL_CAP_RECV`/`CALL_INPUT_POLL`), whose
 //! identity is the caller's GATE SESSION (`service84::attach_gate_session`,
-//! recorded at the ring transition) or, with no session, the running
-//! scheduler task -- the release's session machine in first slice gives a
-//! ring-3 caller its OWN table (the proof boot mints its caller one;
-//! `prepare_session_for_proof`), and the manifest's parked step (every
-//! ring-3 task a session, recorded at the scheduler's ring-3 switches)
-//! generalizes that to every caller WITHOUT another ABI change. Ring-0
+//! the transition's kernel-only NAME) or, with no session, the running
+//! scheduler task -- the release's session machine gives a ring-3
+//! caller its OWN table (the proof boot mints its session one;
+//! `prepare_session_for_proof`), and the manifest's parked step -- every
+//! ring-3 task a session, the STORE in `experimental::scheduler`
+//! (`session_identity`/`attach_session`/`withdraw_session`), recorded at
+//! the ring-3 task switches -- is this slice's generalization, so the
+//! ring3 scheduler's E/F/G and the preemption hogs each speak from
+//! their mapped session at every switch WITHOUT another ABI change. Ring-0
 //! callers -- the kernel itself, boot self-tests -- keep task 0's identity:
 //! that IS the kernel's table. What a single holder can exercise today --
 //! bounds, generation, attenuation -- is proven here by `run()` (which
@@ -441,9 +444,9 @@ pub fn init(task_count: usize) {
 
 /// Proof-boot equip: endpoint 0 owned by task 0; a fresh SEND|GRANT cap
 /// minted into task 0's table. Retired 2026-11-05 for
-/// `prepare_session_for_proof`: the session machine's first slice gives
-/// a ring-3 caller its OWN table, so sharing task 0's is not the
-/// equip's shape any more.
+/// `prepare_session_for_proof`: the session machine gives a ring-3
+/// caller its OWN table, so sharing task 0's is not the equip's shape
+/// any more. (Store home since the generalization: the scheduler.)
 /// The gate session's equip, the release's session machine in FIRST
 /// SLICE (`service84::attach_gate_session` and `src/svc84_proof.rs`):
 /// creates the holder for the ring-3 caller's SESSION `sid` -- its OWN

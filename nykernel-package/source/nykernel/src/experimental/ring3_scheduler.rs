@@ -251,6 +251,14 @@ fn build_initial_blob(kernel_stack_top: u64, entry: u64, user_rsp: u64, user_cs:
 /// Must be called at most once, after Phases 1-4-prep are initialized
 /// (heap, paging, IDT with [`install`] already wired in via
 /// `idt::init`).
+/// The id space the ring-3 sessions occupy: one past the HOUSE
+/// scheduler's task ids (0..=6), so a session and a scheduler task can
+/// never share an id -- the manifest's "sessions live above the
+/// scheduler's id space", literally. E/F/G sit at base+0/1/2 while the
+/// cooperative machine runs, the preemption hogs H/I at base+0/1
+/// during their phase (the machine's TASKS[0]/[1] slots).
+const POC_SESSION_BASE: usize = 100;
+
 pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
     let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
@@ -303,6 +311,20 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         );
     }
 
+    // The release's session machine, literally "recorded at the
+    // scheduler's ring-3 task switches": every switch in
+    // `ring3_yield_dispatch`/`preempt_switch` re-records the resumed
+    // task's session (base + its machine slot), and each ring-0 resume
+    // (finale/preempt_finale) withdraws it -- kernel-owned at both
+    // ends. During these ring-3 phases, any int 0x84 call that ever
+    // reached the gate from these tasks would speak from the task's
+    // OWN session, not whoever owns the running slot.
+    crate::experimental::scheduler::attach_session(POC_SESSION_BASE);
+    serial_println!(
+        "  experimental ring3-scheduler: ring-3 sessions recorded at every switch (task i -> session {}, withdrawn at each ring-0 resume) -- the release's session machine, store in experimental::scheduler",
+        POC_SESSION_BASE
+    );
+
     TASKS[0].address_space.activate();
     usermode::enter_with_stack(e_entry.unwrap(), e_rsp.unwrap())
 }
@@ -326,6 +348,9 @@ extern "C" fn ring3_yield_dispatch(trap_rsp: u64) -> u64 {
 
         let next = (current + 1) % (*&raw const TASKS).len();
         CURRENT = next;
+        // Record-at-switch: the resumed task's session becomes the rows'
+        // caller identity until the next switch or a ring-0 resume.
+        crate::experimental::scheduler::attach_session(POC_SESSION_BASE + next);
         TASKS[next].address_space.activate();
         TASKS[next].saved_trap_rsp
     }
@@ -473,6 +498,9 @@ unsafe fn preempt_switch(trap_rsp: u64) -> u64 {
 
     let next = (current + 1) % (&*tasks).len();
     CURRENT = next;
+    // Same record-at-switch as the cooperative machine: the timer moved
+    // the core to the next hog, so the rows' caller identity follows.
+    crate::experimental::scheduler::attach_session(POC_SESSION_BASE + next);
     (&*tasks)[next].address_space.activate();
     (&*tasks)[next].saved_trap_rsp
 }
@@ -491,6 +519,19 @@ unsafe fn preempt_switch(trap_rsp: u64) -> u64 {
 /// tasks in `TASKS` -- guaranteed by being reachable only through
 /// [`preempt_switch`], which only [`finale`] arms.
 unsafe fn preempt_finale() -> ! {
+    // The record's exit half for the timer-driven machine's ring-0
+    // boundary, pinned by name exactly like the cooperative one.
+    let withdrawn = crate::experimental::scheduler::withdraw_session();
+    assert_eq!(
+        withdrawn,
+        Some(POC_SESSION_BASE + CURRENT),
+        "the preemption hog's session must be its recorded id at the ring-0 boundary"
+    );
+    serial_println!(
+        "  experimental ring3-scheduler: preemption hog's session {} withdrawn at the ring-0 boundary -- identity back to the running slot before the later demos",
+        withdrawn.unwrap()
+    );
+
     PREEMPT_ARMED.store(false, Ordering::SeqCst);
 
     let switches = PREEMPT_SWITCHES.load(Ordering::SeqCst);
@@ -563,6 +604,23 @@ unsafe fn preempt_finale() -> ! {
 /// kernel_main to somehow run several separate one-way ring-3
 /// sequences itself.
 unsafe fn finale() -> ! {
+    // The record's exit half at the ring-3 -> ring-0 boundary, pinned
+    // by NAME: the withdrawn id must be the yielding task's own
+    // recorded session (what the last switch before this trap recorded).
+    // The release's machine destroys the session's holdings here; this
+    // POC's sessions carry no holders, so the withdraw is the whole
+    // teardown -- the withdrawn id's holdings are none to account for.
+    let withdrawn = crate::experimental::scheduler::withdraw_session();
+    assert_eq!(
+        withdrawn,
+        Some(POC_SESSION_BASE + CURRENT),
+        "ring-3 session must be the yielding task's recorded id at the ring-0 boundary"
+    );
+    serial_println!(
+        "  experimental ring3-scheduler: ring-3 session {} withdrawn at the ring-0 boundary (identity back to the running slot) -- the record was live across every switch",
+        withdrawn.unwrap()
+    );
+
     let mut counts: Vec<u64> = Vec::new();
     for i in 0..(*&raw const TASKS).len() {
         TASKS[i].address_space.activate();
@@ -744,6 +802,10 @@ unsafe fn finale() -> ! {
     // from preempt_finale. Consistent with this kernel's convention,
     // failures are reported loudly rather than hidden --
     // preempt_finale asserts its own result on the way through.
+    // H's own record: a fresh one-way ring-3 phase, same mapping rule
+    // (machine slot 0 -> session base), so the same identity contract
+    // holds through the preemption phase.
+    crate::experimental::scheduler::attach_session(POC_SESSION_BASE);
     (&*tasks)[0].address_space.activate();
     usermode::enter_with_stack(h_entry.unwrap(), h_rsp.unwrap())
 }

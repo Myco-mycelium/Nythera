@@ -574,7 +574,12 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     // `experimental::terminated_task` uses terminate_current() there
     // so the §5.5/§5.6 edges are exercised on a real dispatch.
     let term_ok = experimental::scheduler::self_test_terminated_consistency();
+    let session_ok = experimental::scheduler::self_test_session_contract();
     assert!(term_ok, "NPS-002 §5.5/§5.6 termination-state consistency self-test failed");
+    assert!(
+        session_ok,
+        "experimental scheduler session contract self-test failed: the gate session's record/withdraw mechanics are wrong"
+    );
 
     // ---- experimental: NPS-003 §5.4/§4.3 arbiter + revocation controls ----
     // Accepted-spec enforcement, proven every boot against a scratch

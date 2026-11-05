@@ -143,8 +143,12 @@ else
     else
         bad "the widened argument pass did not round-trip through the trap boundary"
     fi
-    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x7"* ]] && [[ "$VERDICT" == *"want 0x7"* ]]; then
-        ok "one sent message round-tripped through the kernel's real mailbox (sender=0 seq=7 -> 0x7) and the shape/empty refusals were observed by name"
+    # recv/want 0x700000007: with the session machine generalized, the
+    # ring-3 send's message carries the KERNEL-DECLARed caller identity
+    # -- the recorded gate session (7), not whoever owns the running
+    # slot -- so the recv answer is (sender << 32) | seq with sender = 7.
+    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x700000007"* ]] && [[ "$VERDICT" == *"want 0x700000007"* ]]; then
+        ok "one sent message round-tripped through the kernel's real mailbox (session sender=7 seq=7 -> 0x700000007) and the shape/empty refusals were observed by name"
     else
         bad "the IPC rows' round trip or refusals failed their read-back"
     fi

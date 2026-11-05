@@ -145,6 +145,61 @@ struct TaskControlBlock {
 static mut TASKS: Vec<TaskControlBlock> = Vec::new();
 static mut CURRENT: usize = 0;
 
+// ---- the gate session store (the release's session machine, first
+// slice, INITIAL HOME) -------------------------------------------
+//
+// The release's sessions are SCHEDULER state: a ring-3 caller's
+// capability identity is the session the machine records at the ring
+// transition, not whoever happens to own the running slot. First
+// slice: the store lives HERE (one source of truth for every row),
+// `attach_session` records a kernel-owned session id,
+// `withdraw_session` is the record's exit half (reports the id it
+// took), and `session_identity` is what the 0x84 rows and the ipc
+// arbiter speak through: the session when one is attached, the
+// running task otherwise. Normal boots attach nothing (ring-0 callers
+// are the kernel; identity = current_task). The proof boot attaches
+// its session at the ring-3 entry; the ring-3 scheduler attaches
+// E/F/G and the preemption hogs' sessions AT EVERY YIELD/PREEMPTION
+// SWITCH and withdraws at the ring-0 resumes -- literally the
+// manifest's "recorded at the scheduler's ring-3 task switches"
+// (experimental/ring3_scheduler).
+pub const NO_SESSION: usize = usize::MAX;
+
+static GATE_SESSION: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(NO_SESSION);
+
+/// Kernel-only: records a ring-3 caller's session. Called once at the
+/// ring transition (the proof's entry) and at every ring-3 task switch
+/// by the ring3 scheduler. Kernel-owned, kernel-declared: a caller
+/// cannot forge it, and cannot observe it except through what the
+/// rows answer.
+pub fn attach_session(sid: usize) {
+    GATE_SESSION.store(sid, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The record's exit half: withdraws the attached session (if any) and
+/// reports it. Afterwards [`session_identity`] names the running task
+/// again. The release's machine destroys the session's holders and
+/// mailbox here; the withdrawn id's holdings are its caller's to
+/// account for (the proofs are terminal-path and keep none).
+pub fn withdraw_session() -> Option<usize> {
+    match GATE_SESSION.swap(NO_SESSION, core::sync::atomic::Ordering::Relaxed) {
+        NO_SESSION => None,
+        sid => Some(sid),
+    }
+}
+
+/// The caller identity the machine serves: the recorded session when
+/// one is attached, the running scheduler task otherwise. Single
+/// source of truth: the 0x84 rows (CAP/IP/INPUT_POLL) and the ipc
+/// arbiter all read this.
+pub fn session_identity() -> usize {
+    match GATE_SESSION.load(core::sync::atomic::Ordering::Relaxed) {
+        NO_SESSION => current_task(),
+        sid => sid,
+    }
+}
+
 /// Count of set_state() calls that were refused because the requested
 /// transition is not a legal NPS-002 §5 edge. Read back by
 /// [`lifecycle_rejections`] for the every-boot negative-control
@@ -341,6 +396,29 @@ pub fn self_test_terminated_consistency() -> bool {
 /// not CREATED. This is not a special edge in the diagram: §5.3 is
 /// exactly what's true of the caller. spawn()/spawn_with_cr3() later
 /// give every genuinely-new task the normal CREATED → READY path.
+/// The session store's record/withdraw contract, every boot. The
+/// ring-3 users of this store are terminal-path proofs that never
+/// return, so this in-tree exercise is the only place the CONTRACT
+/// itself is pinned: attach is what identity becomes, withdraw
+/// reports the id taken and reverts, a second withdraw reports none,
+/// and identity returns to the running task. Runs with NO session
+/// attached (this phase predates every ring-3 caller in a normal
+/// boot; proof boots never reach spawns) and restores that state.
+pub fn self_test_session_contract() -> bool {
+    const TEST_SESSION: usize = 0x5E55_10;
+    let before = current_task();
+    attach_session(TEST_SESSION);
+    let attached_ok = session_identity() == TEST_SESSION;
+    let withdrew = withdraw_session();
+    let reverted_ok = withdraw_session().is_none() && session_identity() == before;
+    let ok = attached_ok && withdrew == Some(TEST_SESSION) && reverted_ok;
+    crate::serial_println!(
+        "  experimental scheduler session record/withdraw contract: attach names the recorded id, withdraw reverts and reports it, double-withdraw reports none, identity back to the running task -- {}",
+        if ok { "OK" } else { "FAILED" }
+    );
+    ok
+}
+
 pub fn init() {
     unsafe {
         // Task 0 is whatever called init() -- its real stack pointer
