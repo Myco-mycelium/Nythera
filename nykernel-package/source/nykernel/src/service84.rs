@@ -196,6 +196,11 @@ fn map_cap_error(e: crate::experimental::caps::CapError) -> i64 {
     match e {
         BadProcess | TargetDead => ESRCH,
         BadHandle => EBADF,
+        // A handle resolved but named a DIFFERENT kind of object: that is
+        // an authorization failure at the type level (the release maps
+        // its WrongType to EACCES-family refusals; EACCES by name),
+        // distinct from EBADF's "no such handle".
+        WrongType => EACCES,
         NoRight | Revoked | NotOwner => EACCES,
         PayloadTooLarge | Widening => EMSGSIZE,
         QueueFull => EAGAIN,

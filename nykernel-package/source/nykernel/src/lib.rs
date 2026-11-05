@@ -685,7 +685,8 @@ const TASK_B_ID: usize = 2;
 const TASK_J_ID: usize = 3;
 const TASK_C_ID: usize = 4;
 const TASK_D_ID: usize = 5;
-const TASK_E_ID: usize = 6;
+// Task E is the trio's id 6 (spawn order): its parked registration needs
+// no named constant -- its ONE leg loads nothing position-sensitive.
 
 // ---- the blocking-receive (NPS-003 §3) demo's C/D/E trio ----
 // Endpoints reuse the per-task mailbox indices (task_count is 7, so

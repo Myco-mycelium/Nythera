@@ -27,13 +27,32 @@
 //! * a dead holder's endpoints fail sends with a defined error (§7.1).
 //!
 //! NOT ported yet, named so their absence is checkable: the other
-//! capability kinds (BlockDevice, IoPort, FrameBuffer, Input, SharedMem,
-//! Reply -- each has its own bootstrap/window machinery in the release),
-//! badges, containers (NPS-007), notify, blocking receive. Every one of
-//! those is a follow-on slice over THIS machine; this slice ports the
-//! clauses the `0x84` gate's payload/transfer shape needs, and the
-//! kernel-side self-test (`run()`) proves each of them positive AND
+//! capability kinds (BlockDevice, IoPort, FrameBuffer, SharedMem, Reply
+//! -- each has its own bootstrap/window machinery in the release),
+//! badges, containers (NPS-007), notify. The INPUT kind IS now ported
+//! (see its section below -- the router `kbdrt`'s prerequisite). Every
+//! gap is a follow-on slice over THIS machine; the kernel-side
+//! self-test (`run()`) proves each ported clause positive AND
 //! negative, mirroring the release's own `run()`.
+//!
+//! ---- the Input kind (the release's Phase-9/1-29 clauses) ------------
+//!
+//! `Kind::Input` is the TOKEN that authorizes polling input events:
+//! `READ` = may poll raw events, `GRANT` = may pass it on, ATTENUATED
+//! (the release's exact right set, applied in its `bootstrap_input`:
+//! rights masked to READ|GRANT). It has NO endpoint: `endpoint` is 0
+//! and its generation never stales (the queue it guards is the kernel's
+//! input hardware state, not a revocable mailbox), so the transfer
+//! machine's liveness check is kind-aware. The release's shape is kept
+//! exactly: only the kernel ever MINTS an Input capability
+//! (`bootstrap_input`, init's role -- never reachable from user code),
+//! and holders can only receive one by transfer. The refusals are the
+//! release's: WrongType when the handle is some other kind, NoRight
+//! when it carries no READ. The GATE rows that would serve
+//! INPUT_POLL-with-this-check wait for the session machine (an
+//! un-sessioned ring-3 caller shares task 0's table); the clauses are
+//! proven here before any row mounts on them, the same order every
+//! other kind's machinery was proven in.
 //!
 //! HOW CALLERS REACH IT: through the `0x84` gate's capability rows
 //! (`service84::CALL_CAP_SEND`/`CALL_CAP_RECV`), whose caller identity is
@@ -58,19 +77,33 @@ pub const QUEUE_CAPACITY: usize = 4;
 /// Per-holder table size.
 pub const CAP_TABLE_SIZE: usize = 32;
 
-/// Rights bits -- ENDPOINT-kind rights only; the device kinds' READ/WRITE
-/// arrive with their kinds.
+/// Rights bits. SEND/GRANT are the ENDPOINT-kind rights; READ is the
+/// device/kind rights bit the Input capability uses ("may poll events").
 pub mod rights {
     pub const SEND: u8 = 1;
     /// May transfer this capability (attenuated) to others (§5.2).
     pub const GRANT: u8 = 2;
+    /// The device kinds' right (Input: may poll the raw event stream).
+    pub const READ: u8 = 4;
 }
 
-/// A capability: which endpoint, WHICH GENERATION of it (§4.3's O(1)
-/// revocation), and the rights mask. No raw task ids, no endpoint numbers
-/// leak to user code -- only the table indexes ("handles") do.
+/// The capability kinds THIS machine knows. Endpoint is the queue-based
+/// kind; Input is the release's Phase-9/1-29 poll-authority token
+/// (endpoint 0, never stales). The remaining release kinds are named in
+/// the module doc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Endpoint,
+    Input,
+}
+
+/// A capability: which KIND, which endpoint, WHICH GENERATION of it
+/// (§4.3's O(1) revocation), and the rights mask. No raw task ids, no
+/// endpoint numbers leak to user code -- only the table indexes
+/// ("handles") do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capability {
+    kind: Kind,
     endpoint: u32,
     generation: u32,
     rights: u8,
@@ -80,6 +113,9 @@ pub struct Capability {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CapError {
     BadProcess,
+    /// The handle names a capability of a DIFFERENT kind than the
+    /// operation required (the release's WrongType, named per-clause).
+    WrongType,
     BadHandle,
     NoRight,
     Revoked,
@@ -175,7 +211,7 @@ impl CapSystem {
         self.live(owner)?;
         let id = self.endpoints.len() as u32;
         self.endpoints.push(Endpoint { owner, generation: 0, alive: true, queue: VecDeque::new() });
-        let cap = Capability { endpoint: id, generation: 0, rights: rights::SEND | rights::GRANT };
+        let cap = Capability { kind: Kind::Endpoint, endpoint: id, generation: 0, rights: rights::SEND | rights::GRANT };
         let handle = Self::install(self.live(owner)?, cap)?;
         Ok((id, handle))
     }
@@ -205,7 +241,7 @@ impl CapSystem {
             }
             e.generation
         };
-        let cap = Capability { endpoint: ep, generation, rights: want & (rights::SEND | rights::GRANT) };
+        let cap = Capability { kind: Kind::Endpoint, endpoint: ep, generation, rights: want & (rights::SEND | rights::GRANT) };
         Self::install(self.live(owner)?, cap)
     }
 
@@ -214,8 +250,34 @@ impl CapSystem {
     /// capability into `to`'s table directly.
     pub fn bootstrap_grant(&mut self, to: usize, ep: u32, want: u8) -> Result<u32, CapError> {
         let generation = self.endpoints.get(ep as usize).map(|e| e.generation).ok_or(CapError::BadHandle)?;
-        let cap = Capability { endpoint: ep, generation, rights: want & (rights::SEND | rights::GRANT) };
+        let cap = Capability { kind: Kind::Endpoint, endpoint: ep, generation, rights: want & (rights::SEND | rights::GRANT) };
         Self::install(self.live(to)?, cap)
+    }
+
+    /// The release's `bootstrap_input` (Phase-9/1-29), same role: the
+    /// KERNEL mints `to` the Input capability -- rights masked to
+    /// READ|GRANT (READ = may poll events, GRANT = may pass it on,
+    /// attenuated). Only the kernel ever mints an Input capability; a
+    /// holder receives one by transfer, never by minting.
+    pub fn bootstrap_input(&mut self, to: usize, want: u8) -> Result<u32, CapError> {
+        let cap = Capability { kind: Kind::Input, endpoint: 0, generation: 0, rights: want & (rights::READ | rights::GRANT) };
+        Self::install(self.live(to)?, cap)
+    }
+
+    /// The release's `input_check`: WrongType unless `h` is an Input
+    /// capability; NoRight unless it carries READ. This is the
+    /// authorization an eventual INPUT_POLL row would mount on --
+    /// checking rights BEFORE any event is consumed, the release's
+    /// authority-first ordering.
+    pub fn input_check(&mut self, p: usize, h: u32) -> Result<(), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::Input {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & rights::READ == 0 {
+            return Err(CapError::NoRight);
+        }
+        Ok(())
     }
 
     fn live(&mut self, p: usize) -> Result<&mut Holder, CapError> {
@@ -274,9 +336,19 @@ impl CapSystem {
                 if want & !held.rights != 0 {
                     return Err(CapError::Widening);
                 }
-                let tep = self.endpoints.get(held.endpoint as usize).ok_or(CapError::BadHandle)?;
-                if tep.generation != held.generation {
-                    return Err(CapError::Revoked);
+                // Kind-aware liveness: an Endpoint capability must still
+                // name the CURRENT generation; an Input capability has no
+                // endpoint state (its authority never stales -- the
+                // release grants no revoke on it); other kinds are not
+                // ported and are refused BY NAME rather than guessed at.
+                match held.kind {
+                    Kind::Endpoint => {
+                        let tep = self.endpoints.get(held.endpoint as usize).ok_or(CapError::BadHandle)?;
+                        if tep.generation != held.generation {
+                            return Err(CapError::Revoked);
+                        }
+                    }
+                    Kind::Input => {}
                 }
                 Some(Capability { rights: want, ..held })
             }
@@ -415,8 +487,10 @@ pub fn run() -> bool {
     use crate::serial_println;
 
     let mut failed: Vec<&'static str> = Vec::new();
+    let mut groups: u32 = 0;
     macro_rules! check {
         ($name:literal, $cond:expr) => {
+            groups += 1;
             if !$cond {
                 failed.push($name);
             }
@@ -520,6 +594,41 @@ pub fn run() -> bool {
         sys.send(CLIENT, cli_grant_only, b"", Some((cli_grant_only, rights::SEND | rights::GRANT))) == Err(CapError::Widening)
     );
 
+    // ---- the Input kind (the release's Phase-9/1-29 clauses) ----
+    // The kernel mints CLIENT the Input cap (READ|GRANT): the holder may
+    // POLL events. Refusals, by name:
+    // NOTE: this group needs a LIVE ep and a CURRENT-generation cli_h
+    // (the transfer rides a send THROUGH the endpoint), so it runs
+    // BEFORE the revocation and terminate groups below -- those kill
+    // exactly what this group leans on.
+    let input_h = sys.bootstrap_input(CLIENT, rights::READ | rights::GRANT).expect("self-test: input grant");
+    check!("input check through a READ copy", sys.input_check(CLIENT, input_h).is_ok());
+    // WrongType: the check run against an ENDPOINT cap's handle -- the
+    // kind field is what refuses, not silence.
+    check!("input check on an endpoint cap refused (WrongType)", sys.input_check(CLIENT, cli_h) == Err(CapError::WrongType));
+    // NoRight: the same kind but masked to GRANT only -- the authority
+    // to pass it on is NOT the authority to poll.
+    let input_grant_only = sys.bootstrap_input(CLIENT, rights::GRANT).expect("self-test: GRANT-only input");
+    check!("input check without READ refused (NoRight)", sys.input_check(CLIENT, input_grant_only) == Err(CapError::NoRight));
+    // Transfer: the holder passes the Input cap on, ATTENUATED to the
+    // SERVER's poll authority (READ only, no GRANT in the copy).
+    check!(
+        "input cap transferred attenuated",
+        sys.send(CLIENT, cli_h, b"input", Some((input_h, rights::READ))).is_ok()
+    );
+    let m = sys.receive(SERVER, ep).expect("self-test: transfer receive").expect("self-test: transfer message");
+    let input_in_server = m.transferred.expect("self-test: input transfer installed");
+    check!("received input copy polls", sys.input_check(SERVER, input_in_server).is_ok());
+    // The attenuation holds in the OTHER direction too: the received
+    // copy carries no GRANT, so it cannot be passed on again. (The
+    // SERVER sends through its own SEND-something endpoint handle --
+    // the send's own authority is fine; the TRANSFER clause inspects
+    // the input copy, finds no GRANT, and refuses.)
+    check!(
+        "received input copy cannot re-transfer",
+        sys.send(SERVER, srv_h, b"", Some((input_in_server, rights::READ))) == Err(CapError::NoRight)
+    );
+
     // §4.3 revocation: O(1), outstanding caps dead, owner mints fresh
     check!("revoke", sys.revoke(SERVER, ep).is_ok());
     check!("stale generation refused", sys.send(CLIENT, cli_h, b"after revoke", None) == Err(CapError::Revoked));
@@ -531,13 +640,16 @@ pub fn run() -> bool {
     check!("fresh mint works after revoke", sys.send(SERVER, fresh, b"post-revoke", None).is_ok());
     let _ = sys.receive(SERVER, ep);
 
-    // §7.1: terminated owner's endpoints refuse with the typed error
+    // §7.1: terminated owner's endpoints refuse with the typed error --
+    // TERMINAL on purpose: this kills every endpoint SERVER owns, so no
+    // later group may ride them (the panicking first run of this
+    // self-test proved the ordering matters).
     check!("terminate", sys.terminate_process(SERVER).is_ok());
 
     if failed.is_empty() {
         serial_println!(
-            "  experimental caps: {} clause groups proven positive+negative (handles forge-proof, attenuation-only transfers, O(1) revocation, bounded payloads and queues) -- OK",
-            21
+            "  experimental caps: {} clause groups proven positive+negative (handles forge-proof, attenuation-only transfers, O(1) revocation, bounded payloads and queues, the Input kind's poll authority) -- OK",
+            groups
         );
         true
     } else {
