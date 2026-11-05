@@ -47,6 +47,14 @@ pub const PROOF_STACK: u64 = CODE + 0x2_0000;
 
 const TOKEN: &[u8] = b"nyrqis.proof=svc84";
 
+/// The raw scancode bytes the proof seeds before entering ring 3 (the
+/// INPUT_POLL row's deterministic stream: zero the tail -- a seed
+/// function that CLEARS the queue is why the count and these two bytes
+/// are the whole of the program's expected input -- and the kernel's
+/// read-back judges the polled records against THESE values, its own
+/// seeds, not against constants typed into the program).
+pub const SEED_BYTES: [u8; 2] = [0x1E, 0x9E];
+
 /// The separately-built ELF (see `userprog/prog_svc84.s`); built by
 /// `build.sh` before the kernel crate, like the other proof programs.
 static PROGRAM: &[u8] = include_bytes!("../userprog/userprog_svc84.elf");
@@ -120,6 +128,24 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         panic!("svc84 proof: caps equip produced handle {} -- the program names handle 1", cap_handle);
     }
 
+    // The INPUT_POLL row's equip, the same one-grant-per-equip rule as
+    // above: the KERNEL mints task 0 (this program's identity on the
+    // capability rows) an Input capability -- READ|GRANT, the release's
+    // bootstrap_input right set -- landing in the next free table slot
+    // (2, after the endpoint's owner cap and the mint), and seeds TWO
+    // known raw scancodes so the program's polls are deterministic.
+    // Terminal-path-only like the other equips: this ring-3 program
+    // never returns, so no later phase can observe the mint.
+    let input_handle = crate::experimental::caps::bootstrap_input_for(0, crate::experimental::caps::rights::READ | crate::experimental::caps::rights::GRANT)
+        .unwrap_or_else(|e| panic!("svc84 proof: input equip mint failed: {:?}", e));
+    if input_handle != 2 {
+        panic!("svc84 proof: input equip produced handle {} -- the program names handle 2", input_handle);
+    }
+    let seeded = crate::experimental::input::seed_scancodes(&SEED_BYTES);
+    if seeded != SEED_BYTES.len() {
+        panic!("svc84 proof: seeded {} raw bytes -- the program expects {}", seeded, SEED_BYTES.len());
+    }
+
     // The ring-0 stack the CPU will switch to on the first trap: if it is
     // not mapped in THIS address space, the first `int 0x84` faults while
     // the CPU is pushing the frame, which looks like a kernel fault at a
@@ -128,14 +154,16 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     let rsp0 = space.kernel_stack_top();
     let rsp0_flags = paging::page_flags_active(VirtAddr::new(rsp0 - 8));
     serial_println!(
-        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; caps equip -- endpoint {} granted to task 0's cap table at handle {} ; entering ring 3",
+        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; caps equip -- endpoint {} granted to task 0's cap table at handle {} ; input equip -- INPUT cap at handle {} and {} raw scancodes seeded ; entering ring 3",
         loaded.entry_point.as_u64(),
         PROOF_BUF,
         PROOF_STACK,
         rsp0,
         rsp0_flags,
         cap_ep,
-        cap_handle
+        cap_handle,
+        input_handle,
+        seeded
     );
 
     usermode::enter_with_stack(loaded.entry_point, VirtAddr::new(PROOF_STACK + 4096 - 16))

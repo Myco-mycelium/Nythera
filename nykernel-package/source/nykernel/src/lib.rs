@@ -510,6 +510,14 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         experimental::caps::run(),
         "experimental caps: capability semantics do not hold"
     );
+    // The raw input ring's clause proof (the release's queue clauses,
+    // positive AND negative): from here the PS/2 IRQs push through this
+    // ring and the 0x84 gate's INPUT_POLL row drains it under the Input
+    // capability kind's authority-first check.
+    assert!(
+        experimental::input::run(),
+        "experimental input: raw-ring semantics do not hold"
+    );
 
     // 7 tasks = main + A + B + J + C + D + E. Round-robin is strict, so
     // exactly TARGET_ROUNDS yields from main give A and B TARGET_ROUNDS

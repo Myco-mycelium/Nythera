@@ -152,6 +152,14 @@ else
     else
         bad "the capability rows' round trip or refusals failed their read-back"
     fi
+    # The INPUT_POLL row's leg: two real polls of the seeded raw stream
+    # (bytes 0x1e and 0x9e delivered whole, device keyboard), the third
+    # poll's real-and-empty 0, and the forged handle's EBADF.
+    if [[ "$VERDICT" == *"INPUT matches"* ]] && [[ "$VERDICT" == *"INPUT_POLL (1 0x1 , 2 0x1 , 3 0x0"* ]] && [[ "$VERDICT" == *"forged 0xfffffffffffffff7"* ]] && [[ "$VERDICT" == *"bytes 0x1e/0x9e"* ]]; then
+        ok "two raw scancodes the kernel seeded were polled through the INPUT kind (HANDLE 2, bytes 0x1e/0x9e, device keyboard), the authorized-AND-bare third poll answered 0 with an untouched record buffer, and the forged handle was refused -EBADF"
+    else
+        bad "the INPUT_POLL row's polls, refusals or byte delivery failed their read-back"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -166,4 +174,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, and one capability-payload round-tripped through the kernel's real handle-table machine with the forged-handle and oversize refusals observed by name."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the kernel's real handle-table machine with the forged-handle and oversize refusals observed by name, and the kernel's seeded raw input bytes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name."

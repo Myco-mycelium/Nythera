@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves nine calls:
+//! table), the result goes back in `rax` -- that serves ten calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -17,6 +17,7 @@
 //! | 0x46 | `IPC_RECV` | a0=endpoint | drains one queued message -> `(sender << 32) | seq`; `-ENODATA` when real-and-empty, `-ENOENT` when it does not exist |
 //! | 0x47 | `CAP_SEND` | a0=handle, a1/a2=payload, a_xfer/a_rights | capability-checked send through `experimental::caps`; `0`, or its errno |
 //! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
+//! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
 //! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
@@ -88,8 +89,11 @@
 //! `(sender, seq)` mailbox primitive, which is NOT the release's
 //! payload/transfer/capability shape and refuses that shape rather than
 //! answering it falsely. The calls here are the ones whose answers exist in this kernel: the
-//! pointer is where the PS/2 driver says it is, and the display is the mode
-//! the framebuffer driver bound.
+//! pointer is where the PS/2 driver says it is, the display is the mode
+//! the framebuffer driver bound, and the INPUT_POLL row answers the raw
+//! byte stream to the holder of the kernel-MINTED Input capability (task
+//! 0's shared table, while the session machine waits) -- not a foreground
+//! container, no routing, no decoded events.
 //!
 //! The pointer-taking call exists only because the user-range validator now
 //! does: `GFX_MODE_INTO` refuses any address the active page tables do not
@@ -151,6 +155,20 @@ pub const CALL_IPC_RECV: u64 = 0x46;
 /// un-sessioned ring-3 callers share task 0's (see caps's module docs).
 pub const CALL_CAP_SEND: u64 = 0x47;
 pub const CALL_CAP_RECV: u64 = 0x48;
+
+/// The release's INPUT_POLL (its ledger's call 22), served through the
+/// INPUT capability kind (`experimental::caps::Kind::Input`) and the
+/// kernel's raw input byte ring (`experimental::input`): a0 = HANDLE (an
+/// index in the caller's OWN table -- same rules as the other capability
+/// rows), a1 = pointer to the 16-byte result record the kernel writes
+/// under its user-range validator: {byte u8, 2 x zeros, device u8
+/// (0 keyboard, 1 mouse), 4 x zeros, ticks u64 LE}. The kernel does NOT
+/// decode -- the byte is exactly as the controller delivered it. Returns
+/// 1 when a byte was popped, 0 when the caller is AUTHORIZED but the
+/// queue is bare (a real answer, not a refusal -- the release's shape).
+/// AUTHORITY-FIRST, the release's ordering: the capability is checked
+/// BEFORE any event is consumed, so a refused poll can never eat a byte.
+pub const CALL_INPUT_POLL: u64 = 0x49;
 
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
@@ -319,21 +337,26 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             0
         }
         CALL_PROOF_DONE => {
-            // Seventeen qwords: the five older results (gfx, input, enosys,
+            // Twenty-two qwords: the five older results (gfx, input, enosys,
             // (unused), self), the four widened-arg markers at BUF+40..+64,
             // the IPC records (ack BUF+72, recv BUF+80, shape refusal
             // BUF+88, empty-real BUF+96), and the capability records: the
             // CAP_SEND ack (BUF+104), the CAP_RECV rax (BUF+112), the
             // forged-handle refusal (BUF+120) and the oversize refusal
-            // (BUF+128). The received CAP PAYLOAD is separately compared
-            // at BUF+192..+198 (below).
-            if !crate::memory::paging::user_range_ok(a0, 136, false) {
+            // (BUF+128); and, of the INPUT_POLL row, the two positive
+            // polls' acks (BUF+136, BUF+144), the third poll's real-and-
+            // empty answer (BUF+152) and the forged-handle refusal
+            // (BUF+168 -- STORED INDEX 21: index 20 is offset 160, the
+            // payload staging area, and the proof's first run read the
+            // payload bytes as "the forged answer" exactly that way). The CAP PAYLOAD is compared at BUF+192..+198 and
+            // the INPUT POLLED BYTES at BUF+208/+224 (below).
+            if !crate::memory::paging::user_range_ok(a0, 176, false) {
                 return EFAULT;
             }
             // Read the results back OUT OF USER MEMORY: this is the part
             // the registers alone cannot prove, because it shows the
             // ring-3 program actually received and stored them.
-            let mut stored = [0i64; 17];
+            let mut stored = [0i64; 22];
             for (i, slot) in stored.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 as *const i64).add(i)) };
             }
@@ -412,6 +435,40 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[16] == EMSGSIZE
                 && held_first8 == want_cap_first8
                 && want_cap_first8 == CAP_SENTINEL;
+            // The INPUT_POLL leg, judged against the kernel's OWN seeds
+            // (svc84_proof::SEED_BYTES -- what the kernel queued before
+            // ring 3), so the polled records' compare shares one
+            // representation on both sides: the record's low byte is the
+            // raw byte, and byte 3 is the device tag (0 = keyboard).
+            let seed = crate::svc84_proof::SEED_BYTES;
+            let polled_first8 = if crate::memory::paging::user_range_ok(a0 + 208, 8, false) {
+                unsafe { core::ptr::read_unaligned((a0 + 208) as *const u64) }
+            } else {
+                u64::MAX
+            };
+            let polled_second8 = if crate::memory::paging::user_range_ok(a0 + 224, 8, false) {
+                unsafe { core::ptr::read_unaligned((a0 + 224) as *const u64) }
+            } else {
+                u64::MAX
+            };
+            let polled_empty8 = if crate::memory::paging::user_range_ok(a0 + 240, 8, false) {
+                unsafe { core::ptr::read_unaligned((a0 + 240) as *const u64) }
+            } else {
+                u64::MAX
+            };
+            let input_poll_ok = stored[17] == 1
+                && stored[18] == 1
+                && stored[19] == 0 // authorized AND bare: the real answer
+                && stored[21] == EBADF
+                && polled_first8 & 0xFF == seed[0] as u64
+                && polled_first8 >> 24 & 0xFF == 0 // device = keyboard
+                && polled_second8 & 0xFF == seed[1] as u64
+                && polled_second8 >> 24 & 0xFF == 0
+                // ...and the empty path wrote NOTHING: the empty record
+                // buffer the program zeroed at BUF+240 must still be
+                // all-zero (a poll that "answered empty" but scribbled
+                // would be a lie).
+                && polled_empty8 == 0;
             let stored_ok = stored[0] == want_gfx
                 && stored[1] == want_input
                 && stored[2] == want_enosys
@@ -422,10 +479,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[7] == want_r10 as i64
                 && stored[8] == want_r8 as i64
                 && ipc_ok
-                && cap_ok;
+                && cap_ok
+                && input_poll_ok;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} ,ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {}) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} -- {}
+            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} ,ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {}) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} -- {}
 ",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
@@ -464,6 +522,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 },
                 if ipc_ok { "matches" } else { "MISMATCH" },
                 if cap_ok { "matches" } else { "MISMATCH" },
+                stored[17] as u64,
+                stored[18] as u64,
+                stored[19] as u64,
+                stored[21] as u64,
+                polled_first8,
+                polled_second8,
+                if input_poll_ok { "matches" } else { "MISMATCH" },
                 if ok { "OK" } else { "FAILED" }
             );
             0
@@ -650,6 +715,52 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 }
             }
         }
+        CALL_INPUT_POLL => {
+            // The release's authority-first poll through the INPUT
+            // capability kind. Identity is the capability rows': the
+            // caller's SCHEDULER TASK (an un-sessioned ring-3 caller
+            // speaks through task 0's table -- see caps's module docs).
+            // Handles are u32 table indexes; anything that would TRUNCATE
+            // is not a handle claim.
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            // A poll carries no payload claim, no transfer token and no
+            // rights mask: the record pointer is a1 and everything else
+            // must claim "none". A shape the row does not own is
+            // refused, never half-served.
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            // AUTHORITY FIRST, the release's ordering: the capability is
+            // checked before ANY event is consumed, so a refused poll
+            // cannot eat a byte it was never allowed to see.
+            match crate::experimental::caps::input_check_for(
+                crate::experimental::scheduler::current_task(),
+                a0 as u32,
+            ) {
+                Err(e) => return map_cap_error(e),
+                Ok(()) => {}
+            }
+            if !crate::memory::paging::user_range_ok(a1, 16, true) {
+                return EFAULT;
+            }
+            match crate::experimental::input::pop() {
+                // Authorized but bare: 0, a REAL answer (the release's
+                // shape), distinguishable from a refusal by name.
+                None => 0,
+                Some(ev) => {
+                    let mut b = [0u8; 16];
+                    b[0] = ev.byte;
+                    b[3] = if ev.device == crate::experimental::input::DeviceKind::Ps2Mouse { 1 } else { 0 };
+                    b[8..16].copy_from_slice(&ev.timestamp_ticks.to_le_bytes());
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(b.as_ptr(), a1 as *mut u8, 16);
+                    }
+                    1
+                }
+            }
+        }
         _ => {
             if from_ring3 {
                 RET_ENOSYS.store(ENOSYS, Ordering::Relaxed);
@@ -829,10 +940,18 @@ pub fn self_test() -> bool {
         && dispatch(CALL_CAP_RECV, 0, 0, 0, u64::MAX, 0, 0) == EBADF
         && dispatch(CALL_CAP_SEND, 0, 0, 65, u64::MAX, 0, 0) == EMSGSIZE
         && dispatch(CALL_CAP_SEND, 0, 0, 0, u64::MAX, u32::MAX as u64, 0) == EBADF;
+    // The INPUT_POLL row, on the same empty-table state: the authority
+    // check's dead-process refusal (ESRCH, no holder exists yet), a
+    // handle claim that would TRUNCATE (EBADF, a shape refusal), and an
+    // unused-arg shape claim (EINVAL) -- each by name, and NO byte ever
+    // consumed, because the authority-first clause runs before the ring.
+    let input_row_ok = dispatch(CALL_INPUT_POLL, 0, 0, 0, u64::MAX, 0, 0) == ESRCH
+        && dispatch(CALL_INPUT_POLL, u64::MAX, 0, 0, u64::MAX, 0, 0) == EBADF
+        && dispatch(CALL_INPUT_POLL, 0, 0, 5, u64::MAX, 0, 0) == EINVAL;
 
-    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok && ipc_shape_ok && caps_rows_ok;
+    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok && ipc_shape_ok && caps_rows_ok && input_row_ok;
     crate::serial_println!(
-        "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {}, process SELF names the running task {} , IPC shape claims refused by name {} , capability rows refused by name on an empty table {} ; gate installed at DPL3 -- {}",
+        "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {}, process SELF names the running task {} , IPC shape claims refused by name {} , capability rows refused by name on an empty table {} , INPUT_POLL refused by name on an empty table {} ; gate installed at DPL3 -- {}",
         if gfx_ok { "OK" } else { "FAILED" },
         if input_ok { "OK" } else { "FAILED" },
         if refused { "OK" } else { "FAILED" },
@@ -840,6 +959,7 @@ pub fn self_test() -> bool {
         if self_ok { "OK" } else { "FAILED" },
         if ipc_shape_ok { "OK" } else { "FAILED" },
         if caps_rows_ok { "OK" } else { "FAILED" },
+        if input_row_ok { "OK" } else { "FAILED" },
         if ok { "OK" } else { "FAILED" }
     );
     ok

@@ -5037,3 +5037,58 @@ Checks: BIOS boot gate PASS with `task C parked, got 1 empty wake ->
 ReceiveTimedOut (typed, never an indefinite block), then got woken BY A SEND
 and delivered -- OK` on the tape; UEFI boot gate PASS; parity diff
 line-identical (416 chain lines); `svc84_proof_test.sh` PASS unchanged.
+## The Input capability kind + the INPUT_POLL row (2026-11-05): the release's
+## Phase-9/1-29 poll authority, minted kernel-only and served authority-first
+
+`src/experimental/caps.rs` gained the release's `Kind::Input` — the poll-
+authority TOKEN (the release's exact right set, applied at mint time): rights
+bit READ ("may poll the raw event stream") joins SEND/GRANT, the kernel's
+`bootstrap_input` (the release's `init` role) is the ONLY minter (rights
+masked READ|GRANT, `endpoint` 0, generation 0 — the queue it guards is the
+kernel's input hardware state, NOT a revocable mailbox, so it never stales,
+and the transfer machine's liveness check is kind-aware), and `input_check`
+is the authorization: WrongType when the handle names some other kind, NoRight
+when it carries no READ. Each refusal is named, and the ordering is the
+release's authority-first one: the check runs BEFORE any event is consumed,
+so a refused poll can never reach the queue.
+The first boot of this slice panicked `transfer receive: TargetDead`: the
+Input-kind proof group had been placed AFTER the revocation/terminate groups
+it rode (both kill exactly what the group needs — a live endpoint and a
+current-generation client cap). The group now runs while those are live,
+terminate stays terminal by construction, and the comment at the emitting
+code names why the ordering matters. The kernel-side clause proof now reads
+`27 clause groups proven positive+negative`.
+
+`src/experimental/input.rs` ports the release's raw byte ring (1-50 shape):
+SPSC FIFO, every byte tagged with device and IRQ-time tick, bounded 1024
+entries with COUNTED overflow (dropped(), never a silent drop), seed_* for
+boot tests, and the kernel-side 2-clause self-test (FIFO+tags+timestamps,
+overflow accounting). PUSH points are the real IRQ lines: `keyboard`'s
+IRQ used to keep only the LAST scancodes; now every byte goes into the ring
+RAW (nothing decoded in the kernel — that lives in user space, both there
+and in `ps2_aux`'s assembler).
+
+`src/service84.rs` serves the release's INPUT_POLL shape as `CALL_INPUT_POLL`
+(0x49): a0 = HANDLE, same identity as the other capability rows:
+`current_task()` — so un-sessioned ring-3 callers still speak through task
+0's shared table (the session machine the manifest parks flips this to
+isolation WITHOUT another ABI change); a1 = pointer to the 16-byte record
+{raw byte, device, IRQ-time ticks} written
+under the user-range validator. Returns 1 byte popped, 0 when the caller is
+AUTHORIZED but bare — a real answer, not a refusal. Unused widened args are
+shape-refused (EINVAL). Boot self-test adds ESRCH (empty-table authority),
+EBADF (truncating handle), EINVAL (shape claim) — "INPUT_POLL refused by name
+on an empty table OK".
+
+The ring-3 proof's new leg proves the whole shape at CPL 3: kernel equip
+mints task 0 an INPUT cap (READ|GRANT) after `svc84_proof`'s endpoint equip
+and seeds TWO known scancodes; the program polls through HANDLE 2 (1 with
+byte 0x1e, 1 with 0x9e — device tag and ticks delivered WHOLE), a third
+poll answers the authorized-and-bare 0 with an UNTOUCHED record buffer
+(the empty path writes nothing — a poll that answered empty but scribbled
+would be a lie), a forged handle is refused EBADF with no byte eaten.
+Checks: `svc84_proof_test.sh` PASS with the verdict's `INPUT_POLL (1 0x1 ,
+2 0x1 , 3 0x0 , forged 0xfffffffffffffff7 , bytes 0x1e/0x9e)` and
+`INPUT matches`; the ledger gate reads 10 served calls (0x40..0x49), all
+exercised by `prog_svc84.s`; `qemu_boot_test.sh` PASS with the input
+ring's own clause line green.

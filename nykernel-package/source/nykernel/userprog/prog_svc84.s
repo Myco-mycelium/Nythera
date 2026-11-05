@@ -73,6 +73,29 @@
  *        d. CAP_SEND claiming a 65-byte payload -> stored at BUF+128;
  *           expected -EMSGSIZE (the bound, refused before anything is
  *           queued -- the release's backpressure, not truncation).
+ *   8. the INPUT_POLL row, exercising THE KERNEL'S REAL INPUT KIND
+ *      (experimental::caps::Kind::Input) end to end. The boot equip
+ *      minted this program's task an Input capability at slot 2 of its
+ *      OWN table (READ|GRANT) and seeded TWO raw scancodes (0x1E then
+ *      0x9E) before ring 3, so the polls are deterministic:
+ *        a. INPUT_POLL (0x49, rdi = HANDLE 2, rsi = BUF+208) -> ack
+ *           stored at BUF+136; expected 1, and the 16-byte record at
+ *           BUF+208 is {0x1E, 0, 0, 0, 0, 0, 0, 0, ticks LE...} -- the
+ *           raw byte exactly as the seeded stream delivered it, nothing
+ *           decoded in the kernel.
+ *        b. INPUT_POLL again (record BUF+224) -> BUF+144; expected 1
+ *           with byte 0x9E in the record.
+ *        c. INPUT_POLL a THIRD time (record pointer BUF+240: it MUST be
+ *           a valid record pointer even on this empty path -- the
+ *           validator runs after the authority check, and a null here
+ *           is refused EFAULT, the proof's first RUN caught exactly
+ *           that) -> BUF+152; expected 0, and the record buffer at
+ *           BUF+240 must still be all ZERO: the empty path writes
+ *           NOTHING (a poll that "returned empty" but scribbled into
+ *           the caller's record would be a lie).
+ *        d. INPUT_POLL through a FORGED handle (31, an empty slot of
+ *           the same table) -> stored at BUF+168; expected -EBADF, and
+ *           NO byte was consumed -- the authority-first ordering.
  *
  * Then it asks the kernel to close the proof (rax = 0x43, rdi = BUF): the
  * kernel reads the seventeen stored results back OUT OF USER MEMORY and
@@ -263,6 +286,62 @@ _start:
     mov $0x47, %rax
     int $0x84
     mov %rax, 128(%rbx)
+
+    /* 8. The INPUT_POLL row (0x49). The boot equip minted an Input
+       capability at slot 2 of the task's own table and seeded the raw
+       stream with 0x1E then 0x9E. Zero what a call does not consume,
+       for the trap-preservation reason documented at step 6. */
+    /* 8a. poll #1: handle 2, record at BUF+208 (tail zeroed first: a
+       freshly mapped page is not guaranteed zero) -> rax 1 at BUF+136. */
+    movabs $0, %rcx
+    mov %rcx, 208(%rbx)
+    mov %rcx, 216(%rbx)
+    mov $2, %rdi
+    lea 208(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x49, %rax
+    int $0x84
+    mov %rax, 136(%rbx)
+    /* 8b. poll #2: record at BUF+224 -> rax 1 (byte 0x9E) at BUF+144. */
+    movabs $0, %rcx
+    mov %rcx, 224(%rbx)
+    mov %rcx, 232(%rbx)
+    mov $2, %rdi
+    lea 224(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x49, %rax
+    int $0x84
+    mov %rax, 144(%rbx)
+    /* 8c. poll #3: the queue is bare and the caller is authorized ->
+       0 at BUF+152 -- the real-and-empty answer, not a refusal. The
+       record pointer VALID (BUF+240) even though nothing is written: a
+       null here is refused EFAULT first (the first run proved it), and
+       the kernel must leave BUF+240 all-zero on this empty path. */
+    movabs $0, %rcx
+    mov %rcx, 240(%rbx)
+    mov %rcx, 248(%rbx)
+    mov $2, %rdi
+    lea 240(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x49, %rax
+    int $0x84
+    mov %rax, 152(%rbx)
+    /* 8d. a FORGED handle (31, an empty slot) must be refused -EBADF
+       at BUF+168, and no byte consumed: the authority-first ordering. */
+    mov $31, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x49, %rax
+    int $0x84
+    mov %rax, 168(%rbx)
 
     /* Close the proof (0x43): the kernel reads BUF back through the
        validator. */

@@ -48,6 +48,7 @@ pub mod elf_dyn_plt_demo;
 pub mod ipc;
 pub mod isolated_tasks;
 pub mod isolation_demo;
+pub mod input;
 pub mod pe;
 pub mod pe_demo;
 pub mod pe_exception_demo;

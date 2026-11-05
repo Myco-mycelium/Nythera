@@ -48,11 +48,14 @@
 //! (`bootstrap_input`, init's role -- never reachable from user code),
 //! and holders can only receive one by transfer. The refusals are the
 //! release's: WrongType when the handle is some other kind, NoRight
-//! when it carries no READ. The GATE rows that would serve
-//! INPUT_POLL-with-this-check wait for the session machine (an
-//! un-sessioned ring-3 caller shares task 0's table); the clauses are
-//! proven here before any row mounts on them, the same order every
-//! other kind's machinery was proven in.
+//! when it carries no READ. The GATE row that serves
+//! INPUT_POLL-with-this-check EXISTS (`service84::CALL_INPUT_POLL`),
+//! mounted on the proven clauses, authority-first (the release's exact
+//! ordering: the check runs BEFORE any event is consumed) under the
+//! same identity as the other capability rows -- an un-sessioned ring-3
+//! caller shares task 0's table, and the session machine the
+//! PORT_MANIFEST parks is what gives ring-3 callers distinct tables,
+//! which makes this row isolate WITHOUT another ABI change.
 //!
 //! HOW CALLERS REACH IT: through the `0x84` gate's capability rows
 //! (`service84::CALL_CAP_SEND`/`CALL_CAP_RECV`), whose caller identity is
@@ -266,9 +269,9 @@ impl CapSystem {
 
     /// The release's `input_check`: WrongType unless `h` is an Input
     /// capability; NoRight unless it carries READ. This is the
-    /// authorization an eventual INPUT_POLL row would mount on --
-    /// checking rights BEFORE any event is consumed, the release's
-    /// authority-first ordering.
+    /// authorization the INPUT_POLL row mounts on
+    /// (`service84::CALL_INPUT_POLL`) -- checking rights BEFORE any
+    /// event is consumed, the release's authority-first ordering.
     pub fn input_check(&mut self, p: usize, h: u32) -> Result<(), CapError> {
         let cap = self.lookup(p, h)?;
         if cap.kind != Kind::Input {
@@ -472,6 +475,31 @@ pub fn receive_for(caller: usize, endpoint: u32) -> Result<Option<Message>, CapE
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.receive(caller, endpoint)
+    })
+}
+
+/// Proof-boot equip, the release's `bootstrap_input` role lifted to
+/// the gate's equip path (like `prepare_task0_for_proof`): the
+/// KERNEL mints `to`'s holder an Input capability, rights masked to
+/// READ|GRANT (READ = may poll, GRANT = may pass it on). Kernel-only
+/// and terminal-path-only: a normal boot never mints an Input cap
+/// into a live table, because today's un-sessioned ring-3 identity
+/// is task 0's shared table.
+    pub fn bootstrap_input_for(to: usize, want: u8) -> Result<u32, CapError> {
+        interrupts::without_interrupts(|| unsafe {
+            let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+            sys.bootstrap_input(to, want)
+        })
+    }
+
+
+/// Access for the INPUT_POLL row: the release's authority-first check --
+/// WrongType unless `handle` names an Input capability, NoRight unless
+/// it carries READ -- run BEFORE any event is consumed.
+pub fn input_check_for(caller: usize, handle: u32) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.input_check(caller, handle)
     })
 }
 

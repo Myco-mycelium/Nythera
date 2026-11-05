@@ -154,11 +154,16 @@ pub unsafe fn inject(scancode: u8) {
 
 /// Called from the vector-0x21 handler on every keyboard interrupt:
 /// read the scancode out of the output buffer (which also deasserts the
-/// controller's IRQ line) and count it.
+/// controller's IRQ line) and count it, AND queue it raw in the input
+/// ring (`experimental::input`) -- the kernel does not decode it; the
+/// `0x84` gate's INPUT_POLL row hands the oldest raw byte to the holder
+/// of an Input capability.
 pub fn handle() {
     unsafe {
         if read_status() & STATUS_OBF != 0 {
-            LAST_SCANCODE.store(read_data() as u64, Ordering::Relaxed);
+            let scancode = read_data();
+            LAST_SCANCODE.store(scancode as u64, Ordering::Relaxed);
+            crate::experimental::input::push_keyboard_byte(scancode);
         }
     }
     SCANCODES.fetch_add(1, Ordering::Relaxed);

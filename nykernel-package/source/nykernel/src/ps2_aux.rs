@@ -299,6 +299,11 @@ pub fn handle() {
         }
         let byte = read_data();
         BYTES.fetch_add(1, Ordering::Relaxed);
+        // Queue the byte RAW in the input ring (`experimental::input`),
+        // exactly as the controller delivered it INCLUDING the protocol
+        // words (the release's INPUT_POLL contract: the kernel reports,
+        // never decides -- the user-space assembler is what filters).
+        crate::experimental::input::push_mouse_byte(byte);
         // 0xFA (acknowledge) and 0xFE (resend request) are protocol
         // words, never packet data. This is not cosmetic: 0xFA has bit 3
         // SET, so feeding it to the assembler starts a bogus packet whose
