@@ -32,7 +32,8 @@
 #     are each observed by the program.
 #   - the CAPABILITY rows (0x47 / 0x48) round-trip ONE payload through the
 #     kernel's real handle-table machine (experimental::caps): the boot
-#     equip granted task 0 (the program's identity on these rows) a
+#     equip granted the program's GATE SESSION (its identity on these
+#     rows, its OWN table -- the session machine's first slice) a
 #     SEND|GRANT capability for endpoint 0, the program sends "nyrqis"
 #     through HANDLE 1, receives it back whole into its own memory (first
 #     8 bytes zero-tailed), and the kernel compares the drained payload's
@@ -147,16 +148,21 @@ else
     else
         bad "the IPC rows' round trip or refusals failed their read-back"
     fi
-    if [[ "$VERDICT" == *"CAP matches"* ]] && [[ "$VERDICT" == *"caps (ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x6"* ]] && [[ "$VERDICT" == *"forged 0xfffffffffffffff7"* ]] && [[ "$VERDICT" == *"payload 0x73697172796e"* ]]; then
+    # recv 0x700000006: the record is (sender << 32) | len, and the sender
+    # is the caller's GATE SESSION (7) -- the session machine's first
+    # slice legitimately changed the sender claim from task 0's 0 to the
+    # session's 7; the payload length is still 6.
+    if [[ "$VERDICT" == *"CAP matches"* ]] && [[ "$VERDICT" == *"caps (ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x700000006"* ]] && [[ "$VERDICT" == *"forged 0xfffffffffffffff7"* ]] && [[ "$VERDICT" == *"payload 0x73697172796e"* ]]; then
         ok "one nyrqis payload round-tripped through the kernel's real capability machine (send via HANDLE 1, drained whole into the program's buffer) and the forged-handle/oversize refusals were observed by name"
     else
         bad "the capability rows' round trip or refusals failed their read-back"
     fi
-    # The INPUT_POLL row's leg: two real polls of the seeded raw stream
+    # The INPUT_POLL row's leg: two real polls of the byte stream the
+    # kernel INJECTED through the controller (IRQ1 -> the raw ring)
     # (bytes 0x1e and 0x9e delivered whole, device keyboard), the third
     # poll's real-and-empty 0, and the forged handle's EBADF.
     if [[ "$VERDICT" == *"INPUT matches"* ]] && [[ "$VERDICT" == *"INPUT_POLL (1 0x1 , 2 0x1 , 3 0x0"* ]] && [[ "$VERDICT" == *"forged 0xfffffffffffffff7"* ]] && [[ "$VERDICT" == *"bytes 0x1e/0x9e"* ]]; then
-        ok "two raw scancodes the kernel seeded were polled through the INPUT kind (HANDLE 2, bytes 0x1e/0x9e, device keyboard), the authorized-AND-bare third poll answered 0 with an untouched record buffer, and the forged handle was refused -EBADF"
+        ok "the kernel's scancodes injected through the controller (IRQ1) were polled through the INPUT kind (HANDLE 2, bytes 0x1e/0x9e, device keyboard), the authorized-AND-bare third poll answered 0 with an untouched record buffer, and the forged handle was refused -EBADF"
     else
         bad "the INPUT_POLL row's polls, refusals or byte delivery failed their read-back"
     fi
@@ -174,4 +180,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the kernel's real handle-table machine with the forged-handle and oversize refusals observed by name, and the kernel's seeded raw input bytes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, and the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name."

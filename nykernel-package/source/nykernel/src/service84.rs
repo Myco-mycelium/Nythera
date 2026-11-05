@@ -105,7 +105,7 @@
 //! check.
 
 use core::arch::naked_asm;
-use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::{PrivilegeLevel, VirtAddr};
@@ -151,8 +151,10 @@ pub const CALL_IPC_RECV: u64 = 0x46;
 /// read from user memory, bounded at caps::MAX_PAYLOAD), a_xfer = the
 /// DEDICATED transfer field (u64::MAX = no transfer; else a handle being
 /// transferred attenuated to at most a_rights), only ever narrowing.
-/// Identity note: the caller's table is the table of its scheduler task;
-/// un-sessioned ring-3 callers share task 0's (see caps's module docs).
+/// Identity note: the caller's table is its GATE SESSION's table
+/// (`attach_gate_session` -- the session machine's first slice), or, with
+/// no session attached, task 0's (the kernel itself: ring-0 callers only).
+/// See caps's module docs.
 pub const CALL_CAP_SEND: u64 = 0x47;
 pub const CALL_CAP_RECV: u64 = 0x48;
 
@@ -168,6 +170,8 @@ pub const CALL_CAP_RECV: u64 = 0x48;
 /// queue is bare (a real answer, not a refusal -- the release's shape).
 /// AUTHORITY-FIRST, the release's ordering: the capability is checked
 /// BEFORE any event is consumed, so a refused poll can never eat a byte.
+/// Identity: the caller's GATE SESSION (first-slice session machine), or
+/// task 0 with no session attached.
 pub const CALL_INPUT_POLL: u64 = 0x49;
 
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
@@ -223,6 +227,43 @@ fn map_cap_error(e: crate::experimental::caps::CapError) -> i64 {
         PayloadTooLarge | Widening => EMSGSIZE,
         QueueFull => EAGAIN,
         TableFull => ENOSPC,
+    }
+}
+
+
+// ---- the gate's session machine (first slice) ---------------------------
+//
+// The release's session machine in its smallest honest shape: a ring-3
+// caller that OWNS a session speaks on the capability rows with its OWN
+// capability table, not task 0's. The session is KERNEL-OWNED and is
+// recorded AT THE RING TRANSITION (`attach_gate_session`, called once by
+// `svc84_proof::run` before entering ring 3 -- terminal-path: the proof
+// never returns; the manifest's parked step generalizes record/withdraw
+// to the scheduler's ring-3 task switches, which changes nothing here).
+// Normal boots record NOTHING: ring-0 callers (the boot self-test,
+// kernel-side proofs) keep `current_task()`, which is honest -- the
+// kernel IS task 0.
+
+/// Sentinel: no ring-3 session is attached (normal boots, all ring-0
+/// calls). A session id can never be `usize::MAX` because holder ids are
+/// scheduler task ids plus sessions beyond the scheduler's id space.
+pub const NO_SESSION: usize = usize::MAX;
+
+static GATE_SESSION: AtomicUsize = AtomicUsize::new(NO_SESSION);
+
+/// Kernel-only, called ONCE at the ring-3 transition by the proof's
+/// equip path: from here on, the capability rows' and the INPUT_POLL
+/// row's caller identity is session `sid`'s OWN capability table.
+pub fn attach_gate_session(sid: usize) {
+    GATE_SESSION.store(sid, Ordering::Relaxed);
+}
+
+/// The capability rows' caller identity. Release-shaped: the session
+/// when one is attached, the scheduler's running task otherwise.
+fn gate_session_identity() -> usize {
+    match GATE_SESSION.load(Ordering::Relaxed) {
+        NO_SESSION => crate::experimental::scheduler::current_task(),
+        sid => sid,
     }
 }
 
@@ -435,12 +476,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[16] == EMSGSIZE
                 && held_first8 == want_cap_first8
                 && want_cap_first8 == CAP_SENTINEL;
-            // The INPUT_POLL leg, judged against the kernel's OWN seeds
-            // (svc84_proof::SEED_BYTES -- what the kernel queued before
-            // ring 3), so the polled records' compare shares one
+            // The INPUT_POLL leg, judged against the kernel's OWN bytes
+            // (svc84_proof::INJECT_BYTES -- what the kernel injected
+            // through the controller before ring 3), so the polled
+            // records' compare shares one
             // representation on both sides: the record's low byte is the
             // raw byte, and byte 3 is the device tag (0 = keyboard).
-            let seed = crate::svc84_proof::SEED_BYTES;
+            let expect_bytes = crate::svc84_proof::INJECT_BYTES;
             let polled_first8 = if crate::memory::paging::user_range_ok(a0 + 208, 8, false) {
                 unsafe { core::ptr::read_unaligned((a0 + 208) as *const u64) }
             } else {
@@ -460,9 +502,9 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[18] == 1
                 && stored[19] == 0 // authorized AND bare: the real answer
                 && stored[21] == EBADF
-                && polled_first8 & 0xFF == seed[0] as u64
+                && polled_first8 & 0xFF == expect_bytes[0] as u64
                 && polled_first8 >> 24 & 0xFF == 0 // device = keyboard
-                && polled_second8 & 0xFF == seed[1] as u64
+                && polled_second8 & 0xFF == expect_bytes[1] as u64
                 && polled_second8 >> 24 & 0xFF == 0
                 // ...and the empty path wrote NOTHING: the empty record
                 // buffer the program zeroed at BUF+240 must still be
@@ -614,9 +656,10 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             }
         }
         CALL_CAP_SEND => {
-            // The capability rows' identity is the caller's SCHEDULER TASK;
-            // the un-sessioned ring-3 caller is task 0 (the caps module
-            // documents the honest consequence). The payload is COPIED out
+            // The capability rows' identity is the caller's GATE SESSION
+            // (kernel-recorded at the ring transition -- the session
+            // machine's first slice); with no session, task 0 (the
+            // kernel itself). The payload is COPIED out
             // of user memory here -- the queues hold kernel bytes only, so
             // a stale payload pointer can never be dereferenced at receive
             // time -- and every check the machine makes happens BEFORE its
@@ -653,7 +696,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 Some((a_xfer as u32, a_rights as u8))
             };
             match crate::experimental::caps::send_for(
-                crate::experimental::scheduler::current_task(),
+                gate_session_identity(),
                 a0 as u32,
                 &bytes[..a2 as usize],
                 transfer,
@@ -673,7 +716,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 return EFAULT;
             }
             match crate::experimental::caps::receive_for(
-                crate::experimental::scheduler::current_task(),
+                gate_session_identity(),
                 a0 as u32,
             ) {
                 Ok(None) => ENODATA,
@@ -718,8 +761,8 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
         CALL_INPUT_POLL => {
             // The release's authority-first poll through the INPUT
             // capability kind. Identity is the capability rows': the
-            // caller's SCHEDULER TASK (an un-sessioned ring-3 caller
-            // speaks through task 0's table -- see caps's module docs).
+            // caller's GATE SESSION (kernel-recorded at the ring
+            // transition), or task 0 with no session attached.
             // Handles are u32 table indexes; anything that would TRUNCATE
             // is not a handle claim.
             if a0 > u32::MAX as u64 {
@@ -736,7 +779,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // checked before ANY event is consumed, so a refused poll
             // cannot eat a byte it was never allowed to see.
             match crate::experimental::caps::input_check_for(
-                crate::experimental::scheduler::current_task(),
+                gate_session_identity(),
                 a0 as u32,
             ) {
                 Err(e) => return map_cap_error(e),

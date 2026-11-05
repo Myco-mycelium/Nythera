@@ -52,9 +52,10 @@
  *      proven with values, not assumptions.
  *   7. the CAPABILITY rows, exercising THE KERNEL'S REAL HANDLE-TABLE
  *      MACHINE (experimental::caps) end to end. The boot equip granted
- *      task 0 (this program's identity on these rows) endpoint 0 with a
- *      SEND|GRANT capability at slot 1 of its OWN table -- slot 0 holds
- *      the endpoint's owner cap, the mint lands after it -- and the
+ *      THIS PROGRAM'S GATE SESSION (its identity on these rows, recorded
+ *      at the ring transition) endpoint 0 with a SEND|GRANT capability
+ *      at slot 1 of the session's OWN table -- slot 0 holds the
+ *      endpoint's owner cap, the mint lands after it -- and the
  *      kernel-side check panics on anything else, so the hardcoded
  *      handle/endpoint pair below names the SAME granted capability:
  *        a. CAP_SEND (0x47, rdi = HANDLE 1, rsi = payload, rdx = 6)
@@ -75,13 +76,15 @@
  *           queued -- the release's backpressure, not truncation).
  *   8. the INPUT_POLL row, exercising THE KERNEL'S REAL INPUT KIND
  *      (experimental::caps::Kind::Input) end to end. The boot equip
- *      minted this program's task an Input capability at slot 2 of its
- *      OWN table (READ|GRANT) and seeded TWO raw scancodes (0x1E then
- *      0x9E) before ring 3, so the polls are deterministic:
+ *      minted this program's session an Input capability at slot 2 of
+ *      its OWN table (READ|GRANT) and drove TWO real scancodes through
+ *      the controller's output buffer (0x1E then 0x9E -- the 0xD2
+ *      command, each byte raising IRQ1 exactly as a keystroke would)
+ *      before ring 3, so the polls are deterministic:
  *        a. INPUT_POLL (0x49, rdi = HANDLE 2, rsi = BUF+208) -> ack
  *           stored at BUF+136; expected 1, and the 16-byte record at
  *           BUF+208 is {0x1E, 0, 0, 0, 0, 0, 0, 0, ticks LE...} -- the
- *           raw byte exactly as the seeded stream delivered it, nothing
+ *           raw byte exactly as the injected stream delivered it, nothing
  *           decoded in the kernel.
  *        b. INPUT_POLL again (record BUF+224) -> BUF+144; expected 1
  *           with byte 0x9E in the record.
@@ -229,10 +232,11 @@ _start:
     mov %rax, 96(%rbx)
 
     /* 7. The capability rows (experimental::caps). Identity on these rows
-       is the running scheduler task -- task 0 in a proof boot -- and the
-       boot equip put a SEND|GRANT cap for endpoint 0 at slot 1 of task
-       0's own table. Zero what a call does not consume, for the same
-       trap-preservation reason step 6 documents. */
+       is THIS program's gate session (recorded at the ring transition)
+       -- its OWN capability table -- and the boot equip put a SEND|GRANT
+       cap for endpoint 0 at slot 1 of that table. Zero what a call does
+       not consume, for the same trap-preservation reason step 6
+       documents. */
     /* 7a. Stage the payload "nyrqis" + 2 zero bytes (little-endian qword:
            n=0x6E y=0x79 r=0x72 q=0x71 i=0x69 s=0x73) at BUF+160, and
            point CAP_SEND's payload pointer there. */
@@ -288,9 +292,10 @@ _start:
     mov %rax, 128(%rbx)
 
     /* 8. The INPUT_POLL row (0x49). The boot equip minted an Input
-       capability at slot 2 of the task's own table and seeded the raw
-       stream with 0x1E then 0x9E. Zero what a call does not consume,
-       for the trap-preservation reason documented at step 6. */
+       capability at slot 2 of the session's own table and drove the raw
+       stream with 0x1E then 0x9E through the controller (IRQ1). Zero
+       what a call does not consume, for the trap-preservation reason
+       documented at step 6. */
     /* 8a. poll #1: handle 2, record at BUF+208 (tail zeroed first: a
        freshly mapped page is not guaranteed zero) -> rax 1 at BUF+136. */
     movabs $0, %rcx

@@ -52,21 +52,23 @@
 //! INPUT_POLL-with-this-check EXISTS (`service84::CALL_INPUT_POLL`),
 //! mounted on the proven clauses, authority-first (the release's exact
 //! ordering: the check runs BEFORE any event is consumed) under the
-//! same identity as the other capability rows -- an un-sessioned ring-3
-//! caller shares task 0's table, and the session machine the
-//! PORT_MANIFEST parks is what gives ring-3 callers distinct tables,
-//! which makes this row isolate WITHOUT another ABI change.
+//! gate's SESSION identity (see below).
 //!
 //! HOW CALLERS REACH IT: through the `0x84` gate's capability rows
-//! (`service84::CALL_CAP_SEND`/`CALL_CAP_RECV`), whose caller identity is
-//! `scheduler::current_task()`. TODAY that means every un-sessioned
-//! ring-3 caller shares task 0's table -- the session machine the
-//! PORT_MANIFEST parks is what gives ring-3 callers distinct tables; when
-//! sessions land, these rows start isolating WITHOUT another ABI change.
-//! What a single holder can exercise today -- bounds, generation,
-//! attenuation -- is proven here by `run()` (which builds its OWN
-//! multi-holder system, so the multi-holder clauses are kernel-proven
-//! even before sessions exist) and by the ring-3 proof's capability leg.
+//! (`service84::CALL_CAP_SEND`/`CALL_CAP_RECV`/`CALL_INPUT_POLL`), whose
+//! identity is the caller's GATE SESSION (`service84::attach_gate_session`,
+//! recorded at the ring transition) or, with no session, the running
+//! scheduler task -- the release's session machine in first slice gives a
+//! ring-3 caller its OWN table (the proof boot mints its caller one;
+//! `prepare_session_for_proof`), and the manifest's parked step (every
+//! ring-3 task a session, recorded at the scheduler's ring-3 switches)
+//! generalizes that to every caller WITHOUT another ABI change. Ring-0
+//! callers -- the kernel itself, boot self-tests -- keep task 0's identity:
+//! that IS the kernel's table. What a single holder can exercise today --
+//! bounds, generation, attenuation -- is proven here by `run()` (which
+//! builds its OWN multi-holder system, so the multi-holder clauses are
+//! kernel-proven even beyond the proof's one session) and by the ring-3
+//! proof's capability leg.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -438,19 +440,34 @@ pub fn init(task_count: usize) {
 }
 
 /// Proof-boot equip: endpoint 0 owned by task 0; a fresh SEND|GRANT cap
-/// minted into task 0's table. Returns (endpoint id, handle) so the proof
-/// program and the kernel's read-back agree on the SAME granted index.
-/// Explicit, terminal-path-only (the proof never returns), like
-/// `ipc::prepare_endpoint0_for_proof`.
-pub fn prepare_task0_for_proof() -> (u32, u32) {
+/// minted into task 0's table. Retired 2026-11-05 for
+/// `prepare_session_for_proof`: the session machine's first slice gives
+/// a ring-3 caller its OWN table, so sharing task 0's is not the
+/// equip's shape any more.
+/// The gate session's equip, the release's session machine in FIRST
+/// SLICE (`service84::attach_gate_session` and `src/svc84_proof.rs`):
+/// creates the holder for the ring-3 caller's SESSION `sid` -- its OWN
+/// table, not task 0's -- mints its endpoint-0 capability (slot 0 owner
+/// cap, slot 1 SEND|GRANT) and the Input kind (slot 2, READ|GRANT, the
+/// release's `bootstrap_input` right set). Returns (endpoint id, send
+/// handle, input-poll handle) so the proof program and the kernel's
+/// read-back agree on the SAME granted indexes. Explicit,
+/// terminal-path-only (the proof never returns): in the full machine
+/// the manifest parks (every ring-3 task a session), the table is
+/// minted at the scheduler's ring-3 ALLOC and destroyed on exit; this
+/// slice's session lives until the boot ends.
+pub fn prepare_session_for_proof(sid: usize) -> (u32, u32, u32) {
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
-        sys.create_process(0).expect("caps proof equip: task 0 holder");
-        let (ep, _) = sys.create_endpoint(0).expect("caps proof equip: endpoint 0");
-        let handle = sys
-            .mint(0, ep, rights::SEND | rights::GRANT)
-            .expect("caps proof equip: mint SEND|GRANT");
-        (ep, handle)
+        sys.create_process(sid).expect("caps session equip: session holder");
+        let (ep, _) = sys.create_endpoint(sid).expect("caps session equip: endpoint 0");
+        let cap_handle = sys
+            .mint(sid, ep, rights::SEND | rights::GRANT)
+            .expect("caps session equip: mint SEND|GRANT");
+        let input_handle = sys
+            .bootstrap_input(sid, rights::READ | rights::GRANT)
+            .expect("caps session equip: mint INPUT");
+        (ep, cap_handle, input_handle)
     })
 }
 
@@ -479,12 +496,13 @@ pub fn receive_for(caller: usize, endpoint: u32) -> Result<Option<Message>, CapE
 }
 
 /// Proof-boot equip, the release's `bootstrap_input` role lifted to
-/// the gate's equip path (like `prepare_task0_for_proof`): the
+/// the gate's equip path (like `prepare_session_for_proof`): the
 /// KERNEL mints `to`'s holder an Input capability, rights masked to
 /// READ|GRANT (READ = may poll, GRANT = may pass it on). Kernel-only
 /// and terminal-path-only: a normal boot never mints an Input cap
-/// into a live table, because today's un-sessioned ring-3 identity
-/// is task 0's shared table.
+/// into a live table; the equip path is the proof session's (the
+/// session machine's first slice), and identity on the rows is the
+/// SESSION, not task 0.
     pub fn bootstrap_input_for(to: usize, want: u8) -> Result<u32, CapError> {
         interrupts::without_interrupts(|| unsafe {
             let sys = SYSTEM.get_or_insert_with(CapSystem::new);

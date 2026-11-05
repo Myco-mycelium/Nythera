@@ -94,6 +94,14 @@ pub fn pop() -> Option<InputEvent> {
     ev
 }
 
+/// BOOT-TEST ONLY: empties the queue, single-consumer pop loop (what the
+/// kernel-side proofs do between legs). Marks the boot-test boundary by
+/// existing: real consumers poll through the gate's INPUT_POLL row, they
+/// never reach INTO the ring.
+pub fn clear() {
+    while pop().is_some() {}
+}
+
 /// BOOT-TEST ONLY: empties the queue, then queues raw scancode-set-1
 /// bytes (exactly what IRQ1 does per byte), so a poll test has a known
 /// byte stream without a host injecting keys. Returns how many bytes

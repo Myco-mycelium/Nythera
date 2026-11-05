@@ -47,13 +47,14 @@ pub const PROOF_STACK: u64 = CODE + 0x2_0000;
 
 const TOKEN: &[u8] = b"nyrqis.proof=svc84";
 
-/// The raw scancode bytes the proof seeds before entering ring 3 (the
-/// INPUT_POLL row's deterministic stream: zero the tail -- a seed
-/// function that CLEARS the queue is why the count and these two bytes
-/// are the whole of the program's expected input -- and the kernel's
-/// read-back judges the polled records against THESE values, its own
-/// seeds, not against constants typed into the program).
-pub const SEED_BYTES: [u8; 2] = [0x1E, 0x9E];
+/// The two scancode bytes the proof drives through the REAL hardware
+/// path before entering ring 3 (the INPUT_POLL row's byte source): the
+/// controller is told to place each byte in its own output buffer
+/// (`keyboard::inject`'s 0xD2 command), which raises IRQ1 exactly as a
+/// keystroke would; the IRQ handler queues the bytes raw. The read-back
+/// judges the polled records against THESE values -- the kernel's OWN
+/// injected bytes, not constants typed into the program.
+pub const INJECT_BYTES: [u8; 2] = [0x1E, 0x9E];
 
 /// The separately-built ELF (see `userprog/prog_svc84.s`); built by
 /// `build.sh` before the kernel crate, like the other proof programs.
@@ -108,42 +109,77 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     // loses nothing observable. See ipc::prepare_endpoint0_for_proof.
     crate::experimental::ipc::prepare_endpoint0_for_proof();
 
-    // The capability rows' identity is `scheduler::current_task()` -- task 0
-    // in a proof boot -- so they drive task 0's own cap table. This equip
-    // (endpoint 0 owned by task 0; a fresh SEND|GRANT capability minted
-    // into its table) is the ONE kernel-only grant a proof boot performs,
-    // explicit and terminal-path-only exactly like the ipc equip above:
-    // normal boots never silently own endpoint capabilities (the boot
-    // self-test asserts the empty-table refusals BEFORE reaching here).
     // The install order is deterministic: `create_endpoint`'s owner cap
     // lands in slot 0 and the mint in slot 1, so the kernel-side record
     // and the program's hardcoded handle are compared against the SAME
     // granted index -- and the values are reported, so a drift fails
     // visibly rather than silently sending through some other handle.
-    let (cap_ep, cap_handle) = crate::experimental::caps::prepare_task0_for_proof();
+    // The capability rows' identity is the CALLER'S OWN SESSION, recorded
+    // at the transition into ring 3 (`service84::attach_gate_session` --
+    // the session machine's FIRST slice): from here the program speaks
+    // on the capability rows and INPUT_POLL with its OWN capability
+    // table, not task 0's. The session's holder id is minted one past
+    // the boot's seven scheduler task ids (0..6), so the id space stays
+    // the scheduler's plus sessions', never colliding. The equip
+    // (endpoint 0 owned by the session; its SEND|GRANT cap at slot 1;
+    // the Input cap at slot 2) is the ONE kernel-only grant a proof boot
+    // performs, explicit and terminal-path-only exactly like the ipc
+    // equip above: this ring-3 program never returns, so no later phase
+    // can observe the session's table; a fuller session machine
+    // (the manifest's parked step) mints it at the scheduler's ring-3
+    // alloc and destroys it on exit.
+    const PROOF_SESSION_ID: usize = 7;
+    let (cap_ep, cap_handle, input_handle) =
+        crate::experimental::caps::prepare_session_for_proof(PROOF_SESSION_ID);
     if cap_ep != 0 {
-        panic!("svc84 proof: caps equip produced endpoint {} -- the program names endpoint 0", cap_ep);
+        panic!("svc84 proof: session equip produced endpoint {} -- the program names endpoint 0", cap_ep);
     }
     if cap_handle != 1 {
-        panic!("svc84 proof: caps equip produced handle {} -- the program names handle 1", cap_handle);
+        panic!("svc84 proof: session equip produced handle {} -- the program names handle 1", cap_handle);
+    }
+    if input_handle != 2 {
+        panic!("svc84 proof: session equip produced INPUT handle {} -- the program names handle 2", input_handle);
+    }
+    crate::service84::attach_gate_session(PROOF_SESSION_ID);
+
+    // The DISTINCT TABLES the session machine buys, asserted at the
+    // kernel side, not trusted from the code's shape: task 0's holder
+    // does not exist at all, so resolving a capability AS TASK 0 must
+    // refuse BadProcess. Under the retired shared-table equip (task 0's
+    // holder minted by `prepare_task0_for_proof`) this check could not
+    // answer BadProcess -- that is exactly what it pins.
+    match crate::experimental::caps::input_check_for(0, 0) {
+        Err(crate::experimental::caps::CapError::BadProcess) => {}
+        other => panic!(
+            "svc84 proof: the gate session must NOT share task 0's table (identity task 0 answered {:?})",
+            other
+        ),
     }
 
-    // The INPUT_POLL row's equip, the same one-grant-per-equip rule as
-    // above: the KERNEL mints task 0 (this program's identity on the
-    // capability rows) an Input capability -- READ|GRANT, the release's
-    // bootstrap_input right set -- landing in the next free table slot
-    // (2, after the endpoint's owner cap and the mint), and seeds TWO
-    // known raw scancodes so the program's polls are deterministic.
-    // Terminal-path-only like the other equips: this ring-3 program
-    // never returns, so no later phase can observe the mint.
-    let input_handle = crate::experimental::caps::bootstrap_input_for(0, crate::experimental::caps::rights::READ | crate::experimental::caps::rights::GRANT)
-        .unwrap_or_else(|e| panic!("svc84 proof: input equip mint failed: {:?}", e));
-    if input_handle != 2 {
-        panic!("svc84 proof: input equip produced handle {} -- the program names handle 2", input_handle);
+    // The INPUT_POLL row's byte source is the REAL HARDWARE PATH, not
+    // seeded bytes: the two scancodes are placed in the controller's own
+    // output buffer (`keyboard::inject`, the 0xD2 command), which raises
+    // IRQ1 for each byte exactly as a keystroke would; the handler
+    // queues them raw. Bounded wait on the handler's own counter, with a
+    // named failure -- a dead controller is a boot fact, not a hang.
+    crate::experimental::input::clear();
+    let scancodes_before = crate::keyboard::scancodes_received();
+    for &b in &INJECT_BYTES {
+        unsafe { crate::keyboard::inject(b) };
     }
-    let seeded = crate::experimental::input::seed_scancodes(&SEED_BYTES);
-    if seeded != SEED_BYTES.len() {
-        panic!("svc84 proof: seeded {} raw bytes -- the program expects {}", seeded, SEED_BYTES.len());
+    let mut spins = 0u64;
+    while crate::keyboard::scancodes_received() - scancodes_before < INJECT_BYTES.len() as u64
+        && spins < 50_000_000
+    {
+        spins += 1;
+    }
+    let injected = crate::keyboard::scancodes_received() - scancodes_before;
+    if injected != INJECT_BYTES.len() as u64 {
+        panic!(
+            "svc84 proof: {} of {} injected scancodes reached IRQ1 -- the controller's output-buffer path is dead",
+            injected,
+            INJECT_BYTES.len()
+        );
     }
 
     // The ring-0 stack the CPU will switch to on the first trap: if it is
@@ -154,16 +190,17 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     let rsp0 = space.kernel_stack_top();
     let rsp0_flags = paging::page_flags_active(VirtAddr::new(rsp0 - 8));
     serial_println!(
-        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; caps equip -- endpoint {} granted to task 0's cap table at handle {} ; input equip -- INPUT cap at handle {} and {} raw scancodes seeded ; entering ring 3",
+        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; session {} equip -- endpoint {} granted to the session's OWN table at handle {} , INPUT cap at handle {} (task 0's table absent: distinct, verified) ; {} scancodes injected through the controller (IRQ1 -> raw ring) ; entering ring 3",
         loaded.entry_point.as_u64(),
         PROOF_BUF,
         PROOF_STACK,
         rsp0,
         rsp0_flags,
+        PROOF_SESSION_ID,
         cap_ep,
         cap_handle,
         input_handle,
-        seeded
+        injected
     );
 
     usermode::enter_with_stack(loaded.entry_point, VirtAddr::new(PROOF_STACK + 4096 - 16))

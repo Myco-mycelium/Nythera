@@ -5092,3 +5092,75 @@ Checks: `svc84_proof_test.sh` PASS with the verdict's `INPUT_POLL (1 0x1 ,
 `INPUT matches`; the ledger gate reads 10 served calls (0x40..0x49), all
 exercised by `prog_svc84.s`; `qemu_boot_test.sh` PASS with the input
 ring's own clause line green.
+
+## The gate's session machine, first slice + the real INPUT_POLL byte source (2026-11-05,
+## same day, second increment): the ring-3 proof caller speaks through its OWN capability
+## table, and the polled bytes arrive through the controller, not a seed
+
+The PORT_MANIFEST parks the release's session machine ("what a process
+is, where its capabilities live" — every ring-3 task a session, recorded at
+the scheduler's ring-3 switches) as a last step. This increment takes its
+FIRST SLICE, and it is exactly what the manifest said was missing: a
+ring-3 caller that OWNS a session speaks on the capability rows with its
+OWN capability table, not task 0's.
+
+Mechanism: `service84::attach_gate_session(sid)` — the gate's SESSION is
+KERNEL-OWNED and recorded AT THE RING TRANSITION (the proof's equip path
+calls it once, immediately before entering ring 3; the proof never
+returns, so no withdraw point exists yet, the same terminal-path honesty
+the ipc/caps equips carry). The three capability rows (CAP_SEND 0x47,
+CAP_RECV 0x48) and INPUT_POLL (0x49) now take their caller identity from
+`gate_session_identity()`: the session's id when one is attached, the
+scheduler's running task otherwise (normal boots record nothing, so every
+ring-0 caller — the boot self-test, the kernel itself — keeps task 0's
+identity, which IS the kernel's table — the release's shape, documented).
+
+The proof's session holder is minted one past the scheduler's id
+space (`svc84_proof`'s PROOF_SESSION_ID = 7, one past the boot's seven
+task ids 0..6): the holder id space is the SCHEDULER's plus sessions',
+so the parked full machine cannot collide with a session. The equip is
+`caps::prepare_session_for_proof` (endpoint 0 owned by the session; its
+SEND|GRANT cap at slot 1; the Input cap at slot 2 — retired
+`prepare_task0_for_proof`, whose shared-table shape is exactly what the
+session machine removes).
+
+The DISTINCT TABLES property is ASSERTED by the kernel, not trusted from
+the code's shape: immediately before ring 3, the kernel resolves a
+capability AS TASK 0 and requires the check to answer BadProcess. That
+is only answerable because task 0's holder was never created — under the
+retired shared-table equip, task 0's holder would have existed and held
+these very caps, so the same resolution answered BadHandle, not
+BadProcess.
+
+The sender claim moves WITH the identity, because the CAP_RECV record is
+(sender << 32) | len: the message is now tagged with the SESSION's id
+(7), so the proof's record reads 0x700000006 (length 6 unchanged). The
+verifier expects THAT value by name — the sender is who the caller's
+identity says it is, which is the machine working, not a regression.
+
+The INPUT_POLL row's byte source is the REAL HARDWARE PATH, replacing
+the seeds: `svc84_proof` injects the two scancodes (0x1E then 0x9E) via
+the controller's output buffer (`keyboard::inject`, the 0xD2 command —
+the same proven path the keyboard self-test exercises), each byte
+raising IRQ1 exactly as a keystroke would; the handler queues them raw.
+A bounded spin waits on the handler's own counter (`scancodes_received`
+delta == 2) and fails BY NAME — a dead controller is a boot fact, not a
+hang. The ring is drained first (`input::clear()`, boot-test-only, one
+pop loop). The read-back's compare constant is `INJECT_BYTES` (renamed from
+SEED_BYTES — the old name claimed a population source the code no longer
+exercises), so the polled records are still judged against the KERNEL's
+own bytes, one representation on both sides.
+
+Checks (no boot-environment changes: normal boots never attach a
+session): `svc84_proof_test.sh` PASS with the verdict's CAP record
+(ack 0x0, recv 0x700000006, forged -7, oversized -10, payload the
+"nyrqis" sentinel) and `INPUT_POLL (1 0x1 , 2 0x1 , 3 0x0 , forged
+0xfffffffffffffff7 , bytes 0x1e/0x9e)`; `qemu_boot_test.sh` PASS
+(BootPhase::Ready, the C/D/E blocking-receive tape pinned);
+`qemu_uefi_boot_test.sh` PASS (GOP frame handed over, bound, shell
+rendered); `qemu_uefi_ms_secboot_test.sh` PASS (signed carrier accepted,
+unsigned/tampered/hash-revoked/whole-cert-revoked all refused by the
+firmware, the KeK-signed dbx update accepted at SetVariable, probe and
+cross-build controls green); `qemu_boot_parity_diff.sh` PASS (the demo
+chain line-identical between the two firmware paths modulo the
+documented environment-fact allowlist).
