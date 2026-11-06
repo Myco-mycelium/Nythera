@@ -26,14 +26,16 @@
 //!   reported error, never a silent drop (§3.1 "backpressure");
 //! * a dead holder's endpoints fail sends with a defined error (§7.1).
 //!
-//! NOT ported yet, named so their absence is checkable: the other
-//! capability kinds (BlockDevice, IoPort, FrameBuffer, SharedMem, Reply
-//! -- each has its own bootstrap/window machinery in the release),
-//! badges, containers (NPS-007), notify. The INPUT kind IS now ported
-//! (see its section below -- the router `kbdrt`'s prerequisite). Every
-//! gap is a follow-on slice over THIS machine; the kernel-side
-//! self-test (`run()`) proves each ported clause positive AND
-//! negative, mirroring the release's own `run()`.
+//! NOT ported yet, named so their absence is checkable: the remaining
+//! capability kinds (BlockDevice, IoPort, FrameBuffer, SharedMem -- each
+//! has its own bootstrap/window machinery in the release, and this tree
+//! has neither a block device window nor a shared-memory region to attach
+//! them to; serving any of them today would be a costume, not a
+//! capability), badges, containers (NPS-007), notify. The INPUT kind IS
+//! ported (the router `kbdrt`'s prerequisite) and so is the REPLY kind
+//! (see the call/reply section below); every gap is a follow-on slice
+//! over THIS machine, and the kernel-side self-test (`run()`) proves each
+//! ported clause positive AND negative, mirroring the release's `run()`.
 //!
 //! ---- the Input kind (the release's Phase-9/1-29 clauses) ------------
 //!
@@ -103,6 +105,12 @@ pub mod rights {
 pub enum Kind {
     Endpoint,
     Input,
+    /// The release's one-shot right to answer ONE call: minted by the
+    /// kernel on the CALL path, naming the CALLER (`endpoint` holds its
+    /// identity), carrying SEND and nothing else. Consumed by its first
+    /// `reply` -- a second use is `BadHandle`, and it can never be
+    /// transferred on (it holds no GRANT).
+    Reply,
 }
 
 /// A capability: which KIND, which endpoint, WHICH GENERATION of it
@@ -288,6 +296,98 @@ impl CapSystem {
         Ok(())
     }
 
+    /// The release's `call_send`: a send that ALSO mints a one-shot Reply
+    /// capability naming `from` and queues it in the message's dedicated
+    /// transfer field (§5.1), so the receiving owner gets it the usual way
+    /// (`receive` installs it into its own table and reports the handle).
+    /// Returns the endpoint's OWNER -- the only holder that can answer.
+    ///
+    /// Unlike `send` there is no transfer argument: the capability riding
+    /// this message is the kernel's Reply mint, never the caller's choice,
+    /// which is exactly why a caller cannot smuggle one in.
+    pub fn call_send(&mut self, from: usize, h: u32, payload: &[u8]) -> Result<usize, CapError> {
+        let cap = self.lookup(from, h)?;
+        if cap.kind != Kind::Endpoint {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & rights::SEND == 0 {
+            return Err(CapError::NoRight);
+        }
+        if payload.len() > MAX_PAYLOAD {
+            return Err(CapError::PayloadTooLarge);
+        }
+        // The reply names the caller by identity, and the capability field
+        // is u32: an identity wider than that could not be carried back,
+        // so it is refused rather than truncated.
+        if from > u32::MAX as usize {
+            return Err(CapError::BadProcess);
+        }
+        let reply = Capability {
+            kind: Kind::Reply,
+            endpoint: from as u32,
+            generation: 0,
+            rights: rights::SEND,
+        };
+        let e = self.endpoints.get_mut(cap.endpoint as usize).ok_or(CapError::BadHandle)?;
+        if !e.alive {
+            return Err(CapError::TargetDead);
+        }
+        if e.generation != cap.generation {
+            return Err(CapError::Revoked);
+        }
+        if e.queue.len() >= QUEUE_CAPACITY {
+            return Err(CapError::QueueFull);
+        }
+        let owner = e.owner;
+        e.queue.push_back(Queued { sender: from, payload: payload.to_vec(), moved: Some(reply) });
+        Ok(owner)
+    }
+
+    /// The release's `reply_target`: who `p`'s handle `h` would answer.
+    /// WrongType unless it is a Reply capability -- an ENDPOINT handle
+    /// here is a caller confusing "send" with "answer", refused by name.
+    pub fn reply_target(&mut self, p: usize, h: u32) -> Result<usize, CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::Reply {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & rights::SEND == 0 {
+            return Err(CapError::NoRight);
+        }
+        Ok(cap.endpoint as usize)
+    }
+
+    /// Answers ONE call: the bytes are queued at the caller's ANSWER SLOT
+    /// -- the first live endpoint it owns -- and the reply capability is
+    /// CONSUMED (the release's `drop_handle`, one-shot by construction).
+    ///
+    /// Two ordering choices worth naming. The target's slot and its free
+    /// room are checked BEFORE the handle is emptied, where the release
+    /// drops the capability first and only then looks for a wait slot: an
+    /// answer that cannot land here is a refusal the caller can still
+    /// retry, not a consumed right with bytes on the floor.
+    pub fn reply(&mut self, p: usize, h: u32, payload: &[u8]) -> Result<u32, CapError> {
+        let target = self.reply_target(p, h)?;
+        if payload.len() > MAX_PAYLOAD {
+            return Err(CapError::PayloadTooLarge);
+        }
+        let slot = self
+            .endpoints
+            .iter()
+            .position(|e| e.owner == target && e.alive)
+            .ok_or(CapError::TargetDead)?;
+        if self.endpoints[slot].queue.len() >= QUEUE_CAPACITY {
+            return Err(CapError::QueueFull);
+        }
+        let holder = self.live(p)?;
+        match holder.caps.get_mut(h as usize) {
+            Some(c) if c.is_some() => *c = None,
+            _ => return Err(CapError::BadHandle),
+        }
+        self.endpoints[slot].queue.push_back(Queued { sender: p, payload: payload.to_vec(), moved: None });
+        Ok(slot as u32)
+    }
+
     fn live(&mut self, p: usize) -> Result<&mut Holder, CapError> {
         match self.procs.get_mut(p) {
             Some(h) if h.alive => Ok(h),
@@ -357,6 +457,12 @@ impl CapSystem {
                         }
                     }
                     Kind::Input => {}
+                    // Unreachable as written: the GRANT check above
+                    // already refused a Reply capability (it carries SEND
+                    // only). Kept explicit so the day a right is added
+                    // here, the answer is still a by-name refusal rather
+                    // than a capability travelling on a single-use right.
+                    Kind::Reply => return Err(CapError::NoRight),
                 }
                 Some(Capability { rights: want, ..held })
             }
@@ -524,6 +630,24 @@ pub fn input_check_for(caller: usize, handle: u32) -> Result<(), CapError> {
     })
 }
 
+/// Access for the CALL row: a call from `caller` through `handle`,
+/// answering the endpoint's owner (the release's `call_send` return).
+pub fn call_for(caller: usize, handle: u32, payload: &[u8]) -> Result<usize, CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.call_send(caller, handle, payload)
+    })
+}
+
+/// Access for the REPLY row: answers one call and consumes the
+/// capability. Answers the slot index the bytes landed in.
+pub fn reply_for(caller: usize, handle: u32, payload: &[u8]) -> Result<u32, CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.reply(caller, handle, payload)
+    })
+}
+
 // ---- the kernel-side self-test ------------------------------------------
 //
 // Every ported clause, positive AND negative, on its own multi-holder
@@ -677,6 +801,54 @@ pub fn run() -> bool {
         "received input copy cannot re-transfer",
         sys.send(SERVER, srv_h, b"", Some((input_in_server, rights::READ))) == Err(CapError::NoRight)
     );
+
+    // ---- the Reply kind (the release's one-shot answer authority) ----
+    // A call mints a SEND-only Reply capability naming the CALLER and
+    // rides it in the message's dedicated transfer field; the receiver
+    // gets a handle, answers ONCE, and the handle is gone. Every step
+    // here is on the real machine, not a look-alike: the same endpoint
+    // the earlier groups use.
+    check!("call answers the owner", sys.call_send(SERVER, srv_h, b"ask").unwrap_or(usize::MAX) == SERVER);
+    let call_msg = match sys.receive(SERVER, ep) {
+        Ok(Some(m)) => Some(m),
+        _ => None,
+    };
+    let reply_h = call_msg.as_ref().and_then(|m| m.transferred);
+    check!(
+        "call delivers the message and a reply capability",
+        matches!(&call_msg, Some(m) if m.sender == SERVER && m.payload == b"ask") && reply_h.is_some()
+    );
+    let reply_h = reply_h.unwrap_or(u32::MAX);
+    check!("reply target names the caller", sys.reply_target(SERVER, reply_h) == Ok(SERVER));
+    // WrongType: an ENDPOINT handle asked to answer -- the kind field is
+    // what refuses, exactly as the release's reply_target does.
+    check!(
+        "reply through an endpoint handle refused (WrongType)",
+        sys.reply_target(SERVER, srv_h) == Err(CapError::WrongType)
+    );
+    // The answer lands at the caller's own endpoint and the handle is
+    // consumed by the same call.
+    check!("reply queued", sys.reply(SERVER, reply_h, b"answer").is_ok());
+    check!("reply is one-shot (handle consumed)", sys.reply(SERVER, reply_h, b"again") == Err(CapError::BadHandle));
+    let answered = match sys.receive(SERVER, ep) {
+        Ok(Some(m)) => Some(m),
+        _ => None,
+    };
+    check!(
+        "the caller drains its answer",
+        matches!(&answered, Some(m) if m.payload == b"answer" && m.sender == SERVER && m.transferred.is_none())
+    );
+    // A reply capability is SEND-only, so it can never be handed on:
+    // a second call gives a FRESH handle to try the transfer with.
+    let _ = sys.call_send(SERVER, srv_h, b"ask2");
+    let second = sys.receive(SERVER, ep).ok().flatten().and_then(|m| m.transferred);
+    check!(
+        "a reply capability cannot be transferred",
+        matches!(second, Some(h) if sys.send(SERVER, srv_h, b"", Some((h, rights::SEND))) == Err(CapError::NoRight))
+    );
+    // ...and a call through a NON-endpoint handle is WrongType, not a
+    // send with a reply riding along.
+    check!("call through a non-endpoint handle refused", sys.call_send(CLIENT, input_h, b"x") == Err(CapError::WrongType));
 
     // §4.3 revocation: O(1), outstanding caps dead, owner mints fresh
     check!("revoke", sys.revoke(SERVER, ep).is_ok());

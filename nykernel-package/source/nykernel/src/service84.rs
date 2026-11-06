@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves ten calls:
+//! table), the result goes back in `rax` -- that serves twelve calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -16,8 +16,10 @@
 //! | 0x45 | `IPC_SEND` | a0=endpoint, a1=seq, OR a1=buffer + a2=len | queues `(sender = caller identity, seq)` or the release's payload message (bytes copied into the kernel); `0`, or the arbiter's errno |
 //! | 0x46 | `IPC_RECV` | a0=endpoint (+ a1=buffer, a2=buflen>=64 for the payload dial), a_xfer = 0 plain / 1 blocking | drains one queued message -> `(sender << 32) | seq`, or the payload byte count with the bytes in the caller's buffer; `-ENODATA` when real-and-empty, `-ENOENT` when it does not exist, `-EAGAIN` when a wait woke with nothing |
 //! | 0x47 | `CAP_SEND` | a0=handle, a1/a2=payload, a_xfer/a_rights | capability-checked send through `experimental::caps`; `0`, or its errno |
-//! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
+//! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer, a_rights = out-pointer for a transferred handle (0 = not wanted) | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
 //! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
+//! | 0x4a | `CAP_CALL` | a0=endpoint handle, a1/a2=request | queues the request carrying a ONE-SHOT `Reply` capability naming the caller -> the endpoint's owner id; its errno otherwise |
+//! | 0x4b | `CAP_REPLY` | a0=reply handle, a1/a2=answer | answers one call at the caller's own endpoint and CONSUMES the handle; `0`, `-EBADF` on a second use, `-EACCES` on a wrong-kind handle |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
 //! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
@@ -197,6 +199,26 @@ pub const CALL_CAP_RECV: u64 = 0x48;
 /// task 0 with no session attached.
 pub const CALL_INPUT_POLL: u64 = 0x49;
 
+/// The release's CALL/REPLY pair (its ledger's calls 9 and 10), served
+/// as the capability machine's third kind, `caps::Kind::Reply`: a
+/// request that carries a ONE-SHOT right to answer it.
+///
+/// CALL (0x4a): a0 = an ENDPOINT handle in the caller's own table, a1/a2
+/// = the request payload. The kernel mints a SEND-only Reply capability
+/// naming the CALLER, rides it in the message's dedicated transfer field
+/// (§5.1) and answers the endpoint's OWNER identity -- the only holder
+/// that can answer. There is no transfer argument on this row: the
+/// capability travelling with a call is the kernel's own mint, so a
+/// caller cannot choose what rides along.
+///
+/// REPLY (0x4b): a0 = the handle RECV installed for that capability (see
+/// CALL_CAP_RECV's out-pointer), a1/a2 = the answer. It queues the bytes
+/// at the caller's ANSWER SLOT (the first live endpoint the caller owns)
+/// and CONSUMES the handle -- one-shot by construction, so the second
+/// use is EBADF, not a second answer.
+pub const CALL_CAP_CALL: u64 = 0x4a;
+pub const CALL_CAP_REPLY: u64 = 0x4b;
+
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
 /// Bad user pointer: the validator refused the range.
@@ -318,8 +340,18 @@ static PAYLOAD_RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
 /// handed back BEYOND what rax shows -- the received payload's first 8
 /// bytes (zero-padded) and the packed (sender<<32|len) return. The
 /// program's stored copies and its own memory are compared against THESE.
-static CAP_RECV_FIRST8: AtomicU64 = AtomicU64::new(0);
-static CAP_RECV_RAX: AtomicU64 = AtomicU64::new(0);
+// (The CAP leg used to judge itself against two "last drain" statics.
+// They cannot survive a second ring-3 drain -- the CALL/REPLY legs drain
+// twice more, and the cap leg's expected value silently became the
+// answer's -- so its expectation is derived from the live session
+// identity and the sentinel instead: stored[14] == (session << 32 | 6)
+// and the program's own buffer holding the "nyrqis" sentinel.)
+/// The handle the LAST capability receive installed for a transferred
+/// capability (u64::MAX = nothing transferred). Recorded so the proof
+/// can compare the program's stored copy against the kernel's own, which
+/// is how the CALL/REPLY leg proves the handle the program USED is the
+/// one the machine minted -- a constant there would prove nothing.
+static CAP_XFER_HANDLE: AtomicU64 = AtomicU64::new(u64::MAX);
 /// 0 = not finished, 1 = passed, 2 = failed.
 static PROOF_STATE: AtomicU8 = AtomicU8::new(0);
 
@@ -465,6 +497,20 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // payload recv answered. Compared against the program's
             // stored copy below, like every other answer.
             let want_payload_len = PAYLOAD_RECVD_VALUE.load(Ordering::Relaxed) as i64;
+            // The CALL/REPLY block lives after the payload block
+            // (BUF+496..576, ten qwords): the call's ack, the call
+            // receive's byte count, the handle the kernel wrote at the
+            // out-slot, the handle as the program reads it back, the
+            // request's bytes, the reply's ack, the one-shot refusal,
+            // the wrong-kind refusal, the answer's byte count and the
+            // answer's bytes.
+            if !crate::memory::paging::user_range_ok(a0 + 496, 80, false) {
+                return EFAULT;
+            }
+            let mut reply_block = [0i64; 10];
+            for (i, slot) in reply_block.iter_mut().enumerate() {
+                *slot = unsafe { core::ptr::read_unaligned((a0 + 496 + 8 * i as u64) as *const i64) };
+            }
             let mut payload = [0i64; 6];
             for (i, slot) in payload.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 + 448 + 8 * i as u64) as *const i64) };
@@ -473,8 +519,12 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // drain's actual answer (packed sender<<32|len, recorded when
             // the ring-3 recv ran), the drained payload's first 8 bytes,
             // and the payload bytes still in the program's buffer.
-            let want_cap_rax = CAP_RECV_RAX.load(Ordering::Relaxed) as i64;
-            let want_cap_first8 = CAP_RECV_FIRST8.load(Ordering::Relaxed);
+            // "nyrqis" is six bytes: the packed answer is the live
+            // session identity shifted above it, exactly as the drain
+            // packs (sender << 32 | len). Both sides are derived at
+            // read-back time, so a session that changes changes both.
+            let want_cap_rax =
+                (((crate::experimental::scheduler::session_identity() as u64) << 32) | 6) as i64;
             let wrote_ok = crate::devices::framebuffer::bound_mode()
                 .map(|(w, h)| {
                     // The geometry was written at BUF+24 (the program's own
@@ -546,8 +596,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && want_cap_rax != 0
                 && stored[15] == EBADF
                 && stored[16] == EMSGSIZE
-                && held_first8 == want_cap_first8
-                && want_cap_first8 == CAP_SENTINEL;
+                && held_first8 == CAP_SENTINEL;
             // The INPUT_POLL leg, judged against the kernel's OWN bytes
             // (svc84_proof::INJECT_BYTES -- what the kernel injected
             // through the controller before ring 3), so the polled
@@ -583,6 +632,33 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 // all-zero (a poll that "answered empty" but scribbled
                 // would be a lie).
                 && polled_empty8 == 0;
+            // The CALL/REPLY leg, judged the way the other legs are: the
+            // call's answer is the endpoint's OWNER, which is this very
+            // session (endpoint 0 is the proof session's own), read from
+            // the live identity at read-back time rather than pinned as a
+            // number; the handle is compared against the kernel's own
+            // record of what it installed; the one-shot refusal and the
+            // wrong-kind refusal are by-name refusals, so constants; and
+            // the answer's packed (sender << 32 | len) is derived from
+            // the same live identity, since the session answered itself.
+            let sid = crate::experimental::scheduler::session_identity();
+            let want_reply_ack = sid as i64;
+            let want_xfer_handle = CAP_XFER_HANDLE.load(Ordering::Relaxed) as i64;
+            let want_answer_rax = (((sid as u64) << 32) | 8) as i64;
+            const CALL_BYTES: i64 = 0x2121656d6c6c6163; // callme!!
+            const ANSWER_BYTES: i64 = 0x2121726577736e61; // answer!!
+            let reply_ok = reply_block[0] == want_reply_ack
+                && want_reply_ack >= 0
+                && reply_block[1] == want_answer_rax
+                && want_xfer_handle >= 0
+                && reply_block[2] == want_xfer_handle
+                && reply_block[3] == want_xfer_handle
+                && reply_block[4] == CALL_BYTES
+                && reply_block[5] == 0
+                && reply_block[6] == EBADF
+                && reply_block[7] == EACCES
+                && reply_block[8] == want_answer_rax
+                && reply_block[9] == ANSWER_BYTES;
             let stored_ok = stored[0] == want_gfx
                 && stored[1] == want_input
                 && stored[2] == want_enosys
@@ -594,10 +670,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[8] == want_r8 as i64
                 && ipc_ok
                 && cap_ok
-                && input_poll_ok;
+                && input_poll_ok
+                && reply_ok;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} -- {}
+            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} -- {}
 ",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
@@ -653,6 +730,15 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 polled_first8,
                 polled_second8,
                 if input_poll_ok { "matches" } else { "MISMATCH" },
+                reply_block[0] as u64,
+                reply_block[1] as u64,
+                reply_block[3] as u64,
+                reply_block[5] as u64,
+                reply_block[6] as u64,
+                reply_block[7] as u64,
+                reply_block[8] as u64,
+                reply_block[9] as u64,
+                if reply_ok { "matches" } else { "MISMATCH" },
                 if ok { "OK" } else { "FAILED" }
             );
             0
@@ -923,8 +1009,18 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             }
         }
         CALL_CAP_RECV => {
-            if a_rights != 0 || a_xfer != u64::MAX {
+            // a_rights is NOT a rights mask on RECV: it is the
+            // OUT-POINTER for the handle a transfer installs (the
+            // release's second return register, expressed as a pointer
+            // the way INPUT_POLL's record is). 0 means "I do not want
+            // it". Without it the CALL/REPLY pair is unusable from ring
+            // 3: the reply capability would arrive in the caller's table
+            // and the caller could never learn its index.
+            if a_xfer != u64::MAX {
                 return EBADF;
+            }
+            if a_rights != 0 && !crate::memory::paging::user_range_ok(a_rights, 8, true) {
+                return EFAULT;
             }
             if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
                 return EMSGSIZE;
@@ -954,22 +1050,15 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                             );
                         }
                     }
-                    if from_ring3 {
-                        // The PAYLOAD RECORD little-endian, because the
-                        // read-back compares it against a raw LE read of
-                        // the program's buffer: comparing a big-endian
-                        // packing against an LE memory read "works" only
-                        // when every byte coincidentally aligns -- the
-                        // first run of this compare MISMATCHED exactly
-                        // that way (the bytes' order differed), which is
-                        // the check's own bug, not the call's.
-                        let mut first8 = [0u8; 8];
-                        for (i, b) in m.payload.iter().take(8).enumerate() {
-                            first8[i] = *b;
+                    if a_rights != 0 {
+                        // u64::MAX = "nothing was transferred" -- the
+                        // same "none" sentinel the SEND side takes, so a
+                        // zeroed out-slot can never be read as handle 0.
+                        let h = m.transferred.map(|h| h as u64).unwrap_or(u64::MAX);
+                        CAP_XFER_HANDLE.store(h, Ordering::Relaxed);
+                        unsafe {
+                            core::ptr::write_unaligned(a_rights as *mut u64, h);
                         }
-                        CAP_RECV_FIRST8.store(u64::from_le_bytes(first8), Ordering::Relaxed);
-                        CAP_RECV_RAX
-                            .store(((m.sender as u64) << 32) | m.payload.len() as u64, Ordering::Relaxed);
                     }
                     (((m.sender as u64) << 32) | m.payload.len() as u64) as i64
                 }
@@ -1019,6 +1108,68 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     }
                     1
                 }
+            }
+        }
+        CALL_CAP_CALL => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            // A call's transfer field is the kernel's Reply mint; a
+            // caller-chosen transfer or rights mask is a shape this row
+            // does not own, refused rather than half-served.
+            if a_xfer != u64::MAX || a_rights != 0 {
+                return EBADF;
+            }
+            if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
+                return EMSGSIZE;
+            }
+            if a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, false) {
+                return EFAULT;
+            }
+            let mut bytes = [0u8; crate::experimental::caps::MAX_PAYLOAD];
+            if a2 != 0 {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(a1 as *const u8, bytes.as_mut_ptr(), a2 as usize);
+                }
+            }
+            match crate::experimental::caps::call_for(
+                crate::experimental::scheduler::session_identity(),
+                a0 as u32,
+                &bytes[..a2 as usize],
+            ) {
+                Ok(owner) => owner as i64,
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_REPLY => {
+            // The answer: authority-first (the Reply capability's kind and
+            // SEND right are checked BEFORE anything is queued), then the
+            // bytes, then the handle is consumed.
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
+                return EMSGSIZE;
+            }
+            if a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, false) {
+                return EFAULT;
+            }
+            let mut bytes = [0u8; crate::experimental::caps::MAX_PAYLOAD];
+            if a2 != 0 {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(a1 as *const u8, bytes.as_mut_ptr(), a2 as usize);
+                }
+            }
+            match crate::experimental::caps::reply_for(
+                crate::experimental::scheduler::session_identity(),
+                a0 as u32,
+                &bytes[..a2 as usize],
+            ) {
+                Ok(_slot) => 0,
+                Err(e) => map_cap_error(e),
             }
         }
         _ => {

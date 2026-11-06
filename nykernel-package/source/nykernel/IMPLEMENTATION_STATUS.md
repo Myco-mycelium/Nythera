@@ -5425,3 +5425,74 @@ tape intact and task A/B's six round trips unchanged; `svc84_proof_test.sh`
 PASS with a byte-identical verdict (the proof's callers are still task 0, so
 its `EAGAIN` legs keep their answers). The long gates are rerun on this
 tree's final HEAD, not here -- see the increment that follows.
+
+## The release's CALL/REPLY pair, served (2026-11-06): the Reply kind is a
+## one-shot right to answer, minted by the kernel and consumed by its answer
+
+With the gate parked on a real house task (previous increment), the third
+capability kind this tree can honestly carry is the release's `Reply` -- the
+one-shot authority to answer ONE call. It needs no device and no shared
+region, only the endpoint machine that already exists, which is why it is the
+next kind rather than FrameBuffer/SharedMem/BlockDevice/IoPort: this tree has
+no framebuffer window, no block-device window and no shared-memory region to
+attach those capabilities to, so serving them today would be a costume.
+
+`caps::Kind::Reply` is a capability whose `endpoint` field holds the CALLER's
+identity and whose rights mask is SEND and nothing else. Only the KERNEL mints
+one -- `call_send` (the release's `call_send`) queues the request with a Reply
+capability in the message's dedicated transfer field (§5.1), so a caller
+cannot choose what rides along -- and the receiver gets it exactly like any
+other transfer: installed into its own table, handle reported by the drain.
+
+Serving it from user code needed one honest change to an existing row:
+`CAP_RECV`'s `r8` is no longer "must be zero", it is the OUT-POINTER where
+the kernel writes the transferred capability's handle (`u64::MAX` = nothing
+transferred, 0 = not wanted). Without it the pair is unusable in ring 3 -- the
+capability would arrive in the caller's table and the caller could never learn
+its index. That is the release's second return register, expressed the way
+`INPUT_POLL`'s record pointer already is.
+
+`reply` answers once: authority-first (`reply_target` -- WrongType unless the
+handle is a Reply capability, NoRight without SEND), then the payload bound,
+then the caller's ANSWER SLOT (the first live endpoint the caller owns) and
+its free room are checked BEFORE the handle is emptied. The release drops the
+capability first and only then looks for a wait slot; doing it the other way
+round means an answer that cannot land is a refusal the caller can still
+retry, not a consumed right with the bytes on the floor. That ordering
+difference is documented at the method.
+
+The proof's step 11 is the whole round trip on the session's own endpoint 0:
+call (owner 7) → recv (8 bytes, `0x700000008`) with the handle written to the
+program's out-slot → the program reads it back (handle 3, out of its OWN
+memory) → reply (ack 0) → the SAME handle again (`-EBADF`, one-shot) → an
+endpoint handle asked to answer (`-EACCES`, wrong kind) → recv the answer
+(8 bytes, `answer!!` read back out of the program's buffer).
+
+Verified transcript lines (`tools/svc84_proof_test.sh`, passing):
+
+```
+REPLY (call 0x7 , recv 0x700000008 , handle 0x3 , reply 0x0 , twice 0xfffffffffffffff7 , kind 0xfffffffffffffff3 , answer 0x700000008 , bytes 0x2121726577736e61) , REPLY matches
+OK: one call carried a one-shot reply capability round-trip through the session's OWN table (handle 3), the answer landed back at the caller's endpoint, and the second reply and the wrong-kind reply were refused -EBADF/-EACCES by name
+```
+
+The kernel-side self-test gained nine clause groups on the same machine
+(`experimental caps: 36 clause groups ...`), including the two a single-session
+proof cannot show from ring 3: a reply capability cannot be transferred on (it
+holds no GRANT, so the transfer clause refuses NoRight) and a call through a
+NON-endpoint handle is WrongType rather than a send with a right attached.
+
+**Three proof bugs, all in the checks rather than the machine, found by
+running the gates.** The first run of the new legs refused everything: RECV's
+transfer field was set to 0 (the plain-drain dial of the *mailbox* rows) where
+the capability rows require the "no transfer claim" sentinel `u64::MAX`. The
+second run passed the new leg but failed the older CAP leg, because that leg
+judged itself against two "last drain" statics that the CALL/REPLY legs then
+overwrote -- its expected value had silently become the answer's; it now
+derives its expectation from the live session identity and the sentinel
+instead. The third was the verdict pin itself, written in decimal for values
+the row prints in hex. Each is documented at the site.
+
+Checks: `./build.sh` PASS (the ledger gate now requires 0x4a/0x4b to be
+exercised, and `prog_svc84.s` step 11 does); `svc84_proof_test.sh` PASS with
+every earlier pin intact; `qemu_boot_test.sh` PASS with the gate-park and
+session-contract lines unchanged.

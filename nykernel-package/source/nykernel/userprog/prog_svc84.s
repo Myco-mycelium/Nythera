@@ -478,6 +478,99 @@ _start:
     int $0x84
     mov %rax, 488(%rbx)
 
+    /* 11. The release's CALL/REPLY pair (2026-11-06) -- the Reply
+       capability KIND. A call is a send whose message carries a
+       one-shot right to answer it; the receiver learns the handle from
+       RECV's out-pointer, answers ONCE, and the answer comes back at
+       the caller's own endpoint. Everything here is on the same
+       endpoint 0 and the same session as step 7: the caller and the
+       server are one holder, which is all a single-session proof can
+       be, and every leg below is still the real machine.
+       Results: ack BUF+496, call-recv byte count BUF+504, handle
+       out-slot BUF+512, handle read back BUF+520, call bytes BUF+528,
+       reply ack BUF+536, second-reply refusal BUF+544, kind refusal
+       BUF+552, answer byte count BUF+560, answer bytes BUF+568.
+       Staging: call payload BUF+576, call buffer BUF+592, answer
+       payload BUF+656, answer buffer BUF+672. */
+    /* 11a. CALL (0x4a): HANDLE 1 (the SEND|GRANT endpoint capability),
+       8-byte "callme!!" request, no transfer (r10 = u64::MAX), no
+       rights (r8 = 0). The answer is the endpoint's OWNER. */
+    movabs $0x2121656d6c6c6163, %rcx   /* "callme!!" little-endian */
+    mov %rcx, 576(%rbx)
+    mov $1, %rdi
+    lea 576(%rbx), %rsi
+    mov $8, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x4a, %rax
+    int $0x84
+    mov %rax, 496(%rbx)
+    /* 11b. RECV the call. r8 is NOT a rights mask here: it is the
+       OUT-POINTER for the transferred handle (BUF+512). Expected 8
+       bytes at BUF+504, the request at BUF+592. */
+    xor %rdi, %rdi
+    lea 592(%rbx), %rsi
+    mov $64, %rdx
+    movabs $-1, %r10          /* no transfer CLAIM: the machine mints
+                                 the reply capability itself */
+    lea 512(%rbx), %r8
+    mov $0x48, %rax
+    int $0x84
+    mov %rax, 504(%rbx)
+    /* 11c. The handle the kernel installed, read back out of the
+       program's own memory (a kernel that reported a transfer and
+       wrote nothing would leave the sentinel -1 there). */
+    mov 512(%rbx), %rcx
+    mov %rcx, 520(%rbx)
+    /* 11d. The request's bytes, read back out of BUF+592. */
+    mov 592(%rbx), %rcx
+    mov %rcx, 528(%rbx)
+    /* 11e. REPLY (0x4b) through that handle: 8-byte "answer!!",
+       expected ack 0. */
+    movabs $0x2121726577736e61, %rcx   /* "answer!!" little-endian */
+    mov %rcx, 656(%rbx)
+    mov 520(%rbx), %rdi
+    lea 656(%rbx), %rsi
+    mov $8, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x4b, %rax
+    int $0x84
+    mov %rax, 536(%rbx)
+    /* 11f. The SAME handle again: one-shot, so the slot is empty and
+       the answer must be -EBADF (not a second reply). BUF+544. */
+    mov 520(%rbx), %rdi
+    lea 656(%rbx), %rsi
+    mov $8, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x4b, %rax
+    int $0x84
+    mov %rax, 544(%rbx)
+    /* 11g. REPLY through the ENDPOINT handle (1): the kind field
+       refuses with -EACCES -- answering is not sending. BUF+552. */
+    mov $1, %rdi
+    lea 656(%rbx), %rsi
+    mov $8, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x4b, %rax
+    int $0x84
+    mov %rax, 552(%rbx)
+    /* 11h. RECV the ANSWER at endpoint 0 (no out-pointer this time:
+       r8 = 0 is the common shape). Expected 8 bytes at BUF+560 with
+       "answer!!" at BUF+672, read back at BUF+568. */
+    xor %rdi, %rdi
+    lea 672(%rbx), %rsi
+    mov $64, %rdx
+    movabs $-1, %r10          /* again: no transfer claim */
+    xor %r8, %r8
+    mov $0x48, %rax
+    int $0x84
+    mov %rax, 560(%rbx)
+    mov 672(%rbx), %rcx
+    mov %rcx, 568(%rbx)
+
     /* Close the proof (0x43): the kernel reads BUF back through the
        validator. */
     mov %rbx, %rdi

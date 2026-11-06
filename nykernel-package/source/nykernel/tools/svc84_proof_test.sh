@@ -176,6 +176,19 @@ else
     else
         bad "the INPUT_POLL row's polls, refusals or byte delivery failed their read-back"
     fi
+    # The CALL/REPLY leg (the Reply KIND): the call answered the
+    # endpoint's OWNER (the proof session, 7), the request arrived with a
+    # one-shot reply capability whose handle the program read back out of
+    # its own memory (3 -- the session's table indexes 0..2 are the
+    # endpoint, its SEND cap and the INPUT cap), the reply was accepted
+    # once, the SAME handle was then refused -EBADF, the wrong kind
+    # (an endpoint handle asked to answer) was refused -EACCES, and the
+    # answer came back at the caller's own endpoint with its bytes.
+    if [[ "$VERDICT" == *"REPLY matches"* ]] && [[ "$VERDICT" == *"REPLY (call 0x7 , recv 0x700000008 , handle 0x3 , reply 0x0 , twice 0xfffffffffffffff7 , kind 0xfffffffffffffff3 , answer 0x700000008 , bytes 0x2121726577736e61)"* ]]; then
+        ok "one call carried a one-shot reply capability round-trip through the session's OWN table (handle 3), the answer landed back at the caller's endpoint, and the second reply and the wrong-kind reply were refused -EBADF/-EACCES by name"
+    else
+        bad "the CALL/REPLY leg's round trip or refusals failed their read-back"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -190,4 +203,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, and the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, and one call carried a one-shot reply capability that answered exactly once."
