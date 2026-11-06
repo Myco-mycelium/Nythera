@@ -44,6 +44,17 @@ pub const CODE: u64 = 0x6u64 << 40;
 pub const PROOF_BUF: u64 = CODE + 0x1_0000;
 /// The program's stack page.
 pub const PROOF_STACK: u64 = CODE + 0x2_0000;
+/// The SHARED REGION the region capability names: one page, mapped
+/// USER_ACCESSIBLE, written by the kernel here and by ring 3 later. Both
+/// sides read the SAME frames, which is what makes the SharedMem kind's
+/// proof a two-party one rather than a self-check.
+pub const PROOF_SHM: u64 = CODE + 0x3_0000;
+/// What the kernel writes into the region before ring 3 runs: the value
+/// the program must read back THROUGH the mapping.
+pub const SHM_KERNEL_SENTINEL: u64 = 0x0123_4567_89ab_cdef;
+/// What the program writes back; the kernel reads it out of the region
+/// after the proof closes.
+pub const SHM_RING3_VALUE: u64 = 0xfeed_face_dead_beef;
 
 const TOKEN: &[u8] = b"nyrqis.proof=svc84";
 
@@ -97,8 +108,16 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     let buf_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_BUF), 1, flags);
     let stack_mapped =
         paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_STACK), 1, flags);
+    let shm_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_SHM), 1, flags);
     assert_eq!(buf_mapped, 1, "svc84 proof: results page not mapped");
     assert_eq!(stack_mapped, 1, "svc84 proof: stack page not mapped");
+    assert_eq!(shm_mapped, 1, "svc84 proof: shared region not mapped");
+    // The kernel's half of the shared region, written through the SAME
+    // mapping the program will read: there is one copy of these bytes.
+    unsafe {
+        core::ptr::write_volatile(PROOF_SHM as *mut u64, SHM_KERNEL_SENTINEL);
+        core::ptr::write_volatile((PROOF_SHM + 8) as *mut u64, 0);
+    }
 
     // The proof drives the IPC rows through endpoint 0 (the program's
     // SEND/RECV choice): make that endpoint exist and be EMPTY. A proof
@@ -139,6 +158,18 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     }
     if input_handle != 2 {
         panic!("svc84 proof: session equip produced INPUT handle {} -- the program names handle 2", input_handle);
+    }
+    // The region kind's equip: the kernel's own record of the page it just
+    // mapped, minted into the SESSION's table. It must land at slot 3 --
+    // the program names that index, so a drift fails here rather than as a
+    // mysterious EBADF from ring 3.
+    let (region_id, region_handle) =
+        crate::experimental::caps::prepare_region_for_proof(PROOF_SESSION_ID, PROOF_SHM, 4096);
+    if region_handle != 3 {
+        panic!(
+            "svc84 proof: region equip produced handle {} -- the program names handle 3",
+            region_handle
+        );
     }
     crate::service84::attach_gate_session(PROOF_SESSION_ID);
 
@@ -190,7 +221,7 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     let rsp0 = space.kernel_stack_top();
     let rsp0_flags = paging::page_flags_active(VirtAddr::new(rsp0 - 8));
     serial_println!(
-        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; session {} equip -- endpoint {} granted to the session's OWN table at handle {} , INPUT cap at handle {} (task 0's table absent: distinct, verified) ; {} scancodes injected through the controller (IRQ1 -> raw ring) ; entering ring 3",
+        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; session {} equip -- endpoint {} granted to the session's OWN table at handle {} , INPUT cap at handle {} , SHARED region {} at {:#x}..{:#x} at handle {} (task 0's table absent: distinct, verified) ; {} scancodes injected through the controller (IRQ1 -> raw ring) ; entering ring 3",
         loaded.entry_point.as_u64(),
         PROOF_BUF,
         PROOF_STACK,
@@ -200,6 +231,10 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         cap_ep,
         cap_handle,
         input_handle,
+        region_id,
+        PROOF_SHM,
+        PROOF_SHM + 4096,
+        region_handle,
         injected
     );
 

@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves twelve calls:
+//! table), the result goes back in `rax` -- that serves thirteen calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -19,6 +19,7 @@
 //! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer, a_rights = out-pointer for a transferred handle (0 = not wanted) | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
 //! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
 //! | 0x4a | `CAP_CALL` | a0=endpoint handle, a1/a2=request; a_xfer/a_rights = answer buffer + length for the BLOCKING dial | queues the request carrying a ONE-SHOT `Reply` capability naming the caller -> the endpoint's owner id; with an answer buffer the caller PARKS until the server answers and gets the answer's byte count; its errno otherwise |
+//! | 0x4c | `CAP_SHM` | a0=region handle, a1=24-byte record ptr | the kernel's own geometry of the mapped region (`{base, len, rights}`) -> `0`, `-EBADF` for a handle that names nothing, `-EACCES` for a handle of another kind |
 //! | 0x4b | `CAP_REPLY` | a0=reply handle, a1/a2=answer | answers one call at the caller's own endpoint and CONSUMES the handle; `0`, `-EBADF` on a second use, `-EACCES` on a wrong-kind handle |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
@@ -219,6 +220,22 @@ pub const CALL_INPUT_POLL: u64 = 0x49;
 pub const CALL_CAP_CALL: u64 = 0x4a;
 pub const CALL_CAP_REPLY: u64 = 0x4b;
 
+/// The release's shared-memory row, served as the capability machine's
+/// fourth kind, `caps::Kind::SharedMem`. a0 = a REGION handle in the
+/// caller's own table, a1 = a 24-byte record the kernel writes:
+/// `{u64 base, u64 len, u64 rights}`. The geometry is the KERNEL's own
+/// record of what it mapped -- the holder is told where the region is,
+/// never asked where it thinks it is -- and the rights are the ones the
+/// capability carries (READ|WRITE|GRANT). Returns 0, or the errno of the
+/// refusal (EBADF for a handle that names nothing, EACCES for a handle of
+/// another kind).
+///
+/// What this row does NOT do is map anything: the region is mapped by the
+/// kernel before any holder can name it (that is what makes the capability
+/// a MAPPING authority rather than a request for one), so the row answers
+/// where the mapping is and how much of it the holder may use.
+pub const CALL_CAP_SHM: u64 = 0x4c;
+
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
 /// Bad user pointer: the validator refused the range.
@@ -275,6 +292,9 @@ fn map_cap_error(e: crate::experimental::caps::CapError) -> i64 {
         // the release's "would block", and this caller is already
         // blocked on another call, so it must finish that one first.
         CallPending => EAGAIN,
+        // A region id the kernel's own table does not know. ENOENT by
+        // name: the handle resolved, but what it named does not exist.
+        BadRegion => ENOENT,
         TableFull => ENOSPC,
     }
 }
@@ -515,6 +535,19 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             for (i, slot) in reply_block.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 + 496 + 8 * i as u64) as *const i64) };
             }
+            // The SHARED-REGION block (BUF+760..848, eleven qwords): the
+            // geometry row's ack, the record's base/length/rights as the
+            // program read them back, the sentinel it read THROUGH the
+            // mapping, the value it wrote through the same mapping, and
+            // the two refusals (a handle that names nothing, a handle of
+            // another kind).
+            if !crate::memory::paging::user_range_ok(a0 + 760, 88, false) {
+                return EFAULT;
+            }
+            let mut shm = [0i64; 11];
+            for (i, slot) in shm.iter_mut().enumerate() {
+                *slot = unsafe { core::ptr::read_unaligned((a0 + 760 + 8 * i as u64) as *const i64) };
+            }
             let mut payload = [0i64; 6];
             for (i, slot) in payload.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 + 448 + 8 * i as u64) as *const i64) };
@@ -663,6 +696,32 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && reply_block[7] == EACCES
                 && reply_block[8] == want_answer_rax
                 && reply_block[9] == ANSWER_BYTES;
+            // The SHARED-REGION leg. Three things make this a proof and
+            // not a self-check: the geometry is compared against the
+            // KERNEL's own mapping (crate::svc84_proof::PROOF_SHM), the
+            // sentinel the program read is the value the kernel wrote
+            // BEFORE ring 3, and the kernel then reads the region ITSELF
+            // to find the value ring 3 wrote. The last one is the two
+            // parties meeting in one page -- if the program were writing
+            // some other page of its own, the kernel would still read
+            // zero here.
+            let want_shm_base = crate::svc84_proof::PROOF_SHM as i64;
+            let want_shm_sentinel = crate::svc84_proof::SHM_KERNEL_SENTINEL as i64;
+            let want_shm_written = crate::svc84_proof::SHM_RING3_VALUE as i64;
+            let want_shm_rights =
+                (crate::experimental::caps::rights::READ | crate::experimental::caps::rights::WRITE | crate::experimental::caps::rights::GRANT) as i64;
+            let kernel_sees = unsafe {
+                core::ptr::read_volatile((crate::svc84_proof::PROOF_SHM + 8) as *const u64)
+            } as i64;
+            let shm_ok = shm[0] == 0
+                && shm[4] == want_shm_base
+                && shm[5] == 4096
+                && shm[6] == want_shm_rights
+                && shm[7] == want_shm_sentinel
+                && shm[8] == want_shm_written
+                && shm[9] == EBADF
+                && shm[10] == EACCES
+                && kernel_sees == want_shm_written;
             let stored_ok = stored[0] == want_gfx
                 && stored[1] == want_input
                 && stored[2] == want_enosys
@@ -675,10 +734,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && ipc_ok
                 && cap_ok
                 && input_poll_ok
-                && reply_ok;
+                && reply_ok
+                && shm_ok;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} -- {}
+            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} -- {}
 ",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
@@ -743,6 +803,15 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 reply_block[8] as u64,
                 reply_block[9] as u64,
                 if reply_ok { "matches" } else { "MISMATCH" },
+                shm[0] as u64,
+                shm[4] as u64,
+                shm[5] as u64,
+                shm[6] as u64,
+                shm[7] as u64,
+                shm[8] as u64,
+                shm[9] as u64,
+                shm[10] as u64,
+                if shm_ok { "matches" } else { "MISMATCH" },
                 if ok { "OK" } else { "FAILED" }
             );
             0
@@ -1243,6 +1312,37 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 Ok(_slot) => 0,
                 Err(e) => map_cap_error(e),
             }
+        }
+        CALL_CAP_SHM => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            // A geometry report carries no payload, no transfer and no
+            // rights claim: the record pointer is a1 and everything else
+            // must claim "none".
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            if from_ring3 && !crate::memory::paging::user_range_ok(a1, 24, true) {
+                return EFAULT;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            let (region, held) = match crate::experimental::caps::region_cap_for(identity, a0 as u32) {
+                Ok(v) => v,
+                Err(e) => return map_cap_error(e),
+            };
+            let geometry = match crate::experimental::caps::region_geometry_of(region) {
+                Ok(g) => g,
+                Err(e) => return map_cap_error(e),
+            };
+            let mut rec = [0u8; 24];
+            rec[0..8].copy_from_slice(&geometry.base.to_le_bytes());
+            rec[8..16].copy_from_slice(&geometry.len.to_le_bytes());
+            rec[16..24].copy_from_slice(&(held as u64).to_le_bytes());
+            unsafe {
+                core::ptr::copy_nonoverlapping(rec.as_ptr(), a1 as *mut u8, 24);
+            }
+            0
         }
         _ => {
             if from_ring3 {

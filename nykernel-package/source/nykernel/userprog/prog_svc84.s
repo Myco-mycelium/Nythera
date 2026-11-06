@@ -571,6 +571,65 @@ _start:
     mov 672(%rbx), %rcx
     mov %rcx, 568(%rbx)
 
+    /* 12. The release's SHARED-MEMORY kind (2026-11-06). The kernel
+       mapped one page and wrote a sentinel into it BEFORE ring 3 began;
+       the region capability (handle 3) is the authority to be TOLD where
+       that mapping is. Both sides then touch the same bytes: the program
+       reads the kernel's sentinel and writes its own value, which the
+       kernel reads back after the proof closes.
+       Results: ack BUF+760, base BUF+792, len BUF+800, rights BUF+808,
+       the sentinel read THROUGH the mapping BUF+816, the value written
+       back BUF+824, the forged-handle refusal BUF+832, the wrong-kind
+       refusal BUF+840. Record (24 bytes) at BUF+768. */
+    /* 12a. SHM_GEOMETRY (0x4c): region handle 3, record at BUF+768. */
+    mov $3, %rdi
+    lea 768(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 760(%rbx)
+    /* 12b. The record's three fields, read back out of the program's own
+       memory: base BUF+792, length BUF+800, rights BUF+808. */
+    mov 768(%rbx), %rcx
+    mov %rcx, 792(%rbx)
+    mov 776(%rbx), %rcx
+    mov %rcx, 800(%rbx)
+    mov 784(%rbx), %rcx
+    mov %rcx, 808(%rbx)
+    /* 12c. Read the KERNEL's sentinel through the mapping the record
+       names -- the address is taken from the record, not from a constant,
+       so a kernel that reported the wrong base fails here. */
+    mov 792(%rbx), %rcx
+    mov (%rcx), %rcx
+    mov %rcx, 816(%rbx)
+    /* 12d. Write OUR value through the same mapping (offset 8), which the
+       kernel reads back out of the region after the proof. */
+    movabs $0xfeedfacedeadbeef, %rcx
+    mov 792(%rbx), %rdx
+    mov %rcx, 8(%rdx)
+    mov %rcx, 824(%rbx)
+    /* 12e. A handle that names nothing: -EBADF at BUF+832. */
+    movabs $9999, %rdi
+    lea 768(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 832(%rbx)
+    /* 12f. A handle of ANOTHER kind (the endpoint cap at 1) asked for a
+       region's geometry: -EACCES (WrongType) at BUF+840. */
+    mov $1, %rdi
+    lea 768(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 840(%rbx)
+
     /* Close the proof (0x43): the kernel reads BUF back through the
        validator. */
     mov %rbx, %rdi

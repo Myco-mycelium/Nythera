@@ -26,16 +26,16 @@
 //!   reported error, never a silent drop (§3.1 "backpressure");
 //! * a dead holder's endpoints fail sends with a defined error (§7.1).
 //!
-//! NOT ported yet, named so their absence is checkable: the remaining
-//! capability kinds (BlockDevice, IoPort, FrameBuffer, SharedMem -- each
-//! has its own bootstrap/window machinery in the release, and this tree
-//! has neither a block device window nor a shared-memory region to attach
-//! them to; serving any of them today would be a costume, not a
-//! capability), badges, containers (NPS-007), notify. The INPUT kind IS
-//! ported (the router `kbdrt`'s prerequisite) and so is the REPLY kind
-//! (see the call/reply section below); every gap is a follow-on slice
-//! over THIS machine, and the kernel-side self-test (`run()`) proves each
-//! ported clause positive AND negative, mirroring the release's `run()`.
+//! NOT ported yet, named so their absence is checkable: the device/window
+//! kinds (BlockDevice, IoPort, FrameBuffer -- each needs a hardware window
+//! this tree does not expose to a holder yet; serving them today would be
+//! a costume, not a capability), badges, containers (NPS-007), notify.
+//! FOUR kinds ARE ported: Endpoint (the queue-based one), Input (the
+//! router `kbdrt`'s prerequisite), Reply (the one-shot answer right, with
+//! the CALL/REPLY pair and its blocking wait) and SharedMem (a region the
+//! kernel maps and both rings write); every gap is a follow-on slice over
+//! THIS machine, and the kernel-side self-test (`run()`) proves each ported
+//! clause positive AND negative, mirroring the release's `run()`.
 //!
 //! ---- the Input kind (the release's Phase-9/1-29 clauses) ------------
 //!
@@ -95,6 +95,8 @@ pub mod rights {
     pub const GRANT: u8 = 2;
     /// The device kinds' right (Input: may poll the raw event stream).
     pub const READ: u8 = 4;
+    /// The release's WRITE: may store through a shared region's mapping.
+    pub const WRITE: u8 = 8;
 }
 
 /// The capability kinds THIS machine knows. Endpoint is the queue-based
@@ -111,6 +113,13 @@ pub enum Kind {
     /// `reply` -- a second use is `BadHandle`, and it can never be
     /// transferred on (it holds no GRANT).
     Reply,
+    /// A mapping capability over a REGION of frames the kernel owns and
+    /// has mapped USER_ACCESSIBLE: `endpoint` holds the region id, and the
+    /// rights are the release's READ|WRITE|GRANT. Unlike an endpoint it
+    /// has no generation (a region is not revoked out from under its
+    /// holders) and no queue -- what it authorizes is the MAPPING, which
+    /// is why the row that serves it reports geometry and nothing else.
+    SharedMem,
 }
 
 /// A capability: which KIND, which endpoint, WHICH GENERATION of it
@@ -141,6 +150,9 @@ pub enum CapError {
     Widening,
     NotOwner,
     TableFull,
+    /// A handle that resolves to no region: the kernel's region table does
+    /// not know it (refused rather than treated as a zero-length one).
+    BadRegion,
     /// A BLOCKING call was begun by a caller that is already waiting for
     /// one -- two outstanding calls from one holder would need two
     /// answers and one wake slot, so the second is refused by name.
@@ -178,6 +190,17 @@ struct Holder {
     caps: Vec<Option<Capability>>,
 }
 
+/// A shared region: frames the kernel allocated, mapped USER_ACCESSIBLE at
+/// a known virtual address, with the geometry a holder is told. The bytes
+/// are the kernel's own memory once mapped, so what a holder writes IS
+/// what the kernel reads -- which is the whole point of the kind, and what
+/// the boot proof checks from both sides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    pub base: u64,
+    pub len: u64,
+}
+
 /// A whole system: per-holder tables + the endpoints. The gate owns one
 /// global instance (`init`/`prepare_task0_for_proof`); the self-test
 /// builds its own.
@@ -190,6 +213,7 @@ pub struct CapSystem {
     /// resumes. A caller that answers through its own endpoint instead
     /// never gets an entry.
     waits: Vec<Waiting>,
+    regions: Vec<Region>,
 }
 
 /// A caller blocked on a call. `task` is the scheduler task to wake --
@@ -204,7 +228,12 @@ struct Waiting {
 
 impl CapSystem {
     pub fn new() -> Self {
-        CapSystem { procs: Vec::new(), endpoints: Vec::new(), waits: Vec::new() }
+        CapSystem {
+            procs: Vec::new(),
+            endpoints: Vec::new(),
+            waits: Vec::new(),
+            regions: Vec::new(),
+        }
     }
 
     /// Creates a holder for task id `p`. Duplicate ids are refused
@@ -430,6 +459,49 @@ impl CapSystem {
         }
     }
 
+    /// KERNEL-ONLY: records a region it has already mapped, answering its
+    /// id (the release's `shm` region id, held in the capability's
+    /// `endpoint` field). The kernel owns the mapping; this table only
+    /// remembers the geometry so a holder can be told it.
+    pub fn create_region(&mut self, base: u64, len: u64) -> u32 {
+        let id = self.regions.len() as u32;
+        self.regions.push(Region { base, len });
+        id
+    }
+
+    /// The release's `bootstrap_region`: gives `to` a capability over
+    /// region `region`, rights masked to READ|WRITE|GRANT.
+    pub fn bootstrap_region(&mut self, to: usize, region: u32, want: u8) -> Result<u32, CapError> {
+        if region as usize >= self.regions.len() {
+            return Err(CapError::BadRegion);
+        }
+        let cap = Capability {
+            kind: Kind::SharedMem,
+            endpoint: region,
+            generation: 0,
+            rights: want & (rights::READ | rights::WRITE | rights::GRANT),
+        };
+        Self::install(self.live(to)?, cap)
+    }
+
+    /// The release's `region_cap`: (region id, rights), WrongType unless
+    /// the handle IS a region capability. No right is required here -- the
+    /// release asks only what the holder may do, and the answering row
+    /// reports READ|WRITE as it finds them rather than deciding for it.
+    pub fn region_cap(&mut self, p: usize, h: u32) -> Result<(u32, u8), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::SharedMem {
+            return Err(CapError::WrongType);
+        }
+        Ok((cap.endpoint, cap.rights))
+    }
+
+    /// The geometry behind a region id (the row's answer, not the holder's
+    /// claim): both are the kernel's own record of what it mapped.
+    pub fn region_geometry(&self, region: u32) -> Result<Region, CapError> {
+        self.regions.get(region as usize).copied().ok_or(CapError::BadRegion)
+    }
+
     /// Registers a BLOCKING call: `call_send`, plus the wait slot the
     /// answer will be deposited into. The caller's TASK is recorded
     /// because the machine only knows identities and the scheduler is
@@ -526,6 +598,10 @@ impl CapSystem {
                     // here, the answer is still a by-name refusal rather
                     // than a capability travelling on a single-use right.
                     Kind::Reply => return Err(CapError::NoRight),
+                    // A region capability's authority never stales: the
+                    // frames it names are the kernel's for as long as the
+                    // region exists, and there is no revoke on them.
+                    Kind::SharedMem => {}
                 }
                 Some(Capability { rights: want, ..held })
             }
@@ -724,6 +800,40 @@ pub fn reply_for(caller: usize, handle: u32, payload: &[u8]) -> Result<u32, CapE
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.reply(caller, handle, payload)
+    })
+}
+
+/// Access for the shared-memory row: (region id, rights the holder's
+/// capability carries). WrongType unless the handle IS a region
+/// capability -- an endpoint handle asked for geometry is refused by name.
+pub fn region_cap_for(caller: usize, handle: u32) -> Result<(u32, u8), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.region_cap(caller, handle)
+    })
+}
+
+/// Access for the geometry the row REPORTS: the kernel's own record of the
+/// mapping, not anything the holder supplied.
+pub fn region_geometry_of(region: u32) -> Result<Region, CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.region_geometry(region)
+    })
+}
+
+/// Proof-boot equip for the region kind: the kernel records the region it
+/// has ALREADY mapped and mints `to` a capability over it. Returns the
+/// region id and the holder's handle, so the caller and the kernel's
+/// read-back agree on the same granted index.
+pub fn prepare_region_for_proof(to: usize, base: u64, len: u64) -> (u32, u32) {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        let region = sys.create_region(base, len);
+        let handle = sys
+            .bootstrap_region(to, region, rights::READ | rights::WRITE | rights::GRANT)
+            .expect("caps region equip: bootstrap_region");
+        (region, handle)
     })
 }
 
@@ -973,6 +1083,38 @@ pub fn run() -> bool {
         sys.take_answer(CLIENT).as_deref() == Some(&b"early"[..])
     );
     check!("the consumed wait slot is gone", sys.take_answer(CLIENT).is_none());
+
+    // ---- the SHARED-MEMORY kind ----
+    // The region table's own half: the kernel records a mapping, the
+    // capability names it, and the geometry answered is the KERNEL's
+    // record. (Whether the bytes are genuinely shared is the boot proof's
+    // business -- it writes through the same frames from both rings.)
+    let region = sys.create_region(0x6000_0003_0000, 4096);
+    let region_h = sys.bootstrap_region(CLIENT, region, rights::READ | rights::WRITE).expect("self-test: region grant");
+    check!(
+        "region capability names its region and rights",
+        sys.region_cap(CLIENT, region_h) == Ok((region, rights::READ | rights::WRITE))
+    );
+    check!(
+        "region geometry is the kernel's record",
+        matches!(sys.region_geometry(region), Ok(g) if g.base == 0x6000_0003_0000 && g.len == 4096)
+    );
+    check!(
+        "an endpoint handle asked for geometry is WrongType",
+        sys.region_cap(CLIENT, cli_h) == Err(CapError::WrongType)
+    );
+    check!(
+        "an unknown region id is BadRegion",
+        sys.region_geometry(u32::MAX) == Err(CapError::BadRegion)
+    );
+    check!(
+        "bootstrapping an unknown region is refused",
+        sys.bootstrap_region(CLIENT, u32::MAX, rights::READ) == Err(CapError::BadRegion)
+    );
+    check!(
+        "a wider region rights claim is masked, not widened",
+        matches!(sys.bootstrap_region(CLIENT, region, 0xff), Ok(h) if sys.region_cap(CLIENT, h) == Ok((region, rights::READ | rights::WRITE | rights::GRANT)))
+    );
 
     // §4.3 revocation: O(1), outstanding caps dead, owner mints fresh
     check!("revoke", sys.revoke(SERVER, ep).is_ok());

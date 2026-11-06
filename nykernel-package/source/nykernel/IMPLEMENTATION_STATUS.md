@@ -5605,3 +5605,52 @@ memory. Nothing a ring-3 caller can do changed.
 Checks: `./build.sh` PASS; `qemu_boot_test.sh` PASS with the C/D/E tape, the
 gate-park proof and the new call proof all pinned and matched;
 `svc84_proof_test.sh` PASS unchanged (its CALL leg is the non-blocking dial).
+
+## The release's SharedMem kind, served (2026-11-06): one page, written by the
+## kernel and by ring 3, with the geometry the kernel recorded
+
+`caps::Kind::SharedMem` is a mapping capability: `endpoint` holds the region
+id, the rights are the release's READ|WRITE|GRANT, and it has no generation and
+no queue because what it authorizes is a MAPPING rather than a message. The
+kernel owns the region -- it allocates the frames, maps them USER_ACCESSIBLE
+and writes the first word BEFORE the transition to ring 3 -- so what a holder
+writes is what the kernel reads.
+
+`CAP_SHM` (0x4c) takes a region handle and a 24-byte record and answers the
+kernel's own geometry `{base, len, rights}`. It maps nothing: the mapping
+already exists, which is what makes the capability an authority over a mapping
+rather than a request for one. A handle that names nothing is `EBADF`, a handle
+of another kind is `EACCES` (WrongType), and an unknown region id behind a
+handle is `ENOENT` (`BadRegion`).
+
+The proof's step 12 is the two-party half, and it is the reason this kind is
+worth serving with no second process: the program reads the geometry out of its
+own memory, follows the base the RECORD names (not a constant) to read the
+kernel's sentinel `0x0123_4567_89ab_cdef` THROUGH the mapping, writes
+`0xfeed_face_dead_beef` at offset 8 through the same address, and the kernel's
+`PROOF_DONE` reads that offset out of the region itself. If ring 3 were writing
+some page of its own, the kernel would still read zero.
+
+Verified transcript lines (`tools/svc84_proof_test.sh`, passing, pinned):
+
+```
+  service-0x84 proof: ... session 7 equip -- endpoint 0 granted to the session's OWN table at handle 1 , INPUT cap at handle 2 , SHARED region 0 at 0x60000030000..0x60000031000 at handle 3 ...
+  SHM (ack 0x0 , base 0x60000030000 , len 0x1000 , rights 0xe , sentinel 0x123456789abcdef , wrote 0xfeedfacedeadbeef , forged 0xfffffffffffffff7 , kind 0xfffffffffffffff3) , SHM matches
+```
+
+The kernel self-test gained six more groups (`experimental caps: 48 clause
+groups`): the region table's own half -- the capability naming its region and
+rights, the geometry coming from the kernel's record, WrongType on an endpoint
+handle, `BadRegion` for an unknown id on both the lookup and the bootstrap path,
+and a wider rights claim being MASKED rather than widening.
+
+Two things this slice deliberately does NOT do, named so their absence is
+checkable: a holder cannot ASK for a region (the kernel maps first; the
+release's create/map/refcount lifecycle is still staged), and there is no
+`MAP` row returning a fresh virtual address per holder -- one region, one
+kernel-chosen window, told to whoever holds the capability.
+
+Checks: `./build.sh` PASS (ledger gate requires 0x4c, step 12 exercises it);
+`svc84_proof_test.sh` PASS with the SHM leg pinned and every earlier pin intact
+(the reply capability's handle moved from 3 to 4 because the region occupies
+slot 3 -- the pin was updated to say so); `qemu_boot_test.sh` PASS.
