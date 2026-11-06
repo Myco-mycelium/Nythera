@@ -253,17 +253,19 @@ _start:
     mov $0x47, %rax
     int $0x84
     mov %rax, 104(%rbx)
-    /* 7c. CAP_RECV (0x48): ENDPOINT 0, receive buffer BUF+192 claiming
+    /* 7c. CAP_RECV (0x48): ENDPOINT 0, receive buffer BUF+352 claiming
        8 bytes (>= the queued 6). Expected (sender << 32) | 6, and the
-       payload bytes land at BUF+192. The tail is zeroed FIRST: this
+       payload bytes land at BUF+352. The tail is zeroed FIRST: this
        freshly mapped page is not guaranteed zero-filled physical
-       memory, and the kernel's read-back reads BUF+192..200 as one
+       memory, and the kernel's read-back reads BUF+352..360 as one
        qword -- replicating payload bytes 6 and 7 as garbage would make
-       a correct kernel's copy MISMATCH by itself. */
+       a correct kernel's copy MISMATCH by itself. (The buffer moved
+       from BUF+192 to BUF+352 on 2026-11-05: the blocking-RECV legs'
+       stores took over 192..208.) */
     movabs $0, %rcx
-    mov %rcx, 192(%rbx)
+    mov %rcx, 352(%rbx)
     xor %rdi, %rdi
-    lea 192(%rbx), %rsi
+    lea 352(%rbx), %rsi
     mov $8, %rdx
     xor %r8, %r8
     movabs $-1, %r10
@@ -347,6 +349,58 @@ _start:
     mov $0x49, %rax
     int $0x84
     mov %rax, 168(%rbx)
+
+    /* 9. The IPC row's BLOCKING form (0x46 with r10 = 1) -- the
+       released 0x46 row's blocking dial, now SERVED (a budget, never a
+       parked wait: see the kernel's arm docs for why). Every leg
+       zero-tail-checks nothing else (answers land directly in rax). */
+    /* 9a. SEND to endpoint 0 (seq 42) so the blocking recv has a real
+       message: ack 0 at BUF+176. Carry-through zeros r10 = u64::MAX as
+       the "no transfer" claim and r8 as the row requires. */    xor %rdi, %rdi
+    movabs $42, %rsi
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x45, %rax
+    int $0x84
+    mov %rax, 176(%rbx)
+    /* 9b. BLOCKING RECV (dest 0, budget 1): the queued message answers
+       immediately with (sender << 32) | 42 = 0x70000002a (the sender is
+       the kernel-declared caller identity -- the recorded gate session,
+       7). Stored at BUF+184; the kernel records ITS OWN copy of the
+       answer and compares both sides in PROOF_DONE. */
+    xor %rdi, %rdi
+    movabs $1, %rsi
+    xor %rdx, %rdx
+    mov $1, %r10
+    xor %r8, %r8
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 184(%rbx)
+    /* 9c. BLOCKING RECV on the now-empty endpoint: refused -EAGAIN by
+       name -- the budget is spent, but a session's PARK would hang
+       (no waker exists for a session id), so the answer is a refusal,
+       never a hang. Stored at BUF+192 (the CAP buffer moved to
+       BUF+352). */
+    xor %rdi, %rdi
+    movabs $1, %rsi
+    xor %rdx, %rdx
+    mov $1, %r10
+    xor %r8, %r8
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 192(%rbx)
+    /* 9d. BLOCKING RECV on a nonexistent endpoint: refused -ENOENT --
+       the shape/budget/destination checks happen in that order, so the
+       destination check outranks the park attempt entirely. Stored at
+       BUF+200. */
+    movabs $0x4000, %rdi
+    movabs $1, %rsi
+    xor %rdx, %rdx
+    mov $1, %r10
+    xor %r8, %r8
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 200(%rbx)
 
     /* Close the proof (0x43): the kernel reads BUF back through the
        validator. */

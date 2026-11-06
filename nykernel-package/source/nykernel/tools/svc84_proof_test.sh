@@ -147,8 +147,14 @@ else
     # ring-3 send's message carries the KERNEL-DECLARed caller identity
     # -- the recorded gate session (7), not whoever owns the running
     # slot -- so the recv answer is (sender << 32) | seq with sender = 7.
-    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x700000007"* ]] && [[ "$VERDICT" == *"want 0x700000007"* ]]; then
-        ok "one sent message round-tripped through the kernel's real mailbox (session sender=7 seq=7 -> 0x700000007) and the shape/empty refusals were observed by name"
+    # The blocking dial's legs (2026-11-06): 0x46 with a_xfer=1 is SERVED
+    # for its instant half -- the queued message (seq 42) answers at once
+    # with the SESSION sender, so blocked == want-blocked == 0x70000002a;
+    # the empty retry is refused -EAGAIN (= 18446744073709551605 as the
+    # unsigned rendering) and the dead destination -ENOENT
+    # (= 18446744073709551614) -- by name, never parked, never "empty".
+    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x700000007"* ]] && [[ "$VERDICT" == *"want 0x700000007"* ]] && [[ "$VERDICT" == *"blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"want-blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"again 18446744073709551605"* ]] && [[ "$VERDICT" == *"baddest 18446744073709551614"* ]]; then
+        ok "one sent message round-tripped through the kernel's real mailbox (session sender=7 seq=7 -> 0x700000007), the blocking dial drained a queued message at once (session sender=7 seq=42 -> 0x70000002a) and answered EAGAIN/ENOENT by name, and the shape/empty refusals were observed"
     else
         bad "the IPC rows' round trip or refusals failed their read-back"
     fi

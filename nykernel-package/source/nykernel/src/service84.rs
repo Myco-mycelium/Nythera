@@ -38,10 +38,19 @@
 //! (`a_xfer`) or rights (`a_rights`), or a `seq` wider than u32, claims a
 //! shape this primitive does not own and is refused (`EINVAL`/`ERANGE`)
 //! rather than served truncated. The blocking form (`a_xfer == 1` on RECV)
-//! is refused `-ENOSYS` BY NAME: block-and-reschedule from a trap handler
-//! needs the saved-trap session machine the manifest parks, and "not here
-//! yet" must not be indistinguishable from "empty right now" (which is
-//! `-ENODATA`, a real answer).
+//! is SERVED for its INSTANT half as of 2026-11-06: a message already on
+//! the endpoint is drained and answered exactly as the plain dial would,
+//! with the budget (`a1`) checked first (shape, then budget, then
+//! destination -- the release's ordering). Its BLOCKED half is refused
+//! `-EAGAIN` BY NAME on an empty endpoint, NOT `-ENODATA`: parking from a
+//! session would hang it forever (a session id is never schedulable, and
+//! this tree has no waker to park on), so "waited and got nothing" must
+//! not masquerade as "checked and it was empty" -- the distinction the
+//! manifest's saved-trap session machine exists to draw. The IPC rows are
+//! sessionized (commit `a661b0a`): a message's sender is the SENDING
+//! session's id, so a ring-3 program's own SEND is recognisably its
+//! own -- and that is what makes the served instant half provable (the
+//! proof pins `0x70000002a`: session 7, seq 42).
 //!
 //! The numbers are ALL OUR OWN, in `0x40..`, and they must be: the
 //! release's ledger spans `0..28` contiguously (yield=0, SEND=1, RECV=2,
@@ -58,13 +67,14 @@
 //!
 //! and answers `-ENOSYS` for everything else. The port ledger for what that
 //! "everything else" is: the release's full process machine -- the payload/
-//! transfer/capability shape of SEND and the BLOCKING form of RECV,
+//! transfer/capability shape of SEND, the PARKED half of the blocking RECV
+//! (needs a waker, hence the saved-trap session machine),
 //! capability rights and transfers, spawn, shared memory
 //! (`porting/release-1-71/src/experimental/syscall_demo.rs` and its
 //! `capability.rs`/`shm.rs`) -- is one connected surface, not five
-//! independent calls: full SEND requires capability tables, blocking RECV
-//! requires
-//! block-and-reschedule with a saved trap, either requires a process
+//! independent calls: full SEND requires capability tables, the parked
+//! blocking RECV requires block-and-reschedule with a saved trap and a
+//! waker to be rescheduled BY, either requires a process
 //! identity (which `PROCESS_SELF` now answers from this tree's own task
 //! model, as the surface's first scheduler-backed process call) and
 //! sessions the PORT_MANIFEST parks for its last steps. What those calls
@@ -278,6 +288,13 @@ static WROTE_H: AtomicU32 = AtomicU32::new(0);
 static IPC_SENT_DEST: AtomicU64 = AtomicU64::new(0);
 static IPC_SENT_SEQ: AtomicU64 = AtomicU64::new(0);
 static RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
+/// The blocking form's INSTANT half answer, recorded when the ring-3
+/// blocking recv consumed a queued message (the same shape as
+/// RECVD_VALUE). PROOF_DONE compares the program's stored answer
+/// against THIS. The blocked half can never answer: a session's park
+/// has no waker (a session id is never a schedulable task), so the
+/// arm refuses with EAGAIN when a budget survives the drain.
+static BLOCKED_RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
 /// The capability leg's differential records: what the drain actually
 /// handed back BEYOND what rax shows -- the received payload's first 8
 /// bytes (zero-padded) and the packed (sender<<32|len) return. The
@@ -358,7 +375,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             0
         }
         CALL_PROOF_DONE => {
-            // Twenty-two qwords: the five older results (gfx, input, enosys,
+            // Twenty-six qwords: the five older results (gfx, input, enosys,
             // (unused), self), the four widened-arg markers at BUF+40..+64,
             // the IPC records (ack BUF+72, recv BUF+80, shape refusal
             // BUF+88, empty-real BUF+96), and the capability records: the
@@ -369,15 +386,21 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // empty answer (BUF+152) and the forged-handle refusal
             // (BUF+168 -- STORED INDEX 21: index 20 is offset 160, the
             // payload staging area, and the proof's first run read the
-            // payload bytes as "the forged answer" exactly that way). The CAP PAYLOAD is compared at BUF+192..+198 and
-            // the INPUT POLLED BYTES at BUF+208/+224 (below).
-            if !crate::memory::paging::user_range_ok(a0, 176, false) {
+            // payload bytes as "the forged answer" exactly that way);
+            // and the BLOCKING-RECV legs (2026-11-06): the send ack
+            // (BUF+176 -> index 22), the instant answer (BUF+184 ->
+            // index 23), the empty retry's EAGAIN (BUF+192 -> index 24)
+            // and the dead destination's ENOENT (BUF+200 -> index 25).
+            // The CAP PAYLOAD is compared at BUF+352..+360 (it moved out
+            // of 192..208 to make room for those legs) and the INPUT
+            // POLLED BYTES at BUF+208/+224 (below).
+            if !crate::memory::paging::user_range_ok(a0, 208, false) {
                 return EFAULT;
             }
             // Read the results back OUT OF USER MEMORY: this is the part
             // the registers alone cannot prove, because it shows the
             // ring-3 program actually received and stored them.
-            let mut stored = [0i64; 22];
+            let mut stored = [0i64; 26];
             for (i, slot) in stored.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 as *const i64).add(i)) };
             }
@@ -402,6 +425,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // construction -- sender 0, seq 7), and the two shape refusals
             // must have arrived by name.
             let want_ipc = RECVD_VALUE.load(Ordering::Relaxed) as i64;
+            // The BLOCKING legs are judged the same way: the kernel's own
+            // record of what the instant half handed back (sender = the
+            // gate session, so 0x70000002a for seq 42) compared against
+            // the program's stored copy. The empty retry's EAGAIN and the
+            // dead destination's ENOENT are pinned as constants -- they
+            // are REFUSALS, and a by-name refusal is its own pin.
+            let want_blocked = BLOCKED_RECVD_VALUE.load(Ordering::Relaxed) as i64;
             // The capability leg is judged the same differential way: the
             // drain's actual answer (packed sender<<32|len, recorded when
             // the ring-3 recv ran), the drained payload's first 8 bytes,
@@ -431,7 +461,18 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[10] == want_ipc
                 && want_ipc != 0
                 && stored[11] == EINVAL
-                && stored[12] == ENODATA; // exists-but-empty, a REAL answer
+                && stored[12] == ENODATA // exists-but-empty, a REAL answer
+                // The BLOCKING legs: the queued message answered
+                // instantly on BOTH sides with the same kernel-recorded
+                // value (nonzero by construction), the empty retry was
+                // refused EAGAIN BY NAME (never parked, never answered
+                // as empty), and the dead destination was refused
+                // ENOENT.
+                && stored[22] == 0
+                && stored[23] == want_blocked
+                && want_blocked != 0
+                && stored[24] == EAGAIN
+                && stored[25] == ENOENT;
             // The capability leg: the ack, the round-trip rax, two
             // refusals by name (a forged handle and an oversize claim),
             // and the payload the program ACTUALLY holds matching both
@@ -444,8 +485,8 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // 0x0000_7369_7172_796E, so both sides of the compare are the
             // SAME representation.
             const CAP_SENTINEL: u64 = 0x0000_7369_7172_796E;
-            let held_first8 = if crate::memory::paging::user_range_ok(a0 + 192, 8, false) {
-                unsafe { core::ptr::read_unaligned((a0 + 192) as *const u64) }
+            let held_first8 = if crate::memory::paging::user_range_ok(a0 + 352, 8, false) {
+                unsafe { core::ptr::read_unaligned((a0 + 352) as *const u64) }
             } else {
                 u64::MAX
             };
@@ -505,7 +546,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && input_poll_ok;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} ,ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {}) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} -- {}
+            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {}) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} -- {}
 ",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
@@ -523,6 +564,10 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 want_ipc as u64,
                 stored[11] as u64,
                 stored[12] as u64,
+                stored[23] as u64,
+                want_blocked as u64,
+                stored[24] as u64,
+                stored[25] as u64,
                 stored[13] as u64,
                 stored[14] as u64,
                 stored[15] as u64,
@@ -605,23 +650,49 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             }
         }
         CALL_IPC_RECV => {
+            // Shape first: no payload pointer, no transfer token, no
+            // rights claim (this primitive models messages as
+            // (sender, seq) ONLY -- the same honesty gate as SEND's).
             if a2 != 0 || a_rights != 0 {
                 return EINVAL;
             }
-            if a1 != 0 {
-                return EINVAL;
-            }
+            // 0x46's two dials: a_xfer == 0 is the plain drain (the
+            // callee's "no message" claim lives in a1 = 0), a_xfer == 1
+            // is the RELEASE'S BLOCKING form -- SERVED as of 2026-11-06,
+            // but ONLY its instant half: a message WAS here, the drain
+            // returns it. The BLOCKED half (the manifest's parked park)
+            // cannot be served from a session -- parking would hang it,
+            // and the budget remains -- so that path is EAGAIN BY NAME
+            // below. Anything else is a shape lie.
             match a_xfer {
-                0 => {}
-                // The release-typed BLOCKING form. Refused BY NAME (see the
-                // module docs): serving it needs the session machine, and
-                // answering it with ENODATA would let a caller spin believing
-                // "not here yet" meant "empty".
-                1 => return ENOSYS,
+                0 | 1 => {}
                 _ => return EINVAL,
             }
-            // A nonexistent endpoint is refused, not answered as empty:
-            // try_receive returns None for both, and the two differ.
+            let blocking = a_xfer == 1;
+            if blocking {
+                // The blocking form's second arg is the DRAIN BUDGET
+                // ("try to hand me up to this many"): it must be a sane
+                // positive count -- needs at least one of them (calls
+                // come one message at a time through the gate), so a
+                // zero budget has no answer, and a budget wider than
+                // the primitive's u32 is a caller bug.
+                if a1 > u32::MAX as u64 {
+                    return ERANGE;
+                }
+                if a1 == 0 {
+                    return EINVAL;
+                }
+            } else if a1 != 0 {
+                // The plain drain RECV takes no message: a nonzero a1
+                // is a caller bug, refused by name (the release's own
+                // int parser already refuses the negative field).
+                return EINVAL;
+            }
+            // A nonexistent endpoint is refused BEFORE any receive
+            // (try_receive answers None for both cases, and the two
+            // differ: the caller must see where the fault was, not
+            // just "nothing came"). Same order for both dials: shape,
+            // budget/blocking sanity, destination.
             let dest = a0 as usize;
             if dest >= crate::experimental::ipc::endpoint_count() {
                 return ENOENT;
@@ -630,9 +701,30 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 Some(m) => {
                     let v = ((m.sender as u64) << 32) | m.seq as u64;
                     if from_ring3 {
-                        RECVD_VALUE.store(v, Ordering::Relaxed);
+                        if blocking {
+                            BLOCKED_RECVD_VALUE.store(v, Ordering::Relaxed);
+                        } else {
+                            RECVD_VALUE.store(v, Ordering::Relaxed);
+                        }
                     }
                     v as i64
+                }
+                None if blocking => {
+                    // The instant half is drained and the budget
+                    // remains: the release's BLOCKING dial waits.
+                    // Here the arm REFUSES EAGAIN BY NAME instead of
+                    // parking. Sharp edge, stated: a session's park
+                    // has NO WAKER -- a session id is never a
+                    // schedulable task (see scheduler::session_identity),
+                    // and unblock_task keys on the house scheduler's
+                    // task ids -- so parking a ring-3 caller on its
+                    // session would hang it FOREVER. The manifest's
+                    // "sessions as schedulables" step (tile 19) is
+                    // what would make the wait meaningful; until that
+                    // lands this is an honest, released answer: come
+                    // back and drain again. Never called from the
+                    // kernel's own paths.
+                    EAGAIN
                 }
                 None => ENODATA,
             }
@@ -947,7 +1039,17 @@ pub fn self_test() -> bool {
         && dispatch(CALL_IPC_SEND, 0, u32::MAX as u64 + 1, 0, u64::MAX, 0, 0) == ERANGE
         && dispatch(CALL_IPC_SEND, 0x4000, 7, 0, u64::MAX, 0, 0) == ENOENT
         && dispatch(CALL_IPC_RECV, 0x4000, 0, 0, 0, 0, 0) == ENOENT
-        && dispatch(CALL_IPC_RECV, 0, 0, 0, 1, 0, 0) == ENOSYS // the BLOCKING form
+        // The BLOCKING form (a_xfer == 1) is SERVED now; its refusals
+        // are exercised by name at the kernel's own dispatch: a dead
+        // destination, then the zero and over-wide budget claims on an
+        // EXISTING endpoint. (The EAGAIN answer itself is queue-state-
+        // dependent, so the ring-3 legs in prog_svc84.s own it -- there
+        // the queue is provably empty after the programmable drain.)
+        // The arm never parks on ANY caller: the session-waker sharp
+        // edge in the arm itself explains why.
+        && dispatch(CALL_IPC_RECV, 0x4000, 1, 0, 1, 0, 0) == ENOENT
+        && dispatch(CALL_IPC_RECV, 0, 0, 0, 1, 0, 0) == EINVAL // budget 0 is no budget
+        && dispatch(CALL_IPC_RECV, 0, u32::MAX as u64 + 1, 0, 1, 0, 0) == ERANGE
         && dispatch(CALL_IPC_RECV, 0, 7, 0, 0, 0, 0) == EINVAL; // RECV takes no message
 
     // The capability rows on a NORMAL boot: nothing was ever granted, and
