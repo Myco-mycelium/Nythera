@@ -5496,3 +5496,44 @@ Checks: `./build.sh` PASS (the ledger gate now requires 0x4a/0x4b to be
 exercised, and `prog_svc84.s` step 11 does); `svc84_proof_test.sh` PASS with
 every earlier pin intact; `qemu_boot_test.sh` PASS with the gate-park and
 session-contract lines unchanged.
+
+## The long gates, rerun on the call/reply tree (2026-11-06, at `ac34c8c`):
+## all three green, and they were green two increments earlier too
+
+The three gates that need their own build (`./build.sh` does not cover them)
+were rerun on this round's final HEAD, in sequence, with the tree untouched
+while they ran:
+
+```
+UEFI_EXIT=0
+PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited
+      cleanly; the GOP framebuffer was handed over, bound, and the shell
+      rendered into it
+PARITY_EXIT=0
+PASS: BIOS and UEFI kernels' demo chains are line-identical modulo the
+      documented environment-fact allowlist
+      (BIOS 474 chain lines == UEFI 474 chain lines; allowlist deltas only)
+SECBOOT_EXIT=0
+PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose
+      signer is chained to the enrolled carrier root, refuses both the
+      unsigned one and the tampered one, and the two revocation legs
+      (hash-typed and whole-cert) are refused by firmware; the stub never ran,
+      so the evidence is the composed signature lists (92-byte
+      EFI_CERT_X509_SHA256, 932-byte EFI_CERT_X509)
+      firmware under test: uefi/tools/OVMF_CODE_4M.ms.fd
+      dbx shape probe: 1
+```
+
+Two notes worth keeping. First, the parity gate compares 474 chain lines from
+both boot paths, so the whole demo chain this round touched -- the per-task
+session store, the gate-park proof, and the CALL/REPLY rows -- is proven
+identical under BIOS and UEFI. Second, the secboot gate's `dbx shape probe: 1`
+is the part that would fail silently if the composed revocation entries ever
+stopped reaching the firmware: it re-reads the 975-byte whole-cert entry the
+probe firmware served and confirms the stub saw it byte for byte.
+
+The earlier `nohup` wrapper for this sequence died with the tool call that
+started it, before the first gate finished building -- recorded here because
+a gate sequence that never runs must not be mistaken for one that passed. The
+run above was started as a managed background process and polled to its exit
+codes.
