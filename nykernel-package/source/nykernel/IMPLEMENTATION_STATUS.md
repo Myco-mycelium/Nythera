@@ -5260,3 +5260,111 @@ want-blocked 0x70000002a , again 18446744073709551605 , baddest
 18446744073709551614)` and `IPC matches`; `qemu_boot_test.sh` PASS (Ready,
 the C/D/E blocking-receive tape pinned and matched). UEFI, secboot and
 parity gates NOT rerun, for the same reason as the increment above.
+
+## The long gates, rerun on the blocking-receive tree (2026-11-06, at `d319ef6`): the boot-path
+## gates were stale by two commits and are green again
+
+The blocking-receive increment (`3d65e3d`) and the session generalization
+(`a661b0a`) had only been checked by the three quick gates. The three long
+ones were rerun against that exact tree, in this order, and all passed:
+
+* `qemu_uefi_boot_test.sh` PASS -- OVMF booted the stub, the kernel reached
+  `BootPhase::Ready`, the GOP framebuffer was handed over and bound, the
+  shell rendered, and the C/D/E blocking-receive tape is pinned and matched.
+* `qemu_boot_parity_diff.sh` PASS -- the BIOS and UEFI demo chains are
+  line-identical modulo the documented environment-fact allowlist.
+* `qemu_uefi_ms_secboot_test.sh` PASS -- the enforcing OVMF accepted the
+  Authenticode-signed stub chained to the enrolled carrier root, refused the
+  unsigned and one-byte-tampered stubs, refused the leaf-signed stub under a
+  hash-typed dbx revocation AND under a whole-certificate one, accepted a
+  KeK-signed `EFI_VARIABLE_AUTHENTICATION_2` dbx update at SetVariable time
+  (read back byte-for-byte) while refusing its non-KeK-signed twin, and the
+  kernel reached Ready; the whole-cert dbx shape probe read 1, i.e. the stub
+  saw the composed entry byte-for-byte.
+
+No code changed for this: the point was to retire "not rerun" as an open
+question on that pair, not to fix anything.
+
+## Sessions as schedulables (2026-11-06, commit `ba94b49`): the blocked receive
+## parks on its task instead of refusing, when the caller has a home
+
+The blocked half of the blocking receive refused `EAGAIN` for every caller,
+with a stated reason: a session id is not a schedulable, the dispatcher keys
+on the TCB table, and a park on an id it has never heard of has no waker.
+That reason is now only half true, and the half that is false is the useful
+one.
+
+`scheduler` records the session's HOME: `attach_session_for(sid, task)`
+stores the session and the house task it is schedulable on, `session_task()`
+reads it back, `withdraw_session()` clears the home WITH the id (a withdrawn
+session can never answer "parkable"), and `session_is_schedulable()` answers
+the only question a parking row may ask -- is the home a real task, and is it
+the one running? Task 0 is deliberately NOT a home: it is the kernel's boot
+context, and parking it would park the core.
+
+The gate's blocking RECV then delegates to `ipc::receive` for a caller with a
+home: the task's TCB goes RUNNING -> BLOCKED inside the trap (the trap frame
+stays on its kernel stack; the resume returns into the same arm), the next
+`ipc::send` moves it BLOCKED -> READY with the message waiting, and `a1` is
+read as the primitive's EMPTY-WAKE budget -- an exhausted budget is the typed
+`ReceiveTimedOut`, answered here as `EAGAIN` ("waited, woke, still nothing"),
+never `ENODATA`. Callers with no home keep the released `EAGAIN` by name.
+
+The honest scope: the ring-3 proof's caller and the kernel self-test run on
+task 0, and the ring3-scheduler POC's sessions live in their own machine, so
+the PARK ITSELF is exercised through `ipc::receive` (the C/D/E tape proves it
+every boot) rather than from a gate call. Hosting the gate on a house task is
+the step that would close that gap, and it is what "sessions as schedulables"
+still owes.
+
+Checks: `./build.sh` PASS; `svc84_proof_test.sh` PASS (ring-3 verdict
+unchanged -- its caller has no home and keeps its EAGAIN legs);
+`qemu_boot_test.sh` PASS with the contract line extended: "a session attached
+for task 1 names that home while task 0's names none and is not schedulable,
+and withdrawing clears the home -- OK".
+
+## The release's payload dials, served (2026-11-06, commit `f01d867`): messages
+## carry bytes, copied into the kernel at the gate and drained by count
+
+`a2 != 0` on 0x45/0x46 was `EINVAL` since the rows landed, and the docs said
+why: the primitive modelled a message as `(sender, seq)` only, so accepting a
+buffer claim would answer a message the other end never receives. The
+primitive carries the bytes now, so the claim is served.
+
+`IpcMessage` gains `payload: [u8; 64]` + `len`; 64 is the release's own
+message size (`buflen >= 64`) and the same bound `caps::MAX_PAYLOAD` uses.
+Bytes are copied INTO THE KERNEL at send time (a queue entry never holds a
+user pointer), `payload()` exposes only the live prefix, and
+`with_payload` refuses an oversize body instead of truncating.
+`IpcMessage::new(sender, seq)` keeps every pre-existing caller working.
+
+One register selects the dial. SEND: `a2 == 0` is the surface's `(sender,
+seq)` form; `a2 != 0` is the release's `SEND(handle, buf, len)` -- `a1` a
+user buffer, `a2` its length, `EMSGSIZE` above 64, `EFAULT` when unreadable,
+and seq 0 in the body (the release has no seq field; inventing one would be a
+number the sender never claimed). RECV: `a2 != 0` is `RECV(idx, buf, buflen)`
+-- `buflen` below 64 is `EINVAL` (the release's floor), the destination must
+validate WRITABLE, and the answer is the BYTE COUNT with the bytes in the
+caller's buffer, on both the instant and the parked path (one `answer`
+closure, so the two cannot drift). Transfer tokens and rights stay `EINVAL`:
+a message cannot carry a capability yet.
+
+The proof's step 10 pins it end to end -- 8-byte "payload!" SEND (ack 0),
+RECV into the release's 64-byte buffer (answer 8), the bytes read back out of
+the program's own memory (`0x2164616f6c796170`, so a kernel that answered a
+length and copied nothing fails), then the three refusals by name: 65 bytes
+`EMSGSIZE`, null pointer `EFAULT`, 32-byte buflen `EINVAL`. Two call-site
+bugs the proof caught on its first runs are documented at the site: the
+payload RECV legs passed `r10 = -1` (SEND's "no transfer" claim, an unknown
+dial on RECV), and the old 6c leg's "payload claim in rdx" had become a
+SERVED dial -- the shape refusal it pins moved to an unknown `a_xfer`, and 6d
+now clears the register 6c sets.
+
+Checks: `./build.sh` PASS; `svc84_proof_test.sh` PASS with the verdict's ipc
+parens carrying `payload (ack 0 , len 8 , bytes 0x2164616f6c796170 , wide
+18446744073709551526 , null 18446744073709551602 , short
+18446744073709551594)` and `IPC matches`; `qemu_boot_test.sh` PASS (the ring-0
+shape rows now pin the payload refusals too). The UEFI, secboot and parity
+gates were NOT rerun after this increment: it touches the gate and the
+mailbox, neither of which the boot-path gates' kernel-side chain differs on,
+and the three were green two commits earlier (above).
