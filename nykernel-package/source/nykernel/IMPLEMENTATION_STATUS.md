@@ -5164,3 +5164,99 @@ firmware, the KeK-signed dbx update accepted at SetVariable, probe and
 cross-build controls green); `qemu_boot_parity_diff.sh` PASS (the demo
 chain line-identical between the two firmware paths modulo the
 documented environment-fact allowlist).
+
+## The gate's session machine, generalized (2026-11-06, commit `a661b0a`): sessions live in
+## the scheduler, recorded at every ring-3 task switch and withdrawn at ring 0
+
+The first slice recorded a session ONCE, at the proof's equip path, because
+that caller never returns. The release's machine is not that: a session is
+recorded when a task ENTERS ring 3 and forgotten when it resumes in ring 0,
+on every switch — including the preemptive ones, which do not pass through
+any syscall at all. That is now the tree's shape.
+
+The store moved where the machine actually lives: `experimental::scheduler`
+owns it (`NO_SESSION = usize::MAX`, `attach_session`, `withdraw_session ->
+Option<usize>`, `session_identity()`), and the recording points are the
+scheduler's own ring-3 transitions — `ring3_scheduler`'s cooperative
+dispatches and its preemptive switch — with the withdraw at every ring-0
+resume (`finale`, `preempt_finale`), where the returned id is asserted
+against the one that was attached (a mismatched withdraw is a machine bug
+being reported by the machine, not a silent leak). The proof's session id
+stays 7, and `ring3_scheduler`'s own POC tasks now take ids from
+`POC_SESSION_BASE = 100`, one clear of the house task ids 0..6, so the two
+id spaces cannot collide in a boot that runs both.
+
+`service84::attach_gate_session` is now a delegating shell over the
+scheduler's API (docs say so, so the next slice removes a call, not a
+machine), and the three capability rows plus IPC read
+`scheduler::session_identity()` directly. The self-test
+`self_test_session_contract` proves attach/withdraw/withdraw-again at the
+kernel's own boundary, hooked in `src/lib.rs` after the terminal check.
+
+The IPC rows are SESSIONIZED here, which is what makes the next increment
+provable: `ipc::send` tags a message with the SENDING session's id (the
+arbiter compares `msg.sender` against `scheduler::session_identity()`, not
+against the running task), so the proof's own SEND reaches it as
+`0x700000007` even though the message travels through the house mailbox.
+Normal boots attach no session, so every ring-0 caller keeps task 0's
+identity and the transcripts are untouched.
+
+Checks: `./build.sh` PASS (ledger gate + trust walk); `svc84_proof_test.sh`
+PASS (verdict unchanged except the sender is now machine-recorded:
+`recv 0x700000007`, `caps recv 0x700000006`); `qemu_boot_test.sh` PASS
+(Ready; the C/D/E blocking-receive tape pinned and matched). The UEFI,
+Microsoft-secure-boot and BIOS/UEFI parity gates were NOT rerun for this
+increment: it touches no boot path, the stub, or the carrier — the boot
+transcript is the evidence, and re-running the ~30-minute secboot walk
+would re-prove the firmware's carrier, not this change.
+
+## The release's BLOCKING receive, served (2026-11-06, commit `3d65e3d`): 0x46's
+## blocked-wait dial answers its instant half and refuses its parked half by name
+
+The 0x46 row carries two dials and always did: `a_xfer == 0` is the plain
+drain this tree has served since the IPC increment, `a_xfer == 1` is the
+release's BLOCKING receive, refused `-ENOSYS BY NAME` from the surface's
+first version. The refusal is now gone and replaced by the honest half of
+the release's answer.
+
+Served: when a message WAS on the endpoint, the drain hands it back exactly
+as the plain dial does, with the release's ordering — shape (`a2` payload
+pointer, `a_rights`), then the budget (`a1`: wider than u32 -> ERANGE, zero
+-> EINVAL, both before the destination is looked at), then the destination
+(a dead endpoint -> ENOENT, refused before any receive so the caller learns
+where the fault was instead of "nothing came").
+
+Refused by name: the BLOCKED half — budget remains, endpoint empty — is
+`EAGAIN`, never `ENODATA`. "Waited and got nothing" must not masquerade as
+"checked and it was empty"; that distinction is the whole reason the
+manifest parks the saved-trap session machine. The sharp edge is stated in
+the arm: it never parks on ANY caller. A session's park has no waker — a
+session id is never a schedulable task and `unblock_task` keys on the house
+scheduler's task ids — so parking a ring-3 caller on its session would hang
+it forever. EAGAIN is therefore a RELEASED answer (come back and drain
+again), and sessions-as-schedulables is the step that would make the wait
+meaningful.
+
+Provable because of the sessionization above: the proof's SEND reaches the
+endpoint as session 7, so step 9's legs pin both sides of the instant
+answer. `prog_svc84.s` gains 9a SEND(dest 0, seq 42) -> ack 0, 9b blocking
+RECV -> `0x70000002a` on BOTH sides (the kernel's `BLOCKED_RECVD_VALUE`
+against the program's stored copy), 9c the empty endpoint's `-EAGAIN`, 9d
+the dead destination's `-ENOENT`. The capability payload buffer moved
+BUF+192 -> BUF+352 (tail zeroed first; the read-back's `held_first8`
+compares there), `PROOF_DONE` grew 22 -> 26 qwords with its user-range
+check widened to 208, and the verdict carries `blocked` /
+`want-blocked` / `again` / `baddest` inside the ipc parens. The kernel
+self-test replaces its stale ENOSYS row with the dial's three deterministic
+refusals (ENOENT, EINVAL, ERANGE); the queue-state-dependent EAGAIN is
+owned by the ring-3 legs, where the queue is provably empty after the
+programmable drain. No new call numbers: the ledger gate's shape is
+unchanged at ten served calls (0x40..0x49), all exercised.
+
+Checks: `./build.sh` PASS; `svc84_proof_test.sh` PASS with `ipc round trip
+(send-ack 0x0 , recv 0x700000007 , want 0x700000007 , shape
+18446744073709551594 , empty 18446744073709551555 , blocked 0x70000002a ,
+want-blocked 0x70000002a , again 18446744073709551605 , baddest
+18446744073709551614)` and `IPC matches`; `qemu_boot_test.sh` PASS (Ready,
+the C/D/E blocking-receive tape pinned and matched). UEFI, secboot and
+parity gates NOT rerun, for the same reason as the increment above.
