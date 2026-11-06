@@ -60,6 +60,10 @@ as --64 userprog/prog_b.s -o userprog/prog_b.o
 ld -n -T userprog/linker.ld -o userprog/userprog_b.elf userprog/prog_b.o
 as --64 userprog/prog_svc84.s -o userprog/prog_svc84.o
 ld -n -T userprog/linker_svc84.ld -o userprog/userprog_svc84.elf userprog/prog_svc84.o
+# The 0x84 proof's SECOND ring-3 process: its own load address (0x7...),
+# linked and embedded the same way as the first.
+as --64 userprog/prog_svc84_peer.s -o userprog/prog_svc84_peer.o
+ld -n -T userprog/linker_svc84_peer.ld -o userprog/userprog_svc84_peer.elf userprog/prog_svc84_peer.o
 as --64 userprog/prog_yield.s -o userprog/prog_yield.o
 ld -n -T userprog/linker_yield.ld -o userprog/userprog_yield.elf userprog/prog_yield.o
 as --64 userprog/prog_spin.s -o userprog/prog_spin.o

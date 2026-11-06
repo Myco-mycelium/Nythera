@@ -5682,3 +5682,108 @@ The parity line count is the useful number: 526 chain lines on both boot paths
 (474 before this round), so the two new boot proofs -- the parked caller and the
 two-session call, and the shared region -- produce identical transcripts under
 BIOS and UEFI rather than merely passing on one.
+
+## Two ring-3 processes, one parked call, one counted region (2026-11-06):
+## the scheduler's per-task trap stack, CAP_EXIT, and the region's lifetime
+
+The previous section's call proof had the kernel on one side. That is a true
+statement about the machine and a false one about a SERVICE: no program ever
+parked on a call, and no two capability tables ever met. This slice makes the
+ring-3 proof two PROCESSES -- each its own scheduler task, its own session, its
+own trap stack -- and gives the SharedMem kind the release's lifetime.
+
+**Per-task trap stacks (`scheduler::TaskControlBlock::rsp0`).** `TSS.RSP0` is
+one machine-wide register, but a trap from ring 3 pushes its frame on the
+RUNNING task's kernel stack. With one ring-3 task the two are the same thing
+and nobody notices; with two, the second task's trap would land on the first
+task's stack -- exactly where the first task's PARKED trap frame lives. So the
+TCB records each task's trap-stack top, `yield_task` writes it into the TSS
+before every switch to a task that has one, and task 0 (the coordinator) keeps
+the boot's own value. Shared RSP0 across parked ring-3 tasks is a silent stack
+smash, and it is the reason this could not be done before.
+
+**A ring-3 caller parks on its call.** The blocking dial already existed; what
+was missing was a caller that COULD park. `svc84_proof::run` now spawns the
+proof's tasks instead of entering ring 3 from task 0, and task 0 becomes the
+COORDINATOR: it spawns, pumps round-robin until both processes are
+TERMINATED, and only then reads the results back -- so nothing it observes is
+a process still running. A ring-3 caller parks inside its trap; the switch
+saves that stack pointer, and the resume returns through the same trap and
+`iretq`. Nothing touches the parked task's kernel stack in between, which is
+why this is a park of a TASK and not a re-entry.
+
+**Two processes, two directions, two wakes.** The rendezvous uses both
+primitives, each waking the other out of a park:
+
+1. process A blocks on a receive at mailbox 0 and goes off-CPU; B's SEND
+   answers it (the value it wakes with is B's message, recorded in
+   `WOKEN_RECVD_VALUE` -- distinct from the instant drain's record, so "the
+   park happened" is a value and not an assertion);
+2. A runs the rest of its capability steps, sends "go" to mailbox 1, then
+   calls B's endpoint and parks;
+3. B, which parked on mailbox 1, wakes, drains the call, writes the region,
+   answers, and EXITs;
+4. A resumes with B's bytes in its own buffer.
+
+**The region's lifetime.** `RegionEntry` counts live CAPABILITIES (not
+holders), `CAP_SHM_CLOSE` (0x4d) gives one back, and the record is freed
+exactly when the count reaches zero -- so a close by one of three capabilities
+is not a teardown. `CAP_EXIT` (0x4e) is the other way a count moves: it
+releases the caller's whole table (region counts included), withdraws the
+session identity, and terminates the task through the scheduler's own
+lifecycle. A holder that never closes anything still cannot pin a dead region
+alive. `region_live`/`region_holders` are the read-backs the proof judges:
+after both processes are gone the record is gone and names nothing.
+
+**What the verdict says now** (`tools/svc84_proof_test.sh`, passing, pinned):
+
+```
+TWO-PROCESS (close 0x0 , geometry 0x0 , call 0x8 , request 0x21416d6f7266 ,
+  answer 0x21426d6f7266 , offset8 0xfeedfacedeadbeef , offset16
+  0xbeefcafedead1234 , last 0x0 , twice 0xfffffffffffffff7 , region live no
+  holders Some(0) , exits 2 session 7 released 1) , PEER (ack 0x0 , base
+  0x60000030000 , read 0xfeedfacedeadbeef , recv 0x700000008 , handle 0x2 ,
+  request 0x21416d6f7266 , reply 0x0 , wrote 0xbeefcafedead1234) ,
+  TWO-PROCESS matches , PEER matches
+```
+
+`0x21416d6f7266` is "fromA!", `0x21426d6f7266` is "fromB!"; the region's
+offset 8 is read by the PEER through its own capability and offset 16 by the
+first process through its own, so the sharing is checked in both directions
+with values only the other process could have written.
+
+Named sharp edges, all of them found by running it:
+
+- `scheduler::init()` had NOT run at the point this proof boots, so `spawn`
+  returned ids 0 and 1 for a table with no task 0 -- the first process WAS
+  task 0 and its park was refused `EPERM`. The proof now initialises the
+  scheduler itself (it never returns to the code that would).
+- caps RECV's `a0` is an ENDPOINT ID, not a handle: the peer passed 0 and was
+  refused `-EACCES` by name, because endpoint 0 belongs to the other process.
+  The refusal said exactly that.
+- mailbox 1 did not exist (`NoSuchMailbox`): `ipc::prepare_endpoint0_for_proof`
+  grew a sibling that creates any endpoint the proof needs.
+- `create_process(9000)` PADDS the table up to the id, and the self-test's
+  first lifetime section asked for 9000 -- 288 KB that exhausted the kernel
+  heap and panicked the boot. Small ids, and the panic is why the row is
+  written that way.
+- Two ring-3 callers now write the "last drain" statics, so the read-back's
+  compares would depend on WHO spoke last: `WOKEN_RECVD_VALUE` keeps the FIRST
+  parked wake and `CAP_XFER_HANDLE` keeps the FIRST transfer, both documented
+  as such, and the identity the capability legs are judged against is the
+  proof's own first session rather than a live `session_identity()` call on
+  the coordinator (which would answer task 0).
+
+Deliberately NOT done, named so the gaps stay visible: the two processes share
+ONE address space (this tree still has no per-process address space; what is
+proven is two tasks, two sessions, two capability tables and one page), a
+region still cannot be ASKED for (the kernel maps first), and the pages of a
+freed region are not unmapped -- the RECORD dies, the mapping stays.
+
+Checks: `./build.sh` PASS (the ledger gate now reads both programs AND the
+coordinator, and requires every served call including 0x4d/0x4e); 
+`svc84_proof_test.sh` PASS with the two-process leg pinned; `qemu_boot_test.sh`
+PASS with `experimental caps: 60 clause groups` (twelve new clauses cover the
+lifetime: counts per capability, survives-a-close, double close, wrong kind,
+last holder frees by name, a freed region cannot be re-granted, exit releases
+each capability, a dead holder's table stays dead).

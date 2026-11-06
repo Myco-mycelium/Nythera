@@ -251,16 +251,27 @@ pub fn endpoint_count() -> usize {
 /// general-purpose reset: a caller of this documents why its path is
 /// boot-terminal, as the proof's is.
 pub fn prepare_endpoint0_for_proof() {
+    prepare_endpoint_for_proof(0);
+}
+
+/// As [`prepare_endpoint0_for_proof`], for endpoint `idx`: an EMPTY mailbox
+/// that exists. The two-process proof needs a second one -- the peer's
+/// endpoint, which the first process sends its "go" to and the peer parks
+/// on -- and asking for a mailbox that does not exist is `NoSuchMailbox`
+/// (the honest answer: a proof boot reaches this before the ordinary ipc
+/// demo has built a table).
+pub fn prepare_endpoint_for_proof(idx: usize) {
     interrupts::without_interrupts(|| unsafe {
         let boxes = &mut *(&raw mut MAILBOXES);
-        if boxes.is_empty() {
+        while boxes.len() <= idx {
             boxes.push(Mailbox {
                 queue: VecDeque::new(),
                 capacity: DEFAULT_CAPACITY,
                 revoked: Vec::new(),
                 waiters: VecDeque::new(),
             });
-        } else if let Some(m) = boxes.get_mut(0) {
+        }
+        if let Some(m) = boxes.get_mut(idx) {
             m.queue.clear();
         }
     })

@@ -140,6 +140,22 @@ struct TaskControlBlock {
     /// [`lifecycle_rejections`] (the every-boot proof that illegal
     /// transitions are actually refused, not just never attempted).
     state: LifecycleState,
+    /// This task's TRAP STACK TOP -- what `TSS.RSP0` must hold while the
+    /// task is the running one. Zero means "this task has no ring-3
+    /// life": the dispatcher leaves RSP0 exactly as it found it, which is
+    /// task 0's case (the boot context traps onto whatever the boot
+    /// arranged, and the ring-3 proof that runs on task 0 is the single
+    /// non-scheduled one).
+    ///
+    /// Why the dispatcher has to touch the TSS at all: `RSP0` is ONE
+    /// machine-wide register, but a trap from ring 3 pushes its frame on
+    /// the *running task's* kernel stack. With a single ring-3 task the
+    /// two are the same thing and nobody notices; with two, the second
+    /// task's trap would land on the first task's stack -- which is
+    /// exactly where the first task's parked trap frame lives. Shared
+    /// RSP0 across parked ring-3 tasks is a silent stack smash that
+    /// corrupts the parked caller's resume state, so it is per-task here.
+    rsp0: u64,
 }
 
 static mut TASKS: Vec<TaskControlBlock> = Vec::new();
@@ -552,6 +568,11 @@ pub fn init() {
             saved_rsp: 0,
             cr3: current_cr3(),
             state: Running,
+            // Task 0 keeps the boot's RSP0 (see the field's doc): the
+            // ring-3 proof enters ring 3 from task 0 with the address
+            // space's own private RSP0 stack, and the dispatcher must
+            // not overwrite it.
+            rsp0: 0,
         });
     }
 }
@@ -633,6 +654,11 @@ pub fn spawn_with_cr3(
             saved_rsp: frame_base as u64,
             cr3,
             state: Created,
+            // A spawned task CAN have a ring-3 life (the two-process
+            // proof's ring-3 tasks are spawned exactly like this): its
+            // trap stack is its own guarded kernel stack, whose top is
+            // page-aligned and mapped under every address space.
+            rsp0: aligned_top,
         });
         // §5.1 → §5.2: the task is now dispatchable. runs
         // through set_state (the enforcer), so a bad future edit to
@@ -779,6 +805,16 @@ pub fn yield_task() {
             return;
         }
         CURRENT = next;
+
+        // The machine-wide RSP0 follows the running task (see the TCB
+        // field's doc). Done BEFORE switch_to so that the very first
+        // instruction the dispatched task runs in ring 3 -- and any trap
+        // it takes from there -- already uses its own stack. A task with
+        // no ring-3 life (rsp0 == 0, only task 0) leaves the register
+        // alone: the boot's own value is the right one for it.
+        if TASKS[next].rsp0 != 0 {
+            crate::gdt::set_rsp0(x86_64::VirtAddr::new(TASKS[next].rsp0));
+        }
 
         let current_sp_slot: *mut u64 = &mut TASKS[current].saved_rsp;
         let next_sp = TASKS[next].saved_rsp;

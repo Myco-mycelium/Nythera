@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves thirteen calls:
+//! table), the result goes back in `rax` -- that serves fifteen calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -19,6 +19,8 @@
 //! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer, a_rights = out-pointer for a transferred handle (0 = not wanted) | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
 //! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
 //! | 0x4a | `CAP_CALL` | a0=endpoint handle, a1/a2=request; a_xfer/a_rights = answer buffer + length for the BLOCKING dial | queues the request carrying a ONE-SHOT `Reply` capability naming the caller -> the endpoint's owner id; with an answer buffer the caller PARKS until the server answers and gets the answer's byte count; its errno otherwise |
+//! | 0x4d | `CAP_SHM_CLOSE` | a0=region handle | gives ONE region capability back; the record dies with its LAST holder -> `0`, `-EBADF` (a double close), `-EACCES` for a handle of another kind |
+//! | 0x4e | `CAP_EXIT` | nothing (every claim refused `-EINVAL`) | releases the caller's whole table (region counts included), withdraws its session, terminates its task; never returns. `-EPERM` for task 0 |
 //! | 0x4c | `CAP_SHM` | a0=region handle, a1=24-byte record ptr | the kernel's own geometry of the mapped region (`{base, len, rights}`) -> `0`, `-EBADF` for a handle that names nothing, `-EACCES` for a handle of another kind |
 //! | 0x4b | `CAP_REPLY` | a0=reply handle, a1/a2=answer | answers one call at the caller's own endpoint and CONSUMES the handle; `0`, `-EBADF` on a second use, `-EACCES` on a wrong-kind handle |
 //!
@@ -236,6 +238,37 @@ pub const CALL_CAP_REPLY: u64 = 0x4b;
 /// where the mapping is and how much of it the holder may use.
 pub const CALL_CAP_SHM: u64 = 0x4c;
 
+/// The release's region lifetime, served as two rows because the two
+/// halves are different events:
+///
+/// 0x4d `CAP_SHM_CLOSE`: a0 = a REGION handle the caller gives back. The
+/// handle is consumed, the region's holder count drops by one, and the
+/// record dies exactly when its LAST holder walks away -- so a close from
+/// one of two holders is not a teardown, and asking for the geometry
+/// afterwards (through the other holder's handle) still answers. Returns
+/// 0, `EBADF` for a handle that names nothing (a double close lands here,
+/// which is why the count cannot be driven negative), `EACCES` for a
+/// handle of another kind.
+///
+/// 0x4e `CAP_EXIT`: end this process. Releases every capability the
+/// caller's session holds (region counts included -- this is the OTHER
+/// way a region loses a holder, and the one that makes an abrupt death
+/// safe), withdraws the session's identity record, and terminates the
+/// calling TASK through the scheduler's own lifecycle (`terminate_current`
+/// walks RUNNING -> TERMINATING -> TERMINATED). No row returns from it:
+/// the caller's task is gone, and every argument is refused if it claims
+/// one (`EINVAL`), because an exit that carried a payload would be a
+/// shape this row does not own. Task 0 is `EPERM`: the boot's own task is
+/// not a process and terminating it would leave the machine with nothing
+/// to run the proof's read-back.
+///
+/// Named sharp edge: the ring-3 proof calls this, so this row's LAST
+/// effect on that boot is a context switch into whatever task remains --
+/// which is exactly why the proof's read-back runs on task 0 and not on
+/// the exiting program.
+pub const CALL_CAP_SHM_CLOSE: u64 = 0x4d;
+pub const CALL_CAP_EXIT: u64 = 0x4e;
+
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
 /// Bad user pointer: the validator refused the range.
@@ -323,6 +356,33 @@ pub fn attach_gate_session(sid: usize) {
 // privilege-transition proof.
 
 static CPL3_CALLS: AtomicU32 = AtomicU32::new(0);
+/// The TASK the ring-3 caller ran on, recorded by the identity row. The
+/// proof's read-back runs on the COORDINATOR (task 0) now, so asking the
+/// scheduler "who am I?" at read-back time would answer 0 for a proof
+/// about two other tasks: this static is what the differential SELF
+/// compare uses instead. (The IDENTITY the capability legs are judged
+/// against is the proof's own first session -- a constant, because a
+/// static written by whichever process spoke last would make the compare
+/// depend on scheduling order.)
+static SELF_TASK: AtomicU64 = AtomicU64::new(u64::MAX);
+/// CAP_EXIT's record of the LAST exit: the task that asked (it is gone by
+/// the time anyone reads this), the session identity it withdrew, and how
+/// many region capabilities it gave back. Read by the proof's read-back,
+/// so "the teardown happened" is a value, not an assumption.
+static EXIT_TASK: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXIT_SESSION: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXIT_RELEASED: AtomicU64 = AtomicU64::new(0);
+static EXIT_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Read-back of the exit record: (task, session, region caps released,
+/// exits served).
+pub fn exit_record() -> (u64, u64, u64, u32) {
+    (
+        EXIT_TASK.load(Ordering::Relaxed),
+        EXIT_SESSION.load(Ordering::Relaxed),
+        EXIT_RELEASED.load(Ordering::Relaxed),
+        EXIT_COUNT.load(Ordering::Relaxed),
+    )
+}
 static LAST_CALLER_CPL: AtomicU64 = AtomicU64::new(0xFF);
 static RET_GFX: AtomicI64 = AtomicI64::new(0);
 static RET_INPUT: AtomicI64 = AtomicI64::new(0);
@@ -355,6 +415,14 @@ static RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
 /// without one is refused EAGAIN when its budget survives the drain,
 /// never parked (see the arm's sharp-edge note).
 static BLOCKED_RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
+/// The parked wake's own record, distinct from the instant drain's
+/// `BLOCKED_RECVD_VALUE`: the two-process proof's first process parks on
+/// an empty box and the PEER's send is what answers it, so "the park
+/// happened" is this static being non-zero, and a heap where a drain
+/// answered instead would leave it zero.
+static WOKEN_RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
+/// How many ring-3 receives a PARKED wake answered.
+static BLOCKED_RECVS: AtomicU32 = AtomicU32::new(0);
 /// The payload form's answer, recorded when a ring-3 payload recv
 /// landed bytes in the caller's buffer: the BYTE COUNT (the release's
 /// own `RECV` answer), so the proof can judge the length the kernel
@@ -495,7 +563,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // The identity answer is compared against the scheduler's OWN
             // live value at read-back time, so a future session that makes
             // the program a real task changes both sides together.
-            let want_self = crate::experimental::scheduler::current_task() as i64;
+            let want_self = SELF_TASK.load(Ordering::Relaxed) as i64;
             // The widened pass is judged the same way as the answers:
             // against what the dispatcher ACTUALLY received from the ring-3
             // caller, not against constants compiled into this file.
@@ -517,6 +585,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // dead destination's ENOENT are pinned as constants -- they
             // are REFUSALS, and a by-name refusal is its own pin.
             let want_blocked = BLOCKED_RECVD_VALUE.load(Ordering::Relaxed) as i64;
+            // The PARKED wake's value: the peer's send is what answered the
+            // first process's blocking receive, so this record is what says
+            // the park happened at all (an instant drain would have left it
+            // zero and filled `want_blocked` a second time instead).
+            let want_woken = WOKEN_RECVD_VALUE.load(Ordering::Relaxed) as i64;
             // The payload dial's kernel-side record: the byte count the
             // payload recv answered. Compared against the program's
             // stored copy below, like every other answer.
@@ -548,6 +621,29 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             for (i, slot) in shm.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 + 760 + 8 * i as u64) as *const i64) };
             }
+            // The TWO-PROCESS block (BUF+848..+1000, nineteen qwords): the
+            // first process's close of ONE of its two region capabilities,
+            // the geometry through the OTHER one (the record survives a
+            // holder), the blocking call's answer, the region's two
+            // offsets as each process sees them, the last close and the
+            // then-consumed handle.
+            if !crate::memory::paging::user_range_ok(a0 + 848, 160, false) {
+                return EFAULT;
+            }
+            let mut two = [0i64; 20];
+            for (i, slot) in two.iter_mut().enumerate() {
+                *slot = unsafe { core::ptr::read_unaligned((a0 + 848 + 8 * i as u64) as *const i64) };
+            }
+            // The PEER process's page (a1): its own results, read from ITS
+            // memory after its task was TERMINATED -- the strongest form of
+            // "this is what the other process observed".
+            if !crate::memory::paging::user_range_ok(a1, 112, false) {
+                return EFAULT;
+            }
+            let mut peer = [0i64; 14];
+            for (i, slot) in peer.iter_mut().enumerate() {
+                *slot = unsafe { core::ptr::read_unaligned((a1 + 8 * i as u64) as *const i64) };
+            }
             let mut payload = [0i64; 6];
             for (i, slot) in payload.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 + 448 + 8 * i as u64) as *const i64) };
@@ -561,7 +657,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // packs (sender << 32 | len). Both sides are derived at
             // read-back time, so a session that changes changes both.
             let want_cap_rax =
-                (((crate::experimental::scheduler::session_identity() as u64) << 32) | 6) as i64;
+                ((crate::svc84_proof::FIRST_SESSION as u64) << 32 | 6) as i64;
             let wrote_ok = crate::devices::framebuffer::bound_mode()
                 .map(|(w, h)| {
                     // The geometry was written at BUF+24 (the program's own
@@ -595,7 +691,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[22] == 0
                 && stored[23] == want_blocked
                 && want_blocked != 0
-                && stored[24] == EAGAIN
+                && stored[24] == want_woken
+                && want_woken != 0
+                && want_woken != want_blocked
+                // TWO parked wakes, one per direction: the peer's send
+                // woke the first process out of its blocking receive, and
+                // the first process's "go" woke the peer out of its own.
+                && BLOCKED_RECVS.load(Ordering::Relaxed) == 2
                 && stored[25] == ENOENT
                 // The PAYLOAD dials (2026-11-06): the send was accepted,
                 // the receive answered the kernel-recorded byte count,
@@ -678,7 +780,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // wrong-kind refusal are by-name refusals, so constants; and
             // the answer's packed (sender << 32 | len) is derived from
             // the same live identity, since the session answered itself.
-            let sid = crate::experimental::scheduler::session_identity();
+            let sid = crate::svc84_proof::FIRST_SESSION;
             let want_reply_ack = sid as i64;
             let want_xfer_handle = CAP_XFER_HANDLE.load(Ordering::Relaxed) as i64;
             let want_answer_rax = (((sid as u64) << 32) | 8) as i64;
@@ -722,6 +824,61 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && shm[9] == EBADF
                 && shm[10] == EACCES
                 && kernel_sees == want_shm_written;
+            // The two-process leg. Every value below is one only the
+            // OTHER process could have produced: the answer bytes the
+            // caller read out of a buffer the kernel wrote when the PEER
+            // answered, the region's offset 16 written through the peer's
+            // own capability, and the region's record dying with its last
+            // holder (the kernel's table says so, not the programs).
+            const CALL_REQ: i64 = 0x0000_2141_6d6f_7266; // "fromA!"
+            const CALL_ANSWER: i64 = 0x0000_2142_6d6f_7266; // "fromB!"
+            let want_shm_offset8 = crate::svc84_proof::SHM_RING3_VALUE as i64;
+            let want_peer_write = crate::svc84_proof::PEER_WRITE as i64;
+            let proof_region = crate::svc84_proof::PROOF_REGION.load(Ordering::Relaxed);
+            let region_live = crate::experimental::caps::region_live(proof_region);
+            let region_holders = crate::experimental::caps::region_holders(proof_region);
+            let (exit_task, exit_session, exit_released, exit_count) = exit_record();
+            let two_ok = two[0] == 0                 // the close was accepted
+                && two[4] == want_shm_base           // the OTHER handle still names it
+                && two[5] == 4096
+                && two[6] == want_shm_rights
+                && two[11] == 8                      // the call answered 8 bytes
+                && two[12] == CALL_REQ
+                && two[13] == CALL_ANSWER            // the peer's bytes, in OUR buffer
+                && two[14] == want_shm_offset8       // our own write, still there
+                && two[15] == want_peer_write        // the PEER's write, through OUR handle
+                && two[16] == 0                      // the last close was accepted
+                && two[17] == EBADF                  // ...and the handle is consumed
+                && two[18] == 0                      // geometry answered after the first close
+                && two[19] == 0                      // the go send was accepted
+                // The region's LIFETIME, from the kernel's table: the record
+                // is GONE (its last holder exited) and names no holder. A
+                // close that merely returned 0 without moving the count
+                // would fail here.
+                && !region_live
+                && region_holders == Some(0)
+                // Both processes exited through CAP_EXIT: two exits, the
+                // LAST of them the first process (the peer exits first,
+                // having answered), and exactly ONE region capability was
+                // given back by an exit -- the peer's. The first process
+                // had already closed both of its own, so its exit released
+                // none; a double release would show up here as 2.
+                && exit_count == 2
+                && exit_session == crate::svc84_proof::FIRST_SESSION as u64
+                && exit_released == 1
+                && exit_task != 0;
+            // The peer's own observations: the geometry it was told, the
+            // FIRST process's write read through its capability, the
+            // request it received, its reply's ack, and its write.
+            let peer_ok = peer[0] == 0
+                && peer[4] == want_shm_base
+                && peer[5] == 4096
+                && peer[6] == want_shm_offset8
+                && peer[7] == ((crate::svc84_proof::FIRST_SESSION as i64) << 32 | 8)
+                && peer[8] >= 0
+                && peer[9] == CALL_REQ
+                && peer[11] == 0
+                && peer[12] == want_peer_write;
             let stored_ok = stored[0] == want_gfx
                 && stored[1] == want_input
                 && stored[2] == want_enosys
@@ -735,10 +892,12 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && cap_ok
                 && input_poll_ok
                 && reply_ok
-                && shm_ok;
+                && shm_ok
+                && two_ok
+                && peer_ok;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} -- {}
+            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} -- {}
 ",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
@@ -812,6 +971,30 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 shm[9] as u64,
                 shm[10] as u64,
                 if shm_ok { "matches" } else { "MISMATCH" },
+                two[0] as u64,
+                two[18] as u64,
+                two[11] as u64,
+                two[12] as u64,
+                two[13] as u64,
+                two[14] as u64,
+                two[15] as u64,
+                two[16] as u64,
+                two[17] as u64,
+                if region_live { "yes" } else { "no" },
+                region_holders,
+                exit_count,
+                exit_session,
+                exit_released,
+                peer[0] as u64,
+                peer[4] as u64,
+                peer[6] as u64,
+                peer[7] as u64,
+                peer[8] as u64,
+                peer[9] as u64,
+                peer[11] as u64,
+                peer[12] as u64,
+                if two_ok { "matches" } else { "MISMATCH" },
+                if peer_ok { "matches" } else { "MISMATCH" },
                 if ok { "OK" } else { "FAILED" }
             );
             0
@@ -821,7 +1004,11 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // scheduler task ever owns a ring-3 caller, this call starts
             // naming it without this file changing. No bookkeeping beyond
             // what the proof's read-back uses -- identity is not a resource.
-            crate::experimental::scheduler::current_task() as i64
+            let me = crate::experimental::scheduler::current_task() as i64;
+            if from_ring3 {
+                SELF_TASK.store(me as u64, Ordering::Relaxed);
+            }
+            me
         }
         CALL_IPC_SEND => {
             // Two dials, and the difference is a2:
@@ -1015,7 +1202,21 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                                 if payload_form {
                                     PAYLOAD_RECVD_VALUE.store(v as u64, Ordering::Relaxed);
                                 } else {
-                                    BLOCKED_RECVD_VALUE.store(v as u64, Ordering::Relaxed);
+                                    // A PARKED wake and an INSTANT drain are
+                                    // different events and now have
+                                    // different records: a proof that
+                                    // wakes a parked receiver must be able
+                                    // to tell the two apart, or it cannot
+                                    // say whether the park ever happened.
+                                    // The FIRST parked wake is the one the
+                                    // proof judges (the first process's,
+                                    // woken by the peer): later wakes are
+                                    // counted, not recorded, so a second
+                                    // one cannot quietly replace the value
+                                    // under comparison.
+                                    if BLOCKED_RECVS.fetch_add(1, Ordering::Relaxed) == 0 {
+                                        WOKEN_RECVD_VALUE.store(v as u64, Ordering::Relaxed);
+                                    }
                                 }
                             }
                             v
@@ -1132,7 +1333,15 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                         // same "none" sentinel the SEND side takes, so a
                         // zeroed out-slot can never be read as handle 0.
                         let h = m.transferred.map(|h| h as u64).unwrap_or(u64::MAX);
-                        CAP_XFER_HANDLE.store(h, Ordering::Relaxed);
+                        // FIRST transfer wins (sentinel u64::MAX = unset):
+                        // with two ring-3 processes draining calls, the
+                        // LAST writer would make the read-back's compare
+                        // depend on which process spoke most recently --
+                        // and the leg it judges is the FIRST process's
+                        // loopback, whose handle is what the pins name.
+                        if CAP_XFER_HANDLE.load(Ordering::Relaxed) == u64::MAX {
+                            CAP_XFER_HANDLE.store(h, Ordering::Relaxed);
+                        }
                         unsafe {
                             core::ptr::write_unaligned(a_rights as *mut u64, h);
                         }
@@ -1252,6 +1461,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             if me == 0 {
                 return EPERM; // the boot's own task cannot park on a call
             }
+            // A ring-3 caller parks INSIDE its trap: the frame sits on the
+            // task's own kernel stack (per-task TSS.RSP0, see the
+            // scheduler's TCB), the switch saves that stack pointer, and
+            // the resume returns through this same trap and `iretq`.
+            // Nothing in between touches the caller's kernel stack, which
+            // is why a parked ring-3 call is a park of a TASK and not a
+            // re-entry.
             let identity = crate::experimental::scheduler::session_identity();
             match crate::experimental::caps::call_wait_for(identity, me, a0 as u32, &bytes[..a2 as usize]) {
                 Ok(_owner) => {}
@@ -1312,6 +1528,47 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 Ok(_slot) => 0,
                 Err(e) => map_cap_error(e),
             }
+        }
+        CALL_CAP_SHM_CLOSE => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a1 != 0 || a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            match crate::experimental::caps::close_region_for(
+                crate::experimental::scheduler::session_identity(),
+                a0 as u32,
+            ) {
+                Ok(()) => 0,
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_EXIT => {
+            if a0 != 0 || a1 != 0 || a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            let me = crate::experimental::scheduler::current_task();
+            if me == 0 {
+                // The boot's own task is the proof's read-back and the
+                // scheduler's last runnable context: terminating it would
+                // park the machine with a verdict nobody would print.
+                return EPERM;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            // Capabilities first: the region counts must be consistent
+            // BEFORE the identity record goes away, or a region would be
+            // pinned alive by a holder that no longer exists.
+            let released = crate::experimental::caps::release_holder_caps(identity);
+            // ACCUMULATED, not overwritten: the interesting number is the
+            // total the exits gave back, and the region's teardown depends
+            // on all of them (the last holder frees the record).
+            EXIT_RELEASED.fetch_add(released as u64, Ordering::Relaxed);
+            let withdrew = crate::experimental::scheduler::withdraw_session();
+            EXIT_SESSION.store(withdrew.map(|s| s as u64).unwrap_or(u64::MAX), Ordering::Relaxed);
+            EXIT_TASK.store(me as u64, Ordering::Relaxed);
+            EXIT_COUNT.fetch_add(1, Ordering::Relaxed);
+            crate::experimental::scheduler::terminate_current();
         }
         CALL_CAP_SHM => {
             if a0 > u32::MAX as u64 {

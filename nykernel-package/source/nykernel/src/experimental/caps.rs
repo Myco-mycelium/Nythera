@@ -33,9 +33,12 @@
 //! FOUR kinds ARE ported: Endpoint (the queue-based one), Input (the
 //! router `kbdrt`'s prerequisite), Reply (the one-shot answer right, with
 //! the CALL/REPLY pair and its blocking wait) and SharedMem (a region the
-//! kernel maps and both rings write); every gap is a follow-on slice over
-//! THIS machine, and the kernel-side self-test (`run()`) proves each ported
-//! clause positive AND negative, mirroring the release's `run()`.
+//! kernel maps and both rings write, with the release's LIFETIME: the
+//! record is counted in live capabilities and dies with its last holder,
+//! whether that holder closes the capability or exits); every gap is a
+//! follow-on slice over THIS machine, and the kernel-side self-test
+//! (`run()`) proves each ported clause positive AND negative, mirroring
+//! the release's `run()`.
 //!
 //! ---- the Input kind (the release's Phase-9/1-29 clauses) ------------
 //!
@@ -201,6 +204,17 @@ pub struct Region {
     pub len: u64,
 }
 
+/// A region's record: the geometry a holder is told, HOW MANY live
+/// capabilities name it, and whether it still exists. The count is the
+/// release's region lifetime in one number -- the record dies with its
+/// LAST holder, not with its first, and a holder that never gives the
+/// capability back keeps the region alive by construction.
+struct RegionEntry {
+    geometry: Region,
+    holders: u32,
+    live: bool,
+}
+
 /// A whole system: per-holder tables + the endpoints. The gate owns one
 /// global instance (`init`/`prepare_task0_for_proof`); the self-test
 /// builds its own.
@@ -213,7 +227,7 @@ pub struct CapSystem {
     /// resumes. A caller that answers through its own endpoint instead
     /// never gets an entry.
     waits: Vec<Waiting>,
-    regions: Vec<Region>,
+    regions: Vec<RegionEntry>,
 }
 
 /// A caller blocked on a call. `task` is the scheduler task to wake --
@@ -465,15 +479,16 @@ impl CapSystem {
     /// remembers the geometry so a holder can be told it.
     pub fn create_region(&mut self, base: u64, len: u64) -> u32 {
         let id = self.regions.len() as u32;
-        self.regions.push(Region { base, len });
+        self.regions.push(RegionEntry { geometry: Region { base, len }, holders: 0, live: true });
         id
     }
 
     /// The release's `bootstrap_region`: gives `to` a capability over
     /// region `region`, rights masked to READ|WRITE|GRANT.
     pub fn bootstrap_region(&mut self, to: usize, region: u32, want: u8) -> Result<u32, CapError> {
-        if region as usize >= self.regions.len() {
-            return Err(CapError::BadRegion);
+        match self.regions.get(region as usize) {
+            Some(e) if e.live => {}
+            _ => return Err(CapError::BadRegion),
         }
         let cap = Capability {
             kind: Kind::SharedMem,
@@ -481,7 +496,83 @@ impl CapSystem {
             generation: 0,
             rights: want & (rights::READ | rights::WRITE | rights::GRANT),
         };
-        Self::install(self.live(to)?, cap)
+        let holder = self.live(to)?;
+        let handle = Self::install(holder, cap)?;
+        // Counted only AFTER the mint succeeded: a refused grant that
+        // incremented the count would pin a region alive for a holder
+        // that never received it.
+        self.regions[region as usize].holders += 1;
+        Ok(handle)
+    }
+
+    /// The release's region CLOSE (this surface's 0x4d): the holder gives
+    /// ONE capability back. The region's lifetime is the count of live
+    /// capabilities, so the record dies exactly when its last holder
+    /// walks away -- and a refusal to CLOSE (a handle that names no
+    /// region) changes nothing, which matters because a double close is
+    /// the obvious bug and it must not decrement twice.
+    pub fn close_region_cap(&mut self, p: usize, h: u32) -> Result<(), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::SharedMem {
+            return Err(CapError::WrongType);
+        }
+        let region = cap.endpoint as usize;
+        // Drop the capability FIRST: the handle is consumed even if the
+        // region record is somehow already gone (it cannot be while this
+        // cap lives -- the count includes it -- but ordering the table
+        // behind the count is the bug that makes that invariant
+        // unobservable rather than load-bearing).
+        if let Some(holder) = self.procs.get_mut(p) {
+            if let Some(slot) = holder.caps.get_mut(h as usize) {
+                *slot = None;
+            }
+        }
+        if let Some(entry) = self.regions.get_mut(region) {
+            entry.holders = entry.holders.saturating_sub(1);
+            if entry.holders == 0 {
+                entry.live = false;
+            }
+        }
+        Ok(())
+    }
+
+    /// CAP_EXIT's half: every capability this holder owns goes away, and
+    /// every region they named loses one holder. Returns how many region
+    /// capabilities were released, so the gate can report the teardown
+    /// instead of assuming it. The holder itself is marked dead -- a
+    /// session identity is terminal, so its table must not be reusable.
+    pub fn release_holder(&mut self, p: usize) -> usize {
+        let Some(holder) = self.procs.get_mut(p) else {
+            return 0;
+        };
+        if !holder.alive {
+            return 0;
+        }
+        let mut released = 0usize;
+        let caps = core::mem::take(&mut holder.caps);
+        for cap in caps.into_iter().flatten() {
+            if cap.kind == Kind::SharedMem {
+                released += 1;
+                if let Some(entry) = self.regions.get_mut(cap.endpoint as usize) {
+                    entry.holders = entry.holders.saturating_sub(1);
+                    if entry.holders == 0 {
+                        entry.live = false;
+                    }
+                }
+            }
+        }
+        holder.alive = false;
+        released
+    }
+
+    /// Read-back for the gate and the self-test: is the region record
+    /// still there, and how many holders does it name?
+    pub fn region_live(&self, region: u32) -> bool {
+        matches!(self.regions.get(region as usize), Some(e) if e.live)
+    }
+
+    pub fn region_holders(&self, region: u32) -> Option<u32> {
+        self.regions.get(region as usize).map(|e| e.holders)
     }
 
     /// The release's `region_cap`: (region id, rights), WrongType unless
@@ -499,7 +590,10 @@ impl CapSystem {
     /// The geometry behind a region id (the row's answer, not the holder's
     /// claim): both are the kernel's own record of what it mapped.
     pub fn region_geometry(&self, region: u32) -> Result<Region, CapError> {
-        self.regions.get(region as usize).copied().ok_or(CapError::BadRegion)
+        match self.regions.get(region as usize) {
+            Some(e) if e.live => Ok(e.geometry),
+            _ => Err(CapError::BadRegion),
+        }
     }
 
     /// Registers a BLOCKING call: `call_send`, plus the wait slot the
@@ -719,6 +813,41 @@ pub fn prepare_session_for_proof(sid: usize) -> (u32, u32, u32) {
     })
 }
 
+/// The two-process proof's equip: `sid` becomes a second SESSION holding
+/// a NEW endpoint (the peer's own, whose owner capability RECV uses) and
+/// a grant of the SHARED region -- so the region has three live
+/// capabilities over two holders, which is what makes its lifetime
+/// observable. `caller` gets a second grant of the same region (its
+/// "the record survives my close" handle) and a SEND|GRANT capability for
+/// the peer's endpoint (the call it will park on).
+///
+/// Returns `(peer endpoint, peer owner handle, peer region handle,
+/// caller's second region handle, caller's send-to-peer handle)` in the
+/// install order that produced them -- the proof asserts each index
+/// rather than assuming it, so a table-drift bug fails there instead of
+/// turning into a mysterious EBADF from ring 3.
+pub fn prepare_peer_for_proof(
+    sid: usize,
+    caller: usize,
+    region: u32,
+) -> (u32, u32, u32, u32, u32) {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.create_process(sid).expect("caps peer equip: peer holder");
+        let (ep, owner_handle) = sys.create_endpoint(sid).expect("caps peer equip: peer endpoint");
+        let peer_region = sys
+            .bootstrap_region(sid, region, rights::READ | rights::WRITE | rights::GRANT)
+            .expect("caps peer equip: peer region grant");
+        let caller_region2 = sys
+            .bootstrap_region(caller, region, rights::READ | rights::WRITE | rights::GRANT)
+            .expect("caps peer equip: caller's second region grant");
+        let send_handle = sys
+            .bootstrap_grant(caller, ep, rights::SEND | rights::GRANT)
+            .expect("caps peer equip: caller SEND|GRANT to the peer");
+        (ep, owner_handle, peer_region, caller_region2, send_handle)
+    })
+}
+
 /// Proof-boot equip for the CALL/REPLY pair: `server` owns endpoint 0 (so
 /// its answer slot exists) and `caller` holds a SEND|GRANT capability for
 /// that endpoint in its OWN table -- two DISTINCT holders, which is what
@@ -803,6 +932,18 @@ pub fn reply_for(caller: usize, handle: u32, payload: &[u8]) -> Result<u32, CapE
     })
 }
 
+/// A second grant of an ALREADY created region, for the two-process
+/// proof (the kernel-side equip's second holder). Returns the handle the
+/// holder was given; the region's holder count rises by one, which is
+/// what makes the lifetime proof meaningful.
+pub fn equip_region_for(to: usize, region: u32) -> u32 {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.bootstrap_region(to, region, rights::READ | rights::WRITE | rights::GRANT)
+            .expect("caps region equip: second holder")
+    })
+}
+
 /// Access for the shared-memory row: (region id, rights the holder's
 /// capability carries). WrongType unless the handle IS a region
 /// capability -- an endpoint handle asked for geometry is refused by name.
@@ -834,6 +975,48 @@ pub fn prepare_region_for_proof(to: usize, base: u64, len: u64) -> (u32, u32) {
             .bootstrap_region(to, region, rights::READ | rights::WRITE | rights::GRANT)
             .expect("caps region equip: bootstrap_region");
         (region, handle)
+    })
+}
+
+/// The release's region CLOSE for a holder: one capability given back.
+pub fn close_region_for(caller: usize, handle: u32) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.close_region_cap(caller, handle)
+    })
+}
+
+/// CAP_EXIT's capability half: releases every capability the holder owns
+/// and reports how many region capabilities that tore down.
+pub fn release_holder_caps(caller: usize) -> usize {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.release_holder(caller)
+    })
+}
+
+/// How many callers are parked on a call right now -- the stall dump's
+/// most direct question ("did the caller register at all?").
+pub fn wait_count() -> usize {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.waits.iter().filter(|w| w.answer.is_none()).count()
+    })
+}
+
+/// Read-backs for the gate: whether the region record survived its
+/// holders, and how many it currently names.
+pub fn region_live(region: u32) -> bool {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.region_live(region)
+    })
+}
+
+pub fn region_holders(region: u32) -> Option<u32> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.region_holders(region)
     })
 }
 
@@ -1114,6 +1297,94 @@ pub fn run() -> bool {
     check!(
         "a wider region rights claim is masked, not widened",
         matches!(sys.bootstrap_region(CLIENT, region, 0xff), Ok(h) if sys.region_cap(CLIENT, h) == Ok((region, rights::READ | rights::WRITE | rights::GRANT)))
+    );
+
+    // ---- the region's LIFETIME ----
+    // Fresh holders, so the counts below are this section's alone: the
+    // release's rule is that a region dies with its LAST holder, and a
+    // self-test that shared holders with the sections above could not say
+    // which close moved which count. (Small ids on purpose: `create_process`
+    // PADS the table up to the id it is given, and the first version of
+    // this section asked for 9000 -- a 288 KB table that exhausted the
+    // kernel heap and panicked the boot. The ids only have to be free in
+    // THIS system, which is the self-test's own.)
+    const LIFE: usize = 3;
+    const LIFE2: usize = 4;
+    sys.create_process(LIFE).expect("self-test: lifetime holder");
+    sys.create_process(LIFE2).expect("self-test: lifetime holder 2");
+    let life_region = sys.create_region(0x6000_0004_0000, 8192);
+    let life_a = sys.bootstrap_region(LIFE, life_region, rights::READ | rights::WRITE).expect("self-test: lifetime grant");
+    let life_b = sys.bootstrap_region(LIFE, life_region, rights::READ | rights::WRITE).expect("self-test: lifetime grant 2");
+    let life_c = sys.bootstrap_region(LIFE2, life_region, rights::READ).expect("self-test: lifetime grant 3");
+    check!(
+        "a region counts every live capability, not every holder",
+        sys.region_holders(life_region) == Some(3)
+    );
+    check!(
+        "closing one capability decreases the count",
+        sys.close_region_cap(LIFE, life_a).is_ok() && sys.region_holders(life_region) == Some(2)
+    );
+    check!(
+        "the record survives a close while another holder lives",
+        sys.region_geometry(life_region).is_ok() && sys.region_live(life_region)
+    );
+    check!(
+        "a closed handle is consumed, and the count does not move again",
+        sys.close_region_cap(LIFE, life_a) == Err(CapError::BadHandle)
+            && sys.region_holders(life_region) == Some(2)
+    );
+    // A capability of ANOTHER kind in the SAME table: the close row must
+    // refuse by kind, not by "not found" -- and it must not move the count.
+    // (The first version of this clause handed the row CLIENT's handle,
+    // which LIFE's table has no idea about: that is BadHandle, a different
+    // refusal, and the boot said so by name.)
+    let (_, life_other) = sys.create_endpoint(LIFE).expect("self-test: lifetime endpoint");
+    check!(
+        "closing a NON-region capability is WrongType, and changes nothing",
+        sys.close_region_cap(LIFE, life_other) == Err(CapError::WrongType)
+            && sys.region_holders(life_region) == Some(2)
+    );
+    check!(
+        "closing the second-to-last capability leaves the record live",
+        sys.close_region_cap(LIFE, life_b).is_ok()
+            && sys.region_live(life_region)
+            && sys.region_holders(life_region) == Some(1)
+    );
+    check!(
+        "closing the LAST capability frees the record by name",
+        sys.close_region_cap(LIFE2, life_c).is_ok()
+            && !sys.region_live(life_region)
+            && sys.region_holders(life_region) == Some(0)
+            && sys.region_geometry(life_region) == Err(CapError::BadRegion)
+    );
+    check!(
+        "a freed region cannot be granted again",
+        sys.bootstrap_region(LIFE, life_region, rights::READ) == Err(CapError::BadRegion)
+    );
+    // ...and the OTHER way a holder goes away: an abrupt exit. A holder
+    // that never closes anything still must not pin a dead region alive.
+    let exit_region = sys.create_region(0x6000_0005_0000, 4096);
+    let _keep = sys.bootstrap_region(LIFE, exit_region, rights::READ | rights::WRITE).expect("self-test: exit grant");
+    let _gone = sys.bootstrap_region(LIFE2, exit_region, rights::READ).expect("self-test: exit grant 2");
+    check!(
+        "an exit releases every region capability it held (one count per cap)",
+        sys.release_holder(LIFE2) == 1
+            && sys.region_live(exit_region)
+            && sys.region_holders(exit_region) == Some(1)
+    );
+    check!(
+        "a released holder's table is dead, not reusable",
+        sys.region_cap(LIFE2, 0) == Err(CapError::BadProcess)
+    );
+    check!(
+        "the last remaining holder's exit frees the region",
+        sys.release_holder(LIFE) >= 1
+            && !sys.region_live(exit_region)
+            && sys.region_geometry(exit_region) == Err(CapError::BadRegion)
+    );
+    check!(
+        "releasing a dead holder twice releases nothing",
+        sys.release_holder(LIFE2) == 0
     );
 
     // §4.3 revocation: O(1), outstanding caps dead, owner mints fresh

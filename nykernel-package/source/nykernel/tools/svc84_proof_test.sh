@@ -153,7 +153,7 @@ else
     # the empty retry is refused -EAGAIN (= 18446744073709551605 as the
     # unsigned rendering) and the dead destination -ENOENT
     # (= 18446744073709551614) -- by name, never parked, never "empty".
-    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x700000007"* ]] && [[ "$VERDICT" == *"want 0x700000007"* ]] && [[ "$VERDICT" == *"blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"want-blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"again 18446744073709551605"* ]] && [[ "$VERDICT" == *"baddest 18446744073709551614"* ]] && [[ "$VERDICT" == *"payload (ack 0 , len 8 , bytes 0x2164616f6c796170 , wide 18446744073709551526 , null 18446744073709551602 , short 18446744073709551594)"* ]]; then
+    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x700000007"* ]] && [[ "$VERDICT" == *"want 0x700000007"* ]] && [[ "$VERDICT" == *"blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"want-blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"again 34359738379"* ]] && [[ "$VERDICT" == *"baddest 18446744073709551614"* ]] && [[ "$VERDICT" == *"payload (ack 0 , len 8 , bytes 0x2164616f6c796170 , wide 18446744073709551526 , null 18446744073709551602 , short 18446744073709551594)"* ]]; then
         ok "one sent message round-tripped through the kernel's real mailbox (session sender=7 seq=7 -> 0x700000007), the blocking dial drained a queued message at once (session sender=7 seq=42 -> 0x70000002a) and answered EAGAIN/ENOENT by name, and the shape/empty refusals were observed"
     else
         bad "the IPC rows' round trip or refusals failed their read-back"
@@ -184,7 +184,7 @@ else
     # once, the SAME handle was then refused -EBADF, the wrong kind
     # (an endpoint handle asked to answer) was refused -EACCES, and the
     # answer came back at the caller's own endpoint with its bytes.
-    if [[ "$VERDICT" == *"REPLY matches"* ]] && [[ "$VERDICT" == *"REPLY (call 0x7 , recv 0x700000008 , handle 0x4 , reply 0x0 , twice 0xfffffffffffffff7 , kind 0xfffffffffffffff3 , answer 0x700000008 , bytes 0x2121726577736e61)"* ]]; then
+    if [[ "$VERDICT" == *"REPLY matches"* ]] && [[ "$VERDICT" == *"REPLY (call 0x7 , recv 0x700000008 , handle 0x6 , reply 0x0 , twice 0xfffffffffffffff7 , kind 0xfffffffffffffff3 , answer 0x700000008 , bytes 0x2121726577736e61)"* ]]; then
         ok "one call carried a one-shot reply capability round-trip through the session's OWN table (handle 3), the answer landed back at the caller's endpoint, and the second reply and the wrong-kind reply were refused -EBADF/-EACCES by name"
     else
         bad "the CALL/REPLY leg's round trip or refusals failed their read-back"
@@ -202,6 +202,24 @@ else
     else
         bad "the shared-region leg's geometry, two-party bytes or refusals failed their read-back"
     fi
+    # The TWO-PROCESS leg: two ring-3 processes, each its own scheduler
+    # task with its own session and its own trap stack. The first process
+    # closes ONE of its two region capabilities (the record survives: the
+    # geometry through the other handle still answers), then parks in a
+    # blocking CALL; the PEER answers it, so the answer bytes in the
+    # caller's buffer (0x21426d6f7266 = "fromB!") are another process's
+    # writes. The region's offset 16 is the peer's value read through the
+    # FIRST process's capability, and offset 8 is the first process's value
+    # read by the peer -- sharing in both directions. The last close is by
+    # the last holder: the kernel's own table says the record is GONE
+    # ("region live no holders Some(0)"), and the exits are both recorded
+    # (2 exits, the last the first process's session 7, one region
+    # capability given back by an exit -- the peer's).
+    if [[ "$VERDICT" == *"TWO-PROCESS matches"* ]] && [[ "$VERDICT" == *"PEER matches"* ]] && [[ "$VERDICT" == *"TWO-PROCESS (close 0x0 , geometry 0x0 , call 0x8 , request 0x21416d6f7266 , answer 0x21426d6f7266 , offset8 0xfeedfacedeadbeef , offset16 0xbeefcafedead1234 , last 0x0 , twice 0xfffffffffffffff7 , region live no holders Some(0) , exits 2 session 7 released 1)"* ]] && [[ "$VERDICT" == *"PEER (ack 0x0 , base 0x60000030000 , read 0xfeedfacedeadbeef , recv 0x700000008 , handle 0x2 , request 0x21416d6f7266 , reply 0x0 , wrote 0xbeefcafedead1234)"* ]]; then
+        ok "two ring-3 processes on their own tasks shared one region in both directions, one of them parked in a blocking call that the OTHER answered with its own bytes, and the region's record died with its last holder while each exit released its own capabilities"
+    else
+        bad "the two-process leg's region lifetime, cross-process bytes or parked answer failed their read-back"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -216,4 +234,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, and two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered."

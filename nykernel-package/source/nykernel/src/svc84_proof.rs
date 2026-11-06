@@ -26,6 +26,8 @@
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::VirtAddr;
 
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
 use crate::experimental::address_space::AddressSpace;
 use crate::experimental::{elf, usermode};
 use crate::memory::frame_allocator::BumpFrameAllocator;
@@ -56,6 +58,67 @@ pub const SHM_KERNEL_SENTINEL: u64 = 0x0123_4567_89ab_cdef;
 /// after the proof closes.
 pub const SHM_RING3_VALUE: u64 = 0xfeed_face_dead_beef;
 
+/// The peer process's own load address (userprog/linker_svc84_peer.ld):
+/// 7 << 40. Its results page and stack are the same two offsets the first
+/// program uses, relative to ITS anchor -- the two processes share this
+/// tree's single address space, so the anchors are what keeps them apart.
+pub const PEER_CODE: u64 = 0x7u64 << 40;
+pub const PEER_BUF: u64 = PEER_CODE + 0x1_0000;
+pub const PEER_STACK: u64 = PEER_CODE + 0x2_0000;
+
+/// The peer's half of the two-process proof, written by
+/// `prog_svc84_peer.s` and read back by `CALL_PROOF_DONE` after the
+/// process is TERMINATED (so nothing in it can be the program answering
+/// while it runs).
+pub const PEER_WRITE: u64 = 0xbeef_cafe_dead_1234;
+
+/// The session ids the two ring-3 tasks speak as. Past the boot's seven
+/// scheduler task ids and the call proof's two (201/202): the id spaces
+/// stay the scheduler's plus sessions', never colliding.
+const PROOF_SESSION_ID: usize = 7;
+const PEER_SESSION_ID: usize = 8;
+
+/// The two ring-3 programs' entry points, recorded by [`run`] before it
+/// spawns their tasks: a task entry function is a plain `fn`, so the ELF's
+/// entry point reaches it through a static rather than through a spawn
+/// argument the scheduler does not take.
+/// The first process's session id, for the read-back's exit check.
+pub const FIRST_SESSION: usize = PROOF_SESSION_ID;
+/// The region id the proof created. Recorded rather than assumed: the
+/// read-back asks the capability machine whether THIS region survived its
+/// holders, and a table that returned some other id's answer would be a
+/// different (and wrong) proof.
+pub static PROOF_REGION: AtomicU32 = AtomicU32::new(u32::MAX);
+
+static ENTRY_A: AtomicU64 = AtomicU64::new(0);
+static ENTRY_B: AtomicU64 = AtomicU64::new(0);
+
+/// The first ring-3 process's task entry. The session attach happens HERE,
+/// on the task that will run the program: the identity record is the
+/// scheduler's per-task slot (see `scheduler::attach_session`), so
+/// attaching it on task 0 would name task 0 for both processes.
+extern "C" fn ring3_a() -> ! {
+    crate::service84::attach_gate_session(PROOF_SESSION_ID);
+    unsafe {
+        usermode::enter_with_stack(
+            VirtAddr::new(ENTRY_A.load(core::sync::atomic::Ordering::SeqCst)),
+            VirtAddr::new(PROOF_STACK + 4096 - 16),
+        )
+    }
+}
+
+/// The peer ring-3 process's task entry: same shape, its own session, its
+/// own stack.
+extern "C" fn ring3_b() -> ! {
+    crate::service84::attach_gate_session(PEER_SESSION_ID);
+    unsafe {
+        usermode::enter_with_stack(
+            VirtAddr::new(ENTRY_B.load(core::sync::atomic::Ordering::SeqCst)),
+            VirtAddr::new(PEER_STACK + 4096 - 16),
+        )
+    }
+}
+
 const TOKEN: &[u8] = b"nyrqis.proof=svc84";
 
 /// The two scancode bytes the proof drives through the REAL hardware
@@ -70,6 +133,8 @@ pub const INJECT_BYTES: [u8; 2] = [0x1E, 0x9E];
 /// The separately-built ELF (see `userprog/prog_svc84.s`); built by
 /// `build.sh` before the kernel crate, like the other proof programs.
 static PROGRAM: &[u8] = include_bytes!("../userprog/userprog_svc84.elf");
+/// The peer process, separately built and separately linked (0x7...).
+static PEER_PROGRAM: &[u8] = include_bytes!("../userprog/userprog_svc84_peer.elf");
 
 /// True when the loader's command line asks for this proof. Matched as a
 /// whole token, so `nyrqis.proof=svc84x` does not silently select it.
@@ -127,6 +192,11 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     // queued there is unreachable and no one waits for it -- draining
     // loses nothing observable. See ipc::prepare_endpoint0_for_proof.
     crate::experimental::ipc::prepare_endpoint0_for_proof();
+    // ...and the PEER's mailbox (endpoint 1): the second half of the
+    // rendezvous, and the one the peer parks on. Creating it here rather
+    // than assuming it exists is the same discipline as endpoint 0's --
+    // a proof boot reaches this before the ipc demo builds a table.
+    crate::experimental::ipc::prepare_endpoint_for_proof(1);
 
     // The install order is deterministic: `create_endpoint`'s owner cap
     // lands in slot 0 and the mint in slot 1, so the kernel-side record
@@ -147,22 +217,31 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     // can observe the session's table; a fuller session machine
     // (the manifest's parked step) mints it at the scheduler's ring-3
     // alloc and destroys it on exit.
-    const PROOF_SESSION_ID: usize = 7;
+    // The PEER process: its own ELF at its own anchor, in the SAME
+    // address space (this tree has no per-process address space yet, and
+    // pretending otherwise here would be the lie the whole two-process
+    // slice exists to avoid: what is proven is two TASKS, two sessions and
+    // two capability tables meeting in one page).
+    let peer_loaded = elf::load(PEER_PROGRAM, &mut mapper, frame_allocator, 0, &elf::LoadContext::none())
+        .unwrap_or_else(|e| panic!("svc84 proof: loading userprog_svc84_peer.elf failed: {:?}", e));
+    let peer_buf_mapped =
+        paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PEER_BUF), 1, flags);
+    let peer_stack_mapped =
+        paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PEER_STACK), 1, flags);
+    assert_eq!(peer_buf_mapped, 1, "svc84 proof: peer results page not mapped");
+    assert_eq!(peer_stack_mapped, 1, "svc84 proof: peer stack page not mapped");
+
+    // The two sessions' equips. The install order is asserted, not
+    // assumed: the programs name these indexes, so a drift must fail HERE
+    // rather than as a mysterious EBADF from ring 3.
     let (cap_ep, cap_handle, input_handle) =
         crate::experimental::caps::prepare_session_for_proof(PROOF_SESSION_ID);
-    if cap_ep != 0 {
-        panic!("svc84 proof: session equip produced endpoint {} -- the program names endpoint 0", cap_ep);
+    if (cap_ep, cap_handle, input_handle) != (0, 1, 2) {
+        panic!(
+            "svc84 proof: session equip produced endpoint {} handles {} {} -- the program names 0, 1, 2",
+            cap_ep, cap_handle, input_handle
+        );
     }
-    if cap_handle != 1 {
-        panic!("svc84 proof: session equip produced handle {} -- the program names handle 1", cap_handle);
-    }
-    if input_handle != 2 {
-        panic!("svc84 proof: session equip produced INPUT handle {} -- the program names handle 2", input_handle);
-    }
-    // The region kind's equip: the kernel's own record of the page it just
-    // mapped, minted into the SESSION's table. It must land at slot 3 --
-    // the program names that index, so a drift fails here rather than as a
-    // mysterious EBADF from ring 3.
     let (region_id, region_handle) =
         crate::experimental::caps::prepare_region_for_proof(PROOF_SESSION_ID, PROOF_SHM, 4096);
     if region_handle != 3 {
@@ -171,14 +250,30 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
             region_handle
         );
     }
-    crate::service84::attach_gate_session(PROOF_SESSION_ID);
+    // The peer: its own endpoint (the one the first process will park on)
+    // and a SECOND grant of the same region; the first process gets a
+    // second region capability plus the SEND right to the peer's endpoint.
+    let (peer_ep, peer_owner, peer_region_handle, caller_region2, send_handle) =
+        crate::experimental::caps::prepare_peer_for_proof(PEER_SESSION_ID, PROOF_SESSION_ID, region_id);
+    if (peer_ep, peer_owner, peer_region_handle, caller_region2, send_handle) != (1, 0, 1, 4, 5) {
+        panic!(
+            "svc84 proof: peer equip produced endpoint {} handles {} {} {} {} -- the programs name 1, 0, 1, 4, 5",
+            peer_ep, peer_owner, peer_region_handle, caller_region2, send_handle
+        );
+    }
+    PROOF_REGION.store(region_id, Ordering::SeqCst);
+    let region_holders = crate::experimental::caps::region_holders(region_id).unwrap_or(0);
+    if region_holders != 3 {
+        panic!(
+            "svc84 proof: the region names {} holders after the equip -- the two processes hold 3 capabilities",
+            region_holders
+        );
+    }
 
     // The DISTINCT TABLES the session machine buys, asserted at the
     // kernel side, not trusted from the code's shape: task 0's holder
     // does not exist at all, so resolving a capability AS TASK 0 must
-    // refuse BadProcess. Under the retired shared-table equip (task 0's
-    // holder minted by `prepare_task0_for_proof`) this check could not
-    // answer BadProcess -- that is exactly what it pins.
+    // refuse BadProcess.
     match crate::experimental::caps::input_check_for(0, 0) {
         Err(crate::experimental::caps::CapError::BadProcess) => {}
         other => panic!(
@@ -213,21 +308,38 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         );
     }
 
-    // The ring-0 stack the CPU will switch to on the first trap: if it is
-    // not mapped in THIS address space, the first `int 0x84` faults while
-    // the CPU is pushing the frame, which looks like a kernel fault at a
-    // stack address rather than a service bug. Check it explicitly and say
-    // so, instead of discovering it as an exception dump.
-    let rsp0 = space.kernel_stack_top();
-    let rsp0_flags = paging::page_flags_active(VirtAddr::new(rsp0 - 8));
+    // Neither program enters ring 3 from HERE: both run as SCHEDULER
+    // TASKS (spawned below), because that is the only way a ring-3 caller
+    // can be PARKED on a blocking call -- task 0 has no session slot to
+    // park and the boot would be left with nothing to run. The
+    // coordinator stays on task 0: it spawns, pumps until both processes
+    // are TERMINATED, and only then reads the results back, so nothing it
+    // observes can be a process still running.
+    // The scheduler is INITIALISED here, which it is not yet at this point
+    // in the boot (the ordinary boot inits it later, after the demo chain;
+    // this proof never returns to that code). Without this, `spawn` would
+    // hand out ids 0 and 1 for a table that has no task 0 -- and id 0 is
+    // the coordinator, so the first process would have been "task 0" and
+    // refused its park with EPERM. That is exactly how the first run of
+    // this slice failed.
+    crate::experimental::scheduler::init();
+    ENTRY_A.store(loaded.entry_point.as_u64(), Ordering::SeqCst);
+    ENTRY_B.store(peer_loaded.entry_point.as_u64(), Ordering::SeqCst);
+    let task_a = crate::experimental::scheduler::spawn(ring3_a, &mut mapper, frame_allocator);
+    let task_b = crate::experimental::scheduler::spawn(ring3_b, &mut mapper, frame_allocator);
+
     serial_println!(
-        "  service-0x84 proof: program loaded at {:#x}, results page {:#x} and stack {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; session {} equip -- endpoint {} granted to the session's OWN table at handle {} , INPUT cap at handle {} , SHARED region {} at {:#x}..{:#x} at handle {} (task 0's table absent: distinct, verified) ; {} scancodes injected through the controller (IRQ1 -> raw ring) ; entering ring 3",
+        "  service-0x84 proof: program loaded at {:#x} (peer at {:#x}), results pages {:#x} and {:#x}, stacks {:#x} and {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; sessions {} and {} equip -- endpoint {} granted at handle {} , INPUT cap at handle {} , SHARED region {} ({:#x}..{:#x}) at handles {} and {} (two capabilities), peer endpoint {} at the peer's handle {} with the first process holding SEND at handle {} , {} region holders (task 0's table absent: distinct, verified) ; {} scancodes injected through the controller (IRQ1 -> raw ring) ; tasks {} and {} spawned -- entering ring 3",
         loaded.entry_point.as_u64(),
+        peer_loaded.entry_point.as_u64(),
         PROOF_BUF,
+        PEER_BUF,
         PROOF_STACK,
-        rsp0,
-        rsp0_flags,
+        PEER_STACK,
+        space.kernel_stack_top(),
+        paging::page_flags_active(VirtAddr::new(space.kernel_stack_top() - 8)),
         PROOF_SESSION_ID,
+        PEER_SESSION_ID,
         cap_ep,
         cap_handle,
         input_handle,
@@ -235,8 +347,95 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         PROOF_SHM,
         PROOF_SHM + 4096,
         region_handle,
-        injected
+        caller_region2,
+        peer_ep,
+        peer_owner,
+        send_handle,
+        region_holders,
+        injected,
+        task_a,
+        task_b
     );
 
-    usermode::enter_with_stack(loaded.entry_point, VirtAddr::new(PROOF_STACK + 4096 - 16))
+    // Pump: both ring-3 tasks run until each EXITs (CAP_EXIT terminates
+    // its own task). Round-robin does the ordering -- the first process
+    // gets the core first, runs to its blocking call, and its park is what
+    // hands the core to the peer, which answers it. Bounded, because a
+    // proof that hangs is a proof that says nothing.
+    let mut pumps = 0u64;
+    loop {
+        let done_a = matches!(
+            crate::experimental::scheduler::state_of(task_a),
+            Some(crate::experimental::scheduler::LifecycleState::Terminated)
+        );
+        let done_b = matches!(
+            crate::experimental::scheduler::state_of(task_b),
+            Some(crate::experimental::scheduler::LifecycleState::Terminated)
+        );
+        if done_a && done_b {
+            break;
+        }
+        if pumps >= 1_000_000 {
+            serial_println!(
+                "  service-0x84 proof: the two ring-3 processes did not both terminate (task {} {:?} , task {} {:?}) -- the call/answer handshake stalled",
+                task_a,
+                crate::experimental::scheduler::state_of(task_a),
+                task_b,
+                crate::experimental::scheduler::state_of(task_b)
+            );
+            // Halt here rather than spin: the verdict line was printed
+            // without a verdict, and the harness reads the console.
+            // A stall always lands here with the two processes' pages
+            // still mapped: dump what each of them got to, because the
+            // difference between "the peer never received" and "the peer
+            // answered but nobody woke" is exactly these numbers.
+            let mut peer_words = [0u64; 14];
+            for (i, w) in peer_words.iter_mut().enumerate() {
+                *w = unsafe { core::ptr::read_volatile((PEER_BUF + 8 * i as u64) as *const u64) };
+            }
+            serial_println!(
+                "  service-0x84 proof: peer page (ack {:#x} , base {:#x} , len {:#x} , read {:#x} , recv {:#x} , handle {:#x} , req {:#x} , retries {:#x} , reply {:#x} , wrote {:#x})",
+                peer_words[0], peer_words[4], peer_words[5], peer_words[6],
+                peer_words[7], peer_words[8], peer_words[9], peer_words[10],
+                peer_words[11], peer_words[12]
+            );
+            let mut a_words = [0u64; 19];
+            for (i, w) in a_words.iter_mut().enumerate() {
+                *w = unsafe { core::ptr::read_volatile((PROOF_BUF + 848 + 8 * i as u64) as *const u64) };
+            }
+            let mut head = [0u64; 4];
+            for (i, w) in head.iter_mut().enumerate() {
+                *w = unsafe { core::ptr::read_volatile((PROOF_BUF + 8 * i as u64) as *const u64) };
+            }
+            serial_println!(
+                "  service-0x84 proof: first process head (gfx {:#x} , input {:#x} , enosys {:#x} , geometry {:#x})",
+                head[0], head[1], head[2], head[3]
+            );
+            serial_println!(
+                "  service-0x84 proof: first process page (close {:#x} , base {:#x} , len {:#x} , rights {:#x} , call {:#x}) , waits {} , region holders {:?}",
+                a_words[0], a_words[4], a_words[5], a_words[6], a_words[11],
+                crate::experimental::caps::wait_count(),
+                crate::experimental::caps::region_holders(PROOF_REGION.load(Ordering::SeqCst))
+            );
+            crate::hlt_loop();
+        }
+        pumps += 1;
+        crate::experimental::scheduler::yield_task();
+    }
+
+    // The verdict is read HERE, on the coordinator, with both processes
+    // gone: the region's teardown is only observable after its last holder
+    // exited, which is exactly the lifetime clause this slice adds.
+    crate::service84::dispatch(
+        crate::service84::CALL_PROOF_DONE,
+        PROOF_BUF,
+        PEER_BUF,
+        0,
+        u64::MAX,
+        0,
+        0,
+    );
+    // The verdict is on the console; the harness reads it there. Halt
+    // rather than return: there is no "after the proof" in this boot.
+    crate::hlt_loop();
 }

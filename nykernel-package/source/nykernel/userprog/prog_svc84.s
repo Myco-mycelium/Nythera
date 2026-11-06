@@ -630,10 +630,121 @@ _start:
     int $0x84
     mov %rax, 840(%rbx)
 
-    /* Close the proof (0x43): the kernel reads BUF back through the
-       validator. */
-    mov %rbx, %rdi
-    mov $0x43, %rax
+    /* 13. TWO PROCESSES (2026-11-06): the region's LIFETIME, and a
+       blocking CALL that parks THIS program while a DIFFERENT ring-3
+       process answers it.
+
+       The capability table now holds (see svc84_proof's equip):
+         0 the endpoint's owner cap, 1 SEND cap, 2 INPUT cap,
+         3 region cap, 4 a SECOND region cap, 5 SEND to the peer's
+         endpoint, 6 the one-shot reply cap step 11 was handed.
+       The peer (prog_svc84_peer.s, its own scheduler task) holds its own
+       endpoint and its own grant of the same region.
+
+       Results: close-3 ack BUF+848, geometry record BUF+856 (base 880,
+       length 888, rights 896), the call's answer buffer BUF+904, the
+       call's byte count BUF+936, the request BUF+944, the answer as read
+       back BUF+952, the region's offset 8 re-read BUF+960, the PEER's
+       offset 16 BUF+968, close-4 ack BUF+976, the second close at
+       BUF+984, the geometry ack at BUF+992, the go send's ack at
+       BUF+1000. */
+    /* 13a. SHM_CLOSE (0x4d) on handle 3: ONE of this process's two region
+       capabilities goes back. The region is NOT torn down -- handle 4 and
+       the peer's grant still name it. */
+    mov $3, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
+    mov %rax, 848(%rbx)
+    /* 13b. Geometry through the OTHER handle (4): the record still
+       answers, and its base is the one the program then dereferences. */
+    mov $4, %rdi
+    lea 856(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 992(%rbx)
+    mov 856(%rbx), %rcx          /* record's base */
+    mov %rcx, 880(%rbx)
+    mov 864(%rbx), %rcx          /* record's length */
+    mov %rcx, 888(%rbx)
+    mov 872(%rbx), %rcx          /* record's rights */
+    mov %rcx, 896(%rbx)
+    /* 13c. THE CALL (0x4a, blocking dial): handle 5, the peer's endpoint
+       as the capability names it, 8-byte "fromA!" request, the answer
+       buffer at BUF+904 and its capacity 32. THIS PARK: the task that
+       runs this instruction is BLOCKED until the peer answers, and the
+       next instruction executed here is after that answer arrived. */
+    /* 13c-pre. The GO: SEND to mailbox 1 (the PEER's endpoint) in the
+       (sender, seq) form. The peer is PARKED in a blocking receive there,
+       so this message is what resumes it -- and the peer's next step is to
+       drain the call queued just below. Two processes, two primitives, each
+       waking the other out of a park. */
+    mov $1, %rdi
+    mov $22, %rsi
+    xor %rdx, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x45, %rax
+    int $0x84
+    mov %rax, 1000(%rbx)
+    movabs $0x000021416d6f7266, %rcx   /* "fromA!" little-endian */
+    mov %rcx, 944(%rbx)
+    mov $5, %rdi
+    lea 944(%rbx), %rsi
+    mov $8, %rdx
+    lea 904(%rbx), %r10
+    mov $32, %r8
+    mov $0x4a, %rax
+    int $0x84
+    mov %rax, 936(%rbx)
+    /* 13d. The ANSWER, read back out of the buffer the kernel wrote
+       through: the peer's own bytes, in THIS process's memory. */
+    mov 904(%rbx), %rcx
+    mov %rcx, 952(%rbx)
+    /* 13e. The region, after the peer ran: offset 8 is OUR value (we
+       wrote it in step 12, and nobody else touched it), offset 16 is the
+       PEER's -- written by another ring-3 process through another
+       capability and read here through ours. */
+    mov 880(%rbx), %rcx
+    mov 8(%rcx), %rdx
+    mov %rdx, 960(%rbx)
+    mov 16(%rcx), %rdx
+    mov %rdx, 968(%rbx)
+    /* 13f. SHM_CLOSE (0x4d) on handle 4: by now the PEER has exited and
+       released its grant, so this is the LAST holder -- the record dies
+       here, which the kernel's read-back confirms. */
+    mov $4, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
+    mov %rax, 976(%rbx)
+    /* 13g. The same handle again: consumed, so -EBADF. */
+    mov $4, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
+    mov %rax, 984(%rbx)
+    /* 14. EXIT (0x4e): releases what this table still holds and
+       terminates THIS task. The proof's verdict is read by task 0, which
+       is why this program does not ask for it. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4e, %rax
     int $0x84
 
 .hang:

@@ -16,9 +16,11 @@ sides so neither can drift back into the other:
   1. DISJOINT served calls must not appear anywhere in the release's
      ledger (the syscall_demo dispatch arms + every release user program's
      rax-loads before `int $0x84`).
-  2. COVERED the ring-3 proof (userprog/prog_svc84.s) must exercise EVERY
-     served call number, so renumbering without updating the proof fails
-     the build instead of quietly proving a call that no longer exists.
+  2. COVERED the ring-3 proof (userprog/prog_svc84.s, its peer
+     userprog/prog_svc84_peer.s, and the coordinator in
+     src/svc84_proof.rs) must exercise EVERY served call number, so
+     renumbering without updating the proof fails the build instead of
+     quietly proving a call that no longer exists.
 
 Reads files, prints one summary line, refuses the build by exiting 1 with
 the named failure. Usage: python3 tools/check_svc84_ledger.py
@@ -33,6 +35,16 @@ SERVICE84 = ROOT / "src" / "service84.rs"
 RELEASE_DEMO = ROOT / "porting" / "release-1-71" / "src" / "experimental" / "syscall_demo.rs"
 RELEASE_PROGS = ROOT / "porting" / "release-1-71" / "userprog"
 PROOF_PROG = ROOT / "userprog" / "prog_svc84.s"
+# The proof is TWO ring-3 processes and one kernel COORDINATOR since
+# 2026-11-06: the peer process drives the rows only it can reach (the
+# receive and reply that answer the parked caller), and the verdict call
+# (PROOF_DONE) is made by the coordinator on task 0, because the region's
+# teardown is only observable after both processes have EXITed. A row
+# exercised from either of those is exercised -- so this gate reads all
+# three files rather than pretending the first program still does
+# everything.
+PEER_PROG = ROOT / "userprog" / "prog_svc84_peer.s"
+COORDINATOR = ROOT / "src" / "svc84_proof.rs"
 
 
 def served_calls() -> dict[str, int]:
@@ -65,14 +77,25 @@ def release_ledger() -> set[int]:
 
 
 def proof_numbers() -> set[int]:
-    text = PROOF_PROG.read_text()
     nums: set[int] = set()
-    for m in re.finditer(r"int\s+\$0x84", text):
-        loads = re.findall(r"mov\s+\$([0-9]+|0x[0-9a-fA-F]+),\s*%rax", text[: m.start()])
-        if loads:
-            nums.add(int(loads[-1], 0))
+    asm_rows = 0
+    for prog in (PROOF_PROG, PEER_PROG):
+        text = prog.read_text()
+        for m in re.finditer(r"int\s+\$0x84", text):
+            loads = re.findall(r"mov\s+\$([0-9]+|0x[0-9a-fA-F]+),\s*%rax", text[: m.start()])
+            if loads:
+                nums.add(int(loads[-1], 0))
+                asm_rows += 1
+    if not asm_rows:
+        sys.exit("FAIL: the proof programs parsed empty -- prog_svc84.s drifted")
+    # The coordinator names the constants it dispatches (the verdict row),
+    # so a served call reached that way is covered by name.
+    coord = COORDINATOR.read_text()
+    for name, num in served_calls().items():
+        if re.search(r"\b" + name + r"\b", coord):
+            nums.add(num)
     if not nums:
-        sys.exit("FAIL: prog_svc84.s parsed empty -- the proof program drifted")
+        sys.exit("FAIL: the proof programs parsed empty -- the proof drifted")
     return nums
 
 
@@ -105,7 +128,7 @@ def main() -> None:
         f"svc84 ledger gate: {len(served)} served calls ({lo}..{hi}) disjoint from the "
         f"release ledger ({span}, {len(release)} numbers over syscall_demo.rs + "
         f"{len(list(RELEASE_PROGS.glob('*.s')))} release programs); "
-        f"prog_svc84.s exercises every served call"
+        f"prog_svc84.s + prog_svc84_peer.s + the task-0 coordinator exercise every served call"
     )
 
 
