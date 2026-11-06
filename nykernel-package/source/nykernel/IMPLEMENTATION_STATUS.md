@@ -5537,3 +5537,71 @@ started it, before the first gate finished building -- recorded here because
 a gate sequence that never runs must not be mistaken for one that passed. The
 run above was started as a managed background process and polled to its exit
 codes.
+
+## The release's blocking CALL, and a call that crosses two sessions (2026-11-06):
+## the caller parks mid-call and a different holder answers it
+
+The previous increment served CALL/REPLY but only as a self-call: the caller
+and the server were the same session, so the pair never crossed a table
+boundary, and the answer was collected with a plain receive rather than by
+waiting. Both halves are closed here.
+
+`CAP_CALL` gained a THIRD dial. `a_xfer == u64::MAX, a_rights == 0` is still the
+plain call. An answer buffer and length (`a_xfer != 0`, `a_rights >= 1`) make
+it the release's `call` + wait: the gate registers a wait slot in the
+capability machine, PARKS the calling task, and returns the answer's byte count
+with the bytes in the caller's buffer. A half claim is `EINVAL`, task 0 is
+refused `EPERM` (parking the boot's own task would leave nobody to run the
+scheduler), and a caller woken without an answer gets `EAGAIN` by name.
+
+The machine half is a wait registry: `call_wait_begin` (one outstanding wait per
+caller, `CallPending`/`EAGAIN` on the second), `reply` depositing into a PARKED
+caller's slot instead of an endpoint and unblocking its task in the same step,
+and `take_answer` consuming the slot. Register-then-park is the order that
+cannot lose a wake: a server that answers in between finds the slot already
+there.
+
+The proof runs the exchange between two DISTINCT holders: session 201 owns
+endpoint 0, session 202 holds a copy of a SEND|GRANT capability for it, and each
+runs as its own house task. The caller parks mid-call; the server drains the
+request on ITS table (retrying while the queue is bare, since the two race by
+construction), answers through the one-shot reply capability, and the caller
+resumes with the answer.
+
+One design note about who observes the park: the boot's own task cannot. By the
+time the scheduler returns to task 0 the caller has already been answered and
+has terminated, so sampling its state there is a race that fails about half the
+time (it did on this proof's first run). The SERVER observes it instead: at the
+moment it drains the request the caller is necessarily off-CPU -- the caller
+only leaves it inside the gate's own `block_current` -- so the server's reading
+is the park's proof, and the boot gate pins the line.
+
+Verified transcript lines (`tools/qemu_boot_test.sh`, passing, pinned):
+
+```
+  service-0x84 call proof: two sessions equipped -- 201 owns endpoint 0, 202 holds handle 0 for it (distinct tables)
+  service-0x84 call proof: caller task 8 (session 202) calls handle 0 of ANOTHER session's endpoint and parks
+  service-0x84 call proof: server task 9 (session 201) drained the request (reply handle 1) and answered it (ack 0)
+  service-0x84 call proof: the caller WOKE with 8 bytes and the server's answer in its buffer -- OK
+  service-0x84 call proof self-test: the caller parked (state BLOCKED), the OTHER session's task drained the call (recv 0xca00000008 , want 0xca00000008) and answered once (ack 0), and the caller resumed with 8 bytes reading 0x6b636162676e6f70 (want 0x6b636162676e6f70) -- OK
+```
+
+`0xca00000008` is the two tables meeting in one value: the server's drain packs
+the CALLER's session id (0xca = 202) above the request length, and the
+orchestrator compares it against the constant it equipped, not against
+whatever the kernel happened to print.
+
+The kernel self-test gained six more clause groups (`experimental caps: 42
+clause groups`), covering the registry's own half: one wait per caller,
+`CallPending` on the second, the answer landing in the wait slot rather than an
+endpoint, and the slot gone once consumed.
+
+One honest change to existing rows: the user-range validators on the capability
+rows are now RING-3-SCOPED (`from_ring3 && ...`). They exist as the ring-3
+boundary check, and a cpl-0 caller is the kernel passing its own buffers -- a
+kernel stack address is not USER_ACCESSIBLE and was being refused its own
+memory. Nothing a ring-3 caller can do changed.
+
+Checks: `./build.sh` PASS; `qemu_boot_test.sh` PASS with the C/D/E tape, the
+gate-park proof and the new call proof all pinned and matched;
+`svc84_proof_test.sh` PASS unchanged (its CALL leg is the non-blocking dial).

@@ -80,6 +80,9 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "woke C's re-parked delivery leg and sent the real delivery" \
         "blocking receive leg 2: woken BY A SEND" \
         "experimental ipc blocking-receive proof: task C parked, got 1 empty wake" \
+        "service-0x84 gate park self-test: the 0x46 blocking dial PARKED a session-backed task" \
+        "service-0x84 call proof self-test: the caller parked (state BLOCKED)" \
+        "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
     ; do
         if ! grep -aqF -- "$needle" target/qemu-test-stdout.log; then
             echo "FAIL: blocking-receive demo line missing or out of contract: $needle"
@@ -87,7 +90,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
             exit 1
         fi
     done
-    echo "PASS: kernel reached BootPhase::Ready and exited cleanly; the C/D/E blocking-receive tape is pinned and matched"
+    echo "PASS: kernel reached BootPhase::Ready and exited cleanly; the C/D/E blocking-receive tape, the gate-park proof and the cross-session blocking call are pinned and matched"
     exit 0
 elif [[ "$QEMU_STATUS" -eq 124 ]]; then
     echo "FAIL: boot test timed out (kernel hung or never reached Ready)"

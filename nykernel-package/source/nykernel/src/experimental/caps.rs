@@ -141,6 +141,10 @@ pub enum CapError {
     Widening,
     NotOwner,
     TableFull,
+    /// A BLOCKING call was begun by a caller that is already waiting for
+    /// one -- two outstanding calls from one holder would need two
+    /// answers and one wake slot, so the second is refused by name.
+    CallPending,
 }
 
 /// A message queued at an endpoint: the sender task id, the bounded
@@ -180,11 +184,27 @@ struct Holder {
 pub struct CapSystem {
     procs: Vec<Holder>,
     endpoints: Vec<Endpoint>,
+    /// One entry per PARKED caller: the blocking CALL's wait slot. The
+    /// answer is deposited here by `reply` (which also unblocks the
+    /// caller's task) and consumed by the gate when the parked task
+    /// resumes. A caller that answers through its own endpoint instead
+    /// never gets an entry.
+    waits: Vec<Waiting>,
+}
+
+/// A caller blocked on a call. `task` is the scheduler task to wake --
+/// the gate passes it because the capability machine only knows
+/// IDENTITIES (sessions), and a session's home task is the scheduler's
+/// fact, not this table's.
+struct Waiting {
+    caller: usize,
+    task: usize,
+    answer: Option<Vec<u8>>,
 }
 
 impl CapSystem {
     pub fn new() -> Self {
-        CapSystem { procs: Vec::new(), endpoints: Vec::new() }
+        CapSystem { procs: Vec::new(), endpoints: Vec::new(), waits: Vec::new() }
     }
 
     /// Creates a holder for task id `p`. Duplicate ids are refused
@@ -371,21 +391,64 @@ impl CapSystem {
         if payload.len() > MAX_PAYLOAD {
             return Err(CapError::PayloadTooLarge);
         }
-        let slot = self
-            .endpoints
-            .iter()
-            .position(|e| e.owner == target && e.alive)
-            .ok_or(CapError::TargetDead)?;
-        if self.endpoints[slot].queue.len() >= QUEUE_CAPACITY {
-            return Err(CapError::QueueFull);
-        }
+        // A PARKED caller is answered where it waits, not where it owns
+        // an endpoint: the blocking CALL registered a wait slot, and the
+        // parked task is unblocked by the same reply that fills it.
+        let waiting = self.waits.iter().position(|w| w.caller == target && w.answer.is_none());
+        let slot = match waiting {
+            Some(_) => usize::MAX,
+            None => {
+                let s = self
+                    .endpoints
+                    .iter()
+                    .position(|e| e.owner == target && e.alive)
+                    .ok_or(CapError::TargetDead)?;
+                if self.endpoints[s].queue.len() >= QUEUE_CAPACITY {
+                    return Err(CapError::QueueFull);
+                }
+                s
+            }
+        };
         let holder = self.live(p)?;
         match holder.caps.get_mut(h as usize) {
             Some(c) if c.is_some() => *c = None,
             _ => return Err(CapError::BadHandle),
         }
-        self.endpoints[slot].queue.push_back(Queued { sender: p, payload: payload.to_vec(), moved: None });
-        Ok(slot as u32)
+        match waiting {
+            Some(i) => {
+                self.waits[i].answer = Some(payload.to_vec());
+                // The wake is part of the answer, not a separate step a
+                // caller could forget: a filled slot with a still-parked
+                // task would be a lost wake (NPS-002 §5.4).
+                crate::experimental::scheduler::unblock_task(self.waits[i].task);
+                Ok(u32::MAX)
+            }
+            None => {
+                self.endpoints[slot].queue.push_back(Queued { sender: p, payload: payload.to_vec(), moved: None });
+                Ok(slot as u32)
+            }
+        }
+    }
+
+    /// Registers a BLOCKING call: `call_send`, plus the wait slot the
+    /// answer will be deposited into. The caller's TASK is recorded
+    /// because the machine only knows identities and the scheduler is
+    /// what a wake names.
+    pub fn call_wait_begin(&mut self, caller: usize, task: usize, h: u32, payload: &[u8]) -> Result<usize, CapError> {
+        if self.waits.iter().any(|w| w.caller == caller && w.answer.is_none()) {
+            return Err(CapError::CallPending);
+        }
+        let owner = self.call_send(caller, h, payload)?;
+        self.waits.push(Waiting { caller, task, answer: None });
+        Ok(owner)
+    }
+
+    /// Consumes this caller's wait slot, answer and all. `None` means the
+    /// caller was woken for something that was not an answer -- the
+    /// gate answers that EAGAIN by name rather than pretending.
+    pub fn take_answer(&mut self, caller: usize) -> Option<Vec<u8>> {
+        let i = self.waits.iter().position(|w| w.caller == caller)?;
+        self.waits.remove(i).answer
     }
 
     fn live(&mut self, p: usize) -> Result<&mut Holder, CapError> {
@@ -580,6 +643,22 @@ pub fn prepare_session_for_proof(sid: usize) -> (u32, u32, u32) {
     })
 }
 
+/// Proof-boot equip for the CALL/REPLY pair: `server` owns endpoint 0 (so
+/// its answer slot exists) and `caller` holds a SEND|GRANT capability for
+/// that endpoint in its OWN table -- two DISTINCT holders, which is what
+/// makes the call cross tables rather than loop inside one. Returns the
+/// caller's handle. Kernel-only, like every other bootstrap here.
+pub fn prepare_call_proof(server: usize, caller: usize) -> u32 {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.create_process(server).expect("caps call equip: server holder");
+        sys.create_process(caller).expect("caps call equip: caller holder");
+        let (ep, _owner_handle) = sys.create_endpoint(server).expect("caps call equip: server endpoint");
+        sys.bootstrap_grant(caller, ep, rights::SEND | rights::GRANT)
+            .expect("caps call equip: caller SEND|GRANT")
+    })
+}
+
 /// Access for the 0x84 rows: sends a kernel-side payload COPY (the gate
 /// already validated the user range) from the caller task through
 /// `handle`.
@@ -645,6 +724,25 @@ pub fn reply_for(caller: usize, handle: u32, payload: &[u8]) -> Result<u32, CapE
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.reply(caller, handle, payload)
+    })
+}
+
+/// Access for the BLOCKING CALL: registers the wait slot, then queues the
+/// request exactly as the non-blocking form does. The gate parks the
+/// caller after this returns, so the order matters -- register first, or
+/// a fast reply could land before there is anywhere to put it.
+pub fn call_wait_for(caller: usize, task: usize, handle: u32, payload: &[u8]) -> Result<usize, CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.call_wait_begin(caller, task, handle, payload)
+    })
+}
+
+/// Access for the resumed caller: drain whatever the reply deposited.
+pub fn take_answer_for(caller: usize) -> Option<Vec<u8>> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.take_answer(caller)
     })
 }
 
@@ -849,6 +947,32 @@ pub fn run() -> bool {
     // ...and a call through a NON-endpoint handle is WrongType, not a
     // send with a reply riding along.
     check!("call through a non-endpoint handle refused", sys.call_send(CLIENT, input_h, b"x") == Err(CapError::WrongType));
+
+    // ---- the BLOCKING call's wait registry ----
+    // The park itself is the scheduler's and is proven by the boot's own
+    // two-task proof (the gate parks a caller and a DIFFERENT session's
+    // task answers it); what belongs here is the machine's half: one
+    // outstanding wait per caller, the answer landing in the WAIT slot
+    // rather than an endpoint, and the slot being gone once consumed.
+    // `usize::MAX` is the task to wake -- there is none, and `unblock_task`
+    // refuses an unknown id, so the self-test never touches the boot's own
+    // task states.
+    check!("blocking call accepted", sys.call_wait_begin(CLIENT, usize::MAX, cli_h, b"wait").is_ok());
+    check!(
+        "a second blocking call from the same caller refused (CallPending)",
+        sys.call_wait_begin(CLIENT, usize::MAX, cli_h, b"x") == Err(CapError::CallPending)
+    );
+    let waited = sys.receive(SERVER, ep).ok().flatten().and_then(|m| m.transferred);
+    check!("the waiting call arrives with its one-shot reply right", waited.is_some());
+    check!(
+        "reply fills the PARKED caller's slot",
+        matches!(waited, Some(h) if sys.reply(SERVER, h, b"early").is_ok())
+    );
+    check!(
+        "the waiting caller wakes with the answer in its own slot",
+        sys.take_answer(CLIENT).as_deref() == Some(&b"early"[..])
+    );
+    check!("the consumed wait slot is gone", sys.take_answer(CLIENT).is_none());
 
     // §4.3 revocation: O(1), outstanding caps dead, owner mints fresh
     check!("revoke", sys.revoke(SERVER, ep).is_ok());

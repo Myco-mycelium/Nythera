@@ -630,6 +630,17 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         "the 0x84 gate's blocking receive did not park-and-wake a session-backed task"
     );
 
+    // ---- the 0x84 gate's BLOCKING CALL, across two sessions ----
+    // A caller parks until its server answers, and the two ends are
+    // different holders: the call crosses tables in both directions
+    // (request through the caller's copied SEND capability, answer
+    // through the reply capability the drain installed on the server).
+    let call_ok = experimental_call_proof(&mut mapper, &mut frame_allocator);
+    assert!(
+        call_ok,
+        "the 0x84 gate's blocking call did not park a caller and deliver a cross-session answer"
+    );
+
     // (The shared-object loader proofs run inside the ring-3 demo
     // CHAIN: pie_demo's trap hands to elf_dyn_demo (in-object
     // symbol resolution), whose trap hands to elf_dyn_cross_demo
@@ -907,6 +918,193 @@ extern "C" fn experimental_task_b() -> ! {
         }
         experimental::scheduler::yield_task();
     }
+}
+
+/// The blocking CALL's proof: a caller in ONE session calls an endpoint
+/// owned by ANOTHER session and parks mid-call; the server, running as its
+/// own house task under its own session, drains the request on its own
+/// table, answers through the one-shot reply capability, and the caller
+/// resumes with the answer in its buffer. Nothing here shares a table with
+/// anything else, which is the point -- the rejected earlier shape was a
+/// self-call that crossed no boundary at all.
+const CALL_PROOF_SERVER_SESSION: usize = 201;
+const CALL_PROOF_CALLER_SESSION: usize = 202;
+const CALL_PROOF_REQUEST: &[u8; 8] = b"pingme!!";
+const CALL_PROOF_ANSWER: &[u8; 8] = b"pongback";
+static CALL_PROOF_HANDLE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+static CALL_PROOF_RESULT: AtomicI64 = AtomicI64::new(i64::MIN);
+static CALL_PROOF_ANSWER_SEEN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static CALL_PROOF_SERVER_SAW: AtomicI64 = AtomicI64::new(i64::MIN);
+static CALL_PROOF_SERVER_REPLY: AtomicI64 = AtomicI64::new(i64::MIN);
+static CALL_PROOF_CALLER_DONE: AtomicBool = AtomicBool::new(false);
+static CALL_PROOF_SERVER_DONE: AtomicBool = AtomicBool::new(false);
+/// The caller's task id, so the SERVER can observe the park from outside:
+/// the orchestrator cannot, because by the time task 0 regains control the
+/// caller has already been answered and has terminated. The server drains
+/// at a moment when the caller is necessarily off-CPU (the caller only
+/// leaves it inside `block_current`), so its reading IS the park's proof.
+static CALL_PROOF_CALLER_TASK: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(usize::MAX);
+static CALL_PROOF_PARKED_SEEN: AtomicI64 = AtomicI64::new(-1);
+
+/// The caller: attaches its own session, then makes the BLOCKING call.
+/// The park happens INSIDE the gate's arm, so the `dispatch` below does
+/// not return until the server answers.
+extern "C" fn experimental_call_proof_caller() -> ! {
+    let me = experimental::scheduler::current_task();
+    experimental::scheduler::attach_session_for(CALL_PROOF_CALLER_SESSION, me);
+    let handle = CALL_PROOF_HANDLE.load(Ordering::Relaxed);
+    let mut request = [0u8; 64];
+    request[..8].copy_from_slice(CALL_PROOF_REQUEST);
+    let mut answer = [0u8; 64];
+    serial_println!(
+        "  service-0x84 call proof: caller task {} (session {}) calls handle {} of ANOTHER session's endpoint and parks",
+        me, CALL_PROOF_CALLER_SESSION, handle
+    );
+    let r = service84::dispatch(
+        service84::CALL_CAP_CALL,
+        handle as u64,
+        request.as_ptr() as u64,
+        8,
+        answer.as_mut_ptr() as u64,
+        64,
+        0,
+    );
+    CALL_PROOF_RESULT.store(r, Ordering::Relaxed);
+    let mut seen = [0u8; 8];
+    seen.copy_from_slice(&answer[..8]);
+    CALL_PROOF_ANSWER_SEEN.store(u64::from_le_bytes(seen), Ordering::Relaxed);
+    CALL_PROOF_CALLER_DONE.store(true, Ordering::Relaxed);
+    let _ = experimental::scheduler::withdraw_session();
+    serial_println!(
+        "  service-0x84 call proof: the caller WOKE with {} bytes and the server's answer in its buffer -- OK",
+        r
+    );
+    experimental::scheduler::terminate_current()
+}
+
+/// The server: attaches the OTHER session, drains the request on its own
+/// table (retrying while the queue is still bare -- the caller's park and
+/// this receive are racing by construction), then answers once through the
+/// reply capability the drain installed.
+extern "C" fn experimental_call_proof_server() -> ! {
+    let me = experimental::scheduler::current_task();
+    experimental::scheduler::attach_session_for(CALL_PROOF_SERVER_SESSION, me);
+    let mut buf = [0u8; 64];
+    let mut xfer: u64 = u64::MAX;
+    let mut packed = service84::ENODATA;
+    for _ in 0..64 {
+        packed = service84::dispatch(
+            service84::CALL_CAP_RECV,
+            0, // the session's own endpoint 0
+            buf.as_mut_ptr() as u64,
+            64,
+            u64::MAX,
+            (&mut xfer) as *mut u64 as u64,
+            0,
+        );
+        if packed != service84::ENODATA {
+            break;
+        }
+        experimental::scheduler::yield_task();
+    }
+    CALL_PROOF_SERVER_SAW.store(packed, Ordering::Relaxed);
+    // The park, observed by a task that is NOT the caller. Reading it here
+    // (immediately after the drain, before the answer) is the one moment
+    // the caller is provably mid-call rather than not-yet-started: it left
+    // the CPU inside the gate's own `block_current`.
+    let caller_task = CALL_PROOF_CALLER_TASK.load(Ordering::Relaxed);
+    let parked_now = matches!(
+        experimental::scheduler::state_of(caller_task),
+        Some(experimental::scheduler::LifecycleState::Blocked)
+    );
+    CALL_PROOF_PARKED_SEEN.store(if parked_now { 1 } else { 0 }, Ordering::Relaxed);
+    let mut answer = [0u8; 64];
+    answer[..8].copy_from_slice(CALL_PROOF_ANSWER);
+    let replied = service84::dispatch(
+        service84::CALL_CAP_REPLY,
+        xfer,
+        answer.as_ptr() as u64,
+        8,
+        u64::MAX,
+        0,
+        0,
+    );
+    CALL_PROOF_SERVER_REPLY.store(replied, Ordering::Relaxed);
+    CALL_PROOF_SERVER_DONE.store(true, Ordering::Relaxed);
+    let _ = experimental::scheduler::withdraw_session();
+    serial_println!(
+        "  service-0x84 call proof: server task {} (session {}) drained the request (reply handle {}) and answered it (ack {})",
+        me, CALL_PROOF_SERVER_SESSION, xfer, replied
+    );
+    experimental::scheduler::terminate_current()
+}
+
+/// Spawns both, waits for the caller's BLOCKED edge, lets the server run,
+/// and judges the answer the caller resumed with. Bounded waits
+/// throughout: a park that never happens, a wake that never arrives or an
+/// answer that never lands is a NAMED failure, never a boot hang.
+fn experimental_call_proof(
+    mapper: &mut x86_64::structures::paging::OffsetPageTable<'static>,
+    frame_allocator: &mut BumpFrameAllocator,
+) -> bool {
+    let handle = experimental::caps::prepare_call_proof(CALL_PROOF_SERVER_SESSION, CALL_PROOF_CALLER_SESSION);
+    CALL_PROOF_HANDLE.store(handle, Ordering::Relaxed);
+    serial_println!(
+        "  service-0x84 call proof: two sessions equipped -- {} owns endpoint 0, {} holds handle {} for it (distinct tables)",
+        CALL_PROOF_SERVER_SESSION, CALL_PROOF_CALLER_SESSION, handle
+    );
+    let caller = experimental::scheduler::spawn(experimental_call_proof_caller, mapper, frame_allocator);
+    CALL_PROOF_CALLER_TASK.store(caller, Ordering::Relaxed);
+    let server = experimental::scheduler::spawn(experimental_call_proof_server, mapper, frame_allocator);
+    serial_println!(
+        "  service-0x84 call proof: spawned caller task {} and server task {}",
+        caller, server
+    );
+    let mut done = false;
+    for _ in 0..128 {
+        experimental::scheduler::yield_task();
+        if CALL_PROOF_CALLER_DONE.load(Ordering::Relaxed) && CALL_PROOF_SERVER_DONE.load(Ordering::Relaxed) {
+            done = true;
+            break;
+        }
+    }
+    // The park as the SERVER saw it, not as task 0 might race to see it.
+    let parked = CALL_PROOF_PARKED_SEEN.load(Ordering::Relaxed) == 1;
+    if !done || !parked {
+        serial_println!(
+            "  service-0x84 call proof: FAILED -- the caller never parked (server saw {}) or the exchange never finished (done {})",
+            CALL_PROOF_PARKED_SEEN.load(Ordering::Relaxed),
+            done
+        );
+        return false;
+    }
+    let result = CALL_PROOF_RESULT.load(Ordering::Relaxed);
+    let seen = CALL_PROOF_ANSWER_SEEN.load(Ordering::Relaxed);
+    let server_saw = CALL_PROOF_SERVER_SAW.load(Ordering::Relaxed);
+    let reply_ack = CALL_PROOF_SERVER_REPLY.load(Ordering::Relaxed);
+    // The server's drain packs (sender << 32) | len, and the sender is the
+    // CALLER's session -- the two tables meeting is exactly this value.
+    let want_server = ((CALL_PROOF_CALLER_SESSION as i64) << 32) | 8;
+    let want_answer = u64::from_le_bytes(*CALL_PROOF_ANSWER);
+    let ok = parked
+        && done
+        && result == 8
+        && seen == want_answer
+        && server_saw == want_server
+        && reply_ack == 0;
+    serial_println!(
+        "  service-0x84 call proof self-test: the caller parked (state {}), the OTHER session's task drained the call (recv {:#x} , want {:#x}) and answered once (ack {}), and the caller resumed with {} bytes reading {:#x} (want {:#x}) -- {}",
+        if parked { "BLOCKED" } else { "UNPARKED" },
+        server_saw as u64,
+        want_server as u64,
+        reply_ack,
+        result,
+        seen,
+        want_answer,
+        if ok { "OK" } else { "FAILED" }
+    );
+    ok
 }
 
 /// Halts the CPU in a loop rather than spinning it hot -- `hlt` puts

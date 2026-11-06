@@ -18,7 +18,7 @@
 //! | 0x47 | `CAP_SEND` | a0=handle, a1/a2=payload, a_xfer/a_rights | capability-checked send through `experimental::caps`; `0`, or its errno |
 //! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer, a_rights = out-pointer for a transferred handle (0 = not wanted) | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
 //! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
-//! | 0x4a | `CAP_CALL` | a0=endpoint handle, a1/a2=request | queues the request carrying a ONE-SHOT `Reply` capability naming the caller -> the endpoint's owner id; its errno otherwise |
+//! | 0x4a | `CAP_CALL` | a0=endpoint handle, a1/a2=request; a_xfer/a_rights = answer buffer + length for the BLOCKING dial | queues the request carrying a ONE-SHOT `Reply` capability naming the caller -> the endpoint's owner id; with an answer buffer the caller PARKS until the server answers and gets the answer's byte count; its errno otherwise |
 //! | 0x4b | `CAP_REPLY` | a0=reply handle, a1/a2=answer | answers one call at the caller's own endpoint and CONSUMES the handle; `0`, `-EBADF` on a second use, `-EACCES` on a wrong-kind handle |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
@@ -271,6 +271,10 @@ fn map_cap_error(e: crate::experimental::caps::CapError) -> i64 {
         NoRight | Revoked | NotOwner => EACCES,
         PayloadTooLarge | Widening => EMSGSIZE,
         QueueFull => EAGAIN,
+        // A second outstanding BLOCKING call from one holder: EAGAIN is
+        // the release's "would block", and this caller is already
+        // blocked on another call, so it must finish that one first.
+        CallPending => EAGAIN,
         TableFull => ENOSPC,
     }
 }
@@ -1019,13 +1023,17 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             if a_xfer != u64::MAX {
                 return EBADF;
             }
-            if a_rights != 0 && !crate::memory::paging::user_range_ok(a_rights, 8, true) {
+            // The user-range validator IS the ring-3 boundary check; a
+            // cpl-0 caller is the kernel, whose buffers are its own
+            // (a kernel stack address is not USER_ACCESSIBLE and would
+            // otherwise be refused its own memory).
+            if from_ring3 && a_rights != 0 && !crate::memory::paging::user_range_ok(a_rights, 8, true) {
                 return EFAULT;
             }
             if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
                 return EMSGSIZE;
             }
-            if a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, true) {
+            if from_ring3 && a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, true) {
                 return EFAULT;
             }
             match crate::experimental::caps::receive_for(
@@ -1114,16 +1122,33 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             if a0 > u32::MAX as u64 {
                 return EBADF;
             }
-            // A call's transfer field is the kernel's Reply mint; a
-            // caller-chosen transfer or rights mask is a shape this row
-            // does not own, refused rather than half-served.
-            if a_xfer != u64::MAX || a_rights != 0 {
+            // THREE dials on one row, selected by a_xfer/a_rights:
+            //
+            //   a_xfer == u64::MAX, a_rights == 0 -- the plain call: the
+            //     answer comes back later at the caller's own endpoint,
+            //     and the row answers the endpoint's owner.
+            //   a_xfer != u64::MAX and a_xfer != 0, a_rights >= 1 -- the
+            //     BLOCKING call (the release's `call` + wait): a_xfer is
+            //     the answer buffer, a_rights its length. The caller's
+            //     tasks PARKS until the server answers, and the row
+            //     returns the answer's byte count with the bytes in that
+            //     buffer. The kernel main task (0) is refused EPERM:
+            //     parking it would leave no one to run the scheduler's
+            //     own boot chain.
+            //   anything else -- a half claim, a zero-length answer
+            //     buffer -- is a shape this row does not own (EBADF for
+            //     the transfer field's sentinel, EINVAL for the rest).
+            let blocking = a_xfer != u64::MAX;
+            if blocking && (a_xfer == 0 || a_rights == 0) {
+                return EINVAL;
+            }
+            if !blocking && a_rights != 0 {
                 return EBADF;
             }
             if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
                 return EMSGSIZE;
             }
-            if a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, false) {
+            if from_ring3 && a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, false) {
                 return EFAULT;
             }
             let mut bytes = [0u8; crate::experimental::caps::MAX_PAYLOAD];
@@ -1132,13 +1157,60 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     core::ptr::copy_nonoverlapping(a1 as *const u8, bytes.as_mut_ptr(), a2 as usize);
                 }
             }
-            match crate::experimental::caps::call_for(
-                crate::experimental::scheduler::session_identity(),
-                a0 as u32,
-                &bytes[..a2 as usize],
-            ) {
-                Ok(owner) => owner as i64,
-                Err(e) => map_cap_error(e),
+            if !blocking {
+                return match crate::experimental::caps::call_for(
+                    crate::experimental::scheduler::session_identity(),
+                    a0 as u32,
+                    &bytes[..a2 as usize],
+                ) {
+                    Ok(owner) => owner as i64,
+                    Err(e) => map_cap_error(e),
+                };
+            }
+            // ---- the blocking dial ----
+            if a_rights > crate::experimental::caps::MAX_PAYLOAD as u64 {
+                return EMSGSIZE;
+            }
+            // A ring-3 caller's answer buffer goes through the validator;
+            // a ring-0 caller's pointer is the kernel's own memory, which
+            // the validator is not written to accept (it answers only for
+            // USER_ACCESSIBLE ranges). The boundary check exists for ring
+            // 3, and that is exactly where it is applied.
+            if from_ring3 && !crate::memory::paging::user_range_ok(a_xfer, a_rights as usize, true) {
+                return EFAULT;
+            }
+            let me = crate::experimental::scheduler::current_task();
+            if me == 0 {
+                return EPERM; // the boot's own task cannot park on a call
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::call_wait_for(identity, me, a0 as u32, &bytes[..a2 as usize]) {
+                Ok(_owner) => {}
+                Err(e) => return map_cap_error(e),
+            }
+            // Register-then-park is the order that cannot lose a wake: a
+            // server that answers between the two finds the wait slot
+            // already there.
+            crate::experimental::scheduler::block_current();
+            match crate::experimental::caps::take_answer_for(identity) {
+                Some(answer) => {
+                    if answer.len() as u64 > a_rights {
+                        // The answer was delivered and cannot fit: the
+                        // caller is told by name rather than handed a
+                        // truncated reply it would read as complete.
+                        return EMSGSIZE;
+                    }
+                    if !answer.is_empty() {
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(answer.as_ptr(), a_xfer as *mut u8, answer.len());
+                        }
+                    }
+                    answer.len() as i64
+                }
+                // Woken without an answer: a real answer to a real state,
+                // not a refusal to hide it (the 0x46 blocking dial's own
+                // convention).
+                None => EAGAIN,
             }
         }
         CALL_CAP_REPLY => {
@@ -1154,7 +1226,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
                 return EMSGSIZE;
             }
-            if a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, false) {
+            if from_ring3 && a2 != 0 && !crate::memory::paging::user_range_ok(a1, a2 as usize, false) {
                 return EFAULT;
             }
             let mut bytes = [0u8; crate::experimental::caps::MAX_PAYLOAD];
