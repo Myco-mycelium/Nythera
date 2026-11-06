@@ -5368,3 +5368,60 @@ shape rows now pin the payload refusals too). The UEFI, secboot and parity
 gates were NOT rerun after this increment: it touches the gate and the
 mailbox, neither of which the boot-path gates' kernel-side chain differs on,
 and the three were green two commits earlier (above).
+
+## The 0x46 blocking dial parked on a real house task (2026-11-06): a session
+## store that is per-task, and the .data bug that proved it
+
+Since the blocking dial landed (`ba94b49`) the parked leg had only ever been
+exercised from the ring-3 proof, whose callers are task 0. Doing it from a
+scheduler task was refused `EAGAIN` because a task with no session is not a
+schedulable home -- honest, but it meant the one dial this release serves
+(park and be woken by the next send) had never run on the house scheduler.
+
+That needed the session store to tell tasks apart. Its first cut was a
+single global `AtomicUsize`: one session for the whole kernel. The new
+gate-park proof killed it immediately -- the moment task 7 attached a
+session and blocked, task A's sends started answering `NotRunningTask`,
+because the arbiter's sender check compares against `session_identity()`
+and every task now read back task 7's session. A global identity can only
+be right while exactly one task runs.
+
+The store is `SESSIONS: [AtomicUsize; 32]`, one slot per task, with
+`session_of(task)` / `detach_session_for(task)` alongside `attach_session_for`,
+`session_task`, `session_is_schedulable`, `withdraw_session` and
+`session_identity`. That fix exposed a second bug the proof caught too: the
+slots were initialised to `NO_SESSION` (`usize::MAX`), which puts the table
+in `.data`, and this boot path does not materialise that section -- every
+slot read back whatever the loader left there, and task A's sends declared
+identity `6182160`. Slots now store `session id + 1` with 0 meaning "no
+session", so the table is zero-initialised and lives in `.bss` like every
+other static here. Both bugs are documented at the store, not just fixed.
+
+A third bug was the new self-test's own: its per-task isolation check
+records a session FOR another task (to prove the store is per-task), and it
+did not put that slot back -- so demo task A woke up owning a session it
+never attached, which is exactly the `NotRunningTask` noise the boot log
+showed. The test now snapshots the slot, restores it exactly, and asserts
+`session_of` agrees.
+
+The proof itself spawns task 7, has it attach session 200 with HOME = this
+task, and calls `service84::dispatch(CALL_IPC_RECV, GATE_PARK_EP, 1, ...)`
+against an empty endpoint whose owner (task J) is terminated and will
+never read it. The gate parks it (state BLOCKED), the next `ipc::send`
+from the main task wakes it, and the gate answers the queued message.
+
+Verified transcript lines (`tools/qemu_boot_test.sh`, passing):
+
+```
+  experimental scheduler session record/withdraw contract: attach names the recorded id, withdraw reverts and reports it, double-withdraw reports none, identity back to the running task, a session recorded for ANOTHER task leaves this one's identity alone (and is put back exactly as found), the current task's own record names it as the home while task 0 is never schedulable, and withdrawing clears the home -- OK
+  service-0x84 gate park: spawned task 7 to call the blocking dial from a caller that HAS a schedulable session home
+  service-0x84 gate park: task 7 attached session 200 with HOME = this task; calling 0x46 blocking on the EMPTY endpoint 3 (budget 1)
+  service-0x84 gate park: the parked task woke (its session home withdrawn) and carries the message the sender queued -- OK
+  service-0x84 gate park self-test: the 0x46 blocking dial PARKED a session-backed task (state BLOCKED), the next ipc::send woke it, and the gate answered the queued message (0x5b , want 0x5b , done true) -- OK
+```
+
+Checks: `./build.sh` PASS; `qemu_boot_test.sh` PASS with the pinned C/D/E
+tape intact and task A/B's six round trips unchanged; `svc84_proof_test.sh`
+PASS with a byte-identical verdict (the proof's callers are still task 0, so
+its `EAGAIN` legs keep their answers). The long gates are rerun on this
+tree's final HEAD, not here -- see the increment that follows.

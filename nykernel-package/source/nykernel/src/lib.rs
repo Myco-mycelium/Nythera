@@ -26,7 +26,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 
 pub mod acpi;
 pub mod ata;
@@ -618,6 +618,18 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     );
     serial_println!("  experimental ipc blocking-receive proof: task C parked, got 1 empty wake -> ReceiveTimedOut (typed, never an indefinite block); the delivery send then woke BOTH parked receivers, exactly one (E) consumed the message, C re-parked and was delivered by D's own next send -- OK");
 
+    // ---- the 0x84 gate's blocking receive, parked on a real task ----
+    // Every other gate caller in this tree is task 0 (the boot context,
+    // never a home) or the ring3-scheduler POC's own machine, so the
+    // gate's PARK path needs a caller the scheduler can actually park:
+    // this one. It proves the arm's decision AND the machine behind it
+    // at the gate's own boundary, with the wake arriving from a send.
+    let gate_park_ok = experimental_gate_park_proof(&mut mapper, &mut frame_allocator);
+    assert!(
+        gate_park_ok,
+        "the 0x84 gate's blocking receive did not park-and-wake a session-backed task"
+    );
+
     // (The shared-object loader proofs run inside the ring-3 demo
     // CHAIN: pie_demo's trap hands to elf_dyn_demo (in-object
     // symbol resolution), whose trap hands to elf_dyn_cross_demo
@@ -716,6 +728,21 @@ static BLOCKED_RACE_WON_E: AtomicBool = AtomicBool::new(false);
 static TASK_D_KICKED: AtomicBool = AtomicBool::new(false);
 static TASK_D_SENT: AtomicBool = AtomicBool::new(false);
 static TASK_D_SENT_DELIVERY: AtomicBool = AtomicBool::new(false);
+
+// ---- the GATE's blocking receive, parked on a real house task ----
+// The 0x46 blocking dial parks only for a caller whose session names a
+// schedulable task (`scheduler::session_is_schedulable`). The ring-3
+// proof's caller is task 0 (the boot context -- never a home), so the
+// park path needs a caller that HAS one: this task. Its session is
+// minted above the ring3-scheduler POC's base (100) so the id spaces
+// stay disjoint, and the endpoint is task J's mailbox index -- J
+// terminated on its first activation, so nothing else ever reads it.
+const GATE_PARK_SESSION: usize = 200;
+const GATE_PARK_EP: usize = TASK_J_ID;
+const GATE_PARK_SEQ: u32 = 91;
+static GATE_PARK_RESULT: AtomicI64 = AtomicI64::new(i64::MIN);
+static GATE_PARK_DONE: AtomicBool = AtomicBool::new(false);
+static GATE_PARK_PARKED: AtomicBool = AtomicBool::new(false);
 
 /// Task C: the blocking receive's receiver. Leg 1 parks on an empty
 /// endpoint with a ONE-wake budget -- its only wake is an empty
@@ -887,6 +914,105 @@ extern "C" fn experimental_task_b() -> ! {
 /// a single-core kernel because it's what a real idle task will
 /// eventually do too; this is that behavior's first appearance, not a
 /// throwaway.
+/// The gate's PARKED caller: a real house task whose session names
+/// ITSELF as the schedulable home, calling the 0x46 blocking dial on an
+/// EMPTY endpoint. Before the home relation existed this call was
+/// refused `EAGAIN` (nothing to park); now the task's own TCB takes the
+/// RUNNING -> BLOCKED edge inside the trap and the resume returns into
+/// the same arm with the message task 0 sent. The answer is stored for
+/// the orchestrator to judge, then the task withdraws its session and
+/// terminates so the dispatcher never picks it again.
+extern "C" fn experimental_gate_park_task() -> ! {
+    let me = experimental::scheduler::current_task();
+    experimental::scheduler::attach_session_for(GATE_PARK_SESSION, me);
+    serial_println!(
+        "  service-0x84 gate park: task {} attached session {} with HOME = this task; calling 0x46 blocking on the EMPTY endpoint {} (budget 1)",
+        me, GATE_PARK_SESSION, GATE_PARK_EP
+    );
+    // The gate's OWN arm decides here: empty queue, blocking dial, a
+    // caller with a home -> park.
+    let answer = service84::dispatch(
+        service84::CALL_IPC_RECV,
+        GATE_PARK_EP as u64,
+        1, // the empty-wake budget
+        0,
+        1, // a_xfer == 1: the release's blocking dial
+        0,
+        0, // cpl 0: a kernel task, so the proof statics stay untouched
+    );
+    GATE_PARK_RESULT.store(answer, Ordering::Relaxed);
+    GATE_PARK_DONE.store(true, Ordering::Relaxed);
+    let withdrawn = experimental::scheduler::withdraw_session();
+    assert_eq!(
+        withdrawn,
+        Some(GATE_PARK_SESSION),
+        "the parked task's session must be withdrawn by the same task that attached it"
+    );
+    serial_println!(
+        "  service-0x84 gate park: the parked task woke (its session home withdrawn) and carries the message the sender queued -- OK"
+    );
+    experimental::scheduler::terminate_current()
+}
+
+/// Drives the gate-park proof: spawn the task, wait for its BLOCKED edge
+/// (the park is the machine's state, not a print), send the message that
+/// must wake it, and judge the answer the gate handed back. A bounded
+/// wait on every leg: a park that never happens or a wake that never
+/// arrives is a NAMED failure, never a boot hang.
+fn experimental_gate_park_proof(
+    mapper: &mut x86_64::structures::paging::OffsetPageTable<'static>,
+    frame_allocator: &mut BumpFrameAllocator,
+) -> bool {
+    let task = experimental::scheduler::spawn(experimental_gate_park_task, mapper, frame_allocator);
+    serial_println!(
+        "  service-0x84 gate park: spawned task {} to call the blocking dial from a caller that HAS a schedulable session home",
+        task
+    );
+    let mut parked = false;
+    for _ in 0..64 {
+        experimental::scheduler::yield_task();
+        if experimental::scheduler::state_of(task) == Some(experimental::scheduler::LifecycleState::Blocked) {
+            parked = true;
+            break;
+        }
+    }
+    GATE_PARK_PARKED.store(parked, Ordering::Relaxed);
+    if !parked {
+        serial_println!(
+            "  service-0x84 gate park: FAILED -- task {} never reached the BLOCKED edge (the arm refused instead of parking)",
+            task
+        );
+        return false;
+    }
+    // Task 0 is the sender (and so the message's declared sender: the
+    // arbiter compares against `session_identity()`, which is the
+    // running task when no session is attached).
+    let sent = experimental::ipc::send(
+        GATE_PARK_EP,
+        experimental::ipc::IpcMessage::new(0, GATE_PARK_SEQ),
+    );
+    let mut done = false;
+    for _ in 0..64 {
+        experimental::scheduler::yield_task();
+        if GATE_PARK_DONE.load(Ordering::Relaxed) {
+            done = true;
+            break;
+        }
+    }
+    let want = GATE_PARK_SEQ as i64; // (sender 0 << 32) | seq
+    let got = GATE_PARK_RESULT.load(Ordering::Relaxed);
+    let ok = sent.is_ok() && done && got == want;
+    serial_println!(
+        "  service-0x84 gate park self-test: the 0x46 blocking dial PARKED a session-backed task (state {}), the next ipc::send woke it, and the gate answered the queued message ({:#x} , want {:#x} , done {}) -- {}",
+        if parked { "BLOCKED" } else { "UNPARKED" },
+        got as u64,
+        want as u64,
+        done,
+        if ok { "OK" } else { "FAILED" }
+    );
+    ok
+}
+
 pub fn hlt_loop() -> ! {
     loop {
         x86_64::instructions::hlt();
