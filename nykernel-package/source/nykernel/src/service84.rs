@@ -13,8 +13,8 @@
 //! | 0x42 | `GFX_MODE_INTO` | user pointer | writes `(u32 width, u32 height)` there; `0`, or `-EFAULT` |
 //! | 0x43 | `PROOF_DONE` | user pointer | the ring-3 proof's read-back check (see below) |
 //! | 0x44 | `PROCESS_SELF` | — | the running scheduler task's id (`experimental::scheduler`); `0` = the kernel itself |
-//! | 0x45 | `IPC_SEND` | a0=endpoint, a1=seq | queues `(sender = current task, seq)` through `experimental::ipc`; `0`, or the arbiter's errno |
-//! | 0x46 | `IPC_RECV` | a0=endpoint | drains one queued message -> `(sender << 32) | seq`; `-ENODATA` when real-and-empty, `-ENOENT` when it does not exist |
+//! | 0x45 | `IPC_SEND` | a0=endpoint, a1=seq, OR a1=buffer + a2=len | queues `(sender = caller identity, seq)` or the release's payload message (bytes copied into the kernel); `0`, or the arbiter's errno |
+//! | 0x46 | `IPC_RECV` | a0=endpoint (+ a1=buffer, a2=buflen>=64 for the payload dial), a_xfer = 0 plain / 1 blocking | drains one queued message -> `(sender << 32) | seq`, or the payload byte count with the bytes in the caller's buffer; `-ENODATA` when real-and-empty, `-ENOENT` when it does not exist, `-EAGAIN` when a wait woke with nothing |
 //! | 0x47 | `CAP_SEND` | a0=handle, a1/a2=payload, a_xfer/a_rights | capability-checked send through `experimental::caps`; `0`, or its errno |
 //! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
 //! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
@@ -37,7 +37,20 @@
 //! (`a2`), a transfer token other than the release's "no transfer"
 //! (`a_xfer`) or rights (`a_rights`), or a `seq` wider than u32, claims a
 //! shape this primitive does not own and is refused (`EINVAL`/`ERANGE`)
-//! rather than served truncated. The blocking form (`a_xfer == 1` on RECV)
+//! rather than served truncated. Since 2026-11-06 the payload half is
+//! SERVED as its own dial: `a2 != 0` on SEND means the release's
+//! `SEND(handle, buf, len)` -- `a1` is a user buffer and `a2` the byte
+//! count, bounded at `ipc::MAX_PAYLOAD` (64, the release's own message
+//! size), validated and COPIED into the kernel before the queue is
+//! touched; on RECV it means `RECV(idx, buf, buflen)`, whose `buflen`
+//! must be at least one whole message and whose answer is the BYTE
+//! COUNT with the bytes written to the caller's buffer. A transfer
+//! token (`a_xfer != u64::MAX` on SEND) and a rights claim (`a_rights`)
+//! are still refused `EINVAL`: a message cannot carry a capability yet,
+//! and answering a transfer the other end never receives would be the
+//! exact lie the refusal convention exists to prevent.
+//!
+//! The blocking form (`a_xfer == 1` on RECV)
 //! is SERVED for its INSTANT half as of 2026-11-06: a message already on
 //! the endpoint is drained and answered exactly as the plain dial would,
 //! with the budget (`a1`) checked first (shape, then budget, then
@@ -291,10 +304,16 @@ static RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
 /// The blocking form's INSTANT half answer, recorded when the ring-3
 /// blocking recv consumed a queued message (the same shape as
 /// RECVD_VALUE). PROOF_DONE compares the program's stored answer
-/// against THIS. The blocked half can never answer: a session's park
-/// has no waker (a session id is never a schedulable task), so the
-/// arm refuses with EAGAIN when a budget survives the drain.
+/// against THIS. The blocked half answers only for a caller with a
+/// schedulable home (`scheduler::session_is_schedulable`); a caller
+/// without one is refused EAGAIN when its budget survives the drain,
+/// never parked (see the arm's sharp-edge note).
 static BLOCKED_RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
+/// The payload form's answer, recorded when a ring-3 payload recv
+/// landed bytes in the caller's buffer: the BYTE COUNT (the release's
+/// own `RECV` answer), so the proof can judge the length the kernel
+/// handed back against what the program's buffer now holds.
+static PAYLOAD_RECVD_VALUE: AtomicU64 = AtomicU64::new(0);
 /// The capability leg's differential records: what the drain actually
 /// handed back BEYOND what rax shows -- the received payload's first 8
 /// bytes (zero-padded) and the packed (sender<<32|len) return. The
@@ -400,6 +419,16 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // Read the results back OUT OF USER MEMORY: this is the part
             // the registers alone cannot prove, because it shows the
             // ring-3 program actually received and stored them.
+            // The PAYLOAD dials' results live in their own block
+            // (BUF+448..+496), because the first array's 8-byte stride
+            // collides with the INPUT_POLL records at BUF+208/+224/+240
+            // from index 26 on: [0] send ack, [1] recv byte count,
+            // [2] the bytes read back OUT of the program's buffer,
+            // [3] the oversize refusal, [4] the null-pointer refusal,
+            // [5] the too-small receive buffer's refusal.
+            if !crate::memory::paging::user_range_ok(a0 + 448, 48, false) {
+                return EFAULT;
+            }
             let mut stored = [0i64; 26];
             for (i, slot) in stored.iter_mut().enumerate() {
                 *slot = unsafe { core::ptr::read_unaligned((a0 as *const i64).add(i)) };
@@ -432,6 +461,14 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // dead destination's ENOENT are pinned as constants -- they
             // are REFUSALS, and a by-name refusal is its own pin.
             let want_blocked = BLOCKED_RECVD_VALUE.load(Ordering::Relaxed) as i64;
+            // The payload dial's kernel-side record: the byte count the
+            // payload recv answered. Compared against the program's
+            // stored copy below, like every other answer.
+            let want_payload_len = PAYLOAD_RECVD_VALUE.load(Ordering::Relaxed) as i64;
+            let mut payload = [0i64; 6];
+            for (i, slot) in payload.iter_mut().enumerate() {
+                *slot = unsafe { core::ptr::read_unaligned((a0 + 448 + 8 * i as u64) as *const i64) };
+            }
             // The capability leg is judged the same differential way: the
             // drain's actual answer (packed sender<<32|len, recorded when
             // the ring-3 recv ran), the drained payload's first 8 bytes,
@@ -472,7 +509,21 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && stored[23] == want_blocked
                 && want_blocked != 0
                 && stored[24] == EAGAIN
-                && stored[25] == ENOENT;
+                && stored[25] == ENOENT
+                // The PAYLOAD dials (2026-11-06): the send was accepted,
+                // the receive answered the kernel-recorded byte count,
+                // the program's OWN buffer holds the sent bytes (a
+                // kernel that answered a length and copied nothing
+                // would fail here), and the three shape claims were
+                // refused by name -- too wide, null pointer, too-small
+                // buffer.
+                && payload[0] == 0
+                && payload[1] == want_payload_len
+                && want_payload_len == 8
+                && payload[2] == 0x2164616f6c796170
+                && payload[3] == EMSGSIZE
+                && payload[4] == EFAULT
+                && payload[5] == EINVAL;
             // The capability leg: the ack, the round-trip rax, two
             // refusals by name (a forged handle and an oversize claim),
             // and the payload the program ACTUALLY holds matching both
@@ -546,7 +597,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 && input_poll_ok;
             let ok = stored_ok && wrote_ok;
             PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {}) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} -- {}
+            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} -- {}
 ",
                 LAST_CALLER_CPL.load(Ordering::Relaxed),
                 want_gfx as u64,
@@ -568,6 +619,12 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 want_blocked as u64,
                 stored[24] as u64,
                 stored[25] as u64,
+                payload[0] as u64,
+                payload[1] as u64,
+                payload[2] as u64,
+                payload[3] as u64,
+                payload[4] as u64,
+                payload[5] as u64,
                 stored[13] as u64,
                 stored[14] as u64,
                 stored[15] as u64,
@@ -608,21 +665,41 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             crate::experimental::scheduler::current_task() as i64
         }
         CALL_IPC_SEND => {
-            // The release's SEND shape arrives with a payload pointer
-            // (a2), a transfer token (a_xfer) and rights (a_rights); the
-            // primitive this serves models messages as (sender, seq)
-            // ONLY, so all of those must claim "none" here and the seq
-            // must fit the primitive's u32. Refusing the shape claims is
-            // what makes "served" an HONEST word on this row: a gate that
-            // accepted them and sent nothing but the seq would answer a
-            // message the other end never receives.
-            if a2 != 0 || a_rights != 0 {
-                return EINVAL;
+            // Two dials, and the difference is a2:
+            //
+            //   a2 == 0 -- the surface's OWN (sender, seq) form: a1 is
+            //     the seq, which must fit the primitive's u32.
+            //   a2 != 0 -- the RELEASE'S payload SEND(handle, buf, len):
+            //     a1 is a USER buffer pointer and a2 the byte count,
+            //     bounded at `ipc::MAX_PAYLOAD` (the release's own
+            //     message size) and COPIED OUT here, so the queue holds
+            //     kernel bytes and a stale pointer can never be
+            //     dereferenced at receive time.
+            //
+            // a_xfer (the transfer token) and a_rights (the grant mask)
+            // are still refused EINVAL: a message cannot yet carry a
+            // capability, and accepting the claim while sending only a
+            // number would answer a transfer the other end never
+            // receives -- the same honesty gate as before.
+            if a_rights != 0 {
+                return EINVAL; // rights without a transfer are a lie
             }
             if a_xfer != u64::MAX {
-                return EINVAL;
-            } // the release's own "no transfer" claim
-            if a1 > u32::MAX as u64 {
+                return EINVAL; // the release's own "no transfer" claim
+            }
+            let payload_form = a2 != 0;
+            let mut payload = [0u8; crate::experimental::ipc::MAX_PAYLOAD];
+            if payload_form {
+                if a2 > crate::experimental::ipc::MAX_PAYLOAD as u64 {
+                    return EMSGSIZE;
+                }
+                if !crate::memory::paging::user_range_ok(a1, a2 as usize, false) {
+                    return EFAULT;
+                }
+                unsafe {
+                    core::ptr::copy_nonoverlapping(a1 as *const u8, payload.as_mut_ptr(), a2 as usize);
+                }
+            } else if a1 > u32::MAX as u64 {
                 return ERANGE;
             }
             let dest = a0 as usize;
@@ -630,10 +707,15 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // kernel-declared caller identity; this gate supplies the
             // scheduler's OWN answer -- the recorded gate session at a
             // ring-3 transition, the running task otherwise -- so a
-            // ring-3 caller cannot forge it.
-            let msg = crate::experimental::ipc::IpcMessage {
-                sender: crate::experimental::scheduler::session_identity(),
-                seq: a1 as u32,
+            // ring-3 caller cannot forge it. A payload message carries
+            // seq 0: the release's SEND has no seq field, and inventing
+            // one would be a number the sender never claimed.
+            let identity = crate::experimental::scheduler::session_identity();
+            let msg = if payload_form {
+                crate::experimental::ipc::IpcMessage::with_payload(identity, 0, &payload[..a2 as usize])
+                    .expect("payload bounded above")
+            } else {
+                crate::experimental::ipc::IpcMessage::new(identity, a1 as u32)
             };
             let r = crate::experimental::ipc::send(dest, msg);
             if from_ring3 {
@@ -650,26 +732,32 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             }
         }
         CALL_IPC_RECV => {
-            // Shape first: no payload pointer, no transfer token, no
-            // rights claim (this primitive models messages as
-            // (sender, seq) ONLY -- the same honesty gate as SEND's).
-            if a2 != 0 || a_rights != 0 {
+            // Shape first: no rights claim (there is no transfer to
+            // grant on this row).
+            if a_rights != 0 {
                 return EINVAL;
             }
-            // 0x46's two dials: a_xfer == 0 is the plain drain (the
-            // callee's "no message" claim lives in a1 = 0), a_xfer == 1
-            // is the RELEASE'S BLOCKING form -- SERVED as of 2026-11-06,
-            // but ONLY its instant half: a message WAS here, the drain
-            // returns it. The BLOCKED half (the manifest's parked park)
-            // cannot be served from a session -- parking would hang it,
-            // and the budget remains -- so that path is EAGAIN BY NAME
-            // below. Anything else is a shape lie.
+            // 0x46's dials. a_xfer: 0 is the plain drain, 1 is the
+            // RELEASE'S BLOCKING form (a1 = the empty-wake budget in the
+            // seq form; see below), anything else is a shape lie. a2:
+            // 0 keeps the surface's own `(sender << 32) | seq` answer,
+            // non-zero is the RELEASE'S payload RECV(owned_idx, buf,
+            // buflen) -- a2 is the receiver's buffer size, which the
+            // release requires to be at least one whole message.
             match a_xfer {
                 0 | 1 => {}
                 _ => return EINVAL,
             }
             let blocking = a_xfer == 1;
-            if blocking {
+            let payload_form = a2 != 0;
+            if payload_form {
+                if a2 < crate::experimental::ipc::MAX_PAYLOAD as u64 {
+                    return EINVAL; // the release's buflen >= 64 floor
+                }
+                if !crate::memory::paging::user_range_ok(a1, a2 as usize, true) {
+                    return EFAULT;
+                }
+            } else if blocking {
                 // The blocking form's second arg is the DRAIN BUDGET
                 // ("try to hand me up to this many"): it must be a sane
                 // positive count -- needs at least one of them (calls
@@ -691,27 +779,45 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // A nonexistent endpoint is refused BEFORE any receive
             // (try_receive answers None for both cases, and the two
             // differ: the caller must see where the fault was, not
-            // just "nothing came"). Same order for both dials: shape,
-            // budget/blocking sanity, destination.
+            // just "nothing came"). Same order for every dial: shape,
+            // budget/buffer sanity, destination.
             let dest = a0 as usize;
             if dest >= crate::experimental::ipc::endpoint_count() {
                 return ENOENT;
             }
+            // One answer-shaping place for both the instant drain and
+            // the parked wake, so the two paths cannot drift.
+            let answer = |m: crate::experimental::ipc::IpcMessage| -> i64 {
+                if payload_form {
+                    // The release's answer is the byte count, and the
+                    // bytes go to the caller's buffer. buflen >= 64 >=
+                    // any message, so the copy can never overflow what
+                    // was validated above.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(m.payload().as_ptr(), a1 as *mut u8, m.len as usize);
+                    }
+                    m.len as i64
+                } else {
+                    (((m.sender as u64) << 32) | m.seq as u64) as i64
+                }
+            };
             match crate::experimental::ipc::try_receive(dest) {
                 Some(m) => {
-                    let v = ((m.sender as u64) << 32) | m.seq as u64;
+                    let v = answer(m);
                     if from_ring3 {
-                        if blocking {
-                            BLOCKED_RECVD_VALUE.store(v, Ordering::Relaxed);
+                        if payload_form {
+                            PAYLOAD_RECVD_VALUE.store(v as u64, Ordering::Relaxed);
+                        } else if blocking {
+                            BLOCKED_RECVD_VALUE.store(v as u64, Ordering::Relaxed);
                         } else {
-                            RECVD_VALUE.store(v, Ordering::Relaxed);
+                            RECVD_VALUE.store(v as u64, Ordering::Relaxed);
                         }
                     }
-                    v as i64
+                    v
                 }
                 None if blocking => {
-                    // The instant half is drained and the budget
-                    // remains: the release's BLOCKING dial waits.
+                    // The instant half is drained and the wait remains:
+                    // the release's BLOCKING dial waits.
                     //
                     // PARK when the caller HAS a schedulable home
                     // (2026-11-06): `scheduler::session_is_schedulable`
@@ -723,12 +829,12 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     // (the trap frame stays on its kernel stack, so the
                     // resume returns into this arm), and the next
                     // `ipc::send` moves it BLOCKED -> READY with the
-                    // message waiting. `a1` becomes the EMPTY-WAKE
-                    // budget (the primitive's own bound): every wake
-                    // that finds nothing spends one unit, and an
-                    // exhausted budget is the typed ReceiveTimedOut,
-                    // which this row answers as EAGAIN -- "waited, woke,
-                    // still nothing", never ENODATA.
+                    // message waiting. In the seq form `a1` is the
+                    // EMPTY-WAKE budget (the primitive's own bound);
+                    // the payload form has no spare register for one
+                    // (a1 is the buffer, a2 the size), so it waits for
+                    // exactly ONE wake -- an empty wake there is
+                    // ReceiveTimedOut, answered as EAGAIN.
                     //
                     // REFUSE EAGAIN BY NAME otherwise, and the reason is
                     // the honest one: the ring-3 proof's caller and the
@@ -742,13 +848,18 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     if !crate::experimental::scheduler::session_is_schedulable() {
                         return EAGAIN;
                     }
-                    match crate::experimental::ipc::receive(dest, Some(a1 as u32)) {
+                    let budget = if payload_form { 1 } else { a1 as u32 };
+                    match crate::experimental::ipc::receive(dest, Some(budget)) {
                         Ok(m) => {
-                            let v = ((m.sender as u64) << 32) | m.seq as u64;
+                            let v = answer(m);
                             if from_ring3 {
-                                BLOCKED_RECVD_VALUE.store(v, Ordering::Relaxed);
+                                if payload_form {
+                                    PAYLOAD_RECVD_VALUE.store(v as u64, Ordering::Relaxed);
+                                } else {
+                                    BLOCKED_RECVD_VALUE.store(v as u64, Ordering::Relaxed);
+                                }
                             }
-                            v as i64
+                            v
                         }
                         Err(crate::experimental::ipc::IpcError::ReceiveTimedOut) => EAGAIN,
                         Err(crate::experimental::ipc::IpcError::NoSuchMailbox) => ENOENT,
@@ -1065,11 +1176,16 @@ pub fn self_test() -> bool {
     // any queue, and that a nonexistent endpoint is ENOENT, not ENODATA.
     // (Endpoint counts differ per boot phase -- 0 before ipc::init -- so
     // anything above the largest real table is nonexistent on every boot.)
-    let ipc_shape_ok = dispatch(CALL_IPC_SEND, 0, 7, 8, u64::MAX, 0, 0) == EINVAL // payload claim
+    let ipc_shape_ok = dispatch(CALL_IPC_SEND, 0, 0, 65, u64::MAX, 0, 0) == EMSGSIZE // payload wider than a message
+        && dispatch(CALL_IPC_SEND, 0, 0, 8, u64::MAX, 0, 0) == EFAULT // payload at a null pointer
         && dispatch(CALL_IPC_SEND, 0, 7, 0, 9, 0, 0) == EINVAL // transfer-token claim
         && dispatch(CALL_IPC_SEND, 0, 7, 0, u64::MAX, 5, 0) == EINVAL // rights claim
         && dispatch(CALL_IPC_SEND, 0, u32::MAX as u64 + 1, 0, u64::MAX, 0, 0) == ERANGE
         && dispatch(CALL_IPC_SEND, 0x4000, 7, 0, u64::MAX, 0, 0) == ENOENT
+        // The payload RECV dial: the release's buflen floor is refused
+        // by name, and a null receive buffer never reaches the queue.
+        && dispatch(CALL_IPC_RECV, 0, 0, 32, 0, 0, 0) == EINVAL // buflen < 64
+        && dispatch(CALL_IPC_RECV, 0, 0, 64, 0, 0, 0) == EFAULT // null buffer
         && dispatch(CALL_IPC_RECV, 0x4000, 0, 0, 0, 0, 0) == ENOENT
         // The BLOCKING form (a_xfer == 1) is SERVED now; its refusals
         // are exercised by name at the kernel's own dispatch: a dead

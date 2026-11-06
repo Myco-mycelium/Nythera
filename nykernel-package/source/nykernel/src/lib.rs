@@ -773,7 +773,7 @@ extern "C" fn experimental_task_d() -> ! {
             if experimental::ipc::wake_waiters(BLOCKED_DELIVERY_EP) >= 1 {
                 let sent = experimental::ipc::send(
                     BLOCKED_DELIVERY_EP,
-                    experimental::ipc::IpcMessage { sender: TASK_D_ID, seq: BLOCKED_RACE_SEQ },
+                    experimental::ipc::IpcMessage::new(TASK_D_ID, BLOCKED_RACE_SEQ),
                 );
                 TASK_D_SENT.store(matches!(sent, Ok(())), Ordering::Relaxed);
                 serial_println!("    [experimental task D] woke BOTH parked delivery-leg receivers and sent the race message in the same window");
@@ -785,7 +785,7 @@ extern "C" fn experimental_task_d() -> ! {
             if experimental::ipc::wake_waiters(BLOCKED_DELIVERY_EP) == 1 {
                 let sent = experimental::ipc::send(
                     BLOCKED_DELIVERY_EP,
-                    experimental::ipc::IpcMessage { sender: TASK_D_ID, seq: BLOCKED_DELIVERY_SEQ },
+                    experimental::ipc::IpcMessage::new(TASK_D_ID, BLOCKED_DELIVERY_SEQ),
                 );
                 TASK_D_SENT_DELIVERY.store(matches!(sent, Ok(())), Ordering::Relaxed);
                 serial_println!("    [experimental task D] woke C's re-parked delivery leg and sent the real delivery in the same window");
@@ -845,7 +845,7 @@ extern "C" fn experimental_terminating_task() -> ! {
 extern "C" fn experimental_task_a() -> ! {
     loop {
         let seq = TASK_A_RUNS.fetch_add(1, Ordering::Relaxed) + 1;
-        let msg = experimental::ipc::IpcMessage { sender: TASK_A_ID, seq };
+        let msg = experimental::ipc::IpcMessage::new(TASK_A_ID, seq);
         match experimental::ipc::send(TASK_B_ID, msg) {
             Ok(()) => serial_println!("    [experimental task A] activation {}: sent IPC message to task B", seq),
             Err(e) => serial_println!("    [experimental task A] activation {}: IPC SEND FAILED: {:?}", seq, e),

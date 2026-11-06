@@ -40,8 +40,9 @@
  *           The expected answer is (sender << 32) | seq = 7 (sender is
  *           0 here, not zero-by-default): proving ONE SENT message came
  *           back WHOLE, from KERNEL memory across the trap boundary.
- *        c. IPC_RECV with a shape claim (rdx = 0x51) -> stored at
- *           BUF+88; expected -EINVAL (a shape the primitive cannot own).
+ *        c. IPC_RECV with an unknown dial (r10 = 2) -> stored at
+ *           BUF+88; expected -EINVAL (a shape the primitive cannot
+ *           own).
  *        d. IPC_RECV on the now-EMPTY endpoint 0 -> stored at BUF+96;
  *           expected -ENODATA -- the real-and-empty answer, NOT a
  *           refusal. (The nonexistent-endpoint case, -ENOENT, is asserted
@@ -205,12 +206,16 @@ _start:
     mov $0x46, %rax
     int $0x84
     mov %rax, 80(%rbx)
-    /* 6c. a shape claim RECV must refuse (payload pointer rdx) */
+    /* 6c. An UNKNOWN DIAL must be refused: r10 = 2 is neither the plain
+       drain (0) nor the release's blocking form (1). (This leg used to
+       claim a payload pointer in rdx and expect EINVAL; a2 != 0 is a
+       SERVED dial now -- the release's payload RECV -- so the shape
+       refusal this slot pins is the unknown a_xfer.) */
     xor %rdi, %rdi
     xor %rsi, %rsi
-    xor %r10, %r10
+    xor %rdx, %rdx
+    mov $2, %r10
     xor %r8, %r8
-    mov $0x51, %rdx
     mov $0x46, %rax
     int $0x84
     mov %rax, 88(%rbx)
@@ -221,12 +226,13 @@ _start:
        nonexistent-table state; one refused-value slot here (BUF+96) is
        where that difference is pinned. The shape claim 6c left in
        %rdx MUST be cleared: the trap preserves caller registers, so a
-       leftover payload claim here would be answered EINVAL, not
-       ENODATA, and the       proof would catch the mistake -- 6c zeroed everything but %rdx,
-       so this only has one register to clear. */
+       leftover dial would be answered EINVAL, not ENODATA, and the
+       proof would catch the mistake -- 6c set %r10, so this clears it
+       (and %rdx, which the payload legs above share). */
     xor %rdi, %rdi
     xor %rsi, %rsi
     xor %rdx, %rdx
+    xor %r10, %r10
     mov $0x46, %rax
     int $0x84
     mov %rax, 96(%rbx)
@@ -401,6 +407,76 @@ _start:
     mov $0x46, %rax
     int $0x84
     mov %rax, 200(%rbx)
+
+    /* 10. The IPC rows' PAYLOAD dials (2026-11-06) -- the release's
+       SEND(handle, buf, len) / RECV(idx, buf, buflen) half. The
+       difference between this and step 9 is ONE register: a2. Zero
+       keeps the surface's (sender, seq) form; a whole-message size
+       makes a1 a user BUFFER and a2 its length, and RECV answers the
+       BYTE COUNT with the bytes in the caller's buffer. */
+    /* 10a. SEND a payload: endpoint 0, buffer BUF+368, 8 bytes
+       ("payload!"), no transfer (r10 = u64::MAX), no rights (r8 = 0).
+       Expected ack 0 at BUF+448. */
+    movabs $0x2164616f6c796170, %rcx   /* "payload!" little-endian */
+    mov %rcx, 368(%rbx)
+    xor %rdi, %rdi
+    lea 368(%rbx), %rsi
+    mov $8, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x45, %rax
+    int $0x84
+    mov %rax, 448(%rbx)
+    /* 10b. RECV the payload: endpoint 0, buffer BUF+384, buflen 64 (the
+       release's floor -- a smaller buffer is refused, 10f). Expected 8
+       at BUF+456. RECV's r10 is its DIAL, not the SEND-side "no
+       transfer" claim: 0 is the plain drain. (-1 there would be an
+       unknown dial, EINVAL -- the first run of these legs was refused
+       exactly that way.) */
+    xor %rdi, %rdi
+    lea 384(%rbx), %rsi
+    mov $64, %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 456(%rbx)
+    /* 10c. Read the landed BYTES back out of the program's own memory
+       (a kernel that answered 8 and copied nothing would pass 10b
+       alone). Expected "payload!" at BUF+464. */
+    mov 384(%rbx), %rcx
+    mov %rcx, 464(%rbx)
+    /* 10d. A payload WIDER than one message (65 > 64) is refused
+       -EMSGSIZE before any queue is touched. BUF+472. */
+    xor %rdi, %rdi
+    lea 368(%rbx), %rsi
+    mov $65, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x45, %rax
+    int $0x84
+    mov %rax, 472(%rbx)
+    /* 10e. A payload at a NULL pointer is refused -EFAULT by the
+       user-range validator (never dereferenced first). BUF+480. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    mov $8, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x45, %rax
+    int $0x84
+    mov %rax, 480(%rbx)
+    /* 10f. A receive buffer smaller than one message (32 < 64) is
+       refused -EINVAL -- the release's buflen floor, refused by name
+       BEFORE the queue is looked at. BUF+488. */
+    xor %rdi, %rdi
+    lea 384(%rbx), %rsi
+    mov $32, %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 488(%rbx)
 
     /* Close the proof (0x43): the kernel reads BUF back through the
        validator. */

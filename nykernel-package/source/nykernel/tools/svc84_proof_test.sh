@@ -153,7 +153,7 @@ else
     # the empty retry is refused -EAGAIN (= 18446744073709551605 as the
     # unsigned rendering) and the dead destination -ENOENT
     # (= 18446744073709551614) -- by name, never parked, never "empty".
-    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x700000007"* ]] && [[ "$VERDICT" == *"want 0x700000007"* ]] && [[ "$VERDICT" == *"blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"want-blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"again 18446744073709551605"* ]] && [[ "$VERDICT" == *"baddest 18446744073709551614"* ]]; then
+    if [[ "$VERDICT" == *"IPC matches"* ]] && [[ "$VERDICT" == *"send-ack 0x0"* ]] && [[ "$VERDICT" == *"recv 0x700000007"* ]] && [[ "$VERDICT" == *"want 0x700000007"* ]] && [[ "$VERDICT" == *"blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"want-blocked 0x70000002a"* ]] && [[ "$VERDICT" == *"again 18446744073709551605"* ]] && [[ "$VERDICT" == *"baddest 18446744073709551614"* ]] && [[ "$VERDICT" == *"payload (ack 0 , len 8 , bytes 0x2164616f6c796170 , wide 18446744073709551526 , null 18446744073709551602 , short 18446744073709551594)"* ]]; then
         ok "one sent message round-tripped through the kernel's real mailbox (session sender=7 seq=7 -> 0x700000007), the blocking dial drained a queued message at once (session sender=7 seq=42 -> 0x70000002a) and answered EAGAIN/ENOENT by name, and the shape/empty refusals were observed"
     else
         bad "the IPC rows' round trip or refusals failed their read-back"

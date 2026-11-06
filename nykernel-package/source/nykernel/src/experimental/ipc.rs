@@ -45,10 +45,56 @@ use x86_64::instructions::interrupts;
 
 use crate::serial_println;
 
+/// The release's message payload bound: RECV's `buflen >= 64` is the
+/// spec's floor for the receiver's buffer, so 64 bytes is the most a
+/// message can carry. The same number `caps::MAX_PAYLOAD` uses -- one
+/// payload size on both surfaces, so a message that fits one fits the
+/// other.
+pub const MAX_PAYLOAD: usize = 64;
+
+/// `(sender, seq)` plus the release's payload half. The bytes are held
+/// IN THE KERNEL (copied out of the sender's address space at send
+/// time), so a queue entry never carries a user pointer that could go
+/// stale before the receive -- the same contract `caps` documents for
+/// its endpoint queues. `len` says how much of `payload` is live;
+/// `payload()` is the only sane way to read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IpcMessage {
     pub sender: usize,
     pub seq: u32,
+    pub payload: [u8; MAX_PAYLOAD],
+    pub len: u8,
+}
+
+impl Default for IpcMessage {
+    fn default() -> Self {
+        Self { sender: 0, seq: 0, payload: [0; MAX_PAYLOAD], len: 0 }
+    }
+}
+
+impl IpcMessage {
+    /// A message with no payload (the `(sender, seq)` form the surface
+    /// introduced first).
+    pub fn new(sender: usize, seq: u32) -> Self {
+        Self { sender, seq, ..Default::default() }
+    }
+
+    /// A payload-carrying message. Refuses (None) a payload wider than
+    /// [`MAX_PAYLOAD`] -- the caller decides what the refusal means;
+    /// this constructor never truncates silently.
+    pub fn with_payload(sender: usize, seq: u32, bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > MAX_PAYLOAD {
+            return None;
+        }
+        let mut payload = [0u8; MAX_PAYLOAD];
+        payload[..bytes.len()].copy_from_slice(bytes);
+        Some(Self { sender, seq, payload, len: bytes.len() as u8 })
+    }
+
+    /// The live payload bytes (never the zeroed tail).
+    pub fn payload(&self) -> &[u8] {
+        &self.payload[..self.len as usize]
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -401,7 +447,7 @@ pub fn self_test_arbiter_and_revocation() -> bool {
     // claiming sender 0 must go through.
     let honest = send(
         scratch_dest,
-        IpcMessage { sender: 0, seq: 1 },
+        IpcMessage::new(0, 1),
     );
     let honest_ok = matches!(honest, Ok(()));
     all_ok &= honest_ok;
@@ -416,7 +462,7 @@ pub fn self_test_arbiter_and_revocation() -> bool {
     // be unchanged (nothing silently queued, nothing dropped).
     let forged = send(
         scratch_dest,
-        IpcMessage { sender: 1, seq: 2 },
+        IpcMessage::new(1, 2),
     );
     let forged_ok = matches!(forged, Err(IpcError::NotRunningTask));
     all_ok &= forged_ok;
@@ -442,7 +488,7 @@ pub fn self_test_arbiter_and_revocation() -> bool {
 
     let post_revoke = send(
         scratch_dest,
-        IpcMessage { sender: 0, seq: 3 },
+        IpcMessage::new(0, 3),
     );
     let post_revoke_ok = matches!(post_revoke, Err(IpcError::Revoked));
     all_ok &= post_revoke_ok;
@@ -455,7 +501,7 @@ pub fn self_test_arbiter_and_revocation() -> bool {
     // revocation must still be receivable (revocation is
     // forward-looking only). ----
     let drained = try_receive(scratch_dest);
-    let drained_ok = matches!(drained, Some(IpcMessage { sender: 0, seq: 1 }));
+    let drained_ok = matches!(drained, Some(m) if m.sender == 0 && m.seq == 1);
     all_ok &= drained_ok;
     serial_println!(
         "  experimental ipc revocation self-test: message queued before revocation still receivable after it -- {}",
