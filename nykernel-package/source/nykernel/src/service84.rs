@@ -712,19 +712,51 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 None if blocking => {
                     // The instant half is drained and the budget
                     // remains: the release's BLOCKING dial waits.
-                    // Here the arm REFUSES EAGAIN BY NAME instead of
-                    // parking. Sharp edge, stated: a session's park
-                    // has NO WAKER -- a session id is never a
-                    // schedulable task (see scheduler::session_identity),
-                    // and unblock_task keys on the house scheduler's
-                    // task ids -- so parking a ring-3 caller on its
-                    // session would hang it FOREVER. The manifest's
-                    // "sessions as schedulables" step (tile 19) is
-                    // what would make the wait meaningful; until that
-                    // lands this is an honest, released answer: come
-                    // back and drain again. Never called from the
-                    // kernel's own paths.
-                    EAGAIN
+                    //
+                    // PARK when the caller HAS a schedulable home
+                    // (2026-11-06): `scheduler::session_is_schedulable`
+                    // says the attached session names a real scheduler
+                    // task and that task is the one running -- the
+                    // manifest's "sessions as schedulables" edge. The
+                    // park is the ordinary `ipc::receive`: this task's
+                    // TCB goes RUNNING -> BLOCKED inside the handler
+                    // (the trap frame stays on its kernel stack, so the
+                    // resume returns into this arm), and the next
+                    // `ipc::send` moves it BLOCKED -> READY with the
+                    // message waiting. `a1` becomes the EMPTY-WAKE
+                    // budget (the primitive's own bound): every wake
+                    // that finds nothing spends one unit, and an
+                    // exhausted budget is the typed ReceiveTimedOut,
+                    // which this row answers as EAGAIN -- "waited, woke,
+                    // still nothing", never ENODATA.
+                    //
+                    // REFUSE EAGAIN BY NAME otherwise, and the reason is
+                    // the honest one: the ring-3 proof's caller and the
+                    // kernel's own self-test are task 0 (the boot
+                    // context -- parking it would park the core), and the
+                    // ring3-scheduler POC's sessions live in their own
+                    // machine, not the house scheduler's TCB table.
+                    // Parking an id nothing can wake would hang the
+                    // caller FOREVER, so those callers get a released
+                    // answer instead: come back and drain again.
+                    if !crate::experimental::scheduler::session_is_schedulable() {
+                        return EAGAIN;
+                    }
+                    match crate::experimental::ipc::receive(dest, Some(a1 as u32)) {
+                        Ok(m) => {
+                            let v = ((m.sender as u64) << 32) | m.seq as u64;
+                            if from_ring3 {
+                                BLOCKED_RECVD_VALUE.store(v, Ordering::Relaxed);
+                            }
+                            v as i64
+                        }
+                        Err(crate::experimental::ipc::IpcError::ReceiveTimedOut) => EAGAIN,
+                        Err(crate::experimental::ipc::IpcError::NoSuchMailbox) => ENOENT,
+                        // The arbiter's refusals cannot fire here (this
+                        // arm never SENDS), but a fail-closed answer
+                        // beats an unreachable!() on a released path.
+                        Err(_) => EPERM,
+                    }
                 }
                 None => ENODATA,
             }

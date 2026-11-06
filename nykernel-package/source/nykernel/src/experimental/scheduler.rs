@@ -168,13 +168,56 @@ pub const NO_SESSION: usize = usize::MAX;
 static GATE_SESSION: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(NO_SESSION);
 
+/// The scheduler TASK the recorded session is schedulable on, or
+/// [`NO_SESSION`] when the session has no home here (the ring-3 proof's
+/// terminal caller, and the ring3-scheduler POC's own machine, are both
+/// sessions with no house task -- see [`session_is_schedulable`]).
+/// This is the manifest's "sessions as schedulables" edge: a session
+/// that names a real task can be PARKED and WOKEN through the ordinary
+/// lifecycle, because its park lands on that task's TCB, not on an id
+/// the dispatcher has never heard of.
+static SESSION_TASK: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(NO_SESSION);
+
 /// Kernel-only: records a ring-3 caller's session. Called once at the
 /// ring transition (the proof's entry) and at every ring-3 task switch
 /// by the ring3 scheduler. Kernel-owned, kernel-declared: a caller
 /// cannot forge it, and cannot observe it except through what the
 /// rows answer.
 pub fn attach_session(sid: usize) {
+    attach_session_for(sid, current_task());
+}
+
+/// As [`attach_session`], but names the scheduler task the session is
+/// SCHEDULABLE on -- for switches where the resumed task is not yet the
+/// running one (the ring-3 scheduler records the INCOMING task's
+/// session while the outgoing task is still current). Task 0 is
+/// recorded as "no home": the kernel's own boot context must never be
+/// parked, and a session claiming it would be claiming the core.
+pub fn attach_session_for(sid: usize, task: usize) {
     GATE_SESSION.store(sid, core::sync::atomic::Ordering::Relaxed);
+    SESSION_TASK.store(if task == 0 { NO_SESSION } else { task }, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The task the attached session is schedulable on, if any. Task 0 is
+/// never a home (see [`attach_session_for`]).
+pub fn session_task() -> Option<usize> {
+    match SESSION_TASK.load(core::sync::atomic::Ordering::Relaxed) {
+        NO_SESSION => None,
+        t => Some(t),
+    }
+}
+
+/// Can the CURRENT session be parked? True only when a session is
+/// attached AND it names a real scheduler task AND that task is the
+/// one running. A blocking gate row asks this before parking: the
+/// answer decides between a real park (the task's TCB goes
+/// RUNNING -> BLOCKED and a later send moves it back) and the
+/// released `EAGAIN` refusal (there is nothing to park). Sharp edge:
+/// the answer is about the CALLER, so a task that merely happens to be
+/// running while some other session is attached answers false.
+pub fn session_is_schedulable() -> bool {
+    session_task() == Some(current_task()) && current_task() != 0
 }
 
 /// The record's exit half: withdraws the attached session (if any) and
@@ -183,6 +226,10 @@ pub fn attach_session(sid: usize) {
 /// mailbox here; the withdrawn id's holdings are its caller's to
 /// account for (the proofs are terminal-path and keep none).
 pub fn withdraw_session() -> Option<usize> {
+    // The session's home is withdrawn WITH it: an id whose record is
+    // gone must not stay schedulable (a later park would target a task
+    // the session no longer names).
+    SESSION_TASK.store(NO_SESSION, core::sync::atomic::Ordering::Relaxed);
     match GATE_SESSION.swap(NO_SESSION, core::sync::atomic::Ordering::Relaxed) {
         NO_SESSION => None,
         sid => Some(sid),
@@ -411,9 +458,22 @@ pub fn self_test_session_contract() -> bool {
     let attached_ok = session_identity() == TEST_SESSION;
     let withdrew = withdraw_session();
     let reverted_ok = withdraw_session().is_none() && session_identity() == before;
-    let ok = attached_ok && withdrew == Some(TEST_SESSION) && reverted_ok;
+    // The schedulable-home edge: a session attached FOR a real task
+    // names it; task 0 names no home; identity and home are withdrawn
+    // together, so a withdrawn session can never answer "parkable".
+    let before_home = session_task();
+    attach_session_for(TEST_SESSION, 1);
+    let home_ok = session_task() == Some(1);
+    let _ = withdraw_session();
+    let home_cleared_ok = session_task().is_none();
+    attach_session(TEST_SESSION);
+    let self_home_ok = session_task() == before_home; // task 0 -> no home
+    let self_unschedulable_ok = !session_is_schedulable();
+    let _ = withdraw_session();
+    let ok = attached_ok && withdrew == Some(TEST_SESSION) && reverted_ok && home_ok
+        && home_cleared_ok && self_home_ok && self_unschedulable_ok;
     crate::serial_println!(
-        "  experimental scheduler session record/withdraw contract: attach names the recorded id, withdraw reverts and reports it, double-withdraw reports none, identity back to the running task -- {}",
+        "  experimental scheduler session record/withdraw contract: attach names the recorded id, withdraw reverts and reports it, double-withdraw reports none, identity back to the running task, a session attached for task 1 names that home while task 0's names none and is not schedulable, and withdrawing clears the home -- {}",
         if ok { "OK" } else { "FAILED" }
     );
     ok
