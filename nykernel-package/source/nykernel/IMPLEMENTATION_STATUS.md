@@ -5654,3 +5654,31 @@ Checks: `./build.sh` PASS (ledger gate requires 0x4c, step 12 exercises it);
 `svc84_proof_test.sh` PASS with the SHM leg pinned and every earlier pin intact
 (the reply capability's handle moved from 3 to 4 because the region occupies
 slot 3 -- the pin was updated to say so); `qemu_boot_test.sh` PASS.
+
+## The long gates, rerun on the three-kinds tree (2026-11-06, at `9e90224`):
+## green again, and the chain grew by the lines this round added
+
+The UEFI boot, BIOS/UEFI parity and MS secure-boot gates were rerun once more
+on the final HEAD of this round -- the blocking CALL, the cross-session proof
+and the SharedMem kind all change the boot chain, so the run on `ac34c8c` was
+stale the moment they landed:
+
+```
+UEFI_EXIT=0
+PARITY_EXIT=0
+PASS: BIOS and UEFI kernels' demo chains are line-identical modulo the
+      documented environment-fact allowlist
+      (BIOS 526 chain lines == UEFI 526 chain lines; allowlist deltas only)
+SECBOOT_EXIT=0
+PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose
+      signer is chained to the enrolled carrier root, refuses both the
+      unsigned one and the one-byte-tampered signed one, refuses the two
+      revocation legs by firmware, and the stub never ran on any of them
+      firmware under test: uefi/tools/OVMF_CODE_4M.ms.fd
+      dbx shape probe: 1
+```
+
+The parity line count is the useful number: 526 chain lines on both boot paths
+(474 before this round), so the two new boot proofs -- the parked caller and the
+two-session call, and the shared region -- produce identical transcripts under
+BIOS and UEFI rather than merely passing on one.
