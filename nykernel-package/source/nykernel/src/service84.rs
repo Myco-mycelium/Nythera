@@ -22,6 +22,7 @@
 //! | 0x4d | `CAP_SHM_CLOSE` | a0=region handle | gives ONE region capability back; the record dies with its LAST holder -> `0`, `-EBADF` (a double close), `-EACCES` for a handle of another kind |
 //! | 0x4e | `CAP_EXIT` | nothing (every claim refused `-EINVAL`) | releases the caller's whole table (region counts included), withdraws its session, terminates its task; never returns. `-EPERM` for task 0 |
 //! | 0x4c | `CAP_SHM` | a0=region handle, a1=24-byte record ptr | the kernel's own geometry of the mapped region (`{base, len, rights}`) -> `0`, `-EBADF` for a handle that names nothing, `-EACCES` for a handle of another kind |
+//! | 0x4f | `CAP_SHM_MAP` | a0=length in bytes (4096-aligned, <= 16 pages), a1=32-byte record ptr | the release's region REQUEST: the kernel maps fresh pages at its own window, records the region, mints the caller a capability and answers `{base, len, rights, handle}` -> `0`; `-EINVAL` for a shape it does not own, `-EFAULT` for a bad record pointer, `-ENOMEM` when the kernel refused the mapping, `-ENOSYS` when no mapping source is installed |
 //! | 0x4b | `CAP_REPLY` | a0=reply handle, a1/a2=answer | answers one call at the caller's own endpoint and CONSUMES the handle; `0`, `-EBADF` on a second use, `-EACCES` on a wrong-kind handle |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
@@ -269,8 +270,38 @@ pub const CALL_CAP_SHM: u64 = 0x4c;
 pub const CALL_CAP_SHM_CLOSE: u64 = 0x4d;
 pub const CALL_CAP_EXIT: u64 = 0x4e;
 
+/// The release's region REQUEST -- the half that was missing until
+/// 2026-11-07: until then the kernel mapped a region FIRST and a holder
+/// could only be told where it was (0x4c). This row is the other
+/// direction, the release's `shm` create/map: a0 = the LENGTH IN BYTES
+/// (a multiple of the page size, at most [`MAX_REGION_REQUEST_PAGES`]),
+/// a1 = a 32-byte record the kernel writes `{u64 base, u64 len, u64
+/// rights, u64 handle}`. The kernel half chooses the window and backs it
+/// with fresh, zeroed frames, records the region, and mints the caller a
+/// capability over it -- so the handle in the record is usable for 0x4c
+/// and 0x4d immediately, without the caller knowing any address. Every
+/// other argument must claim nothing (`a2 == 0`, `a_xfer == u64::MAX`,
+/// `a_rights == 0`): the rights are the kernel half's to grant, and a
+/// caller that could ask for GRANT while the machine's owner is the
+/// kernel would be widening by request.
+///
+/// The mapping is OWNED by the region machine: when the last capability
+/// over it goes away -- the holder's close (0x4d) or its exit (0x4e) --
+/// the pages are unmapped and returned to the frame allocator. A refusal
+/// at request time gives back whatever it had already mapped, so an
+/// answered error never leaves frames that nothing names.
+pub const CALL_CAP_SHM_MAP: u64 = 0x4f;
+/// The largest region a request may ask for, in pages. The kernel half's
+/// window stride is one 64 KiB slot per request, so a 16-page region is
+/// exactly the largest that cannot run into the next request's window --
+/// the bound is a property of the mapping layout, not a policy guess.
+pub const MAX_REGION_REQUEST_PAGES: u64 = 16;
+
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
+/// Linux `ENOMEM`: the kernel's mapping source could not back a
+/// requested region. The caller holds nothing, and nothing was leaked.
+pub const ENOMEM: i64 = -12;
 /// Bad user pointer: the validator refused the range.
 pub const EFAULT: i64 = -14;
 /// Linux `EINVAL`: the call's SHAPE claims something this primitive does
@@ -329,6 +360,13 @@ fn map_cap_error(e: crate::experimental::caps::CapError) -> i64 {
         // name: the handle resolved, but what it named does not exist.
         BadRegion => ENOENT,
         TableFull => ENOSPC,
+        // A region REQUEST on a boot whose kernel half installed no
+        // mapping source: "this machine cannot map" is exactly ENOSYS,
+        // not a zero-length region and not a made-up address.
+        NoRegionMapper => ENOSYS,
+        // The kernel's mapping source refused (out of frames): a real
+        // resource refusal, answered by name.
+        OutOfMemory => ENOMEM,
     }
 }
 
@@ -470,6 +508,656 @@ fn pack_gfx() -> i64 {
     }
 }
 
+/// The `PROOF_DONE` (0x43) row's body, OUT OF LINE: it is the biggest
+/// arm in the dispatcher by far (nine result blocks read back out of user
+/// memory, compared field by field, and printed), and a `match` arm's
+/// locals live in the DISPATCHER's frame -- measured at ~11.6 KiB, which a
+/// five-page task stack that calls another row from inside the gate cannot
+/// afford. Out of line, that cost is paid only by the one proof boot that
+/// asks for the verdict, and every other row's caller keeps the headroom.
+#[inline(never)]
+fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
+    // Twenty-six qwords: the five older results (gfx, input, enosys,
+    // (unused), self), the four widened-arg markers at BUF+40..+64,
+    // the IPC records (ack BUF+72, recv BUF+80, shape refusal
+    // BUF+88, empty-real BUF+96), and the capability records: the
+    // CAP_SEND ack (BUF+104), the CAP_RECV rax (BUF+112), the
+    // forged-handle refusal (BUF+120) and the oversize refusal
+    // (BUF+128); and, of the INPUT_POLL row, the two positive
+    // polls' acks (BUF+136, BUF+144), the third poll's real-and-
+    // empty answer (BUF+152) and the forged-handle refusal
+    // (BUF+168 -- STORED INDEX 21: index 20 is offset 160, the
+    // payload staging area, and the proof's first run read the
+    // payload bytes as "the forged answer" exactly that way);
+    // and the BLOCKING-RECV legs (2026-11-06): the send ack
+    // (BUF+176 -> index 22), the instant answer (BUF+184 ->
+    // index 23), the empty retry's EAGAIN (BUF+192 -> index 24)
+    // and the dead destination's ENOENT (BUF+200 -> index 25).
+    // The CAP PAYLOAD is compared at BUF+352..+360 (it moved out
+    // of 192..208 to make room for those legs) and the INPUT
+    // POLLED BYTES at BUF+208/+224 (below).
+    if !crate::memory::paging::user_range_ok(a0, 208, false) {
+        return EFAULT;
+    }
+    // Read the results back OUT OF USER MEMORY: this is the part
+    // the registers alone cannot prove, because it shows the
+    // ring-3 program actually received and stored them.
+    // The PAYLOAD dials' results live in their own block
+    // (BUF+448..+496), because the first array's 8-byte stride
+    // collides with the INPUT_POLL records at BUF+208/+224/+240
+    // from index 26 on: [0] send ack, [1] recv byte count,
+    // [2] the bytes read back OUT of the program's buffer,
+    // [3] the oversize refusal, [4] the null-pointer refusal,
+    // [5] the too-small receive buffer's refusal.
+    if !crate::memory::paging::user_range_ok(a0 + 448, 48, false) {
+        return EFAULT;
+    }
+    let mut stored = [0i64; 26];
+    for (i, slot) in stored.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 as *const i64).add(i)) };
+    }
+    let want_gfx = RET_GFX.load(Ordering::Relaxed);
+    let want_input = RET_INPUT.load(Ordering::Relaxed);
+    let want_enosys = RET_ENOSYS.load(Ordering::Relaxed);
+    // The identity answer is compared against the scheduler's OWN
+    // live value at read-back time, so a future session that makes
+    // the program a real task changes both sides together.
+    let want_self = SELF_TASK.load(Ordering::Relaxed) as i64;
+    // The widened pass is judged the same way as the answers:
+    // against what the dispatcher ACTUALLY received from the ring-3
+    // caller, not against constants compiled into this file.
+    let want_rsi = JUNK_ARG_RSI.load(Ordering::Relaxed);
+    let want_rdx = JUNK_ARG_RDX.load(Ordering::Relaxed);
+    let want_r10 = JUNK_ARG_R10.load(Ordering::Relaxed);
+    let want_r8 = JUNK_ARG_R8.load(Ordering::Relaxed);
+    // The IPC round trip is judged against what the drain actually
+    // unpacked (the queue-side and return-side record the same
+    // message's two halves): the program's stored SEND ack must be
+    // 0, its stored RECV result must equal THIS value (nonzero by
+    // construction -- sender 0, seq 7), and the two shape refusals
+    // must have arrived by name.
+    let want_ipc = RECVD_VALUE.load(Ordering::Relaxed) as i64;
+    // The BLOCKING legs are judged the same way: the kernel's own
+    // record of what the instant half handed back (sender = the
+    // gate session, so 0x70000002a for seq 42) compared against
+    // the program's stored copy. The empty retry's EAGAIN and the
+    // dead destination's ENOENT are pinned as constants -- they
+    // are REFUSALS, and a by-name refusal is its own pin.
+    let want_blocked = BLOCKED_RECVD_VALUE.load(Ordering::Relaxed) as i64;
+    // The PARKED wake's value: the peer's send is what answered the
+    // first process's blocking receive, so this record is what says
+    // the park happened at all (an instant drain would have left it
+    // zero and filled `want_blocked` a second time instead).
+    let want_woken = WOKEN_RECVD_VALUE.load(Ordering::Relaxed) as i64;
+    // The payload dial's kernel-side record: the byte count the
+    // payload recv answered. Compared against the program's
+    // stored copy below, like every other answer.
+    let want_payload_len = PAYLOAD_RECVD_VALUE.load(Ordering::Relaxed) as i64;
+    // The CALL/REPLY block lives after the payload block
+    // (BUF+496..576, ten qwords): the call's ack, the call
+    // receive's byte count, the handle the kernel wrote at the
+    // out-slot, the handle as the program reads it back, the
+    // request's bytes, the reply's ack, the one-shot refusal,
+    // the wrong-kind refusal, the answer's byte count and the
+    // answer's bytes.
+    if !crate::memory::paging::user_range_ok(a0 + 496, 80, false) {
+        return EFAULT;
+    }
+    let mut reply_block = [0i64; 10];
+    for (i, slot) in reply_block.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 496 + 8 * i as u64) as *const i64) };
+    }
+    // The SHARED-REGION block (BUF+760..848, eleven qwords): the
+    // geometry row's ack, the record's base/length/rights as the
+    // program read them back, the sentinel it read THROUGH the
+    // mapping, the value it wrote through the same mapping, and
+    // the two refusals (a handle that names nothing, a handle of
+    // another kind).
+    if !crate::memory::paging::user_range_ok(a0 + 760, 88, false) {
+        return EFAULT;
+    }
+    let mut shm = [0i64; 11];
+    for (i, slot) in shm.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 760 + 8 * i as u64) as *const i64) };
+    }
+    // The TWO-PROCESS block (BUF+848..+1000, nineteen qwords): the
+    // first process's close of ONE of its two region capabilities,
+    // the geometry through the OTHER one (the record survives a
+    // holder), the blocking call's answer, the region's two
+    // offsets as each process sees them, the last close and the
+    // then-consumed handle.
+    if !crate::memory::paging::user_range_ok(a0 + 848, 160, false) {
+        return EFAULT;
+    }
+    let mut two = [0i64; 20];
+    for (i, slot) in two.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 848 + 8 * i as u64) as *const i64) };
+    }
+    // The REQUESTED-REGION block (BUF+2136..+2264, sixteen
+    // qwords): the 0x4f request's ack, the geometry the kernel's
+    // record answered, the handle it minted, the value the holder
+    // wrote THROUGH the mapping, and the second request's own
+    // facts (a different window), then the two closes and the
+    // consumed handle's refusal. The kernel-side half (the window
+    // unmapped, the releaser's reading, the frame count) is
+    // compared from `svc84_proof`'s own record below.
+    if !crate::memory::paging::user_range_ok(a0 + 2136, 128, false) {
+        return EFAULT;
+    }
+    let mut map = [0i64; 16];
+    for (i, slot) in map.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 2136 + 8 * i as u64) as *const i64) };
+    }
+    // The PEER process's page (a1): its own results, read from ITS
+    // memory after its task was TERMINATED -- the strongest form of
+    // "this is what the other process observed".
+    if !crate::memory::paging::user_range_ok(a1, 112, false) {
+        return EFAULT;
+    }
+    let mut peer = [0i64; 14];
+    for (i, slot) in peer.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a1 + 8 * i as u64) as *const i64) };
+    }
+    let mut payload = [0i64; 6];
+    for (i, slot) in payload.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 448 + 8 * i as u64) as *const i64) };
+    }
+    // The capability leg is judged the same differential way: the
+    // drain's actual answer (packed sender<<32|len, recorded when
+    // the ring-3 recv ran), the drained payload's first 8 bytes,
+    // and the payload bytes still in the program's buffer.
+    // "nyrqis" is six bytes: the packed answer is the live
+    // session identity shifted above it, exactly as the drain
+    // packs (sender << 32 | len). Both sides are derived at
+    // read-back time, so a session that changes changes both.
+    let want_cap_rax =
+        ((crate::svc84_proof::FIRST_SESSION as u64) << 32 | 6) as i64;
+    let wrote_ok = crate::devices::framebuffer::bound_mode()
+        .map(|(w, h)| {
+            // The geometry was written at BUF+24 (the program's own
+            // offset, matching its assembly); the first version of
+            // this check read BUF+0 -- where GFX_MODE's low dword
+            // lives -- and reported a MISMATCH that was the check's
+            // own bug, not the call's.
+            let at = unsafe { (a0 + 24) as *const u32 };
+            unsafe {
+                core::ptr::read_unaligned(at) == w
+                    && core::ptr::read_unaligned(at.add(1)) == h
+            }
+        })
+        .unwrap_or(true);
+    // stored[3] is NOT the validated write's ack: BUF+24 is where
+    // the write PUT the geometry (the first version of this check
+    // read it as "== 0" and failed every boot with a verdict whose
+    // per-field pieces all said matches). The write's side is
+    // already covered by `wrote_ok`, which re-reads BUF+24+8.
+    let ipc_ok = stored[9] == 0
+        && stored[10] == want_ipc
+        && want_ipc != 0
+        && stored[11] == EINVAL
+        && stored[12] == ENODATA // exists-but-empty, a REAL answer
+        // The BLOCKING legs: the queued message answered
+        // instantly on BOTH sides with the same kernel-recorded
+        // value (nonzero by construction), the empty retry was
+        // refused EAGAIN BY NAME (never parked, never answered
+        // as empty), and the dead destination was refused
+        // ENOENT.
+        && stored[22] == 0
+        && stored[23] == want_blocked
+        && want_blocked != 0
+        && stored[24] == want_woken
+        && want_woken != 0
+        && want_woken != want_blocked
+        // TWO parked wakes, one per direction: the peer's send
+        // woke the first process out of its blocking receive, and
+        // the first process's "go" woke the peer out of its own.
+        && BLOCKED_RECVS.load(Ordering::Relaxed) == 2
+        && stored[25] == ENOENT
+        // The PAYLOAD dials (2026-11-06): the send was accepted,
+        // the receive answered the kernel-recorded byte count,
+        // the program's OWN buffer holds the sent bytes (a
+        // kernel that answered a length and copied nothing
+        // would fail here), and the three shape claims were
+        // refused by name -- too wide, null pointer, too-small
+        // buffer.
+        && payload[0] == 0
+        && payload[1] == want_payload_len
+        && want_payload_len == 8
+        && payload[2] == 0x2164616f6c796170
+        && payload[3] == EMSGSIZE
+        && payload[4] == EFAULT
+        && payload[5] == EINVAL;
+    // The capability leg: the ack, the round-trip rax, two
+    // refusals by name (a forged handle and an oversize claim),
+    // and the payload the program ACTUALLY holds matching both
+    // the drained message's record and the "nyrqis" sentinel.
+    // The sentinel compare is against the KERNEL's own image of
+    // the payload (CAP_RECV_FIRST8), so queue -> user-memory is
+    // covered with values, not constants.
+    // 6 bytes, zero tail: "nyrqis" as the payload copy leaves it
+    // in user memory -- an LE u64 read of [ny, rq, is, \0, \0] is
+    // 0x0000_7369_7172_796E, so both sides of the compare are the
+    // SAME representation.
+    const CAP_SENTINEL: u64 = 0x0000_7369_7172_796E;
+    let held_first8 = if crate::memory::paging::user_range_ok(a0 + 352, 8, false) {
+        unsafe { core::ptr::read_unaligned((a0 + 352) as *const u64) }
+    } else {
+        u64::MAX
+    };
+    let cap_ok = stored[13] == 0
+        && stored[14] == want_cap_rax
+        && want_cap_rax != 0
+        && stored[15] == EBADF
+        && stored[16] == EMSGSIZE
+        && held_first8 == CAP_SENTINEL;
+    // The INPUT_POLL leg, judged against the kernel's OWN bytes
+    // (svc84_proof::INJECT_BYTES -- what the kernel injected
+    // through the controller before ring 3), so the polled
+    // records' compare shares one
+    // representation on both sides: the record's low byte is the
+    // raw byte, and byte 3 is the device tag (0 = keyboard).
+    let expect_bytes = crate::svc84_proof::INJECT_BYTES;
+    let polled_first8 = if crate::memory::paging::user_range_ok(a0 + 208, 8, false) {
+        unsafe { core::ptr::read_unaligned((a0 + 208) as *const u64) }
+    } else {
+        u64::MAX
+    };
+    let polled_second8 = if crate::memory::paging::user_range_ok(a0 + 224, 8, false) {
+        unsafe { core::ptr::read_unaligned((a0 + 224) as *const u64) }
+    } else {
+        u64::MAX
+    };
+    let polled_empty8 = if crate::memory::paging::user_range_ok(a0 + 240, 8, false) {
+        unsafe { core::ptr::read_unaligned((a0 + 240) as *const u64) }
+    } else {
+        u64::MAX
+    };
+    let input_poll_ok = stored[17] == 1
+        && stored[18] == 1
+        && stored[19] == 0 // authorized AND bare: the real answer
+        && stored[21] == EBADF
+        && polled_first8 & 0xFF == expect_bytes[0] as u64
+        && polled_first8 >> 24 & 0xFF == 0 // device = keyboard
+        && polled_second8 & 0xFF == expect_bytes[1] as u64
+        && polled_second8 >> 24 & 0xFF == 0
+        // ...and the empty path wrote NOTHING: the empty record
+        // buffer the program zeroed at BUF+240 must still be
+        // all-zero (a poll that "answered empty" but scribbled
+        // would be a lie).
+        && polled_empty8 == 0;
+    // The CALL/REPLY leg, judged the way the other legs are: the
+    // call's answer is the endpoint's OWNER, which is this very
+    // session (endpoint 0 is the proof session's own), read from
+    // the live identity at read-back time rather than pinned as a
+    // number; the handle is compared against the kernel's own
+    // record of what it installed; the one-shot refusal and the
+    // wrong-kind refusal are by-name refusals, so constants; and
+    // the answer's packed (sender << 32 | len) is derived from
+    // the same live identity, since the session answered itself.
+    let sid = crate::svc84_proof::FIRST_SESSION;
+    let want_reply_ack = sid as i64;
+    let want_xfer_handle = CAP_XFER_HANDLE.load(Ordering::Relaxed) as i64;
+    let want_answer_rax = (((sid as u64) << 32) | 8) as i64;
+    const CALL_BYTES: i64 = 0x2121656d6c6c6163; // callme!!
+    const ANSWER_BYTES: i64 = 0x2121726577736e61; // answer!!
+    let reply_ok = reply_block[0] == want_reply_ack
+        && want_reply_ack >= 0
+        && reply_block[1] == want_answer_rax
+        && want_xfer_handle >= 0
+        && reply_block[2] == want_xfer_handle
+        && reply_block[3] == want_xfer_handle
+        && reply_block[4] == CALL_BYTES
+        && reply_block[5] == 0
+        && reply_block[6] == EBADF
+        && reply_block[7] == EACCES
+        && reply_block[8] == want_answer_rax
+        && reply_block[9] == ANSWER_BYTES;
+    // The SHARED-REGION leg. Three things make this a proof and
+    // not a self-check: the geometry is compared against the
+    // KERNEL's own mapping (crate::svc84_proof::PROOF_SHM), the
+    // sentinel the program read is the value the kernel wrote
+    // BEFORE ring 3, and the kernel then reads the region ITSELF
+    // to find the value ring 3 wrote. The last one is the two
+    // parties meeting in one page -- if the program were writing
+    // some other page of its own, the kernel would still read
+    // zero here.
+    let want_shm_base = crate::svc84_proof::PROOF_SHM as i64;
+    let want_shm_sentinel = crate::svc84_proof::SHM_KERNEL_SENTINEL as i64;
+    let want_shm_written = crate::svc84_proof::SHM_RING3_VALUE as i64;
+    let want_shm_rights =
+        (crate::experimental::caps::rights::READ | crate::experimental::caps::rights::WRITE | crate::experimental::caps::rights::GRANT) as i64;
+    let kernel_sees = unsafe {
+        core::ptr::read_volatile((crate::svc84_proof::PROOF_SHM + 8) as *const u64)
+    } as i64;
+    let shm_ok = shm[0] == 0
+        && shm[4] == want_shm_base
+        && shm[5] == 4096
+        && shm[6] == want_shm_rights
+        && shm[7] == want_shm_sentinel
+        && shm[8] == want_shm_written
+        && shm[9] == EBADF
+        && shm[10] == EACCES
+        && kernel_sees == want_shm_written;
+    // The two-process leg. Every value below is one only the
+    // OTHER process could have produced: the answer bytes the
+    // caller read out of a buffer the kernel wrote when the PEER
+    // answered, the region's offset 16 written through the peer's
+    // own capability, and the region's record dying with its last
+    // holder (the kernel's table says so, not the programs).
+    const CALL_REQ: i64 = 0x0000_2141_6d6f_7266; // "fromA!"
+    const CALL_ANSWER: i64 = 0x0000_2142_6d6f_7266; // "fromB!"
+    let want_shm_offset8 = crate::svc84_proof::SHM_RING3_VALUE as i64;
+    let want_peer_write = crate::svc84_proof::PEER_WRITE as i64;
+    let proof_region = crate::svc84_proof::PROOF_REGION.load(Ordering::Relaxed);
+    let region_live = crate::experimental::caps::region_live(proof_region);
+    let region_holders = crate::experimental::caps::region_holders(proof_region);
+    let (exit_task, exit_session, exit_released, exit_count) = exit_record();
+    let two_ok = two[0] == 0                 // the close was accepted
+        && two[4] == want_shm_base           // the OTHER handle still names it
+        && two[5] == 4096
+        && two[6] == want_shm_rights
+        && two[11] == 8                      // the call answered 8 bytes
+        && two[12] == CALL_REQ
+        && two[13] == CALL_ANSWER            // the peer's bytes, in OUR buffer
+        && two[14] == want_shm_offset8       // our own write, still there
+        && two[15] == want_peer_write        // the PEER's write, through OUR handle
+        && two[16] == 0                      // the last close was accepted
+        && two[17] == EBADF                  // ...and the handle is consumed
+        && two[18] == 0                      // geometry answered after the first close
+        && two[19] == 0                      // the go send was accepted
+        // The region's LIFETIME, from the kernel's table: the record
+        // is GONE (its last holder exited) and names no holder. A
+        // close that merely returned 0 without moving the count
+        // would fail here.
+        && !region_live
+        && region_holders == Some(0)
+        // Both processes exited through CAP_EXIT: two exits, the
+        // LAST of them the first process (the peer exits first,
+        // having answered), and exactly ONE region capability was
+        // given back by an exit -- the peer's. The first process
+        // had already closed both of its own, so its exit released
+        // none; a double release would show up here as 2.
+        && exit_count == 2
+        && exit_session == crate::svc84_proof::FIRST_SESSION as u64
+        && exit_released == 1
+        && exit_task != 0;
+    // The peer's own observations: the geometry it was told, the
+    // FIRST process's write read through its capability, the
+    // request it received, its reply's ack, and its write.
+    // The REQUESTED region: the caller ASKED (0x4f) and the kernel
+    // chose the window, minted a usable handle, and backed it with
+    // real frames -- the holder's write is read back by the
+    // RELEASER out of the mapping before unmapping, which is the
+    // same two-party evidence the SHM leg carries. A second
+    // request lands in the NEXT window, so the base is the
+    // kernel's choice and not a constant on the program's side.
+    // After the last close the window is unmapped in the page
+    // tables, and the frame count is back to the pre-pump
+    // baseline: the mapping's pages came back, not just its
+    // record.
+    let want_map_base = crate::svc84_proof::SHM_REQUEST_WINDOW as i64;
+    let want_map_base2 =
+        (crate::svc84_proof::SHM_REQUEST_WINDOW + crate::svc84_proof::SHM_REQUEST_STRIDE) as i64;
+    let want_map_value = crate::svc84_proof::SHM_REQUEST_VALUE as i64;
+    let map_report = crate::svc84_proof::requested_region_report();
+    let map_ok = match map_report {
+        Some(r) => {
+            map[0] == 0
+                && map[1] == want_map_base
+                && map[2] == 4096
+                && map[3] == want_shm_rights
+                && map[4] >= 0
+                && map[5] == want_map_value
+                && map[6] == 0
+                && map[7] == want_map_base2
+                && map[8] == 8192
+                && map[9] == want_shm_rights
+                && map[10] == map[4] + 1
+                && map[11] == 0
+                && map[12] == 0
+                && map[13] == EBADF
+                && map[14] == 0
+                && map[15] == want_map_base
+                && r.first_unmapped
+                && r.second_unmapped
+                && r.released == 2
+                && r.first_word == want_map_value as u64
+                && r.last_word == 0
+                && r.first_base == crate::svc84_proof::SHM_REQUEST_WINDOW
+                && r.last_base
+                    == crate::svc84_proof::SHM_REQUEST_WINDOW
+                        + crate::svc84_proof::SHM_REQUEST_STRIDE
+                && r.frames_in_use == r.frames_baseline
+        }
+        None => false,
+    };
+    let (map_released, map_first_word, map_last_word, map_first_base, map_last_base, map_in_use, map_baseline, map_unmapped1, map_unmapped2) =
+        match map_report {
+            Some(r) => (
+                r.released,
+                r.first_word,
+                r.last_word,
+                r.first_base,
+                r.last_base,
+                r.frames_in_use,
+                r.frames_baseline,
+                r.first_unmapped,
+                r.second_unmapped,
+            ),
+            None => (0, 0, 0, 0, 0, 0, 0, false, false),
+        };
+    let peer_ok = peer[0] == 0
+        && peer[4] == want_shm_base
+        && peer[5] == 4096
+        && peer[6] == want_shm_offset8
+        && peer[7] == ((crate::svc84_proof::FIRST_SESSION as i64) << 32 | 8)
+        && peer[8] >= 0
+        && peer[9] == CALL_REQ
+        && peer[11] == 0
+        && peer[12] == want_peer_write;
+    let stored_ok = stored[0] == want_gfx
+        && stored[1] == want_input
+        && stored[2] == want_enosys
+        && stored[2] == ENOSYS
+        && stored[4] == want_self
+        && stored[5] == want_rsi as i64
+        && stored[6] == want_rdx as i64
+        && stored[7] == want_r10 as i64
+        && stored[8] == want_r8 as i64
+        && ipc_ok
+        && cap_ok
+        && input_poll_ok
+        && reply_ok
+        && shm_ok
+        && two_ok
+        && peer_ok
+        && map_ok;
+    let ok = stored_ok && wrote_ok;
+    PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
+    crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {}) , MAP {} -- {}
+",
+        LAST_CALLER_CPL.load(Ordering::Relaxed),
+        want_gfx as u64,
+        want_input as u64,
+        want_enosys as u64,
+        WROTE_W.load(Ordering::Relaxed),
+        WROTE_H.load(Ordering::Relaxed),
+        want_self as u64,
+        want_rsi,
+        want_rdx,
+        want_r10,
+        want_r8,
+        stored[9] as u64,
+        stored[10] as u64,
+        want_ipc as u64,
+        stored[11] as u64,
+        stored[12] as u64,
+        stored[23] as u64,
+        want_blocked as u64,
+        stored[24] as u64,
+        stored[25] as u64,
+        payload[0] as u64,
+        payload[1] as u64,
+        payload[2] as u64,
+        payload[3] as u64,
+        payload[4] as u64,
+        payload[5] as u64,
+        stored[13] as u64,
+        stored[14] as u64,
+        stored[15] as u64,
+        stored[16] as u64,
+        held_first8,
+        if stored[0] == want_gfx { "matches" } else { "MISMATCH" },
+        if stored[1] == want_input { "matches" } else { "MISMATCH" },
+        if stored[2] == want_enosys { "matches" } else { "MISMATCH" },
+        if wrote_ok { "matches" } else { "MISMATCH" },
+        if stored[4] == want_self { "matches" } else { "MISMATCH" },
+        if stored[5] == want_rsi as i64
+            && stored[6] == want_rdx as i64
+            && stored[7] == want_r10 as i64
+            && stored[8] == want_r8 as i64
+        {
+            "matches"
+        } else {
+            "MISMATCH"
+        },
+        if ipc_ok { "matches" } else { "MISMATCH" },
+        if cap_ok { "matches" } else { "MISMATCH" },
+        stored[17] as u64,
+        stored[18] as u64,
+        stored[19] as u64,
+        stored[21] as u64,
+        polled_first8,
+        polled_second8,
+        if input_poll_ok { "matches" } else { "MISMATCH" },
+        reply_block[0] as u64,
+        reply_block[1] as u64,
+        reply_block[3] as u64,
+        reply_block[5] as u64,
+        reply_block[6] as u64,
+        reply_block[7] as u64,
+        reply_block[8] as u64,
+        reply_block[9] as u64,
+        if reply_ok { "matches" } else { "MISMATCH" },
+        shm[0] as u64,
+        shm[4] as u64,
+        shm[5] as u64,
+        shm[6] as u64,
+        shm[7] as u64,
+        shm[8] as u64,
+        shm[9] as u64,
+        shm[10] as u64,
+        if shm_ok { "matches" } else { "MISMATCH" },
+        two[0] as u64,
+        two[18] as u64,
+        two[11] as u64,
+        two[12] as u64,
+        two[13] as u64,
+        two[14] as u64,
+        two[15] as u64,
+        two[16] as u64,
+        two[17] as u64,
+        if region_live { "yes" } else { "no" },
+        region_holders,
+        exit_count,
+        exit_session,
+        exit_released,
+        peer[0] as u64,
+        peer[4] as u64,
+        peer[6] as u64,
+        peer[7] as u64,
+        peer[8] as u64,
+        peer[9] as u64,
+        peer[11] as u64,
+        peer[12] as u64,
+        if two_ok { "matches" } else { "MISMATCH" },
+        if peer_ok { "matches" } else { "MISMATCH" },
+        map[0] as u64,
+        map[1] as u64,
+        map[2] as u64,
+        map[3] as u64,
+        map[4] as u64,
+        map[5] as u64,
+        map[6] as u64,
+        map[7] as u64,
+        map[8] as u64,
+        map[10] as u64,
+        map[11] as u64,
+        map[12] as u64,
+        map[13] as u64,
+        map[14] as u64,
+        map[15] as u64,
+        map_released,
+        map_first_word,
+        map_last_word,
+        map_first_base,
+        map_last_base,
+        map_in_use,
+        map_baseline,
+        map_unmapped1,
+        map_unmapped2,
+        if map_ok { "matches" } else { "MISMATCH" },
+        if ok { "OK" } else { "FAILED" }
+    );
+    0
+
+}
+
+/// The `CAP_SHM_MAP` (0x4f) row's body, OUT OF LINE on purpose: a
+/// `dispatch` frame is shared by every arm, and this row's record buffer
+/// plus its refusal paths grew it enough to matter. The first version kept
+/// the body inline and the ordinary boot's PARKED-CALL proof -- a
+/// five-page task stack that is already deep inside `dispatch` -- crossed
+/// its guard page (a #PF in the kernel's own number formatter, caught by
+/// the boot test at once). In its own frame the row costs stack only when
+/// a caller actually asks for a region.
+#[inline(never)]
+fn serve_region_request(
+    a0: u64,
+    a1: u64,
+    a2: u64,
+    a_xfer: u64,
+    a_rights: u64,
+    from_ring3: bool,
+) -> i64 {
+    // The shape first: a length in bytes, a record pointer, and no claim in
+    // any other field. Checked before the mapping source is asked, so a
+    // malformed request can never allocate.
+    if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+        return EINVAL;
+    }
+    if a0 == 0 || a0 % 4096 != 0 || a0 / 4096 > MAX_REGION_REQUEST_PAGES {
+        return EINVAL;
+    }
+    if from_ring3 && !crate::memory::paging::user_range_ok(a1, 32, true) {
+        return EFAULT;
+    }
+    let identity = crate::experimental::scheduler::session_identity();
+    let (_region, handle, geometry) =
+        match crate::experimental::caps::request_region_for(identity, a0 / 4096) {
+            Ok(v) => v,
+            Err(e) => return map_cap_error(e),
+        };
+    // The record carries the HANDLE as well as the geometry: the row that
+    // answers "where is it" (0x4c) takes a handle, so handing the caller
+    // the one the machine just minted is what makes a request usable
+    // without a constant on the program's side. The rights are read back
+    // from the capability itself, not assumed from the request.
+    let (_, held) = match crate::experimental::caps::region_cap_for(identity, handle) {
+        Ok(v) => v,
+        Err(e) => return map_cap_error(e),
+    };
+    let mut rec = [0u8; 32];
+    rec[0..8].copy_from_slice(&geometry.base.to_le_bytes());
+    rec[8..16].copy_from_slice(&geometry.len.to_le_bytes());
+    rec[16..24].copy_from_slice(&(held as u64).to_le_bytes());
+    rec[24..32].copy_from_slice(&(handle as u64).to_le_bytes());
+    unsafe {
+        core::ptr::copy_nonoverlapping(rec.as_ptr(), a1 as *mut u8, 32);
+    }
+    0
+}
+
 /// The dispatcher. `cpl` is the caller's privilege level, read from the
 /// saved CS by the entry stub -- without it, a kernel-side call and a
 /// ring-3 call look identical, and the proof would be worthless. The
@@ -517,488 +1205,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             }
             0
         }
-        CALL_PROOF_DONE => {
-            // Twenty-six qwords: the five older results (gfx, input, enosys,
-            // (unused), self), the four widened-arg markers at BUF+40..+64,
-            // the IPC records (ack BUF+72, recv BUF+80, shape refusal
-            // BUF+88, empty-real BUF+96), and the capability records: the
-            // CAP_SEND ack (BUF+104), the CAP_RECV rax (BUF+112), the
-            // forged-handle refusal (BUF+120) and the oversize refusal
-            // (BUF+128); and, of the INPUT_POLL row, the two positive
-            // polls' acks (BUF+136, BUF+144), the third poll's real-and-
-            // empty answer (BUF+152) and the forged-handle refusal
-            // (BUF+168 -- STORED INDEX 21: index 20 is offset 160, the
-            // payload staging area, and the proof's first run read the
-            // payload bytes as "the forged answer" exactly that way);
-            // and the BLOCKING-RECV legs (2026-11-06): the send ack
-            // (BUF+176 -> index 22), the instant answer (BUF+184 ->
-            // index 23), the empty retry's EAGAIN (BUF+192 -> index 24)
-            // and the dead destination's ENOENT (BUF+200 -> index 25).
-            // The CAP PAYLOAD is compared at BUF+352..+360 (it moved out
-            // of 192..208 to make room for those legs) and the INPUT
-            // POLLED BYTES at BUF+208/+224 (below).
-            if !crate::memory::paging::user_range_ok(a0, 208, false) {
-                return EFAULT;
-            }
-            // Read the results back OUT OF USER MEMORY: this is the part
-            // the registers alone cannot prove, because it shows the
-            // ring-3 program actually received and stored them.
-            // The PAYLOAD dials' results live in their own block
-            // (BUF+448..+496), because the first array's 8-byte stride
-            // collides with the INPUT_POLL records at BUF+208/+224/+240
-            // from index 26 on: [0] send ack, [1] recv byte count,
-            // [2] the bytes read back OUT of the program's buffer,
-            // [3] the oversize refusal, [4] the null-pointer refusal,
-            // [5] the too-small receive buffer's refusal.
-            if !crate::memory::paging::user_range_ok(a0 + 448, 48, false) {
-                return EFAULT;
-            }
-            let mut stored = [0i64; 26];
-            for (i, slot) in stored.iter_mut().enumerate() {
-                *slot = unsafe { core::ptr::read_unaligned((a0 as *const i64).add(i)) };
-            }
-            let want_gfx = RET_GFX.load(Ordering::Relaxed);
-            let want_input = RET_INPUT.load(Ordering::Relaxed);
-            let want_enosys = RET_ENOSYS.load(Ordering::Relaxed);
-            // The identity answer is compared against the scheduler's OWN
-            // live value at read-back time, so a future session that makes
-            // the program a real task changes both sides together.
-            let want_self = SELF_TASK.load(Ordering::Relaxed) as i64;
-            // The widened pass is judged the same way as the answers:
-            // against what the dispatcher ACTUALLY received from the ring-3
-            // caller, not against constants compiled into this file.
-            let want_rsi = JUNK_ARG_RSI.load(Ordering::Relaxed);
-            let want_rdx = JUNK_ARG_RDX.load(Ordering::Relaxed);
-            let want_r10 = JUNK_ARG_R10.load(Ordering::Relaxed);
-            let want_r8 = JUNK_ARG_R8.load(Ordering::Relaxed);
-            // The IPC round trip is judged against what the drain actually
-            // unpacked (the queue-side and return-side record the same
-            // message's two halves): the program's stored SEND ack must be
-            // 0, its stored RECV result must equal THIS value (nonzero by
-            // construction -- sender 0, seq 7), and the two shape refusals
-            // must have arrived by name.
-            let want_ipc = RECVD_VALUE.load(Ordering::Relaxed) as i64;
-            // The BLOCKING legs are judged the same way: the kernel's own
-            // record of what the instant half handed back (sender = the
-            // gate session, so 0x70000002a for seq 42) compared against
-            // the program's stored copy. The empty retry's EAGAIN and the
-            // dead destination's ENOENT are pinned as constants -- they
-            // are REFUSALS, and a by-name refusal is its own pin.
-            let want_blocked = BLOCKED_RECVD_VALUE.load(Ordering::Relaxed) as i64;
-            // The PARKED wake's value: the peer's send is what answered the
-            // first process's blocking receive, so this record is what says
-            // the park happened at all (an instant drain would have left it
-            // zero and filled `want_blocked` a second time instead).
-            let want_woken = WOKEN_RECVD_VALUE.load(Ordering::Relaxed) as i64;
-            // The payload dial's kernel-side record: the byte count the
-            // payload recv answered. Compared against the program's
-            // stored copy below, like every other answer.
-            let want_payload_len = PAYLOAD_RECVD_VALUE.load(Ordering::Relaxed) as i64;
-            // The CALL/REPLY block lives after the payload block
-            // (BUF+496..576, ten qwords): the call's ack, the call
-            // receive's byte count, the handle the kernel wrote at the
-            // out-slot, the handle as the program reads it back, the
-            // request's bytes, the reply's ack, the one-shot refusal,
-            // the wrong-kind refusal, the answer's byte count and the
-            // answer's bytes.
-            if !crate::memory::paging::user_range_ok(a0 + 496, 80, false) {
-                return EFAULT;
-            }
-            let mut reply_block = [0i64; 10];
-            for (i, slot) in reply_block.iter_mut().enumerate() {
-                *slot = unsafe { core::ptr::read_unaligned((a0 + 496 + 8 * i as u64) as *const i64) };
-            }
-            // The SHARED-REGION block (BUF+760..848, eleven qwords): the
-            // geometry row's ack, the record's base/length/rights as the
-            // program read them back, the sentinel it read THROUGH the
-            // mapping, the value it wrote through the same mapping, and
-            // the two refusals (a handle that names nothing, a handle of
-            // another kind).
-            if !crate::memory::paging::user_range_ok(a0 + 760, 88, false) {
-                return EFAULT;
-            }
-            let mut shm = [0i64; 11];
-            for (i, slot) in shm.iter_mut().enumerate() {
-                *slot = unsafe { core::ptr::read_unaligned((a0 + 760 + 8 * i as u64) as *const i64) };
-            }
-            // The TWO-PROCESS block (BUF+848..+1000, nineteen qwords): the
-            // first process's close of ONE of its two region capabilities,
-            // the geometry through the OTHER one (the record survives a
-            // holder), the blocking call's answer, the region's two
-            // offsets as each process sees them, the last close and the
-            // then-consumed handle.
-            if !crate::memory::paging::user_range_ok(a0 + 848, 160, false) {
-                return EFAULT;
-            }
-            let mut two = [0i64; 20];
-            for (i, slot) in two.iter_mut().enumerate() {
-                *slot = unsafe { core::ptr::read_unaligned((a0 + 848 + 8 * i as u64) as *const i64) };
-            }
-            // The PEER process's page (a1): its own results, read from ITS
-            // memory after its task was TERMINATED -- the strongest form of
-            // "this is what the other process observed".
-            if !crate::memory::paging::user_range_ok(a1, 112, false) {
-                return EFAULT;
-            }
-            let mut peer = [0i64; 14];
-            for (i, slot) in peer.iter_mut().enumerate() {
-                *slot = unsafe { core::ptr::read_unaligned((a1 + 8 * i as u64) as *const i64) };
-            }
-            let mut payload = [0i64; 6];
-            for (i, slot) in payload.iter_mut().enumerate() {
-                *slot = unsafe { core::ptr::read_unaligned((a0 + 448 + 8 * i as u64) as *const i64) };
-            }
-            // The capability leg is judged the same differential way: the
-            // drain's actual answer (packed sender<<32|len, recorded when
-            // the ring-3 recv ran), the drained payload's first 8 bytes,
-            // and the payload bytes still in the program's buffer.
-            // "nyrqis" is six bytes: the packed answer is the live
-            // session identity shifted above it, exactly as the drain
-            // packs (sender << 32 | len). Both sides are derived at
-            // read-back time, so a session that changes changes both.
-            let want_cap_rax =
-                ((crate::svc84_proof::FIRST_SESSION as u64) << 32 | 6) as i64;
-            let wrote_ok = crate::devices::framebuffer::bound_mode()
-                .map(|(w, h)| {
-                    // The geometry was written at BUF+24 (the program's own
-                    // offset, matching its assembly); the first version of
-                    // this check read BUF+0 -- where GFX_MODE's low dword
-                    // lives -- and reported a MISMATCH that was the check's
-                    // own bug, not the call's.
-                    let at = unsafe { (a0 + 24) as *const u32 };
-                    unsafe {
-                        core::ptr::read_unaligned(at) == w
-                            && core::ptr::read_unaligned(at.add(1)) == h
-                    }
-                })
-                .unwrap_or(true);
-            // stored[3] is NOT the validated write's ack: BUF+24 is where
-            // the write PUT the geometry (the first version of this check
-            // read it as "== 0" and failed every boot with a verdict whose
-            // per-field pieces all said matches). The write's side is
-            // already covered by `wrote_ok`, which re-reads BUF+24+8.
-            let ipc_ok = stored[9] == 0
-                && stored[10] == want_ipc
-                && want_ipc != 0
-                && stored[11] == EINVAL
-                && stored[12] == ENODATA // exists-but-empty, a REAL answer
-                // The BLOCKING legs: the queued message answered
-                // instantly on BOTH sides with the same kernel-recorded
-                // value (nonzero by construction), the empty retry was
-                // refused EAGAIN BY NAME (never parked, never answered
-                // as empty), and the dead destination was refused
-                // ENOENT.
-                && stored[22] == 0
-                && stored[23] == want_blocked
-                && want_blocked != 0
-                && stored[24] == want_woken
-                && want_woken != 0
-                && want_woken != want_blocked
-                // TWO parked wakes, one per direction: the peer's send
-                // woke the first process out of its blocking receive, and
-                // the first process's "go" woke the peer out of its own.
-                && BLOCKED_RECVS.load(Ordering::Relaxed) == 2
-                && stored[25] == ENOENT
-                // The PAYLOAD dials (2026-11-06): the send was accepted,
-                // the receive answered the kernel-recorded byte count,
-                // the program's OWN buffer holds the sent bytes (a
-                // kernel that answered a length and copied nothing
-                // would fail here), and the three shape claims were
-                // refused by name -- too wide, null pointer, too-small
-                // buffer.
-                && payload[0] == 0
-                && payload[1] == want_payload_len
-                && want_payload_len == 8
-                && payload[2] == 0x2164616f6c796170
-                && payload[3] == EMSGSIZE
-                && payload[4] == EFAULT
-                && payload[5] == EINVAL;
-            // The capability leg: the ack, the round-trip rax, two
-            // refusals by name (a forged handle and an oversize claim),
-            // and the payload the program ACTUALLY holds matching both
-            // the drained message's record and the "nyrqis" sentinel.
-            // The sentinel compare is against the KERNEL's own image of
-            // the payload (CAP_RECV_FIRST8), so queue -> user-memory is
-            // covered with values, not constants.
-            // 6 bytes, zero tail: "nyrqis" as the payload copy leaves it
-            // in user memory -- an LE u64 read of [ny, rq, is, \0, \0] is
-            // 0x0000_7369_7172_796E, so both sides of the compare are the
-            // SAME representation.
-            const CAP_SENTINEL: u64 = 0x0000_7369_7172_796E;
-            let held_first8 = if crate::memory::paging::user_range_ok(a0 + 352, 8, false) {
-                unsafe { core::ptr::read_unaligned((a0 + 352) as *const u64) }
-            } else {
-                u64::MAX
-            };
-            let cap_ok = stored[13] == 0
-                && stored[14] == want_cap_rax
-                && want_cap_rax != 0
-                && stored[15] == EBADF
-                && stored[16] == EMSGSIZE
-                && held_first8 == CAP_SENTINEL;
-            // The INPUT_POLL leg, judged against the kernel's OWN bytes
-            // (svc84_proof::INJECT_BYTES -- what the kernel injected
-            // through the controller before ring 3), so the polled
-            // records' compare shares one
-            // representation on both sides: the record's low byte is the
-            // raw byte, and byte 3 is the device tag (0 = keyboard).
-            let expect_bytes = crate::svc84_proof::INJECT_BYTES;
-            let polled_first8 = if crate::memory::paging::user_range_ok(a0 + 208, 8, false) {
-                unsafe { core::ptr::read_unaligned((a0 + 208) as *const u64) }
-            } else {
-                u64::MAX
-            };
-            let polled_second8 = if crate::memory::paging::user_range_ok(a0 + 224, 8, false) {
-                unsafe { core::ptr::read_unaligned((a0 + 224) as *const u64) }
-            } else {
-                u64::MAX
-            };
-            let polled_empty8 = if crate::memory::paging::user_range_ok(a0 + 240, 8, false) {
-                unsafe { core::ptr::read_unaligned((a0 + 240) as *const u64) }
-            } else {
-                u64::MAX
-            };
-            let input_poll_ok = stored[17] == 1
-                && stored[18] == 1
-                && stored[19] == 0 // authorized AND bare: the real answer
-                && stored[21] == EBADF
-                && polled_first8 & 0xFF == expect_bytes[0] as u64
-                && polled_first8 >> 24 & 0xFF == 0 // device = keyboard
-                && polled_second8 & 0xFF == expect_bytes[1] as u64
-                && polled_second8 >> 24 & 0xFF == 0
-                // ...and the empty path wrote NOTHING: the empty record
-                // buffer the program zeroed at BUF+240 must still be
-                // all-zero (a poll that "answered empty" but scribbled
-                // would be a lie).
-                && polled_empty8 == 0;
-            // The CALL/REPLY leg, judged the way the other legs are: the
-            // call's answer is the endpoint's OWNER, which is this very
-            // session (endpoint 0 is the proof session's own), read from
-            // the live identity at read-back time rather than pinned as a
-            // number; the handle is compared against the kernel's own
-            // record of what it installed; the one-shot refusal and the
-            // wrong-kind refusal are by-name refusals, so constants; and
-            // the answer's packed (sender << 32 | len) is derived from
-            // the same live identity, since the session answered itself.
-            let sid = crate::svc84_proof::FIRST_SESSION;
-            let want_reply_ack = sid as i64;
-            let want_xfer_handle = CAP_XFER_HANDLE.load(Ordering::Relaxed) as i64;
-            let want_answer_rax = (((sid as u64) << 32) | 8) as i64;
-            const CALL_BYTES: i64 = 0x2121656d6c6c6163; // callme!!
-            const ANSWER_BYTES: i64 = 0x2121726577736e61; // answer!!
-            let reply_ok = reply_block[0] == want_reply_ack
-                && want_reply_ack >= 0
-                && reply_block[1] == want_answer_rax
-                && want_xfer_handle >= 0
-                && reply_block[2] == want_xfer_handle
-                && reply_block[3] == want_xfer_handle
-                && reply_block[4] == CALL_BYTES
-                && reply_block[5] == 0
-                && reply_block[6] == EBADF
-                && reply_block[7] == EACCES
-                && reply_block[8] == want_answer_rax
-                && reply_block[9] == ANSWER_BYTES;
-            // The SHARED-REGION leg. Three things make this a proof and
-            // not a self-check: the geometry is compared against the
-            // KERNEL's own mapping (crate::svc84_proof::PROOF_SHM), the
-            // sentinel the program read is the value the kernel wrote
-            // BEFORE ring 3, and the kernel then reads the region ITSELF
-            // to find the value ring 3 wrote. The last one is the two
-            // parties meeting in one page -- if the program were writing
-            // some other page of its own, the kernel would still read
-            // zero here.
-            let want_shm_base = crate::svc84_proof::PROOF_SHM as i64;
-            let want_shm_sentinel = crate::svc84_proof::SHM_KERNEL_SENTINEL as i64;
-            let want_shm_written = crate::svc84_proof::SHM_RING3_VALUE as i64;
-            let want_shm_rights =
-                (crate::experimental::caps::rights::READ | crate::experimental::caps::rights::WRITE | crate::experimental::caps::rights::GRANT) as i64;
-            let kernel_sees = unsafe {
-                core::ptr::read_volatile((crate::svc84_proof::PROOF_SHM + 8) as *const u64)
-            } as i64;
-            let shm_ok = shm[0] == 0
-                && shm[4] == want_shm_base
-                && shm[5] == 4096
-                && shm[6] == want_shm_rights
-                && shm[7] == want_shm_sentinel
-                && shm[8] == want_shm_written
-                && shm[9] == EBADF
-                && shm[10] == EACCES
-                && kernel_sees == want_shm_written;
-            // The two-process leg. Every value below is one only the
-            // OTHER process could have produced: the answer bytes the
-            // caller read out of a buffer the kernel wrote when the PEER
-            // answered, the region's offset 16 written through the peer's
-            // own capability, and the region's record dying with its last
-            // holder (the kernel's table says so, not the programs).
-            const CALL_REQ: i64 = 0x0000_2141_6d6f_7266; // "fromA!"
-            const CALL_ANSWER: i64 = 0x0000_2142_6d6f_7266; // "fromB!"
-            let want_shm_offset8 = crate::svc84_proof::SHM_RING3_VALUE as i64;
-            let want_peer_write = crate::svc84_proof::PEER_WRITE as i64;
-            let proof_region = crate::svc84_proof::PROOF_REGION.load(Ordering::Relaxed);
-            let region_live = crate::experimental::caps::region_live(proof_region);
-            let region_holders = crate::experimental::caps::region_holders(proof_region);
-            let (exit_task, exit_session, exit_released, exit_count) = exit_record();
-            let two_ok = two[0] == 0                 // the close was accepted
-                && two[4] == want_shm_base           // the OTHER handle still names it
-                && two[5] == 4096
-                && two[6] == want_shm_rights
-                && two[11] == 8                      // the call answered 8 bytes
-                && two[12] == CALL_REQ
-                && two[13] == CALL_ANSWER            // the peer's bytes, in OUR buffer
-                && two[14] == want_shm_offset8       // our own write, still there
-                && two[15] == want_peer_write        // the PEER's write, through OUR handle
-                && two[16] == 0                      // the last close was accepted
-                && two[17] == EBADF                  // ...and the handle is consumed
-                && two[18] == 0                      // geometry answered after the first close
-                && two[19] == 0                      // the go send was accepted
-                // The region's LIFETIME, from the kernel's table: the record
-                // is GONE (its last holder exited) and names no holder. A
-                // close that merely returned 0 without moving the count
-                // would fail here.
-                && !region_live
-                && region_holders == Some(0)
-                // Both processes exited through CAP_EXIT: two exits, the
-                // LAST of them the first process (the peer exits first,
-                // having answered), and exactly ONE region capability was
-                // given back by an exit -- the peer's. The first process
-                // had already closed both of its own, so its exit released
-                // none; a double release would show up here as 2.
-                && exit_count == 2
-                && exit_session == crate::svc84_proof::FIRST_SESSION as u64
-                && exit_released == 1
-                && exit_task != 0;
-            // The peer's own observations: the geometry it was told, the
-            // FIRST process's write read through its capability, the
-            // request it received, its reply's ack, and its write.
-            let peer_ok = peer[0] == 0
-                && peer[4] == want_shm_base
-                && peer[5] == 4096
-                && peer[6] == want_shm_offset8
-                && peer[7] == ((crate::svc84_proof::FIRST_SESSION as i64) << 32 | 8)
-                && peer[8] >= 0
-                && peer[9] == CALL_REQ
-                && peer[11] == 0
-                && peer[12] == want_peer_write;
-            let stored_ok = stored[0] == want_gfx
-                && stored[1] == want_input
-                && stored[2] == want_enosys
-                && stored[2] == ENOSYS
-                && stored[4] == want_self
-                && stored[5] == want_rsi as i64
-                && stored[6] == want_rdx as i64
-                && stored[7] == want_r10 as i64
-                && stored[8] == want_r8 as i64
-                && ipc_ok
-                && cap_ok
-                && input_poll_ok
-                && reply_ok
-                && shm_ok
-                && two_ok
-                && peer_ok;
-            let ok = stored_ok && wrote_ok;
-            PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-            crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} -- {}
-",
-                LAST_CALLER_CPL.load(Ordering::Relaxed),
-                want_gfx as u64,
-                want_input as u64,
-                want_enosys as u64,
-                WROTE_W.load(Ordering::Relaxed),
-                WROTE_H.load(Ordering::Relaxed),
-                want_self as u64,
-                want_rsi,
-                want_rdx,
-                want_r10,
-                want_r8,
-                stored[9] as u64,
-                stored[10] as u64,
-                want_ipc as u64,
-                stored[11] as u64,
-                stored[12] as u64,
-                stored[23] as u64,
-                want_blocked as u64,
-                stored[24] as u64,
-                stored[25] as u64,
-                payload[0] as u64,
-                payload[1] as u64,
-                payload[2] as u64,
-                payload[3] as u64,
-                payload[4] as u64,
-                payload[5] as u64,
-                stored[13] as u64,
-                stored[14] as u64,
-                stored[15] as u64,
-                stored[16] as u64,
-                held_first8,
-                if stored[0] == want_gfx { "matches" } else { "MISMATCH" },
-                if stored[1] == want_input { "matches" } else { "MISMATCH" },
-                if stored[2] == want_enosys { "matches" } else { "MISMATCH" },
-                if wrote_ok { "matches" } else { "MISMATCH" },
-                if stored[4] == want_self { "matches" } else { "MISMATCH" },
-                if stored[5] == want_rsi as i64
-                    && stored[6] == want_rdx as i64
-                    && stored[7] == want_r10 as i64
-                    && stored[8] == want_r8 as i64
-                {
-                    "matches"
-                } else {
-                    "MISMATCH"
-                },
-                if ipc_ok { "matches" } else { "MISMATCH" },
-                if cap_ok { "matches" } else { "MISMATCH" },
-                stored[17] as u64,
-                stored[18] as u64,
-                stored[19] as u64,
-                stored[21] as u64,
-                polled_first8,
-                polled_second8,
-                if input_poll_ok { "matches" } else { "MISMATCH" },
-                reply_block[0] as u64,
-                reply_block[1] as u64,
-                reply_block[3] as u64,
-                reply_block[5] as u64,
-                reply_block[6] as u64,
-                reply_block[7] as u64,
-                reply_block[8] as u64,
-                reply_block[9] as u64,
-                if reply_ok { "matches" } else { "MISMATCH" },
-                shm[0] as u64,
-                shm[4] as u64,
-                shm[5] as u64,
-                shm[6] as u64,
-                shm[7] as u64,
-                shm[8] as u64,
-                shm[9] as u64,
-                shm[10] as u64,
-                if shm_ok { "matches" } else { "MISMATCH" },
-                two[0] as u64,
-                two[18] as u64,
-                two[11] as u64,
-                two[12] as u64,
-                two[13] as u64,
-                two[14] as u64,
-                two[15] as u64,
-                two[16] as u64,
-                two[17] as u64,
-                if region_live { "yes" } else { "no" },
-                region_holders,
-                exit_count,
-                exit_session,
-                exit_released,
-                peer[0] as u64,
-                peer[4] as u64,
-                peer[6] as u64,
-                peer[7] as u64,
-                peer[8] as u64,
-                peer[9] as u64,
-                peer[11] as u64,
-                peer[12] as u64,
-                if two_ok { "matches" } else { "MISMATCH" },
-                if peer_ok { "matches" } else { "MISMATCH" },
-                if ok { "OK" } else { "FAILED" }
-            );
-            0
-        }
+        CALL_PROOF_DONE => serve_proof_done(a0, a1, from_ring3),
         CALL_PROCESS_SELF => {
             // The scheduler's own answer, not a canned one: when a real
             // scheduler task ever owns a ring-3 caller, this call starts
@@ -1601,6 +1808,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             }
             0
         }
+        CALL_CAP_SHM_MAP => serve_region_request(a0, a1, a2, a_xfer, a_rights, from_ring3),
         _ => {
             if from_ring3 {
                 RET_ENOSYS.store(ENOSYS, Ordering::Relaxed);

@@ -23,7 +23,7 @@
 //!   buf   0x6_0000_01000 (the results page)
 //!   stack 0x6_0000_02000
 
-use x86_64::structures::paging::PageTableFlags;
+use x86_64::structures::paging::{FrameDeallocator, Mapper, Page, PageTableFlags, Size4KiB};
 use x86_64::VirtAddr;
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -57,6 +57,153 @@ pub const SHM_KERNEL_SENTINEL: u64 = 0x0123_4567_89ab_cdef;
 /// What the program writes back; the kernel reads it out of the region
 /// after the proof closes.
 pub const SHM_RING3_VALUE: u64 = 0xfeed_face_dead_beef;
+
+/// The window a REQUESTED region is mapped at (0x4f `CAP_SHM_MAP`): the
+/// kernel picks the base, the caller is only told it. One 64 KiB slot per
+/// request, so a request can never overlap the one before it and the
+/// largest legal region (16 pages) still leaves the next slot's first
+/// page untouched.
+pub const SHM_REQUEST_WINDOW: u64 = CODE + 0x10_0000;
+pub const SHM_REQUEST_STRIDE: u64 = 0x1_0000;
+/// How many slots the proof boot's window has. Smaller than the region
+/// table's own capacity on purpose: the window is a fixed VA budget, and
+/// a proof that exhausted it would be measuring the budget, not the row.
+const MAX_REQUEST_SLOTS: u64 = 8;
+/// What the ring-3 process writes through the REQUESTED region's first
+/// word. The kernel's releaser reads that word back out of the mapping
+/// BEFORE unmapping it, so "the holder wrote, the kernel read" is the same
+/// two-party evidence the kernel-mapped SHM leg carries.
+pub const SHM_REQUEST_VALUE: u64 = 0xdead_beef_cafe_babe;
+
+/// The raw allocator the region-request hooks map and free through. The
+/// coordinator owns the allocator by `&mut`; the hooks run inside a trap
+/// taken while that coordinator is suspended in `yield_task`, which is the
+/// same hand-off shape every other demo in this tree uses (a `static mut
+/// Option<BumpFrameAllocator>` there, a raw pointer here because `run`
+/// must keep reading the allocator's counters afterwards). Nothing else
+/// touches the allocator while a request is in flight.
+static REGION_ALLOCATOR: AtomicU64 = AtomicU64::new(0);
+/// Next free window slot (monotonic).
+static REGION_SLOT: AtomicU64 = AtomicU64::new(0);
+/// The frame count just before the pump: the requested regions are all
+/// created and destroyed inside it, so the count must come back to this.
+static REGION_FRAMES_BASELINE: AtomicU64 = AtomicU64::new(u64::MAX);
+/// What the releaser saw, in release order: how many regions came back,
+/// the first and last one's first word (written by the holder), and their
+/// bases.
+static REGION_RELEASED: AtomicU64 = AtomicU64::new(0);
+static REGION_FIRST_WORD: AtomicU64 = AtomicU64::new(0);
+static REGION_LAST_WORD: AtomicU64 = AtomicU64::new(0);
+static REGION_FIRST_BASE: AtomicU64 = AtomicU64::new(0);
+static REGION_LAST_BASE: AtomicU64 = AtomicU64::new(0);
+
+/// The kernel half of `CAP_SHM_MAP`: maps `pages` fresh frames at the next
+/// free window slot, zero-fills them, and answers the geometry. `None` is
+/// a real refusal (no allocator installed, window exhausted, partial
+/// mapping) -- and a partial mapping is given back before answering. A
+/// refused request still consumes its slot: the window is a fixed VA
+/// budget handed out monotonically, and reusing a refused slot would make
+/// a second request's base depend on whether the first one failed.
+unsafe fn allocate_region_mapping(pages: u64) -> Option<crate::experimental::caps::Region> {
+    let fa = REGION_ALLOCATOR.load(Ordering::SeqCst) as *mut BumpFrameAllocator;
+    if fa.is_null() || pages == 0 {
+        return None;
+    }
+    let slot = REGION_SLOT.fetch_add(1, Ordering::SeqCst);
+    if slot >= MAX_REQUEST_SLOTS {
+        return None;
+    }
+    let base = SHM_REQUEST_WINDOW + slot * SHM_REQUEST_STRIDE;
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::NO_EXECUTE;
+    let mut mapper = crate::experimental::address_space::active_mapper();
+    let mapped = paging::map_range(&mut mapper, &mut *fa, VirtAddr::new(base), pages, flags);
+    if mapped != pages {
+        // All-or-nothing: a half-mapped window would be a region whose
+        // geometry lies about its length, so the pages that DID map go
+        // back before the refusal.
+        for i in 0..mapped {
+            let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(base + i * 4096));
+            if let Ok((frame, flush)) = mapper.unmap(page) {
+                flush.flush();
+                (*fa).deallocate_frame(frame);
+            }
+        }
+        return None;
+    }
+    // A freshly mapped page is not guaranteed zero, and a region a holder
+    // can read must not expose whatever the frame held before.
+    core::ptr::write_bytes(base as *mut u8, 0, (pages * 4096) as usize);
+    Some(crate::experimental::caps::Region { base, len: pages * 4096 })
+}
+
+/// The other half: read the holder's first word out of the mapping while
+/// it is still there (the two-party fact), then unmap every page and hand
+/// the frames back to the same allocator that made them.
+unsafe fn release_region_mapping(geometry: crate::experimental::caps::Region) {
+    let fa = REGION_ALLOCATOR.load(Ordering::SeqCst) as *mut BumpFrameAllocator;
+    if fa.is_null() || geometry.len == 0 {
+        return;
+    }
+    let word = core::ptr::read_volatile(geometry.base as *const u64);
+    let n = REGION_RELEASED.fetch_add(1, Ordering::SeqCst);
+    if n == 0 {
+        REGION_FIRST_WORD.store(word, Ordering::SeqCst);
+        REGION_FIRST_BASE.store(geometry.base, Ordering::SeqCst);
+    }
+    REGION_LAST_WORD.store(word, Ordering::SeqCst);
+    REGION_LAST_BASE.store(geometry.base, Ordering::SeqCst);
+
+    let mut mapper = crate::experimental::address_space::active_mapper();
+    for i in 0..geometry.len / 4096 {
+        let page: Page<Size4KiB> =
+            Page::containing_address(VirtAddr::new(geometry.base + i * 4096));
+        if let Ok((frame, flush)) = mapper.unmap(page) {
+            flush.flush();
+            (*fa).deallocate_frame(frame);
+        }
+    }
+}
+
+/// What the coordinator can read back about the REQUESTED regions after
+/// both processes are gone: whether their windows are unmapped, the
+/// releaser's records, and the frame count against its baseline. `None`
+/// on a boot that never installed the hooks (the ordinary boot), so the
+/// read-back can tell "no region was requested" from "the region was
+/// requested and cleaned up".
+#[derive(Clone, Copy)]
+pub struct RequestedRegionReport {
+    pub first_unmapped: bool,
+    pub second_unmapped: bool,
+    pub released: u64,
+    pub first_word: u64,
+    pub last_word: u64,
+    pub first_base: u64,
+    pub last_base: u64,
+    pub frames_in_use: u64,
+    pub frames_baseline: u64,
+}
+
+pub fn requested_region_report() -> Option<RequestedRegionReport> {
+    let fa = REGION_ALLOCATOR.load(Ordering::SeqCst) as *const BumpFrameAllocator;
+    if fa.is_null() {
+        return None;
+    }
+    let unmapped = |addr: u64| paging::page_flags_active(VirtAddr::new(addr)).is_none();
+    Some(RequestedRegionReport {
+        first_unmapped: unmapped(SHM_REQUEST_WINDOW),
+        second_unmapped: unmapped(SHM_REQUEST_WINDOW + SHM_REQUEST_STRIDE),
+        released: REGION_RELEASED.load(Ordering::SeqCst),
+        first_word: REGION_FIRST_WORD.load(Ordering::SeqCst),
+        last_word: REGION_LAST_WORD.load(Ordering::SeqCst),
+        first_base: REGION_FIRST_BASE.load(Ordering::SeqCst),
+        last_base: REGION_LAST_BASE.load(Ordering::SeqCst),
+        frames_in_use: unsafe { (*fa).frames_in_use() },
+        frames_baseline: REGION_FRAMES_BASELINE.load(Ordering::SeqCst),
+    })
+}
 
 /// The peer process's own load address (userprog/linker_svc84_peer.ld):
 /// 7 << 40. Its results page and stack are the same two offsets the first
@@ -327,6 +474,44 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     ENTRY_B.store(peer_loaded.entry_point.as_u64(), Ordering::SeqCst);
     let task_a = crate::experimental::scheduler::spawn(ring3_a, &mut mapper, frame_allocator);
     let task_b = crate::experimental::scheduler::spawn(ring3_b, &mut mapper, frame_allocator);
+
+    // The kernel half of the region REQUEST (`CAP_SHM_MAP`, 0x4f): a
+    // capability table cannot conjure frames, so the boot that owns the
+    // allocator installs the two hooks the row needs. The window's
+    // page-table LEVELS are materialised OUTSIDE the measured baseline --
+    // a first request that had to create them would look, to the frame
+    // count, exactly like a region that never came back.
+    unsafe {
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE
+            | PageTableFlags::NO_EXECUTE;
+        let mut warm = crate::experimental::address_space::active_mapper();
+        let warm_base = VirtAddr::new(SHM_REQUEST_WINDOW);
+        if paging::map_range(&mut warm, frame_allocator, warm_base, 1, flags) == 1 {
+            let page: Page<Size4KiB> = Page::containing_address(warm_base);
+            if let Ok((frame, flush)) = warm.unmap(page) {
+                flush.flush();
+                frame_allocator.deallocate_frame(frame);
+            }
+        }
+        REGION_FRAMES_BASELINE.store(frame_allocator.frames_in_use(), Ordering::SeqCst);
+        // The LAST use of the `&mut` before the hooks take it over: from
+        // here the traps use the raw pointer, and this function only
+        // reads the allocator back THROUGH that pointer.
+        REGION_ALLOCATOR.store(frame_allocator as *mut BumpFrameAllocator as u64, Ordering::SeqCst);
+        crate::experimental::caps::install_region_hooks(
+            allocate_region_mapping,
+            release_region_mapping,
+        );
+    }
+    serial_println!(
+        "  service-0x84 proof: region REQUESTS armed -- window {:#x} (+{:#x} per request, {} slots), {} frames in use before the pump",
+        SHM_REQUEST_WINDOW,
+        SHM_REQUEST_STRIDE,
+        MAX_REQUEST_SLOTS,
+        REGION_FRAMES_BASELINE.load(Ordering::SeqCst)
+    );
 
     serial_println!(
         "  service-0x84 proof: program loaded at {:#x} (peer at {:#x}), results pages {:#x} and {:#x}, stacks {:#x} and {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; sessions {} and {} equip -- endpoint {} granted at handle {} , INPUT cap at handle {} , SHARED region {} ({:#x}..{:#x}) at handles {} and {} (two capabilities), peer endpoint {} at the peer's handle {} with the first process holding SEND at handle {} , {} region holders (task 0's table absent: distinct, verified) ; {} scancodes injected through the controller (IRQ1 -> raw ring) ; tasks {} and {} spawned -- entering ring 3",

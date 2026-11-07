@@ -736,6 +736,106 @@ _start:
     mov $0x4d, %rax
     int $0x84
     mov %rax, 984(%rbx)
+    /* 15. THE REGION A HOLDER ASKS FOR (0x4f `CAP_SHM_MAP`, 2026-11-07).
+       Every region before this step was mapped by the KERNEL first. Here
+       the process ASKS: it names a length and a record, and the kernel
+       picks the window, backs it with zeroed frames, mints a capability
+       and answers {base, len, rights, handle}. The handle in the record is
+       what the follow-up rows use -- the program never holds a constant
+       address.
+
+       record1 BUF+2048 (32 bytes), record2 BUF+2080 (32 bytes), geometry
+       record BUF+2112 (24 bytes). Results from BUF+2136, sixteen qwords:
+         ack1, base1, len1, rights1, handle1, wrote1,
+         ack2, base2, len2, rights2, handle2,
+         close1, close2, stale1, geometry-ack, geometry-base. */
+    /* 15a. ASK for one page. */
+    mov $4096, %rdi
+    lea 2048(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 2136(%rbx)
+    mov 2048(%rbx), %rcx
+    mov %rcx, 2144(%rbx)          /* base the KERNEL chose */
+    mov 2056(%rbx), %rcx
+    mov %rcx, 2152(%rbx)          /* len */
+    mov 2064(%rbx), %rcx
+    mov %rcx, 2160(%rbx)          /* rights */
+    mov 2072(%rbx), %rcx
+    mov %rcx, 2168(%rbx)          /* handle the kernel minted */
+    /* 15b. Write OUR value through the record's base, and read it back
+       through the same address. The kernel's RELEASER reads that word out
+       of the mapping too, before unmapping it: two parties, one page. */
+    movabs $0xdeadbeefcafebabe, %rcx
+    mov 2144(%rbx), %rdx
+    mov %rcx, (%rdx)
+    mov (%rdx), %rcx
+    mov %rcx, 2176(%rbx)
+    /* 15c. A SECOND request (two pages): the kernel hands out its NEXT
+       window, so the base is the kernel's choice and not this program's
+       constant. Its pages are never written -- the kernel's releaser
+       reading zero out of them is what proves a request is zero-filled. */
+    mov $8192, %rdi
+    lea 2080(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 2184(%rbx)
+    mov 2080(%rbx), %rcx
+    mov %rcx, 2192(%rbx)
+    mov 2088(%rbx), %rcx
+    mov %rcx, 2200(%rbx)
+    mov 2096(%rbx), %rcx
+    mov %rcx, 2208(%rbx)
+    mov 2104(%rbx), %rcx
+    mov %rcx, 2216(%rbx)
+    /* 15d. Geometry through the handle the FIRST record named (0x4c),
+       not a constant: the row takes a handle, so this is what proves the
+       request answered a USABLE one. */
+    mov 2168(%rbx), %rdi
+    lea 2112(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 2248(%rbx)
+    mov 2112(%rbx), %rcx
+    mov %rcx, 2256(%rbx)
+    /* 15e. CLOSE both (0x4d). Each is its region's LAST capability, so
+       each close is a teardown: the pages are unmapped and the frames go
+       back while this process is still running. */
+    mov 2168(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
+    mov %rax, 2224(%rbx)
+    mov 2216(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
+    mov %rax, 2232(%rbx)
+    /* 15f. The first handle, consumed: -EBADF through 0x4c. */
+    mov 2168(%rbx), %rdi
+    lea 2112(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 2240(%rbx)
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

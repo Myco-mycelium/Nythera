@@ -40,6 +40,23 @@
 //! (`run()`) proves each ported clause positive AND negative, mirroring
 //! the release's `run()`.
 //!
+//! ---- the SharedMem REQUEST and the mapping's lifetime ----------------
+//!
+//! Until 2026-11-07 the SharedMem kind only named regions the KERNEL had
+//! already mapped: the capability was an authority over a mapping, never a
+//! request for one, so a holder could not ASK. `request_region` closes
+//! that: the machine asks the kernel half for a fresh mapping (`mapper`,
+//! installed by the boot that can actually allocate frames) and mints the
+//! caller a capability over it. A region created that way is OWNED by this
+//! machine -- `RegionEntry::owned` -- and when its last capability goes
+//! away, close OR exit, the `releaser` is called so the pages come back to
+//! the frame allocator. The boot's kernel-mapped regions are `owned: false`
+//! and are never unmapped here: they are the kernel's own pages, and the
+//! 0x84 proof's SHM leg deliberately keeps reading one after its holders
+//! are gone. A refused mint (no such holder, full table) releases the
+//! mapping it just made, so a refusal cannot leak what it created -- and
+//! the self-test checks both the release and the no-leak ordering.
+//!
 //! ---- the Input kind (the release's Phase-9/1-29 clauses) ------------
 //!
 //! `Kind::Input` is the TOKEN that authorizes polling input events:
@@ -80,6 +97,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::instructions::interrupts;
 
 /// §3.1: payloads are bounded; a bigger claim is a named refusal, not a
@@ -160,6 +178,15 @@ pub enum CapError {
     /// one -- two outstanding calls from one holder would need two
     /// answers and one wake slot, so the second is refused by name.
     CallPending,
+    /// A region was REQUESTED on a boot whose kernel half installed no
+    /// mapping source. A region cannot be conjured from a capability
+    /// table, so the request is refused rather than answered with a
+    /// geometry nobody mapped.
+    NoRegionMapper,
+    /// The kernel's mapping source refused the request (out of frames, or
+    /// the request's own cap). The caller still holds nothing, and the
+    /// half-made mapping has already been given back.
+    OutOfMemory,
 }
 
 /// A message queued at an endpoint: the sender task id, the bounded
@@ -213,6 +240,12 @@ struct RegionEntry {
     geometry: Region,
     holders: u32,
     live: bool,
+    /// Whether THIS machine created the mapping (a holder's request) and
+    /// therefore owns giving its pages back when the last capability goes
+    /// away. False for the regions the kernel mapped before minting a
+    /// capability: those are the kernel's own pages, and this table is
+    /// only remembering their geometry.
+    owned: bool,
 }
 
 /// A whole system: per-holder tables + the endpoints. The gate owns one
@@ -221,6 +254,16 @@ struct RegionEntry {
 pub struct CapSystem {
     procs: Vec<Holder>,
     endpoints: Vec<Endpoint>,
+    /// The kernel half of a region REQUEST: `pages -> geometry`, mapping
+    /// fresh frames USER_ACCESSIBLE at a window the kernel chooses. `None`
+    /// until the boot installs it (see `install_region_hooks`), which is
+    /// why `request_region` answers `NoRegionMapper` rather than guessing.
+    region_mapper: Option<unsafe fn(u64) -> Option<Region>>,
+    /// The other half: give a REQUESTED region's pages back when its last
+    /// capability dies. Separate from the mapper because the two happen at
+    /// different times and a table must not keep a mapping alive merely
+    /// because it once had a way to make one.
+    region_releaser: Option<unsafe fn(Region)>,
     /// One entry per PARKED caller: the blocking CALL's wait slot. The
     /// answer is deposited here by `reply` (which also unblocks the
     /// caller's task) and consumed by the gate when the parked task
@@ -245,6 +288,8 @@ impl CapSystem {
         CapSystem {
             procs: Vec::new(),
             endpoints: Vec::new(),
+            region_mapper: None,
+            region_releaser: None,
             waits: Vec::new(),
             regions: Vec::new(),
         }
@@ -479,8 +524,66 @@ impl CapSystem {
     /// remembers the geometry so a holder can be told it.
     pub fn create_region(&mut self, base: u64, len: u64) -> u32 {
         let id = self.regions.len() as u32;
-        self.regions.push(RegionEntry { geometry: Region { base, len }, holders: 0, live: true });
+        self.regions.push(RegionEntry {
+            geometry: Region { base, len },
+            holders: 0,
+            live: true,
+            owned: false,
+        });
         id
+    }
+
+    /// Installs the kernel half of a region REQUEST. Both are needed for a
+    /// requested region's whole life (a mapper without a releaser would
+    /// leak every region the holders close), so they are installed
+    /// together rather than as two optional knobs.
+    pub fn install_region_hooks(
+        &mut self,
+        mapper: unsafe fn(u64) -> Option<Region>,
+        releaser: unsafe fn(Region),
+    ) {
+        self.region_mapper = Some(mapper);
+        self.region_releaser = Some(releaser);
+    }
+
+    /// The release's region CREATE/MAP request: the caller ASKS for a
+    /// region instead of being told about one the kernel already mapped.
+    /// The kernel half chooses the virtual window and backs it with fresh
+    /// frames; this table records the geometry, counts the capability and
+    /// -- the ordering that matters -- gives the mapping back immediately
+    /// if the mint is refused, so a request that answers an error never
+    /// leaves frames mapped that no capability names.
+    pub fn request_region(
+        &mut self,
+        to: usize,
+        pages: u64,
+        want: u8,
+    ) -> Result<(u32, u32, Region), CapError> {
+        let mapper = self.region_mapper.ok_or(CapError::NoRegionMapper)?;
+        if pages == 0 {
+            return Err(CapError::BadRegion);
+        }
+        let geometry = unsafe { mapper(pages) }.ok_or(CapError::OutOfMemory)?;
+        let id = self.regions.len() as u32;
+        self.regions.push(RegionEntry {
+            geometry,
+            holders: 0,
+            live: true,
+            owned: true,
+        });
+        match self.bootstrap_region(to, id, want) {
+            Ok(handle) => Ok((id, handle, geometry)),
+            Err(e) => {
+                // The record was pushed last, so popping it is exact; the
+                // mapping is given back for the same reason: nothing would
+                // ever name it again, and the region machine created it.
+                self.regions.pop();
+                if let Some(release) = self.region_releaser {
+                    unsafe { release(geometry) };
+                }
+                Err(e)
+            }
+        }
     }
 
     /// The release's `bootstrap_region`: gives `to` a capability over
@@ -527,10 +630,23 @@ impl CapSystem {
                 *slot = None;
             }
         }
+        let mut freed: Option<Region> = None;
         if let Some(entry) = self.regions.get_mut(region) {
             entry.holders = entry.holders.saturating_sub(1);
             if entry.holders == 0 {
                 entry.live = false;
+                if entry.owned {
+                    freed = Some(entry.geometry);
+                }
+            }
+        }
+        // Outside the record's borrow: giving pages back walks page tables
+        // and touches the frame allocator, and holding the region table
+        // across that would make a re-entrant request (a releaser that
+        // asks for something) a deadlock instead of a design mistake.
+        if let Some(geometry) = freed {
+            if let Some(release) = self.region_releaser {
+                unsafe { release(geometry) };
             }
         }
         Ok(())
@@ -549,6 +665,11 @@ impl CapSystem {
             return 0;
         }
         let mut released = 0usize;
+        // One entry per region that died with this table. A holder can
+        // hold TWO capabilities over one region, so the release must be
+        // collected across the whole table and fired once per REGION (not
+        // once per capability) after the counts settle.
+        let mut freed: Vec<Region> = Vec::new();
         let caps = core::mem::take(&mut holder.caps);
         for cap in caps.into_iter().flatten() {
             if cap.kind == Kind::SharedMem {
@@ -557,11 +678,19 @@ impl CapSystem {
                     entry.holders = entry.holders.saturating_sub(1);
                     if entry.holders == 0 {
                         entry.live = false;
+                        if entry.owned {
+                            freed.push(entry.geometry);
+                        }
                     }
                 }
             }
         }
         holder.alive = false;
+        for geometry in freed {
+            if let Some(release) = self.region_releaser {
+                unsafe { release(geometry) };
+            }
+        }
         released
     }
 
@@ -963,6 +1092,31 @@ pub fn region_geometry_of(region: u32) -> Result<Region, CapError> {
     })
 }
 
+/// Installs the kernel half of a region REQUEST on the GATE's system
+/// (`service84`'s 0x4f row). Proof boot only, exactly like the equips:
+/// the ordinary boot has no ring-3 caller that could ask, and installing
+/// a mapper there would claim a capability the demo chain never uses.
+pub fn install_region_hooks(
+    mapper: unsafe fn(u64) -> Option<Region>,
+    releaser: unsafe fn(Region),
+) {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.install_region_hooks(mapper, releaser)
+    })
+}
+
+/// The gate's region REQUEST: the caller asks for `pages` fresh pages and
+/// is minted a capability over the mapping the kernel chose. Returns the
+/// region id, the holder's handle and the geometry, so the answering row
+/// and the kernel's read-back agree on the same facts.
+pub fn request_region_for(caller: usize, pages: u64) -> Result<(u32, u32, Region), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.request_region(caller, pages, rights::READ | rights::WRITE | rights::GRANT)
+    })
+}
+
 /// Proof-boot equip for the region kind: the kernel records the region it
 /// has ALREADY mapped and mints `to` a capability over it. Returns the
 /// region id and the holder's handle, so the caller and the kernel's
@@ -1046,6 +1200,24 @@ pub fn take_answer_for(caller: usize) -> Option<Vec<u8>> {
 // rights than held, a stale generation, an oversize payload or an
 // overflowing queue each refuse BY NAME; a capability machine that
 // answered these with silence would be a costume, not a capability.
+
+// The self-test's OWN kernel half of a region request: this module must be
+// able to prove the request/release ordering without a page table, so the
+// mapper answers a fixed window and the releaser records what it was given.
+// The proof boot installs the REAL pair on the gate's system instead
+// (`install_region_hooks`); these statics are never installed there.
+const SELF_TEST_REGION_BASE: u64 = 0x6000_0006_0000;
+static TEST_RELEASED: AtomicU64 = AtomicU64::new(0);
+static TEST_RELEASED_BASE: AtomicU64 = AtomicU64::new(0);
+
+fn self_test_region_mapper(pages: u64) -> Option<Region> {
+    Some(Region { base: SELF_TEST_REGION_BASE, len: pages * 4096 })
+}
+
+fn self_test_region_releaser(geometry: Region) {
+    TEST_RELEASED.fetch_add(1, Ordering::SeqCst);
+    TEST_RELEASED_BASE.store(geometry.base, Ordering::SeqCst);
+}
 
 pub fn run() -> bool {
     use crate::serial_println;
@@ -1385,6 +1557,90 @@ pub fn run() -> bool {
     check!(
         "releasing a dead holder twice releases nothing",
         sys.release_holder(LIFE2) == 0
+    );
+
+    // ---- the region REQUEST and the mapping's lifetime ----
+    // The kernel half (a real mapper + frame allocator) is installed by a
+    // proof boot's gate; the self-test installs its OWN pair, so the
+    // machine's half is proven without touching a page table. The counters
+    // make "the mapping came back" a value.
+    const REQ: usize = 5;
+    sys.create_process(REQ).expect("self-test: request holder");
+    check!(
+        "a region request with no kernel mapper is refused by name",
+        sys.request_region(REQ, 1, rights::READ) == Err(CapError::NoRegionMapper)
+    );
+    sys.install_region_hooks(self_test_region_mapper, self_test_region_releaser);
+    TEST_RELEASED.store(0, Ordering::SeqCst);
+    TEST_RELEASED_BASE.store(0, Ordering::SeqCst);
+    let (req_region, req_h, req_geom) = sys
+        .request_region(REQ, 2, rights::READ | rights::WRITE)
+        .expect("self-test: region request");
+    check!(
+        "a requested region is mapped by the kernel half and its geometry recorded",
+        req_geom.base == SELF_TEST_REGION_BASE
+            && req_geom.len == 8192
+            && sys.region_geometry(req_region) == Ok(req_geom)
+            && sys.region_holders(req_region) == Some(1)
+    );
+    check!(
+        "the requested region's capability carries the rights asked for",
+        sys.region_cap(REQ, req_h) == Ok((req_region, rights::READ | rights::WRITE))
+    );
+    check!(
+        "closing the LAST capability of a REQUESTED region gives its pages back",
+        sys.close_region_cap(REQ, req_h).is_ok()
+            && !sys.region_live(req_region)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+            && TEST_RELEASED_BASE.load(Ordering::SeqCst) == SELF_TEST_REGION_BASE
+    );
+    check!(
+        "a double close does not release the mapping twice",
+        sys.close_region_cap(REQ, req_h) == Err(CapError::BadHandle)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+    );
+    // A refused MINT must give the mapping back: the request that cannot
+    // reach its holder is the case where frames would leak silently.
+    let records_before = sys.regions.len();
+    check!(
+        "a request for a holder that does not exist is refused",
+        sys.request_region(9999, 1, rights::READ) == Err(CapError::BadProcess)
+    );
+    check!(
+        "...and the mapping it made is given back, with no record left behind",
+        TEST_RELEASED.load(Ordering::SeqCst) == 2 && sys.regions.len() == records_before
+    );
+    // ...and the EXIT path releases a requested mapping too, exactly once
+    // even when the exiting table held TWO capabilities over one region.
+    TEST_RELEASED.store(0, Ordering::SeqCst);
+    let (exit_req, exit_a, _) = sys
+        .request_region(REQ, 1, rights::READ)
+        .expect("self-test: second region request");
+    let exit_b = sys
+        .bootstrap_region(REQ, exit_req, rights::READ)
+        .expect("self-test: second capability over the requested region");
+    check!(
+        "two capabilities over one requested region count as two holders",
+        sys.region_holders(exit_req) == Some(2)
+            && exit_a != exit_b
+    );
+    check!(
+        "an exiting holder releases ONE mapping, not one per capability",
+        sys.release_holder(REQ) == 2
+            && !sys.region_live(exit_req)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+    );
+    // A region the KERNEL mapped (owned: false) must NOT be unmapped by
+    // this table: the boot proof keeps reading its page after its holders
+    // are gone, so releasing it would be the bug.
+    TEST_RELEASED.store(0, Ordering::SeqCst);
+    let boot_like = sys.create_region(0x6000_0007_0000, 4096);
+    let boot_h = sys.bootstrap_region(CLIENT, boot_like, rights::READ).expect("self-test: kernel-mapped region");
+    check!(
+        "a kernel-mapped region's death does NOT call the releaser",
+        sys.close_region_cap(CLIENT, boot_h).is_ok()
+            && !sys.region_live(boot_like)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 0
     );
 
     // §4.3 revocation: O(1), outstanding caps dead, owner mints fresh

@@ -220,6 +220,25 @@ else
     else
         bad "the two-process leg's region lifetime, cross-process bytes or parked answer failed their read-back"
     fi
+    # The REQUESTED-REGION leg (0x4f `CAP_SHM_MAP`): until this row the
+    # kernel always mapped first and a holder could only be TOLD where.
+    # Here the process asks for a page, the kernel chooses the window
+    # (base 0x60000100000 -- not a constant in the program), zeroes the
+    # frames, records the region and mints handle 3; a SECOND request gets
+    # the NEXT window (0x60000110000, two pages), so the base is the
+    # kernel's choice per request. The holder's write
+    # (0xdeadbeefcafebabe) is read out of the mapping by the kernel's own
+    # releaser before it unmaps (word 0xdeadbeefcafebabe, and 0x0 out of
+    # the region the program never wrote -- a request is zero-filled).
+    # Both last-capability closes are teardowns: the two windows are
+    # UNMAPPED in the page tables (unmapped true / true) and the frame
+    # count is back to its pre-pump baseline (296 == 296). The consumed
+    # handle is refused -EBADF.
+    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"MAP (ack 0x0 , base 0x60000100000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000110000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000100000 , released 2 word 0xdeadbeefcafebabe/0x0 , bases 0x60000100000/0x60000110000 , frames 296 == 296 , unmapped true / true)"* ]]; then
+        ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; and both teardowns unmapped their window and returned every frame"
+    else
+        bad "the requested-region leg's mapping, kernel-chosen window or page release failed their read-back"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -234,4 +253,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, and two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed."

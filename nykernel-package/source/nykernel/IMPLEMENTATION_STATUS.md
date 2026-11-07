@@ -5787,3 +5787,145 @@ PASS with `experimental caps: 60 clause groups` (twelve new clauses cover the
 lifetime: counts per capability, survives-a-close, double close, wrong kind,
 last holder frees by name, a freed region cannot be re-granted, exit releases
 each capability, a dead holder's table stays dead).
+
+## The region a holder ASKS for, and the pages a dead region gives back (2026-11-07):
+## `CAP_SHM_MAP` (0x4f), owned regions, and a stack bug the row exposed
+
+Every SharedMem slice before this one named a region the KERNEL had already
+mapped: the capability was an authority over a mapping, never a request for
+one. This increment serves the release's other direction -- `shm`'s
+create/map -- and closes the lifetime at the other end: a region created that
+way is owned by the region machine, and when its LAST capability goes away
+(close or exit) its pages are unmapped and returned to the frame allocator.
+
+**The row** (`service84::CALL_CAP_SHM_MAP`, 0x4f): `a0` = length in bytes (a
+multiple of 4096, at most 16 pages), `a1` = a 32-byte record the kernel writes
+`{u64 base, u64 len, u64 rights, u64 handle}`. `a2`, `a_xfer` and `a_rights`
+must claim nothing (`EINVAL` otherwise) -- the rights are the kernel half's to
+grant, and a caller that could ask for GRANT while the machine's owner is the
+kernel would be widening by request. A length that is zero, unaligned or wider
+than the window stride is `EINVAL`; a bad record pointer is `EFAULT`; a
+refused mapping is `ENOMEM`; a boot with no mapping source installed is
+`ENOSYS`. The record carries the HANDLE as well as the geometry, so the row
+that answers "where is it" (0x4c) is usable immediately -- the program never
+holds a constant address.
+
+**The machine** (`experimental::caps`): `RegionEntry` gained `owned`, and
+`CapSystem` gained the two kernel halves as hooks (`unsafe fn(u64) ->
+Option<Region>` and `unsafe fn(Region)`), installed together because a mapper
+without a releaser would leak every region its holders close. `request_region`
+asks the mapper FIRST, records the geometry, mints the capability, and -- the
+ordering that matters -- gives the mapping back if the mint is refused, so a
+request that answers an error leaves no frames that nothing names. On death
+the record is marked dead and the releaser fires ONCE PER REGION, not once per
+capability: a holder with two capabilities over one region releases one
+mapping, and the self-test proves that with an exit (a count of 2, one
+release). The boot's kernel-mapped regions stay `owned: false` and are never
+unmapped here -- the 0x84 proof keeps reading its SHM page after its holders
+are gone, so releasing that one would be the bug, and the self-test pins the
+non-call.
+
+**The kernel half** (`svc84_proof`): requests are mapped at
+`0x60000100000` (the proof space's own private PML4 index, `CODE + 0x10_0000`),
+one 64 KiB slot per request, eight slots. `map_range` backs each page with a
+fresh frame, the region is zero-filled before a holder can read it, and a
+partial mapping is unwound and given back rather than answered. The window's
+page-table LEVELS are materialised before the frame baseline is taken, so the
+balance check measures the region's own pages and not the cost of creating the
+tables. The releaser reads the holder's first word out of the mapping BEFORE
+unmapping it -- the same two-party evidence the kernel-mapped SHM leg carries,
+recorded at the moment the region dies -- then unmaps and frees every page.
+
+**What the proof shows** (`prog_svc84.s` step 15, verified transcript below):
+the ring-3 process asks for one page, receives a base it never chose, writes
+`0xdeadbeefcafebabe` through it and reads it back; asks for a SECOND region
+(two pages) and is given the NEXT window; reads the first region's geometry
+back through the handle the record named (0x4c); closes both (0x4d, each the
+last capability); and is refused `-EBADF` through the consumed handle. The
+kernel's read-back checks, from its own record: both windows UNMAPPED in the
+page tables, the releaser's two records (`0xdeadbeefcafebabe` out of the page
+the holder wrote, `0x0` out of the one it never touched -- a request is
+zero-filled), the two bases, and the frame count back to its pre-pump
+baseline. The kernel self-test gained ten clause groups (`experimental caps:
+70 clause groups`): no mapper is `NoRegionMapper`, a request's geometry and
+rights, the last-close release, a double close that does not release twice, a
+refused mint that gives its mapping back and leaves no record, an exit that
+releases one mapping for two capabilities, and a kernel-mapped region whose
+death does NOT call the releaser.
+
+**A real bug this row exposed, found by running it.** Adding the row inline in
+`dispatch` made the ORDINARY boot's parked-call proof cross a guard page: the
+caller task calls the gate from a five-page kernel stack, and `dispatch`'s
+frame is shared by every arm -- measured at `sub $0x2f18`, ~11.6 KiB, because
+the `PROOF_DONE` arm's nine user-memory read-backs and its ~80-argument
+verdict print live in it. QEMU's `-d int` log named the fault exactly
+(`v=0e e=0002 ... CR2=0000014000023fb8`, a write into the guard page) and the
+guard did what it exists to do: a clean double fault instead of corruption.
+Fixed at the cause, not by shrinking the demo: the verdict read-back and the
+new row are both `#[inline(never)]` bodies, so `dispatch`'s frame is back to
+`sub $0xaa8` (~2.7 KiB) -- SMALLER than before this increment -- and a row's
+own buffers cost stack only when that row is called.
+
+Verified transcript lines (`tools/svc84_proof_test.sh`, passing):
+
+```
+  service-0x84 proof: region REQUESTS armed -- window 0x60000100000 (+0x10000 per request, 8 slots), 296 frames in use before the pump
+  ... , MAP (ack 0x0 , base 0x60000100000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000110000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000100000 , released 2 word 0xdeadbeefcafebabe/0x0 , bases 0x60000100000/0x60000110000 , frames 296 == 296 , unmapped true / true) , MAP matches -- OK
+```
+
+**Negative control on the page release** (temporary, reverted immediately
+after -- not shipped): `deallocate_frame` skipped in the releaser, so the pages
+were unmapped but never returned. The check caught it by name and the proof
+refused to pass:
+
+```
+  ... MAP ( ... , frames 299 == 296 , unmapped true / true) , MAP MISMATCH -- FAILED
+  FAIL: the requested-region leg's mapping, kernel-chosen window or page release failed their read-back
+  FAIL: the kernel reported the proof as FAILED
+```
+
+Named sharp edges, so their absence stays checkable: the two processes still
+share ONE address space (this tree has no per-process space in the proof), so
+"a fresh VA per HOLDER" is not claimed -- the window is fresh per REQUEST, and
+two holders of one region read the same VA; a requested region is not
+distributed to a second holder through the transfer field (the capability
+carries GRANT, but no leg exercises that path); and a live holder can never
+make the machine reclaim its pages -- the lifetime is the LAST capability, not
+a revocation.
+
+Checks: `./build.sh` PASS (the ledger gate requires 0x4f and step 15 exercises
+it; `serve_proof_done`/`serve_region_request` keep every arm out of the
+dispatcher's frame); `svc84_proof_test.sh` PASS with the MAP leg pinned;
+`qemu_boot_test.sh` PASS with `experimental caps: 70 clause groups` and the
+parked-call proof's pinned lines unchanged.
+
+## The long gates, rerun on the region-request tree (2026-11-07):
+## all three green, on the final HEAD, with the tree untouched
+
+The UEFI boot, BIOS/UEFI parity and MS secure-boot gates were rerun on the
+final tree of this round -- the boot chain's caps self-test line changed
+(`60 -> 70` clause groups), so the earlier runs were stale by the rule these
+gates are held to. The first attempt at this sequence overlapped a
+comment-only source edit, which is why the runs below were repeated from
+scratch on a tree nobody was editing:
+
+```
+UEFI_EXIT=0
+PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited
+      cleanly; the GOP framebuffer was handed over, bound, and the shell
+      rendered into it; the C/D/E blocking-receive tape is pinned and matched
+PARITY_EXIT=0
+PASS: BIOS and UEFI kernels' demo chains are line-identical modulo the
+      documented environment-fact allowlist
+      (BIOS 526 chain lines == UEFI 526 chain lines; allowlist deltas only)
+SECBOOT_EXIT=0
+PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose
+      signer is chained to the enrolled carrier root, ... and the kernel
+      reached Ready
+      dbx shape probe: 1
+```
+
+The parity count is unchanged at 526: this round added no demo-chain lines
+(the region request is exercised by the separate `nyrqis.proof=svc84` boot),
+only the clause count inside one existing line, which both boot paths print
+identically.
