@@ -6253,3 +6253,41 @@ pinned; `qemu_boot_test.sh` PASS with `experimental caps: 90 clause groups`
 (four new: revoke with two holders releases once, the holders' handles stay
 resolvable while the geometry refuses, their stale closes free nothing, and
 a dead region cannot be revoked twice).
+
+## The long gates and the release discs, on the revocation tree (2026-11-08)
+
+Rerun because the region machine gained revocation, the peer no longer closes
+(so the proof's release order and exit accounting changed), a page-fault path
+was added, and the caps self-test line grew (`86 -> 90`). No source file was
+edited after the runs started.
+
+```
+UEFI_EXIT=0
+PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited
+      cleanly; the GOP framebuffer was handed over, bound, and the shell
+      rendered into it; the C/D/E blocking-receive tape is pinned and matched
+PARITY_EXIT=0
+PASS: BIOS and UEFI kernels' demo chains are line-identical modulo the
+      documented environment-fact allowlist
+      (BIOS 526 chain lines == UEFI 526 chain lines; allowlist deltas only)
+SECBOOT_EXIT=0
+PASS: ms OVMF under enforcement accepts the Authenticode-signed stub ... and
+      the kernel reached Ready
+      dbx shape probe: 1
+```
+
+The parity count is still 526: the whole increment lives under
+`nyrqis.proof=svc84` plus four clauses inside one existing self-test line.
+
+The release discs were rebuilt from this commit and verified outside the tree
+with `check_live_iso.sh --boot --uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 704a43897e8b66704e2e7e5587563190fc5af6e07b2a2980a5760bf44efe1ddb
+dist/nyrqis-live-uefi.iso   sha256 7ea31b067dabdc120465d517aea838a98814c84c9cd9943f8442be006d9ad8f9
+kernel carried by both:     sha256 6b880d6193d883c010a969f458f40e715e03a4000616b8bbba5cef592051ab1f
+```
+
+Both discs match their recorded digests, the BIOS disc carries the kernel this
+tree built and boots to a verified device-mode session, and the UEFI disc boots
+through our signed stub.
