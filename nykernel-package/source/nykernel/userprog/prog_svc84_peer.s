@@ -193,17 +193,13 @@ _start:
     mov %rcx, 8(%rdx)
     mov %rcx, 192(%rbx)
 
-    /* 3f. Give the handle back: the first process closed its own already,
-       so this IS the last holder -- the pages are unmapped and the frames
-       returned to the allocator here, while this process keeps running. */
-    mov 144(%rbx), %rdi
-    xor %rsi, %rsi
-    xor %rdx, %rdx
-    movabs $-1, %r10
-    xor %r8, %r8
-    mov $0x4d, %rax
-    int $0x84
-    mov %rax, 200(%rbx)
+    /* 3f. WE KEEP THE HANDLE (since 2026-11-08). Until the revocation leg
+       landed this closed here, which made this process the LAST holder and
+       returned the pages. Now the capability stays open on purpose: the
+       kernel half will REVOKE the mapping while we still hold it (step 8),
+       and our own read after that (step 9) is the evidence. Holding a
+       capability is not the same as holding the page -- that is the
+       sentence this leg exists to prove. */
 
     /* 4. The FIRST process's region write, read through the mapping this
        process was told about (PEN+32 is the kernel's base). */
@@ -256,7 +252,38 @@ _start:
     int $0x84
     mov %rax, 88(%rbx)
 
-    /* 8. EXIT (0x4e): no arguments, no return. */
+    /* 8. PARK for the REVOCATION (2026-11-08): the kernel half of the
+       region machine takes this region's pages back AFTER this point -- we
+       are off-CPU inside this trap, so nobody is touching the page while
+       the mapping dies. Budget 1, so one send is what resumes us: the
+       coordinator sends it after the revoke. */
+    /* The SEQ form (a2 = 0), exactly as the park at step 3: the payload
+       form would write the kernel's payload-record (which the IPC leg's
+       read-back compares), and this wake carries no bytes worth recording.
+       The parked wake itself is counted by the kernel, which is what makes
+       "this process was off-CPU when the region was revoked" checkable. */
+    mov $1, %rdi
+    mov $1, %rsi                /* empty-wake budget (zero is EINVAL) */
+    xor %rdx, %rdx
+    mov $1, %r10                /* the blocking dial */
+    xor %r8, %r8
+    mov $0x46, %rax
+    int $0x84
+    mov %rax, 200(%rbx)
+
+    /* 9. THE READ THAT MUST FAULT: the base the kernel gave us at PEN+160
+       is gone from our page tables, so this load faults. The kernel's armed
+       probe records it (address, error code, ring 3, this task) and
+       TERMINATES this task -- the fault is the proof, and the kernel keeps
+       running to print the verdict. If it ever returned a value instead,
+       PEN+224 would hold it and the verdict would say the page survived a
+       revocation. */
+    mov 160(%rbx), %rcx
+    mov (%rcx), %rcx
+    mov %rcx, 224(%rbx)
+
+    /* 10. EXIT (0x4e): no arguments, no return (unreachable after a
+       correctly-armed revocation -- the fault above ends this task). */
     xor %rdi, %rdi
     xor %rsi, %rsi
     xor %rdx, %rdx

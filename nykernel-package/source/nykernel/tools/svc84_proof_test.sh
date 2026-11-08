@@ -215,7 +215,7 @@ else
     # ("region live no holders Some(0)"), and the exits are both recorded
     # (2 exits, the last the first process's session 7, one region
     # capability given back by an exit -- the peer's).
-    if [[ "$VERDICT" == *"TWO-PROCESS matches"* ]] && [[ "$VERDICT" == *"PEER matches"* ]] && [[ "$VERDICT" == *"TWO-PROCESS (close 0x0 , geometry 0x0 , call 0x8 , request 0x21416d6f7266 , answer 0x21426d6f7266 , offset8 0xfeedfacedeadbeef , offset16 0xbeefcafedead1234 , last 0x0 , twice 0xfffffffffffffff7 , region live no holders Some(0) , exits 2 session 7 released 1)"* ]] && [[ "$VERDICT" == *"PEER (ack 0x0 , base 0x60000030000 , read 0xfeedfacedeadbeef , recv 0x700000008 , handle 0x2 , request 0x21416d6f7266 , reply 0x0 , wrote 0xbeefcafedead1234)"* ]]; then
+    if [[ "$VERDICT" == *"TWO-PROCESS matches"* ]] && [[ "$VERDICT" == *"PEER matches"* ]] && [[ "$VERDICT" == *"TWO-PROCESS (close 0x0 , geometry 0x0 , call 0x8 , request 0x21416d6f7266 , answer 0x21426d6f7266 , offset8 0xfeedfacedeadbeef , offset16 0xbeefcafedead1234 , last 0x0 , twice 0xfffffffffffffff7 , region live no holders Some(0) , exits 1 session 7 released 0)"* ]] && [[ "$VERDICT" == *"PEER (ack 0x0 , base 0x60000030000 , read 0xfeedfacedeadbeef , recv 0x700000008 , handle 0x3 , request 0x21416d6f7266 , reply 0x0 , wrote 0xbeefcafedead1234)"* ]]; then
         ok "two ring-3 processes on their own tasks shared one region in both directions, one of them parked in a blocking call that the OTHER answered with its own bytes, and the region's record died with its last holder while each exit released its own capabilities"
     else
         bad "the two-process leg's region lifetime, cross-process bytes or parked answer failed their read-back"
@@ -250,7 +250,7 @@ else
     # precedes the queue, the receiver still drains the ONE good message
     # attenuated to READ|WRITE (0x0c), which is the proof that the wider
     # ask queued nothing.
-    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , MAP (ack 0x0 , base 0x60000110000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000120000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000110000 , released 3 word 0xfeedfacecafed00d/0x0 , bases 0x60000100000/0x60000120000 , frames 302 == 302 , unmapped true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
+    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1) , MAP (ack 0x0 , base 0x60000110000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000120000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000110000 , released 3 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000110000/0x60000100000 , frames 302 == 302 , unmapped true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
         ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; both teardowns unmapped their window and returned every frame"
     else
         bad "the requested-region leg's mapping, kernel-chosen window or page release failed their read-back"
@@ -265,7 +265,7 @@ else
     # copy arrived attenuated (the geometry row answers rights 0xc for a
     # peer whose sender held 0xe), and the message was already queued, so
     # the drain needed no retry (tries 0).
-    if [[ "$VERDICT" == *"PEER-XFER (recv 0x700000004 , handle 0x2 , base 0x60000100000 , read 0xfeedfacecafed00d , wrote 0x1122334455667788 , close 0x0 , tries 0)"* ]]; then
+    if [[ "$VERDICT" == *"PEER-XFER (recv 0x700000004 , handle 0x2 , base 0x60000100000 , read 0xfeedfacecafed00d , wrote 0x1122334455667788 , parked 0x63 , tries 0)"* ]]; then
         ok "one ring-3 process handed its requested region to the OTHER through the capability transfer field; the receiver's copy was counted as a holder (the sender's close freed nothing), the page stayed mapped across that close, and the receiver's own close freed it with both processes' bytes in the kernel's record"
     else
         bad "the region handover's receiver-side facts failed their read-back"
@@ -285,6 +285,21 @@ else
     else
         bad "the two processes' address spaces were not distinct (the same VA read the same page, or the peer's page was not the one it wrote)"
     fi
+    # THE REVOCATION LEG (2026-11-08): the kernel took the handed-on
+    # region's pages back while the peer STILL HELD the capability (it no
+    # longer closes -- that close was what used to make it the last
+    # holder), then woke it. The peer's own next read faulted: the armed
+    # probe recorded the address the KERNEL handed out, the error code of a
+    # READ from RING 3 that found no mapping (0x4: not present, read, user),
+    # and the task it was armed for -- then terminated that task through the
+    # scheduler's lifecycle, so the machine kept running to print this.
+    # `revoked`/`woke` say the machine accepted the revoke and a message
+    # really reached the parked holder.
+    if [[ "$VERDICT" == *"REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1)"* ]]; then
+        ok "the kernel revoked a region's mapping while a holder still had its capability, and that holder's next read faulted on the revoked page from ring 3 -- recorded and absorbed by the armed probe, with the faulting task terminated through the scheduler instead of halting the machine"
+    else
+        bad "the revocation leg's page did not fault (or faulted elsewhere, or was not revoked while a holder lived)"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -299,4 +314,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed, handed one of those requested regions to the OTHER process through the capability transfer field -- the receiver's copy counted as a holder, so the sender's own close freed nothing and the page stayed mapped until the receiver closed last, with both processes' bytes in the kernel's release record -- and both processes ran in address spaces of their own, their identical virtual addresses resolving to different pages."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed, handed one of those requested regions to the OTHER process through the capability transfer field -- the receiver's copy counted as a holder, so the sender's own close freed nothing and the page stayed mapped until the receiver closed last, with both processes' bytes in the kernel's release record -- both processes ran in address spaces of their own, their identical virtual addresses resolving to different pages, and the kernel revoked that region's mapping while one process still held its capability -- the holder's own next read faulted on the revoked page from ring 3, was recorded by the armed probe, and terminated only that task."

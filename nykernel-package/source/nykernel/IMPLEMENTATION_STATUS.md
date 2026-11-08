@@ -6170,3 +6170,86 @@ their recorded digests, the kernel inside the BIOS disc is the kernel this tree
 built, that disc boots headless to a verified device-mode session, and the UEFI
 disc boots through OUR signed stub (carrier walked, GOP handed over, shell
 rendered).
+
+## A region's mapping can be REVOKED while a holder still lives (2026-11-08),
+## and the holder's own next read is what proves it
+
+Everything before this increment made a region's lifetime depend on its
+capabilities: the pages went back when the LAST holder closed. That leaves
+the other direction of the release's revocation model unproven -- a holder
+that never closes keeps its pages forever, so "a capability is authority
+over a page" was only half said: nothing could take the page away.
+
+**The machine half** (`experimental::caps`): `revoke_region` takes a live,
+OWNED region's pages back NOW -- the releaser fires once, the record goes
+dead, and the capabilities that named it become STALE. Their handles still
+resolve (the kernel took the page, not the handle), the geometry row that
+reads the kernel's own record answers `BadRegion`, their later closes free
+nothing (the `live` guard), and a second revoke answers `BadRegion`. A
+region the KERNEL mapped is refused `NotOwned`: it has no releaser and no
+frames this machine may take back. This is not a row any capability can
+call -- holding a region never gives you the power to take it away.
+
+**The evidence problem, and the probe that solves it.** "The holder's next
+read faults" cannot be said from page tables alone, and a ring-3 page fault
+used to end the machine (`page_fault_handler` prints and halts). So
+`experimental::probe_fault` arms ONE expected fault (address + the task
+expected to touch it); the handler checks it matches, records CR2, the error
+code, whether the access came from ring 3 and which task made it, then
+terminates that task through the scheduler's own lifecycle
+(`terminate_current`, the same edge `CAP_EXIT` uses) and disarms. A fault
+that does not match still halts exactly as before -- this is a keyhole for
+one named fault, not a user-fault policy. The faulted task's capabilities
+are released and its session withdrawn on the way out
+(`service84::abandon_gate_session`), in the same order `CAP_EXIT` uses, so a
+dead holder cannot pin a region by simply not existing any more.
+
+**What the proof shows.** The peer no longer closes the handed-on region
+(that close was what used to make it the last holder). It parks on its own
+mailbox -- off-CPU, inside a trap, so nobody is touching the page -- and the
+coordinator, once the first process is Terminated and the peer is Blocked:
+looks the region up by the base the KERNEL handed out, arms the probe for
+that base and that task, REVOKES the region, and sends the wake. The peer
+resumes at the instruction after its receive and reads the base: the page is
+gone, the load faults, the probe records and terminates it, and the kernel
+keeps running to print the verdict.
+
+```
+  REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1)
+  ... released 3 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000110000/0x60000100000 , frames 302 == 302 , unmapped true / true / true ... MAP matches -- OK
+```
+
+`err 0x4` is the CPU's own word for it: not present (bit 0 clear), a READ
+(bit 1 clear), from user mode (bit 2 set). The release order moved with the
+change and is now: step 15's two regions when the first process closes them
+after its parked call returns, then the handed-on region when the kernel
+revokes it -- so the LAST release is the one with both processes' bytes in
+it (`0xdeadbeef...` from the first process at offset 0 is the FIRST release
+now, and `first8`/`last8` are both pinned). The peer's own exit accounting
+changed with it: one process exits through `CAP_EXIT` (`exits 1`, releasing
+its region capability count 0), the peer is terminated by the fault, and the
+kernel's parked-wake count is 3 (the peer now parks twice: for the GO and
+for the revocation).
+
+**Negative control on the revoke** (temporary, reverted immediately after):
+the coordinator armed the probe and woke the parked peer but did NOT take
+the pages back. The read then succeeded and the peer exited normally --
+`hits 0`, no fault, and the check refused to pass:
+
+```
+  REVOKE (base 0x60000100000 , addr 0x0 , err 0x0 , task 18446744073709551615 , expected 2 , hits 0 , woke 1)
+  FAIL: the revocation leg's page did not fault (or faulted elsewhere, or was not revoked while a holder lived)
+```
+
+Named sharp edges: revocation is kernel-initiated (no row exposes it, so a
+capability can never revoke another's region); it takes the WHOLE region --
+there is no partial/per-page revocation; the probe is a single-shot keyhole
+armed by this proof, so a general user-fault policy is still the manifest's
+staged item; and the faulted task's cleanup is `abandon_gate_session`, which
+is the EXIT row's two steps without its exit statistics.
+
+Checks: `./build.sh` PASS; `svc84_proof_test.sh` PASS with the REVOKE leg
+pinned; `qemu_boot_test.sh` PASS with `experimental caps: 90 clause groups`
+(four new: revoke with two holders releases once, the holders' handles stay
+resolvable while the geometry refuses, their stale closes free nothing, and
+a dead region cannot be revoked twice).

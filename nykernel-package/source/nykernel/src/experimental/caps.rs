@@ -185,6 +185,9 @@ pub enum CapError {
     WrongType,
     BadHandle,
     NoRight,
+    /// A region the kernel mapped (not owned by this machine) cannot be
+    /// revoked: there is no mapping of ours to take back.
+    NotOwned,
     Revoked,
     TargetDead,
     PayloadTooLarge,
@@ -692,6 +695,52 @@ impl CapSystem {
     /// walks away -- and a refusal to CLOSE (a handle that names no
     /// region) changes nothing, which matters because a double close is
     /// the obvious bug and it must not decrement twice.
+    /// REVOKES a live region's mapping while its holders still have
+    /// capabilities: the pages go back to the allocator NOW, the record
+    /// goes dead, and every capability naming it becomes STALE (geometry
+    /// answers `BadRegion`, close drops a handle that no longer frees
+    /// anything). This is the release's revocation direction, and it is
+    /// deliberately not something a capability can ask for: holding a
+    /// region never gives you the power to take it away, so the caller
+    /// here is the kernel half of the machine, not a row.
+    ///
+    /// The count is NOT cleared: those capabilities still exist, and
+    /// `close_region_cap`'s `holders == 0 && live` guard is what keeps the
+    /// later closes from freeing the pages a second time.
+    pub fn revoke_region(&mut self, region: u32) -> Result<(), CapError> {
+        let entry = match self.regions.get_mut(region as usize) {
+            Some(e) if e.live => e,
+            _ => return Err(CapError::BadRegion),
+        };
+        if !entry.owned {
+            // A region the KERNEL mapped (the SHM kind's own page, for
+            // instance) has no releaser and no frames this machine may
+            // take back; refusing by name is the honest answer rather
+            // than silently marking it dead while it stays mapped.
+            return Err(CapError::NotOwned);
+        }
+        let geometry = entry.geometry;
+        entry.live = false;
+        let release = self.region_releaser;
+        // Outside the record's borrow, for the same reason
+        // `close_region_cap` does it: a releaser walks page tables.
+        if let Some(release) = release {
+            unsafe { release(geometry) }
+        }
+        Ok(())
+    }
+
+    /// The region id whose geometry starts at `base`, if any. Kernel-side
+    /// lookup used by the boot half of the region machine (the proof revokes
+    /// a region it knows by the address the kernel handed out, not by a
+    /// table index it was never told).
+    pub fn region_id_by_base(&self, base: u64) -> Option<u32> {
+        self.regions
+            .iter()
+            .position(|e| e.geometry.base == base)
+            .map(|i| i as u32)
+    }
+
     pub fn close_region_cap(&mut self, p: usize, h: u32) -> Result<(), CapError> {
         let cap = self.lookup(p, h)?;
         if cap.kind != Kind::SharedMem {
@@ -1305,6 +1354,27 @@ pub fn region_holders(region: u32) -> Option<u32> {
     })
 }
 
+/// The region whose geometry starts at `base` -- the boot half's way of
+/// naming a region it handed out by ADDRESS rather than by table index.
+/// Kernel-side only: no row exposes it, so a holder cannot probe the
+/// region table through it.
+pub fn region_id_by_base(base: u64) -> Option<u32> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.region_id_by_base(base)
+    })
+}
+
+/// REVOKES a live region's mapping: the pages go back while its holders
+/// keep their (now stale) capabilities. Kernel-side only -- see
+/// [`CapSystem::revoke_region`].
+pub fn revoke_region(region: u32) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.revoke_region(region)
+    })
+}
+
 /// Access for the BLOCKING CALL: registers the wait slot, then queues the
 /// request exactly as the non-blocking form does. The gate parks the
 /// caller after this returns, so the order matters -- register first, or
@@ -1875,6 +1945,48 @@ pub fn run() -> bool {
         "the LAST holder's close frees the requested pages, once",
         sys.close_region_cap(XB, x_recv_h).is_ok()
             && !sys.region_live(x_region)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+    );
+    // REVOCATION: the kernel half takes a live region's pages back while
+    // its holders still have capabilities. The mapping dies NOW (the
+    // releaser fires once), the record goes dead, and the capabilities
+    // that named it go stale -- geometry refuses by name and their closes
+    // free nothing, which is the clause that keeps revocation from turning
+    // into a double free when the holders are eventually torn down.
+    TEST_RELEASED.store(0, Ordering::SeqCst);
+    let (rv_region, rv_h, _) = sys
+        .request_region(XA, 1, rights::READ | rights::WRITE | rights::GRANT)
+        .expect("self-test: region to revoke");
+    let rv_h2 = sys
+        .bootstrap_region(XB, rv_region, rights::READ)
+        .expect("self-test: second holder of the revoked region");
+    check!(
+        "a region can be revoked while two holders still hold it, and the pages go back once",
+        sys.region_holders(rv_region) == Some(2)
+            && sys.revoke_region(rv_region).is_ok()
+            && !sys.region_live(rv_region)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+    );
+    // The capability itself still resolves (the holder still HAS it -- the
+    // kernel took the page, not the handle), but the GEOMETRY the row
+    // reports is the kernel's record, and that record is dead: the same two
+    // questions `0x4c` asks in that order, so a stale holder's geometry call
+    // answers ENOENT by name rather than a base that no longer maps.
+    check!(
+        "the holders' capabilities survive the revocation as STALE: the handle still resolves, the geometry refuses by name, and the count is unchanged",
+        sys.region_cap(XA, rv_h) == Ok((rv_region, rights::READ | rights::WRITE | rights::GRANT))
+            && sys.region_geometry(rv_region) == Err(CapError::BadRegion)
+            && sys.region_holders(rv_region) == Some(2)
+    );
+    check!(
+        "a stale close after revocation frees nothing a second time",
+        sys.close_region_cap(XA, rv_h).is_ok()
+            && sys.close_region_cap(XB, rv_h2).is_ok()
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+    );
+    check!(
+        "a dead region cannot be revoked again",
+        sys.revoke_region(rv_region) == Err(CapError::BadRegion)
             && TEST_RELEASED.load(Ordering::SeqCst) == 1
     );
     // A queue that is THROWN AWAY (revocation) must give its counts back:

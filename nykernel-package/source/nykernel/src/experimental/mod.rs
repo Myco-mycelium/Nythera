@@ -51,6 +51,7 @@ pub mod isolation_demo;
 pub mod input;
 pub mod pe;
 pub mod pe_demo;
+pub mod probe_fault;
 pub mod pe_exception_demo;
 pub mod pe_resource_demo;
 pub mod pe_import_demo;

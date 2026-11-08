@@ -122,6 +122,17 @@ static REGION_FIRST_WORD8: AtomicU64 = AtomicU64::new(0);
 static REGION_FIRST_BASE: AtomicU64 = AtomicU64::new(0);
 static REGION_LAST_BASE: AtomicU64 = AtomicU64::new(0);
 
+/// The REVOCATION leg's own record: the base the kernel took back, whether
+/// the machine accepted the revoke, whether the wake reached the parked
+/// holder, and which task the probe was armed for. The fault facts come
+/// from `experimental::probe_fault` at read-back time.
+static REVOKE_BASE: AtomicU64 = AtomicU64::new(0);
+static REVOKE_OK: AtomicU64 = AtomicU64::new(0);
+static REVOKE_WOKE: AtomicU64 = AtomicU64::new(0);
+static REVOKE_TASK: AtomicU64 = AtomicU64::new(u64::MAX);
+/// The seq the coordinator wakes the parked holder with.
+const REVOKE_SEQ: u32 = 99;
+
 /// The two proof processes' address spaces: each task's PML4 physical
 /// address and the top of that space's private RSP0 stack. Zero until the
 /// proof builds them (the ordinary boot never does), so every reader can
@@ -173,6 +184,44 @@ pub unsafe fn select_proof_space() {
 /// by the read-back.
 pub fn peer_pml4() -> u64 {
     PEER_PML4.load(Ordering::SeqCst)
+}
+
+/// What the revocation leg did, for the verdict: the base the kernel took
+/// back, whether the machine accepted the revoke, whether the wake reached
+/// the parked holder, and -- from the armed probe -- the fault the holder's
+/// own read produced.
+#[derive(Clone, Copy)]
+pub struct RevocationReport {
+    pub base: u64,
+    pub revoked: bool,
+    pub woke: bool,
+    pub expected_task: u64,
+    pub hits: u64,
+    pub fault_addr: u64,
+    pub fault_error: u64,
+    pub fault_task: u64,
+    pub from_ring3: bool,
+}
+
+pub fn revocation_report() -> Option<RevocationReport> {
+    // None on a boot that never reached the leg: `REVOKE_TASK` is only set
+    // when the coordinator arms the probe.
+    let expected_task = REVOKE_TASK.load(Ordering::SeqCst);
+    if expected_task == u64::MAX {
+        return None;
+    }
+    let probe = crate::experimental::probe_fault::report();
+    Some(RevocationReport {
+        base: REVOKE_BASE.load(Ordering::SeqCst),
+        revoked: REVOKE_OK.load(Ordering::SeqCst) == 1,
+        woke: REVOKE_WOKE.load(Ordering::SeqCst) == 1,
+        expected_task,
+        hits: probe.map(|p| p.hits).unwrap_or(0),
+        fault_addr: probe.map(|p| p.addr).unwrap_or(0),
+        fault_error: probe.map(|p| p.error).unwrap_or(0),
+        fault_task: probe.map(|p| p.task).unwrap_or(u64::MAX),
+        from_ring3: probe.map(|p| p.from_ring3).unwrap_or(false),
+    })
 }
 
 /// The kernel half of `CAP_SHM_MAP`: maps `pages` fresh frames at the next
@@ -821,6 +870,13 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     // hands the core to the peer, which answers it. Bounded, because a
     // proof that hangs is a proof that says nothing.
     let mut pumps = 0u64;
+    // THE REVOCATION LEG, one-shot: once the first process has exited and
+    // the peer is PARKED (its step 8), the kernel half takes the region's
+    // pages back while the peer still holds the capability, then wakes it.
+    // The peer's next read faults, the armed probe records it and terminates
+    // that task -- so `done_b` becomes true the normal way, through the
+    // scheduler's lifecycle, rather than by halting the machine.
+    let mut revoked = false;
     loop {
         let done_a = matches!(
             crate::experimental::scheduler::state_of(task_a),
@@ -832,6 +888,39 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         );
         if done_a && done_b {
             break;
+        }
+        if !revoked
+            && done_a
+            && matches!(
+                crate::experimental::scheduler::state_of(task_b),
+                Some(crate::experimental::scheduler::LifecycleState::Blocked)
+            )
+        {
+            revoked = true;
+            // The base the kernel handed out for the handed-on region: the
+            // first process recorded it at BUF+2352 when it asked (its
+            // step 16a), and that is the mapping the peer holds now.
+            let base = unsafe {
+                core::ptr::read_unaligned((PROOF_BUF + 2352) as *const u64)
+            };
+            REVOKE_BASE.store(base, Ordering::SeqCst);
+            REVOKE_TASK.store(task_b as u64, Ordering::SeqCst);
+            crate::experimental::probe_fault::arm(base, task_b as u64);
+            let revoked_ok = match crate::experimental::caps::region_id_by_base(base) {
+                Some(region) => crate::experimental::caps::revoke_region(region).is_ok(),
+                None => false,
+            };
+            REVOKE_OK.store(if revoked_ok { 1 } else { 0 }, Ordering::SeqCst);
+            let woke = crate::experimental::ipc::send(
+                1,
+                crate::experimental::ipc::IpcMessage {
+                    sender: crate::experimental::scheduler::session_identity(),
+                    seq: REVOKE_SEQ,
+                    ..Default::default()
+                },
+            )
+            .is_ok();
+            REVOKE_WOKE.store(if woke { 1 } else { 0 }, Ordering::SeqCst);
         }
         if pumps >= 1_000_000 {
             serial_println!(
