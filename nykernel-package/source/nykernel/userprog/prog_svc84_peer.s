@@ -69,8 +69,15 @@
 
 /* Derived from the linker script's load address (linker_svc84_peer.ld), the
    same way prog_svc84.s derives BUF: hand-copying a page address is a
-   digit-count bug waiting to happen. */
-.set ANCHOR, 0x70000000000
+   digit-count bug waiting to happen.
+
+   The anchor is the FIRST program's anchor (0x60000000000) and so is the
+   results page offset: since 2026-11-08 this process has its OWN address
+   space, so PEN and prog_svc84.s's BUF are the same VIRTUAL address over
+   different PHYSICAL frames. The two processes write their own words at
+   the same VA, and the kernel reads each page through the CR3 it belongs
+   to -- `service84`'s read-back does exactly that and pins both values. */
+.set ANCHOR, 0x60000000000
 .set PEN,    ANCHOR + 0x10000
 
 /* 0xbeefcafedead1234 -- the value the kernel reads out of the region.

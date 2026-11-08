@@ -648,28 +648,42 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     for (i, slot) in map.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a0 + 2136 + 8 * i as u64) as *const i64) };
     }
-    // The HANDED-ON region's block (BUF+2344..+2408, eight qwords): the
+    // The HANDED-ON region's block (BUF+2344..+2416, nine qwords): the
     // request's ack, the base the kernel chose for it, the minted handle,
     // the length, the transfer's ack, the close's ack, the process's own
-    // marker read back AFTER that close (the page survived it), and the
-    // consumed handle's refusal.
-    if !crate::memory::paging::user_range_ok(a0 + 2344, 64, false) {
+    // marker read back AFTER that close (the page survived it), the
+    // consumed handle's refusal, and the WIDER ask's refusal (the
+    // attenuation negative control: it must be refused, not clipped).
+    if !crate::memory::paging::user_range_ok(a0 + 2344, 72, false) {
         return EFAULT;
     }
-    let mut mapx = [0i64; 8];
+    let mut mapx = [0i64; 9];
     for (i, slot) in mapx.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a0 + 2344 + 8 * i as u64) as *const i64) };
     }
     // The PEER process's page (a1): its own results, read from ITS
     // memory after its task was TERMINATED -- the strongest form of
     // "this is what the other process observed".
+    //
+    // Since 2026-11-08 a1 IS THE SAME VIRTUAL ADDRESS as a0 (both
+    // processes are linked and given their pages at 0x60000010000), so the
+    // read has to happen under the peer's CR3: with the first program's
+    // tables still active the kernel would read the FIRST program's page
+    // and call it the peer's. The word at offset 8 is captured on each
+    // side of the switch for the verdict -- same VA, two pages, and the
+    // peer's value is the region base its own geometry call answered, so a
+    // wrong space or a shared page would show up as equal words.
+    let same_va_first = unsafe { core::ptr::read_unaligned((a0 + 8) as *const u64) };
+    unsafe { crate::svc84_proof::select_peer_space() };
     if !crate::memory::paging::user_range_ok(a1, 216, false) {
+        unsafe { crate::svc84_proof::select_proof_space() };
         return EFAULT;
     }
     let mut peer = [0i64; 27];
     for (i, slot) in peer.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a1 + 8 * i as u64) as *const i64) };
     }
+    unsafe { crate::svc84_proof::select_proof_space() };
     let mut payload = [0i64; 6];
     for (i, slot) in payload.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a0 + 448 + 8 * i as u64) as *const i64) };
@@ -972,6 +986,12 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
                 && mapx[5] == 0
                 && mapx[6] == want_transfer_value
                 && mapx[7] == EBADF
+                // The WIDER ask (a_rights = ALL, one right the sender never
+                // held) was refused by NAME and queued nothing: the
+                // receiver below drained the ONE good message, attenuated
+                // to READ|WRITE. If attenuation had clipped instead of
+                // refusing, that drain would have carried 0xf.
+                && mapx[8] == EMSGSIZE
                 // ...and the RECEIVER's: the message it drained (the first
                 // process's session, four payload bytes), the handle the
                 // machine installed in ITS table, the geometry row through
@@ -980,6 +1000,12 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
                 // write at offset 8, and the close that finally returned
                 // the pages. Zero retries: the message was queued before
                 // the "go" that resumed it.
+                // THE TWO SPACES: the same VA read on both sides of a CR3
+                // switch, and the peer's page is its own -- the region base
+                // its geometry call answered, not anything the first
+                // program wrote.
+                && same_va_first != peer[1] as u64
+                && peer[1] == crate::svc84_proof::PROOF_SHM as i64
                 && peer[17] == ((crate::svc84_proof::FIRST_SESSION as i64) << 32 | 4)
                 && peer[18] >= 0
                 && peer[20] == want_map_base3
@@ -1038,7 +1064,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && map_ok;
     let ok = stored_ok && wrote_ok;
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-    crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , close {:#x} , tries {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , last8 {:#x})) , MAP {} -- {}
+    crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , close {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
 ",
         LAST_CALLER_CPL.load(Ordering::Relaxed),
         want_gfx as u64,
@@ -1143,6 +1169,8 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         peer[24] as u64,
         peer[25] as u64,
         peer[26] as u64,
+        same_va_first,
+        peer[1] as u64,
         map[0] as u64,
         map[1] as u64,
         map[2] as u64,
@@ -1174,6 +1202,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         mapx[5] as u64,
         mapx[6] as u64,
         map_first_word8,
+        mapx[8] as u64,
         if map_ok { "matches" } else { "MISMATCH" },
         if ok { "OK" } else { "FAILED" }
     );

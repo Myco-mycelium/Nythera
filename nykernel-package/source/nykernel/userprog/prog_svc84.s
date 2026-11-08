@@ -690,9 +690,10 @@ _start:
        the other.
 
        record BUF+2304 (32 bytes), payload "xfer" BUF+2336. Results from
-       BUF+2344, eight qwords: request ack, base, handle, length,
-       transfer ack, close ack, the marker read back AFTER the close, and
-       the consumed handle's geometry refusal. */
+       BUF+2344, nine qwords: request ack, base, handle, length,
+       transfer ack, close ack, the marker read back AFTER the close, the
+       consumed handle's geometry refusal, and the WIDER ask's refusal
+       (BUF+2408, the ninth) -- the attenuation negative control. */
     /* 16a. ASK for one page. */
     mov $4096, %rdi
     lea 2304(%rbx), %rsi
@@ -713,6 +714,20 @@ _start:
     movabs $0xfeedfacecafed00d, %rcx
     mov 2352(%rbx), %rdx
     mov %rcx, (%rdx)
+    /* 16c0. THE WIDER ASK, REFUSED BY NAME. The same handover, but asking
+       for ALL four rights (0x0f) -- SEND is one this process never held,
+       so attenuation cannot manufacture it. The machine must answer
+       EMSGSIZE here and touch no queue: the drain below receives the ONE
+       good message, attenuated to READ|WRITE, which is what makes this a
+       refusal rather than a silent widening. */
+    mov $5, %rdi
+    lea 2336(%rbx), %rsi
+    xor %rdx, %rdx               /* no payload: this send must not queue */
+    mov 2360(%rbx), %r10
+    mov $0x0f, %r8               /* ALL -- includes SEND */
+    mov $0x47, %rax
+    int $0x84
+    mov %rax, 2408(%rbx)
     /* 16c. HAND IT ON. a_xfer (r10) is the capability, a_rights (r8) the
        attenuated mask: READ|WRITE = 0x0c. */
     movabs $0x0000000072656678, %rcx   /* "xfer" little-endian */

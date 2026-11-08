@@ -6046,3 +6046,85 @@ count inside one existing line, which both boot paths print identically. The
 secure-boot gate still takes four negative boots (unsigned, one-byte-tampered,
 hash-revoked, whole-cert-revoked) plus the KeK-signed dbx update, each capped at
 240 s; the run above is from a fresh start after its rebuild, not a resumed one.
+
+## Two address spaces for the two proof processes (2026-11-08), and the wider
+## ask that attenuation refuses
+
+The previous increment handed a requested region from one process to the
+other. Both processes still ran in ONE address space, so "the same virtual
+address" meant "the same page" and the peer only worked because it had been
+linked at `0x7<<40` -- an anchor it needed *because* there was one table. This
+increment removes that crutch and adds the negative control the attenuation
+rule was missing.
+
+**Two PML4s, identical virtual addresses.** The scheduler already had what
+this needs -- `spawn_with_cr3` names a task's PML4 and `switch_to` writes it on
+every switch -- so the task side was free. What changed is the proof's own
+layout: the peer program is now linked at `0x60000000000`, the SAME anchor as
+the first program, and loaded with its own space ACTIVE (`elf::load` writes
+through destination virtual addresses, so loading the peer under the first
+program's tables would have filled the first program's frames). Both processes
+have code, results page and stack at the same VAs, over different frames.
+
+**The shared page is mirrored, the requested windows too.** The region the two
+processes meet in (`PROOF_SHM`) is mapped at the same VA in both spaces over
+the SAME frames -- one page, two translations. Requested regions are mirrored
+the same way by the region hooks: `allocate_region_mapping` maps through the
+requester's (active) tables and then maps the same frames into the other proof
+space, all-or-nothing; `release_region_mapping` unmaps from the active space
+AND from the other one. That asymmetry was the one bug this increment hit: the
+first version unmapped only the caller's space, so the region handed on to the
+receiver was released by the RECEIVER's close and left the SENDER's mapping in
+place -- `unmapped false / true / true` on the first run, fixed by making the
+hook pick the other space (whichever PML4 is not the active one) instead of
+assuming it is the peer's.
+
+**What the proof shows.** Each task runs with its own CR3. The kernel reads the
+word at `0x60000010000 + 8` on each side of an explicit CR3 switch: on the
+first program's side that word is its INPUT_STATE record (`0x1260296`), on the
+peer's side it is the region base its OWN geometry call answered
+(`0x60000030000`). Same VA, two pages, both values pinned:
+
+```
+  ... PEER-XFER (recv 0x700000004 , handle 0x2 , base 0x60000100000 , read 0xfeedfacecafed00d , wrote 0x1122334455667788 , close 0x0 , tries 0) , SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , MAP ( ... , frames 302 == 302 , unmapped true / true / true , xfer ( ... )) , MAP matches -- OK
+```
+
+The frame count moved from 296 to 302 and still balances: the peer's PML4, its
+page-table levels and its own pages are allocated before the baseline, and
+every one of them is still live at the read-back.
+
+**Negative control on the read-back's CR3 switch** (temporary, reverted
+immediately after): `select_peer_space()` removed, so the peer's page was read
+in the first program's space. The same VA then answered the FIRST program's
+word twice, and the proof refused to pass:
+
+```
+  SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x1260296)
+  FAIL: the two processes' address spaces were not distinct (the same VA read the same page, or the peer's page was not the one it wrote)
+  FAIL: the kernel reported the proof as FAILED
+```
+
+**The wider ask, refused by name.** `rights::ALL` bounded 0x47's `a_rights`
+one increment ago so a region transfer could ask for READ|WRITE; nothing
+pinned what happens when a holder asks for MORE than it holds. Now the ring-3
+proof sends the same region twice: once attenuated to READ|WRITE (`0x0c`) and
+once claiming ALL four rights (`0x0f`) -- SEND is one the sender never held.
+The second is refused `EMSGSIZE` (`0xffffffffffffffa6`), before the queue is
+touched, and the receiver still drains the ONE good message at `0x0c`. The
+kernel self-test gained the matching clause: a `READ|GRANT` region capability
+handed on as `WRITE|GRANT` answers `Widening`, leaves the holder count alone,
+leaves no message queued, and the later close still finds the region alive
+(`experimental caps: 86 clause groups`).
+
+Named sharp edges: the two spaces are built by the PROOF, so the ordinary boot
+still uses one space and no demo task has its own; the region machine's mirror
+is a proof-side policy (a region's mapping exists in both proof spaces, chosen
+by "the other PML4"), not a per-holder mapping keyed by the holder's identity;
+and `user_range_ok` is evaluated against whichever space is active, so the
+read-back must switch spaces before it validates the peer's pointer -- the
+control above is what keeps that ordering honest.
+
+Checks: `./build.sh` PASS; `svc84_proof_test.sh` PASS with the SPACES and
+wider-ask legs pinned; `qemu_boot_test.sh` PASS with `experimental caps: 86
+clause groups` and the ordinary boot's pinned lines unchanged (the hooks see no
+peer space there and take the early return).

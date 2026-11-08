@@ -238,9 +238,19 @@ else
     # regions are the last two releases and are zero -- never written by
     # anyone, which is what makes a request's pages zero-filled.
     # All three windows are UNMAPPED in the page tables (unmapped true /
-    # true / true) and the frame count is back to its pre-pump baseline
-    # (296 == 296). The consumed handle is refused -EBADF.
-    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"MAP (ack 0x0 , base 0x60000110000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000120000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000110000 , released 3 word 0xfeedfacecafed00d/0x0 , bases 0x60000100000/0x60000120000 , frames 296 == 296 , unmapped true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , last8 0x1122334455667788))"* ]]; then
+    # true / true -- and the read-back runs in the FIRST program's space,
+    # so "unmapped" is said of that space's tables; the release removes the
+    # mirror from the peer's as well, which is why the count balances) and
+    # the frame count is back to its pre-pump baseline (302 == 302 -- six
+    # frames above the single-space tree: the peer's PML4 and its page
+    # tables plus its own pages, all allocated before the baseline). The consumed handle is refused -EBADF. The same
+    # handover asked a second time with a_rights = ALL (0x0f), one right
+    # the sender never held, is refused by NAME (EMSGSIZE = -90 = 
+    # 0xffffffffffffffa6) rather than clipped -- and because the refusal
+    # precedes the queue, the receiver still drains the ONE good message
+    # attenuated to READ|WRITE (0x0c), which is the proof that the wider
+    # ask queued nothing.
+    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , MAP (ack 0x0 , base 0x60000110000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000120000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000110000 , released 3 word 0xfeedfacecafed00d/0x0 , bases 0x60000100000/0x60000120000 , frames 302 == 302 , unmapped true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
         ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; both teardowns unmapped their window and returned every frame"
     else
         bad "the requested-region leg's mapping, kernel-chosen window or page release failed their read-back"
@@ -260,6 +270,21 @@ else
     else
         bad "the region handover's receiver-side facts failed their read-back"
     fi
+    # THE TWO ADDRESS SPACES (2026-11-08): each ring-3 process runs on its
+    # OWN PML4 (spawn_with_cr3 names it, switch_to loads it on every
+    # switch), and both programs are linked at the SAME anchor with their
+    # results pages at the SAME virtual address -- 0x60000010000. The
+    # kernel captures the word at that VA plus 8 on each side of a CR3
+    # switch: the first program's INPUT_STATE record on one side
+    # (0x1260296) and the region base the PEER's own geometry call
+    # answered on the other (0x60000030000). Same VA, two different pages
+    # -- a single shared space cannot produce that pair, and a wrong CR3 in
+    # the read-back would produce the FIRST value twice.
+    if [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000)"* ]]; then
+        ok "the two ring-3 processes ran in separate address spaces: the same virtual address resolved to different pages in each, read by the kernel across an explicit CR3 switch"
+    else
+        bad "the two processes' address spaces were not distinct (the same VA read the same page, or the peer's page was not the one it wrote)"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -274,4 +299,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed, and handed one of those requested regions to the OTHER process through the capability transfer field -- the receiver's copy counted as a holder, so the sender's own close freed nothing and the page stayed mapped until the receiver closed last, with both processes' bytes in the kernel's release record."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed, handed one of those requested regions to the OTHER process through the capability transfer field -- the receiver's copy counted as a holder, so the sender's own close freed nothing and the page stayed mapped until the receiver closed last, with both processes' bytes in the kernel's release record -- and both processes ran in address spaces of their own, their identical virtual addresses resolving to different pages."

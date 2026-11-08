@@ -23,8 +23,11 @@
 //!   buf   0x6_0000_01000 (the results page)
 //!   stack 0x6_0000_02000
 
-use x86_64::structures::paging::{FrameDeallocator, Mapper, Page, PageTableFlags, Size4KiB};
-use x86_64::VirtAddr;
+use x86_64::registers::control::{Cr3, Cr3Flags};
+use x86_64::structures::paging::{
+    FrameDeallocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB,
+};
+use x86_64::{PhysAddr, VirtAddr};
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -119,6 +122,59 @@ static REGION_FIRST_WORD8: AtomicU64 = AtomicU64::new(0);
 static REGION_FIRST_BASE: AtomicU64 = AtomicU64::new(0);
 static REGION_LAST_BASE: AtomicU64 = AtomicU64::new(0);
 
+/// The two proof processes' address spaces: each task's PML4 physical
+/// address and the top of that space's private RSP0 stack. Zero until the
+/// proof builds them (the ordinary boot never does), so every reader can
+/// tell "there is only one space" from "there are two".
+static PROOF_PML4: AtomicU64 = AtomicU64::new(0);
+static PROOF_RSP0: AtomicU64 = AtomicU64::new(0);
+static PEER_PML4: AtomicU64 = AtomicU64::new(0);
+static PEER_RSP0: AtomicU64 = AtomicU64::new(0);
+
+/// Switches the CPU to the PEER process's address space. Used by the
+/// coordinator's read-back: the peer's results page is the SAME VIRTUAL
+/// ADDRESS as the first program's, so the page read is only meaningful
+/// with the right CR3.
+///
+/// # Safety
+/// Only call from the coordinator (task 0) after both ring-3 tasks are
+/// gone, or from a trap that will switch back before returning to ring 3.
+/// The kernel half is shared by both spaces, so the code doing this and
+/// its stack stay mapped either way.
+pub unsafe fn select_peer_space() {
+    let pml4 = PEER_PML4.load(Ordering::SeqCst);
+    if pml4 != 0 {
+        Cr3::write(
+            x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(pml4)),
+            Cr3Flags::empty(),
+        );
+        crate::gdt::set_rsp0(VirtAddr::new(PEER_RSP0.load(Ordering::SeqCst)));
+    }
+}
+
+/// Switches back to the FIRST program's address space (the one the
+/// coordinator runs in, and the one every other read-back assumes).
+///
+/// # Safety
+/// Same contract as [`select_peer_space`].
+pub unsafe fn select_proof_space() {
+    let pml4 = PROOF_PML4.load(Ordering::SeqCst);
+    if pml4 != 0 {
+        Cr3::write(
+            x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(pml4)),
+            Cr3Flags::empty(),
+        );
+        crate::gdt::set_rsp0(VirtAddr::new(PROOF_RSP0.load(Ordering::SeqCst)));
+    }
+}
+
+/// The peer space's PML4, or 0 when the proof never built one. Read by
+/// the region hooks (a requested region is mirrored into BOTH spaces) and
+/// by the read-back.
+pub fn peer_pml4() -> u64 {
+    PEER_PML4.load(Ordering::SeqCst)
+}
+
 /// The kernel half of `CAP_SHM_MAP`: maps `pages` fresh frames at the next
 /// free window slot, zero-fills them, and answers the geometry. `None` is
 /// a real refusal (no allocator installed, window exhausted, partial
@@ -158,6 +214,23 @@ unsafe fn allocate_region_mapping(pages: u64) -> Option<crate::experimental::cap
     // A freshly mapped page is not guaranteed zero, and a region a holder
     // can read must not expose whatever the frame held before.
     core::ptr::write_bytes(base as *mut u8, 0, (pages * 4096) as usize);
+    // TWO PROCESSES, TWO ADDRESS SPACES: the requester's tables now map the
+    // region, and the peer's must too, at the same VA and over the SAME
+    // frames -- otherwise the capability it receives through the transfer
+    // field would name a page its own space does not map. Mirrored after
+    // the zero-fill so both spaces read zeroes, and all-or-nothing: a
+    // failed mirror unrolls the requester's mapping rather than handing
+    // back a region only one process could use.
+    if !mirror_into_other_space(base, pages, flags, &mapper, &mut *fa) {
+        for i in 0..pages {
+            let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(base + i * 4096));
+            if let Ok((frame, flush)) = mapper.unmap(page) {
+                flush.flush();
+                (*fa).deallocate_frame(frame);
+            }
+        }
+        return None;
+    }
     Some(crate::experimental::caps::Region { base, len: pages * 4096 })
 }
 
@@ -198,6 +271,107 @@ unsafe fn release_region_mapping(geometry: crate::experimental::caps::Region) {
             (*fa).deallocate_frame(frame);
         }
     }
+    // ...and the peer's tables: the mirror is a mapping, not a reference
+    // count, so leaving it behind would keep a translation to frames the
+    // allocator has taken back.
+    unmirror_from_other_space(geometry.base, geometry.len / 4096);
+}
+
+/// The PML4 of the proof's OTHER address space -- the one that is not
+/// active right now -- or 0 when the proof built only one space (the
+/// ordinary boot, or a proof that never made a peer).
+///
+/// The two proof processes share no user mapping except the ones the
+/// region machine installs on purpose, and those have to exist in BOTH
+/// spaces: whichever process REQUESTS a region maps it through its own
+/// (active) tables, and the other one receives a capability naming the
+/// same VA. So every install mirrors into this space, and every release
+/// removes from it too -- the space active at release time is the holder's
+/// that closed, not necessarily the only one that had the mapping.
+unsafe fn other_proof_pml4() -> u64 {
+    let (active, _) = Cr3::read();
+    let active = active.start_address().as_u64();
+    let a = PROOF_PML4.load(Ordering::SeqCst);
+    let b = PEER_PML4.load(Ordering::SeqCst);
+    if active == a {
+        b
+    } else if active == b {
+        a
+    } else {
+        0
+    }
+}
+
+/// Maps `pages` at `base` in the OTHER proof address space, over the
+/// frames the requester's tables already name there. Returns `false` when
+/// there is no other space (nothing to mirror) or when a mapping was
+/// refused, in which case what it did manage is removed again.
+unsafe fn mirror_into_other_space(
+    base: u64,
+    pages: u64,
+    flags: PageTableFlags,
+    requester: &OffsetPageTable<'static>,
+    frame_allocator: &mut BumpFrameAllocator,
+) -> bool {
+    let pml4 = other_proof_pml4();
+    if pml4 == 0 {
+        return true;
+    }
+    let mut peer = mapper_for_pml4(pml4);
+    let mut done = 0u64;
+    while done < pages {
+        let va = VirtAddr::new(base + done * 4096);
+        let phys = match paging::translate(requester, va) {
+            Some(p) => p,
+            None => break,
+        };
+        let frame = x86_64::structures::paging::PhysFrame::containing_address(phys);
+        let page: Page<Size4KiB> = Page::containing_address(va);
+        match unsafe { peer.map_to(page, frame, flags, frame_allocator) } {
+            Ok(flush) => {
+                flush.flush();
+                done += 1;
+            }
+            Err(_) => break,
+        }
+    }
+    if done != pages {
+        unmirror_from_other_space(base, done);
+        return false;
+    }
+    true
+}
+
+/// Removes the mirror mappings for `pages` at `base` from the other proof
+/// space. The frames belong to the requester's tables and are freed by the
+/// caller, so they are dropped here rather than deallocated.
+unsafe fn unmirror_from_other_space(base: u64, pages: u64) {
+    let pml4 = other_proof_pml4();
+    if pml4 == 0 {
+        return;
+    }
+    let mut peer = mapper_for_pml4(pml4);
+    for i in 0..pages {
+        let page: Page<Size4KiB> =
+            Page::containing_address(VirtAddr::new(base + i * 4096));
+        // The flush invalidates the VA in whatever space is ACTIVE -- not
+        // the peer's, which is not active here -- so it is harmless either
+        // way; the unmap itself is what matters (an unreachable mapping
+        // left behind would point at frames the allocator takes back).
+        if let Ok((_frame, flush)) = peer.unmap(page) {
+            flush.flush();
+        }
+    }
+}
+
+/// An `OffsetPageTable` over an arbitrary PML4 physical address. Safe to
+/// build for an INACTIVE space: page tables live in the identity-mapped
+/// low 1GiB, so writing their entries does not need that space active (a
+/// caller that maps *user* pages through it still has to arrange for the
+/// CPU to see them, which is what `activate` is for).
+unsafe fn mapper_for_pml4(pml4: u64) -> OffsetPageTable<'static> {
+    let table: &'static mut PageTable = &mut *(pml4 as *mut PageTable);
+    OffsetPageTable::new(table, VirtAddr::new(0))
 }
 
 /// What the coordinator can read back about the REQUESTED regions after
@@ -248,11 +422,13 @@ pub fn requested_region_report() -> Option<RequestedRegionReport> {
     })
 }
 
-/// The peer process's own load address (userprog/linker_svc84_peer.ld):
-/// 7 << 40. Its results page and stack are the same two offsets the first
-/// program uses, relative to ITS anchor -- the two processes share this
-/// tree's single address space, so the anchors are what keeps them apart.
-pub const PEER_CODE: u64 = 0x7u64 << 40;
+/// The peer process's load address: THE SAME as the first program's, on
+/// purpose. The two processes live in two different address spaces (each
+/// task's CR3 is its own PML4), so the same VA means different frames in
+/// each -- which is the claim this slice makes and the reason the anchor
+/// is no longer `7 << 40`. `prog_svc84_peer.s` and
+/// `userprog/linker_svc84_peer.ld` agree with these constants.
+pub const PEER_CODE: u64 = CODE;
 pub const PEER_BUF: u64 = PEER_CODE + 0x1_0000;
 pub const PEER_STACK: u64 = PEER_CODE + 0x2_0000;
 
@@ -407,19 +583,60 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     // can observe the session's table; a fuller session machine
     // (the manifest's parked step) mints it at the scheduler's ring-3
     // alloc and destroys it on exit.
-    // The PEER process: its own ELF at its own anchor, in the SAME
-    // address space (this tree has no per-process address space yet, and
-    // pretending otherwise here would be the lie the whole two-process
-    // slice exists to avoid: what is proven is two TASKS, two sessions and
-    // two capability tables meeting in one page).
-    let peer_loaded = elf::load(PEER_PROGRAM, &mut mapper, frame_allocator, 0, &elf::LoadContext::none())
-        .unwrap_or_else(|e| panic!("svc84 proof: loading userprog_svc84_peer.elf failed: {:?}", e));
+    // The PEER process: its own ELF, at the SAME anchor, in an address
+    // space of its own. Two PML4s, two sets of user frames, identical
+    // virtual addresses -- so "the same VA" no longer means "the same
+    // page", and each process's writes land in its own memory. The
+    // kernel half is shared (both spaces copy the kernel's PML4 entries),
+    // which is what lets the two tasks trap into the same gate and keeps
+    // their guarded kernel stacks visible from either space.
+    //
+    // The peer is LOADED with its own space active: `elf::load` writes
+    // through the destination virtual addresses, so loading it under the
+    // first program's tables would fill the first program's frames.
+    let mut peer_space = AddressSpace::new_sharing_kernel(frame_allocator)
+        .unwrap_or_else(|_| panic!("svc84 proof: could not build the peer's address space"));
+    unsafe { peer_space.activate() };
+    let mut peer_mapper = peer_space.mapper();
+    let peer_loaded =
+        elf::load(PEER_PROGRAM, &mut peer_mapper, frame_allocator, 0, &elf::LoadContext::none())
+            .unwrap_or_else(|e| panic!("svc84 proof: loading userprog_svc84_peer.elf failed: {:?}", e));
     let peer_buf_mapped =
-        paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PEER_BUF), 1, flags);
+        paging::map_range(&mut peer_mapper, frame_allocator, VirtAddr::new(PEER_BUF), 1, flags);
     let peer_stack_mapped =
-        paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PEER_STACK), 1, flags);
+        paging::map_range(&mut peer_mapper, frame_allocator, VirtAddr::new(PEER_STACK), 1, flags);
     assert_eq!(peer_buf_mapped, 1, "svc84 proof: peer results page not mapped");
     assert_eq!(peer_stack_mapped, 1, "svc84 proof: peer stack page not mapped");
+    // The SHARED region is the one mapping BOTH spaces must have: it is
+    // the page the two processes meet in, so the peer space gets the SAME
+    // frames at the same VA -- mirrored, not re-backed. Without this the
+    // peer's capability would name a page that only the other space maps.
+    {
+        let frame = paging::translate(&mapper, VirtAddr::new(PROOF_SHM))
+            .map(|p| x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(p))
+            .unwrap_or_else(|| panic!("svc84 proof: shared region frame not found"));
+        unsafe {
+            peer_mapper
+                .map_to(Page::containing_address(VirtAddr::new(PROOF_SHM)), frame, flags, &mut *frame_allocator)
+                .unwrap_or_else(|e| panic!("svc84 proof: mirroring the shared region into the peer space failed: {:?}", e))
+                .flush();
+        }
+    }
+    // Record the two spaces' PML4s for the read-back and the region hooks,
+    // then put the FIRST program's space back: everything from here on --
+    // the equips, the window warm-up, the hooks, the coordinator's own
+    // reads -- runs in the space the program was loaded into.
+    PROOF_PML4.store(
+        crate::experimental::address_space::pml4_phys_addr(&space).as_u64(),
+        Ordering::SeqCst,
+    );
+    PROOF_RSP0.store(space.kernel_stack_top(), Ordering::SeqCst);
+    PEER_PML4.store(
+        crate::experimental::address_space::pml4_phys_addr(&peer_space).as_u64(),
+        Ordering::SeqCst,
+    );
+    PEER_RSP0.store(peer_space.kernel_stack_top(), Ordering::SeqCst);
+    unsafe { space.activate() };
 
     // The two sessions' equips. The install order is asserted, not
     // assumed: the programs name these indexes, so a drift must fail HERE
@@ -515,8 +732,21 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     crate::experimental::scheduler::init();
     ENTRY_A.store(loaded.entry_point.as_u64(), Ordering::SeqCst);
     ENTRY_B.store(peer_loaded.entry_point.as_u64(), Ordering::SeqCst);
-    let task_a = crate::experimental::scheduler::spawn(ring3_a, &mut mapper, frame_allocator);
-    let task_b = crate::experimental::scheduler::spawn(ring3_b, &mut mapper, frame_allocator);
+    // Each task names its OWN PML4, so the scheduler's `switch_to` loads the
+    // right CR3 on every switch -- the two processes do not share tables
+    // and cannot see each other's pages.
+    let task_a = crate::experimental::scheduler::spawn_with_cr3(
+        ring3_a,
+        PROOF_PML4.load(Ordering::SeqCst),
+        &mut mapper,
+        frame_allocator,
+    );
+    let task_b = crate::experimental::scheduler::spawn_with_cr3(
+        ring3_b,
+        PEER_PML4.load(Ordering::SeqCst),
+        &mut mapper,
+        frame_allocator,
+    );
 
     // The kernel half of the region REQUEST (`CAP_SHM_MAP`, 0x4f): a
     // capability table cannot conjure frames, so the boot that owns the
@@ -618,8 +848,12 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
             // difference between "the peer never received" and "the peer
             // answered but nobody woke" is exactly these numbers.
             let mut peer_words = [0u64; 14];
-            for (i, w) in peer_words.iter_mut().enumerate() {
-                *w = unsafe { core::ptr::read_volatile((PEER_BUF + 8 * i as u64) as *const u64) };
+            unsafe {
+                select_peer_space();
+                for (i, w) in peer_words.iter_mut().enumerate() {
+                    *w = core::ptr::read_volatile((PEER_BUF + 8 * i as u64) as *const u64);
+                }
+                select_proof_space();
             }
             serial_println!(
                 "  service-0x84 proof: peer page (ack {:#x} , base {:#x} , len {:#x} , read {:#x} , recv {:#x} , handle {:#x} , req {:#x} , retries {:#x} , reply {:#x} , wrote {:#x})",

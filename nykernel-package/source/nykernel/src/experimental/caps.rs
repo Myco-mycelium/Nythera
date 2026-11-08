@@ -1848,6 +1848,26 @@ pub fn run() -> bool {
             && sys.region_holders(x_region) == Some(1)
             && TEST_RELEASED.load(Ordering::SeqCst) == 0
     );
+    // WIDENING on the region kind, the other direction attenuation can be
+    // asked to break: a capability holding READ|GRANT cannot be handed on as
+    // WRITE|GRANT. The GRANT check passes (the holder has GRANT), so the
+    // WIDER ask is what has to be refused -- by name, before the queue is
+    // touched, leaving no count and no message behind. Without this clause
+    // the refusal could regress to a silent truncation (the copy arriving
+    // masked) and every earlier clause would still pass.
+    let x_g = sys
+        .bootstrap_region(XA, x_region, rights::READ | rights::GRANT)
+        .expect("self-test: READ|GRANT region cap");
+    check!(
+        "a region transfer asking for a right the holder never held is refused (Widening), and leaves no count and no message",
+        sys.send(XA, xa_ep, b"", Some((x_g, rights::WRITE | rights::GRANT)))
+            == Err(CapError::Widening)
+            && sys.region_holders(x_region) == Some(2)
+            && sys.receive(XB, xep).ok().flatten().is_none()
+            && sys.close_region_cap(XA, x_g).is_ok()
+            && sys.region_live(x_region)
+            && sys.region_holders(x_region) == Some(1)
+    );
     // ...and now the receiver's close is the LAST one: the pages go back
     // exactly once, and only now -- the count that made the region survive
     // the sender's close is the one this close spends.
