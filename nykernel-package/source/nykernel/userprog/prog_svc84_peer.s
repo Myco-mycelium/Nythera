@@ -32,6 +32,15 @@
  *      one wake: we PARK here, because the first process has not called
  *      yet. This is the hand-back half of the rendezvous: the first
  *      process's "go" send is what resumes us.
+ *   3b. THE REGION HANDOVER (2026-11-07): a CAP_RECV (0x48) on endpoint 1
+ *      drains the message whose dedicated TRANSFER FIELD carries the
+ *      region capability the first process ASKED for (0x47), and the
+ *      kernel installs it in THIS table (out-pointer PEN+144). The
+ *      geometry row then answers through THAT handle (PEN+160..+176), we
+ *      read the first process's marker at offset 0 (PEN+184 -- written by
+ *      it BEFORE it closed its own capability), write our own at offset 8
+ *      (PEN+192), and CLOSE last (PEN+200), which is what returns the
+ *      pages. The first process's close did not: the queued copy counted.
  *   4. read offset 8 through the region mapping -> PEN+48. The first
  *      process wrote that value (0xfeedfacedeadbeef) BEFORE this process
  *      ran again, so a non-zero value here is one ring-3 process reading
@@ -117,6 +126,77 @@ _start:
     mov $0x46, %rax
     int $0x84
     mov %rax, 120(%rbx)
+
+    /* 3b. THE HANDOVER (2026-11-07): the first process ASKED the kernel
+       for a region and then SENT its capability to us in the transfer
+       field (0x47, attenuated to READ|WRITE). This drains that message
+       and installs the capability in OUR table -- r8 is the out-pointer
+       for the handle, so the index is the machine's, not a constant here.
+
+       The send is queued BEFORE the "go" above, so this drain is not a
+       race; the retry loop is the same bounded instrument step 5 uses, so
+       a machine that answered ENODATA forever would REPORT a count instead
+       of hanging. Everything this step learns goes to PEN+136..+208. */
+    xor %r9, %r9                /* retry counter */
+    mov %r9, 208(%rbx)          /* stored even when the FIRST try wins */
+.xfer_retry:
+    mov $1, %rdi
+    lea 216(%rbx), %rsi         /* payload buffer */
+    mov $64, %rdx
+    movabs $-1, %r10
+    lea 144(%rbx), %r8          /* OUT-POINTER for the installed handle */
+    mov $0x48, %rax
+    int $0x84
+    mov %rax, 136(%rbx)
+    cmp $-61, %rax              /* -ENODATA: authorized, box still bare */
+    jne .xfer_done
+    inc %r9
+    mov %r9, 208(%rbx)
+    cmp $RECV_TRIES, %r9
+    jge .xfer_done
+    jmp .xfer_retry
+.xfer_done:
+
+    /* 3c. The geometry of the region we were GIVEN (0x4c), through the
+       handle the machine installed: base PEN+160, length PEN+168, rights
+       PEN+176. The rights are READ|WRITE -- the sender's GRANT did not
+       travel, which is what attenuation means on this kind. */
+    mov 144(%rbx), %rdi
+    lea 160(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 152(%rbx)
+
+    /* 3d. The OTHER process's marker, read through the mapping it handed
+       on -- written BEFORE it gave its own capability back. A non-zero
+       value here is two ring-3 processes sharing one page ACROSS a
+       capability handover, not a constant either side chose. */
+    mov 160(%rbx), %rcx
+    mov (%rcx), %rcx
+    mov %rcx, 184(%rbx)
+
+    /* 3e. OUR write at offset 8. The kernel's releaser reads the last
+       region's first TWO words out of the mapping before unmapping, so a
+       value only this process wrote ends up in the kernel's record. */
+    movabs $0x1122334455667788, %rcx
+    mov 160(%rbx), %rdx
+    mov %rcx, 8(%rdx)
+    mov %rcx, 192(%rbx)
+
+    /* 3f. Give the handle back: the first process closed its own already,
+       so this IS the last holder -- the pages are unmapped and the frames
+       returned to the allocator here, while this process keeps running. */
+    mov 144(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
+    mov %rax, 200(%rbx)
 
     /* 4. The FIRST process's region write, read through the mapping this
        process was told about (PEN+32 is the kernel's base). */

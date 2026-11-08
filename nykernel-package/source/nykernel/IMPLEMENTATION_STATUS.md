@@ -5929,3 +5929,120 @@ The parity count is unchanged at 526: this round added no demo-chain lines
 (the region request is exercised by the separate `nyrqis.proof=svc84` boot),
 only the clause count inside one existing line, which both boot paths print
 identically.
+## The region a holder HANDS ON (2026-11-08): `CAP_SEND`'s transfer field carries a
+## requested region to a second holder, and the queued copy is a holder
+
+The previous increment let a holder ASK the kernel for a region and gave that
+region's pages back when its last capability closed. What it could not do is
+pass the region on: the transfer field existed on `CAP_SEND` (0x47), and
+`CAP_RECV` (0x48) could install a delivered handle for the Reply kind, but a
+SharedMem transfer was counted by nobody, so a sender that closed its own
+capability after sending would have freed the pages out from under the copy
+still sitting in the receiver's mailbox.
+
+**The lifetime rule this increment adopts.** A QUEUED COPY COUNTS AS A HOLDER
+from the moment `send` queues it, not from the moment `receive` installs it.
+The receiver's install HANDS THE COUNT OVER (it does not add a second), and
+every path that discards a queue gives its counts back -- releasing the pages
+if the discarded copy was the last holder. Counting at receive time instead
+would make the window between queue and drain invisible to the region machine,
+which is exactly the window the proof exercises.
+
+**The kernel half** (`experimental::caps`): `send` increments the region's
+holder count when it queues a SharedMem capability and refuses a DEAD region
+by name (`BadRegion`); `receive` hands the count over on install and falls back
+to dropping the orphan count if the install is refused, so a full receiver
+table cannot leak a holder; `drop_queued` is the single place a queue gives its
+counts back, and it is called by `terminate_process` and `revoke` as well as by
+a discarded message. A `live` guard (`holders == 0 && entry.live`) on the
+close/release/drop paths means a stale capability over an already-dead region
+cannot release a second time. `rights::ALL` (`SEND|GRANT|READ|WRITE`) was added
+because 0x47's `a_rights` bound was `SEND|GRANT`, which made every region
+transfer asking for READ or WRITE fail as `EBADF` -- the bound was smaller than
+the release's own rights vocabulary. `Message` gained `transferred_kind`, and
+`CAP_XFER_HANDLE` (0x48) records only `Kind::Reply` transfers: with the region
+handover also filling that field, the first-wins assignment would have broken
+the CALL/REPLY pin that reads the reply handle from it.
+
+**What the proof shows** (`prog_svc84.s` step 16, `prog_svc84_peer.s` steps
+3b-3f; the first ring-3 leg placed BEFORE the parking call because the receiver
+must be alive to take the copy). The sender requests a region, writes
+`0xfeedfacecafed00d` at offset 0, sends it to the peer through the transfer
+field, CLOSES ITS OWN CAPABILITY while the copy is still queued, and reads the
+page again (`survived 0xfeedfacecafed00d` -- the mapping outlived the
+capability because the queued copy held it). The peer drains the transfer
+before the call it answers, reads the sender's marker across the handover,
+writes `0x1122334455667788` at offset 8, then closes -- the last holder -- and
+that close is what returns the pages. The kernel's releaser reads BOTH words
+out of the mapping as it unmaps (`first_word`/`first_word8`), so the release
+record contains a byte from each process, and neither program reports it.
+
+Because the handed-on request runs before step 15's two, the window slots are
+now: handover `0x60000100000`, step 15 `0x60000110000` and `0x60000120000`.
+The release order inverts that for the first leg only -- the receiver closes
+before it answers -- so `released 3` with `first_word 0xfeedfacecafed00d` (the
+handover, both words) and `last_word 0x0`/`last_word8 0x0` (step 15's own
+requests, never written by anyone, which is what keeps the zero-fill claim
+checkable).
+
+Verified transcript lines (`tools/svc84_proof_test.sh`, passing):
+
+```
+  ... PEER-XFER (recv 0x700000004 , handle 0x2 , base 0x60000100000 , read 0xfeedfacecafed00d , wrote 0x1122334455667788 , close 0x0 , tries 0)
+  ... MAP (ack 0x0 , base 0x60000110000 , ... , released 3 word 0xfeedfacecafed00d/0x0 , bases 0x60000100000/0x60000120000 , frames 296 == 296 , unmapped true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , last8 0x1122334455667788)) , MAP matches -- OK
+```
+
+**Negative control on the count** (temporary, reverted immediately after -- the
+restored tree is what passed and what is committed): the increment in `send`
+removed, so the queued copy was invisible to the region machine. The sender's
+close then freed the pages under a copy that had not been drained, and the
+proof never reached its verdict line -- the receiver's read faulted in ring 3:
+
+```
+  FAIL: the ring-3 proof never reached its verdict line
+FAIL: 1 ring-3 service case(s) failed -- see target/svc84-proof/
+```
+
+Checks: `./build.sh` PASS; `svc84_proof_test.sh` PASS with the PEER-XFER leg
+pinned; `qemu_boot_test.sh` PASS with `experimental caps: 85 clause groups`
+(fifteen new clauses: a queued copy counted, the sender's close not freeing,
+handover on install, a refused install giving the count back, a discarded queue
+releasing, a dead region refused by name on send, the double-release guard, and
+`rights::ALL`'s own shape).
+
+Named sharp edges: the transfer is a COPY of the capability, so the receiver
+holds its own attenuated one and the sender's close is not a revocation; the
+two proof processes still share one address space (the handover is proven for
+the capability and the region machine, not for per-process page tables); and a
+region handed on with `a_rights` wider than the sender held is refused by the
+existing attenuation check rather than clipped.
+
+## The long gates, rerun on the handover tree (2026-11-08):
+## all three green on the final sources, with the tree untouched during the runs
+
+Rerun because the boot chain's caps self-test line changed (`70 -> 85` clause
+groups) and because the proof gained a leg. No source file was edited after the
+runs started -- only this document and the port manifest, which no gate reads.
+
+```
+UEFI_EXIT=0
+PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited
+      cleanly; the GOP framebuffer was handed over, bound, and the shell
+      rendered into it; the C/D/E blocking-receive tape is pinned and matched
+PARITY_EXIT=0
+PASS: BIOS and UEFI kernels' demo chains are line-identical modulo the
+      documented environment-fact allowlist
+      (BIOS 526 chain lines == UEFI 526 chain lines; allowlist deltas only)
+SECBOOT_EXIT=0
+PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose
+      signer is chained to the enrolled carrier root, ... and the kernel
+      reached Ready
+      dbx shape probe: 1
+```
+
+The parity count is unchanged at 526: the handover is exercised by the separate
+`nyrqis.proof=svc84` boot, so no demo-chain line was added -- only the clause
+count inside one existing line, which both boot paths print identically. The
+secure-boot gate still takes four negative boots (unsigned, one-byte-tampered,
+hash-revoked, whole-cert-revoked) plus the KeK-signed dbx update, each capped at
+240 s; the run above is from a fresh start after its rebuild, not a resumed one.

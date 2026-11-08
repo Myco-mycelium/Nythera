@@ -74,6 +74,18 @@ const MAX_REQUEST_SLOTS: u64 = 8;
 /// BEFORE unmapping it, so "the holder wrote, the kernel read" is the same
 /// two-party evidence the kernel-mapped SHM leg carries.
 pub const SHM_REQUEST_VALUE: u64 = 0xdead_beef_cafe_babe;
+/// What the first process writes into the region it ASKS for and then HANDS
+/// ON through the transfer field (0x47). It writes it BEFORE giving its own
+/// capability back, and the PEER reads it through the same mapping AFTER
+/// that close -- which is what makes the transferred region's lifetime
+/// observable from both sides: the pages outlived the sender's capability.
+pub const SHM_TRANSFER_VALUE: u64 = 0xfeed_face_cafe_d00d;
+/// What the RECEIVING process writes at offset 8 of that region. The
+/// releaser reads the last region's first TWO words out of the mapping
+/// before unmapping it, so a value only the receiver wrote is in the
+/// kernel's own record: the same two-party evidence the kernel-mapped leg
+/// carries, at the moment the pages actually go back.
+pub const SHM_TRANSFER_WRITE: u64 = 0x1122_3344_5566_7788;
 
 /// The raw allocator the region-request hooks map and free through. The
 /// coordinator owns the allocator by `&mut`; the hooks run inside a trap
@@ -94,6 +106,16 @@ static REGION_FRAMES_BASELINE: AtomicU64 = AtomicU64::new(u64::MAX);
 static REGION_RELEASED: AtomicU64 = AtomicU64::new(0);
 static REGION_FIRST_WORD: AtomicU64 = AtomicU64::new(0);
 static REGION_LAST_WORD: AtomicU64 = AtomicU64::new(0);
+/// The LAST released region's second word: what the RECEIVER of a
+/// transferred region wrote there while it held the mapping.
+static REGION_LAST_WORD8: AtomicU64 = AtomicU64::new(0);
+/// The FIRST released region's second word. The region that is HANDED ON
+/// is the first one released by construction: the receiving process gives
+/// its capability back BEFORE it answers the call that unblocks the
+/// sender, and the sender's own two requests are made after that answer
+/// (its step 15). So the first release is the transfer leg's, and this is
+/// the receiver's write read out of the mapping at that moment.
+static REGION_FIRST_WORD8: AtomicU64 = AtomicU64::new(0);
 static REGION_FIRST_BASE: AtomicU64 = AtomicU64::new(0);
 static REGION_LAST_BASE: AtomicU64 = AtomicU64::new(0);
 
@@ -148,12 +170,23 @@ unsafe fn release_region_mapping(geometry: crate::experimental::caps::Region) {
         return;
     }
     let word = core::ptr::read_volatile(geometry.base as *const u64);
+    // The second word only matters for the region two PROCESSES wrote
+    // (the transfer leg): the sender's marker at offset 0 is `word`, the
+    // receiver's at offset 8 is this one. Read under the same "still
+    // mapped" window so both are facts about the same moment.
+    let word8 = if geometry.len >= 16 {
+        core::ptr::read_volatile((geometry.base + 8) as *const u64)
+    } else {
+        0
+    };
     let n = REGION_RELEASED.fetch_add(1, Ordering::SeqCst);
     if n == 0 {
         REGION_FIRST_WORD.store(word, Ordering::SeqCst);
+        REGION_FIRST_WORD8.store(word8, Ordering::SeqCst);
         REGION_FIRST_BASE.store(geometry.base, Ordering::SeqCst);
     }
     REGION_LAST_WORD.store(word, Ordering::SeqCst);
+    REGION_LAST_WORD8.store(word8, Ordering::SeqCst);
     REGION_LAST_BASE.store(geometry.base, Ordering::SeqCst);
 
     let mut mapper = crate::experimental::address_space::active_mapper();
@@ -177,9 +210,16 @@ unsafe fn release_region_mapping(geometry: crate::experimental::caps::Region) {
 pub struct RequestedRegionReport {
     pub first_unmapped: bool,
     pub second_unmapped: bool,
+    /// The window slot the HANDED-ON region was requested in: a third
+    /// request, so a third slot, and it must be unmapped too.
+    pub third_unmapped: bool,
     pub released: u64,
     pub first_word: u64,
+    /// The first released region's SECOND word (the receiver's write).
+    pub first_word8: u64,
     pub last_word: u64,
+    /// The last released region's SECOND word (the receiver's write).
+    pub last_word8: u64,
     pub first_base: u64,
     pub last_base: u64,
     pub frames_in_use: u64,
@@ -195,9 +235,12 @@ pub fn requested_region_report() -> Option<RequestedRegionReport> {
     Some(RequestedRegionReport {
         first_unmapped: unmapped(SHM_REQUEST_WINDOW),
         second_unmapped: unmapped(SHM_REQUEST_WINDOW + SHM_REQUEST_STRIDE),
+        third_unmapped: unmapped(SHM_REQUEST_WINDOW + 2 * SHM_REQUEST_STRIDE),
         released: REGION_RELEASED.load(Ordering::SeqCst),
         first_word: REGION_FIRST_WORD.load(Ordering::SeqCst),
+        first_word8: REGION_FIRST_WORD8.load(Ordering::SeqCst),
         last_word: REGION_LAST_WORD.load(Ordering::SeqCst),
+        last_word8: REGION_LAST_WORD8.load(Ordering::SeqCst),
         first_base: REGION_FIRST_BASE.load(Ordering::SeqCst),
         last_base: REGION_LAST_BASE.load(Ordering::SeqCst),
         frames_in_use: unsafe { (*fa).frames_in_use() },

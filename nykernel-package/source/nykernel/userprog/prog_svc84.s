@@ -675,6 +675,81 @@ _start:
     mov %rcx, 888(%rbx)
     mov 872(%rbx), %rcx          /* record's rights */
     mov %rcx, 896(%rbx)
+    /* 16. A REGION WE ASKED FOR, HANDED TO THE OTHER PROCESS
+       (0x4f -> 0x47 -> 0x4d, 2026-11-07). The requested region's
+       capability travels in the DEDICATED TRANSFER FIELD of a CAP_SEND
+       through handle 5 (SEND to the peer's endpoint), attenuated to
+       READ|WRITE -- GRANT is deliberately left behind, so the receiver
+       cannot pass it on again.
+
+       The close below is the point of the whole step: this process gives
+       its OWN capability back while the copy is still queued, and the
+       region must SURVIVE that. The queued copy counts as a holder, so
+       the pages stay mapped -- which the immediate read-back through the
+       base proves from this side, and the peer's later read proves from
+       the other.
+
+       record BUF+2304 (32 bytes), payload "xfer" BUF+2336. Results from
+       BUF+2344, eight qwords: request ack, base, handle, length,
+       transfer ack, close ack, the marker read back AFTER the close, and
+       the consumed handle's geometry refusal. */
+    /* 16a. ASK for one page. */
+    mov $4096, %rdi
+    lea 2304(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 2344(%rbx)
+    mov 2304(%rbx), %rcx
+    mov %rcx, 2352(%rbx)         /* base the KERNEL chose */
+    mov 2312(%rbx), %rcx
+    mov %rcx, 2368(%rbx)         /* length */
+    mov 2328(%rbx), %rcx
+    mov %rcx, 2360(%rbx)         /* handle the kernel minted */
+    /* 16b. Our marker through the mapping (the peer reads it after we let
+       go, the kernel's releaser reads it at the very end). */
+    movabs $0xfeedfacecafed00d, %rcx
+    mov 2352(%rbx), %rdx
+    mov %rcx, (%rdx)
+    /* 16c. HAND IT ON. a_xfer (r10) is the capability, a_rights (r8) the
+       attenuated mask: READ|WRITE = 0x0c. */
+    movabs $0x0000000072656678, %rcx   /* "xfer" little-endian */
+    mov %rcx, 2336(%rbx)
+    mov $5, %rdi
+    lea 2336(%rbx), %rsi
+    mov $4, %rdx
+    mov 2360(%rbx), %r10
+    mov $0x0c, %r8
+    mov $0x47, %rax
+    int $0x84
+    mov %rax, 2376(%rbx)
+    /* 16d. Our OWN close, with the copy still in flight: the region must
+       not be torn down here. */
+    mov 2360(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
+    mov %rax, 2384(%rbx)
+    /* 16e. ...and the page is STILL mapped: our own marker, read through
+       the base after our capability is gone. */
+    mov 2352(%rbx), %rdx
+    mov (%rdx), %rcx
+    mov %rcx, 2392(%rbx)
+    /* 16f. Our handle is consumed: -EBADF through 0x4c. */
+    mov 2360(%rbx), %rdi
+    lea 2416(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 2400(%rbx)
+
     /* 13c. THE CALL (0x4a, blocking dial): handle 5, the peer's endpoint
        as the capability names it, 8-byte "fromA!" request, the answer
        buffer at BUF+904 and its capacity 32. THIS PARK: the task that

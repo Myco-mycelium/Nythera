@@ -223,21 +223,42 @@ else
     # The REQUESTED-REGION leg (0x4f `CAP_SHM_MAP`): until this row the
     # kernel always mapped first and a holder could only be TOLD where.
     # Here the process asks for a page, the kernel chooses the window
-    # (base 0x60000100000 -- not a constant in the program), zeroes the
-    # frames, records the region and mints handle 3; a SECOND request gets
-    # the NEXT window (0x60000110000, two pages), so the base is the
-    # kernel's choice per request. The holder's write
-    # (0xdeadbeefcafebabe) is read out of the mapping by the kernel's own
-    # releaser before it unmaps (word 0xdeadbeefcafebabe, and 0x0 out of
-    # the region the program never wrote -- a request is zero-filled).
-    # Both last-capability closes are teardowns: the two windows are
-    # UNMAPPED in the page tables (unmapped true / true) and the frame
-    # count is back to its pre-pump baseline (296 == 296). The consumed
-    # handle is refused -EBADF.
-    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"MAP (ack 0x0 , base 0x60000100000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000110000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000100000 , released 2 word 0xdeadbeefcafebabe/0x0 , bases 0x60000100000/0x60000110000 , frames 296 == 296 , unmapped true / true)"* ]]; then
-        ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; and both teardowns unmapped their window and returned every frame"
+    # (base -- not a constant in the program), zeroes the frames, records
+    # the region and mints a handle. THREE requests happen in the pump, so
+    # the window slots are: the one HANDED ON to the other process
+    # (0x60000100000, `PEER-XFER base 0x60000100000`), then step 15's two
+    # (0x60000110000 and 0x60000120000, the second two pages). The
+    # handover's region is released FIRST -- the receiver closes before it
+    # answers the call that unblocks the sender -- and the kernel's
+    # releaser reads BOTH words out of that mapping as the pages go:
+    # 0xfeedfacecafed00d, written by the sender BEFORE it gave its own
+    # capability back (`survived` is the same value read through the base
+    # after that close: the mapping outlived the capability), and
+    # 0x1122334455667788, written only by the RECEIVER. Step 15's own
+    # regions are the last two releases and are zero -- never written by
+    # anyone, which is what makes a request's pages zero-filled.
+    # All three windows are UNMAPPED in the page tables (unmapped true /
+    # true / true) and the frame count is back to its pre-pump baseline
+    # (296 == 296). The consumed handle is refused -EBADF.
+    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"MAP (ack 0x0 , base 0x60000110000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000120000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000110000 , released 3 word 0xfeedfacecafed00d/0x0 , bases 0x60000100000/0x60000120000 , frames 296 == 296 , unmapped true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , last8 0x1122334455667788))"* ]]; then
+        ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; both teardowns unmapped their window and returned every frame"
     else
         bad "the requested-region leg's mapping, kernel-chosen window or page release failed their read-back"
+    fi
+    # The HANDOVER leg: the SAME requested region, handed to the OTHER
+    # process through the dedicated transfer field. The sender closed its
+    # own capability while the copy was still queued and the page stayed
+    # mapped (survived 0xfeedfacecafed00d); the receiver read that marker
+    # across the handover (read 0xfeedfacecafed00d), wrote at offset 8
+    # (0x1122334455667788), and its close -- the LAST holder's -- is what
+    # returned the pages, which the releaser's two readings confirm. The
+    # copy arrived attenuated (the geometry row answers rights 0xc for a
+    # peer whose sender held 0xe), and the message was already queued, so
+    # the drain needed no retry (tries 0).
+    if [[ "$VERDICT" == *"PEER-XFER (recv 0x700000004 , handle 0x2 , base 0x60000100000 , read 0xfeedfacecafed00d , wrote 0x1122334455667788 , close 0x0 , tries 0)"* ]]; then
+        ok "one ring-3 process handed its requested region to the OTHER through the capability transfer field; the receiver's copy was counted as a holder (the sender's close freed nothing), the page stayed mapped across that close, and the receiver's own close freed it with both processes' bytes in the kernel's record"
+    else
+        bad "the region handover's receiver-side facts failed their read-back"
     fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
@@ -253,4 +274,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed, and handed one of those requested regions to the OTHER process through the capability transfer field -- the receiver's copy counted as a holder, so the sender's own close freed nothing and the page stayed mapped until the receiver closed last, with both processes' bytes in the kernel's release record."

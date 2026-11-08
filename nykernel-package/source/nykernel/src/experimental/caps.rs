@@ -57,6 +57,21 @@
 //! mapping it just made, so a refusal cannot leak what it created -- and
 //! the self-test checks both the release and the no-leak ordering.
 //!
+//! ---- a region reaches a SECOND holder ------------------------------
+//!
+//! The transfer field always carried region capabilities, but the copy it
+//! installs was not COUNTED: the receiver's capability did not appear in
+//! the region's holder count, so the sender's own close could free the
+//! pages while the receiver was still entitled to them. A queued copy is
+//! now a holder from the moment it is queued (`send` increments, `receive`
+//! hands the count over without a second one), which is what makes the
+//! delivery path honest: `drop_queued` gives the count back wherever a
+//! queue is thrown away -- endpoint revocation, an owner's termination --
+//! and releases the pages when that was the last count. The transfer also
+//! refuses BY NAME a region that is already dead, and the row's rights
+//! bound is the union of all kinds' rights (`rights::ALL`), because
+//! bounding it by the endpoint mask would refuse every region handover.
+//!
 //! ---- the Input kind (the release's Phase-9/1-29 clauses) ------------
 //!
 //! `Kind::Input` is the TOKEN that authorizes polling input events:
@@ -118,6 +133,12 @@ pub mod rights {
     pub const READ: u8 = 4;
     /// The release's WRITE: may store through a shared region's mapping.
     pub const WRITE: u8 = 8;
+    /// Every right any kind can carry: the only claim a row can check
+    /// WITHOUT knowing the kind, and the mask a "this is not a handle"
+    /// refusal is bounded by. Which subset a transfer may actually carry
+    /// is the MACHINE's check (attenuation against the holder's own
+    /// mask, per kind), not the row's.
+    pub const ALL: u8 = SEND | GRANT | READ | WRITE;
 }
 
 /// The capability kinds THIS machine knows. Endpoint is the queue-based
@@ -191,7 +212,11 @@ pub enum CapError {
 
 /// A message queued at an endpoint: the sender task id, the bounded
 /// payload, and an ATTENUATED capability travelling in the dedicated
-/// transfer field (§5.1) -- never in payload bytes.
+/// transfer field (§5.1) -- never in payload bytes. That field is how a
+/// region capability reaches a SECOND holder: the sender must hold GRANT
+/// on it, the copy may only narrow its rights, and the region is counted
+/// from the moment the copy is queued until either the receiver installs
+/// it or the queue is discarded.
 struct Queued {
     sender: usize,
     payload: Vec<u8>,
@@ -206,6 +231,11 @@ pub struct Message {
     pub sender: usize,
     pub payload: Vec<u8>,
     pub transferred: Option<u32>,
+    /// The KIND of the capability that arrived in the transfer field
+    /// (`None` when nothing did). The gate reports the handle it installed
+    /// for a REPLY specifically, so a later message carrying a region
+    /// capability cannot be mistaken for the call's reply handle.
+    pub transferred_kind: Option<Kind>,
 }
 
 struct Endpoint {
@@ -235,7 +265,10 @@ pub struct Region {
 /// capabilities name it, and whether it still exists. The count is the
 /// release's region lifetime in one number -- the record dies with its
 /// LAST holder, not with its first, and a holder that never gives the
-/// capability back keeps the region alive by construction.
+/// capability back keeps the region alive by construction. A cap in
+/// flight counts too: a transferred capability sitting in an endpoint's
+/// queue names the region exactly as a table slot does, so it is counted
+/// at send and handed over -- not re-counted -- at receive.
 struct RegionEntry {
     geometry: Region,
     holders: u32,
@@ -317,15 +350,54 @@ impl CapSystem {
     }
 
     /// Ends a holder: its endpoints die with it (§7.1) and in-flight
-    /// transfers in those queues vanish with the queue.
+    /// transfers in those queues vanish with the queue -- which means the
+    /// region counts they were holding have to come back, or a dead
+    /// endpoint would pin a region alive forever.
     pub fn terminate_process(&mut self, p: usize) -> Result<(), CapError> {
         let holder = self.procs.get_mut(p).filter(|h| h.alive).ok_or(CapError::BadProcess)?;
         holder.alive = false;
+        // Collected first, released after: `drop_queued` needs the whole
+        // table, and an endpoint borrow would fight it.
+        let mut dropped: Vec<VecDeque<Queued>> = Vec::new();
         for ep in self.endpoints.iter_mut().filter(|e| e.owner == p) {
             ep.alive = false;
-            ep.queue.clear();
+            dropped.push(core::mem::take(&mut ep.queue));
+        }
+        for q in dropped {
+            self.drop_queued(q);
         }
         Ok(())
+    }
+
+    /// Gives back the region counts carried by messages nobody will
+    /// receive. A queued copy counts as a holder from the moment the send
+    /// queues it (see `send`), so every path that throws a queue away --
+    /// endpoint teardown, revocation, a dead owner -- must decrement for
+    /// it, and release the pages when it was the last one. Non-region
+    /// transfers carry no count: an endpoint cap is bounded by its
+    /// generation and a Reply cap is single-use.
+    fn drop_queued(&mut self, queue: VecDeque<Queued>) {
+        let mut freed: Vec<Region> = Vec::new();
+        for q in queue.iter() {
+            let moved = match q.moved {
+                Some(c) if c.kind == Kind::SharedMem => c,
+                _ => continue,
+            };
+            if let Some(entry) = self.regions.get_mut(moved.endpoint as usize) {
+                entry.holders = entry.holders.saturating_sub(1);
+                if entry.holders == 0 && entry.live {
+                    entry.live = false;
+                    if entry.owned {
+                        freed.push(entry.geometry);
+                    }
+                }
+            }
+        }
+        for geometry in freed {
+            if let Some(release) = self.region_releaser {
+                unsafe { release(geometry) };
+            }
+        }
     }
 
     /// Creates an endpoint owned by `owner`, handing the owner a
@@ -344,13 +416,19 @@ impl CapSystem {
     /// endpoint goes stale -- generation bump, queue drained -- with no
     /// holder cooperation needed.
     pub fn revoke(&mut self, owner: usize, ep: u32) -> Result<(), CapError> {
-        let e = self.endpoints.get_mut(ep as usize).ok_or(CapError::BadHandle)?;
-        if e.owner != owner {
-            return Err(CapError::NotOwner);
-        }
+        let dropped = {
+            let e = self.endpoints.get_mut(ep as usize).ok_or(CapError::BadHandle)?;
+            if e.owner != owner {
+                return Err(CapError::NotOwner);
+            }
         e.generation += 1;
-        e.queue.clear();
-        Ok(())
+        core::mem::take(&mut e.queue)
+    };
+    // Outside the endpoint borrow: a revoked queue may have been the last
+    // holder of a requested region, and giving its pages back walks the
+    // page tables.
+    self.drop_queued(dropped);
+    Ok(())
     }
 
     /// Owner-only: issue a fresh capability of the CURRENT generation.
@@ -633,7 +711,11 @@ impl CapSystem {
         let mut freed: Option<Region> = None;
         if let Some(entry) = self.regions.get_mut(region) {
             entry.holders = entry.holders.saturating_sub(1);
-            if entry.holders == 0 {
+            // `live` is the guard that makes a double release impossible:
+            // a capability can only name a live region (the count is what
+            // keeps it live), so a second close at zero is a machine bug
+            // and must not free the pages a second time.
+            if entry.holders == 0 && entry.live {
                 entry.live = false;
                 if entry.owned {
                     freed = Some(entry.geometry);
@@ -676,7 +758,7 @@ impl CapSystem {
                 released += 1;
                 if let Some(entry) = self.regions.get_mut(cap.endpoint as usize) {
                     entry.holders = entry.holders.saturating_sub(1);
-                    if entry.holders == 0 {
+                    if entry.holders == 0 && entry.live {
                         entry.live = false;
                         if entry.owned {
                             freed.push(entry.geometry);
@@ -823,8 +905,17 @@ impl CapSystem {
                     Kind::Reply => return Err(CapError::NoRight),
                     // A region capability's authority never stales: the
                     // frames it names are the kernel's for as long as the
-                    // region exists, and there is no revoke on them.
-                    Kind::SharedMem => {}
+                    // region exists, and there is no revoke on them. What
+                    // it CAN do is die, so a transfer naming a region that
+                    // is already gone is refused here rather than queued:
+                    // the queue would otherwise carry a capability over
+                    // frames the allocator has taken back.
+                    Kind::SharedMem => {
+                        match self.regions.get(held.endpoint as usize) {
+                            Some(r) if r.live => {}
+                            _ => return Err(CapError::BadRegion),
+                        }
+                    }
                 }
                 Some(Capability { rights: want, ..held })
             }
@@ -839,7 +930,23 @@ impl CapSystem {
         if e.queue.len() >= QUEUE_CAPACITY {
             return Err(CapError::QueueFull);
         }
+        // A queued copy is a capability in flight, so it counts against
+        // the region's lifetime FROM THE MOMENT IT IS QUEUED -- otherwise
+        // a sender could transfer a region, close its own capability, and
+        // free the pages out from under the message waiting to be
+        // received. `receive` hands that count over to the receiving
+        // table slot (it does not add a second one), and every discarded
+        // queue gives it back (`drop_queued`).
+        let queued_region = moved
+            .as_ref()
+            .filter(|c| c.kind == Kind::SharedMem)
+            .map(|c| c.endpoint);
         e.queue.push_back(Queued { sender: from, payload: payload.to_vec(), moved });
+        if let Some(region) = queued_region {
+            if let Some(entry) = self.regions.get_mut(region as usize) {
+                entry.holders += 1;
+            }
+        }
         Ok(())
     }
 
@@ -876,14 +983,38 @@ impl CapSystem {
             Some(q) => q,
             None => return Ok(None),
         };
+        let moved_kind = q.moved.map(|c| c.kind);
         let transferred = match q.moved {
             Some(c) => {
-                let holder = self.live(owner)?;
-                Some(Self::install(holder, c)?)
+                // No region count here: the capability being installed was
+                // COUNTED when it was queued (a queued copy is a holder),
+                // so this is the count moving from the queue into a slot,
+                // not a second capability being born.
+                let installed = {
+                    let holder = self.live(owner)?;
+                    Self::install(holder, c)
+                };
+                match installed {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        // The slot pre-check above makes this unreachable,
+                        // but the message is already consumed here: hand its
+                        // region count back rather than leak a holder.
+                        let mut orphan = VecDeque::new();
+                        orphan.push_back(Queued { sender: q.sender, payload: Vec::new(), moved: Some(c) });
+                        self.drop_queued(orphan);
+                        return Err(e);
+                    }
+                }
             }
             None => None,
         };
-        Ok(Some(Message { sender: q.sender, payload: q.payload, transferred }))
+        Ok(Some(Message {
+            sender: q.sender,
+            payload: q.payload,
+            transferred,
+            transferred_kind: if transferred.is_some() { moved_kind } else { None },
+        }))
     }
 }
 
@@ -1641,6 +1772,136 @@ pub fn run() -> bool {
         sys.close_region_cap(CLIENT, boot_h).is_ok()
             && !sys.region_live(boot_like)
             && TEST_RELEASED.load(Ordering::SeqCst) == 0
+    );
+
+    // ---- a region reaches a SECOND holder through the transfer field ----
+    // The transfer machine always allowed a region capability to ride a
+    // message; what it did not do was COUNT the copy, so a sender could
+    // transfer a region, close its own capability and free the pages while
+    // the receiver's copy was still in the queue -- or worse, installed and
+    // pointing at frames the allocator had taken back. These clauses pin
+    // the count at send, the handover at receive, and the count coming
+    // back when a queue is thrown away.
+    const XA: usize = 3; // transfers a region it requested
+    const XB: usize = 4; // receives it into its own table
+    let _ = sys.create_process(XA);
+    let _ = sys.create_process(XB);
+    let (xep, _xb_owner_h) = sys.create_endpoint(XB).expect("self-test: transfer endpoint");
+    let xa_ep = sys
+        .bootstrap_grant(XA, xep, rights::SEND | rights::GRANT)
+        .expect("self-test: sender's endpoint grant");
+    TEST_RELEASED.store(0, Ordering::SeqCst);
+    let (x_region, x_h, _) = sys
+        .request_region(XA, 1, rights::READ | rights::WRITE | rights::GRANT)
+        .expect("self-test: region for transfer");
+    check!(
+        "a requested region with GRANT can be handed on",
+        sys.region_holders(x_region) == Some(1)
+    );
+    check!(
+        "a transfer through the endpoint is queued",
+        sys.send(XA, xa_ep, b"take", Some((x_h, rights::READ | rights::WRITE))).is_ok()
+    );
+    check!(
+        "the QUEUED copy counts as a holder, not just the table slot",
+        sys.region_holders(x_region) == Some(2)
+    );
+    check!(
+        "the sender's close cannot free a region a copy is in flight for",
+        sys.close_region_cap(XA, x_h).is_ok()
+            && sys.region_live(x_region)
+            && sys.region_holders(x_region) == Some(1)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 0
+    );
+    let xm = sys.receive(XB, xep).expect("self-test: receive transfer").expect("self-test: message");
+    let x_recv_h = xm.transferred.expect("self-test: region installed in the receiver");
+    check!(
+        "receive hands the count over instead of counting a second capability",
+        sys.region_holders(x_region) == Some(1) && xm.payload == b"take"
+    );
+    check!(
+        "the receiver's copy names the same region, attenuated to what was asked",
+        sys.region_cap(XB, x_recv_h) == Ok((x_region, rights::READ | rights::WRITE))
+    );
+    // A READ-only region capability carries no GRANT. Attenuation cannot
+    // manufacture one, so the transfer is refused by NAME -- the same
+    // instrument the endpoint clauses use, on the region kind.
+    let x_ro = sys
+        .bootstrap_region(XA, x_region, rights::READ)
+        .expect("self-test: READ-only region cap");
+    check!(
+        "a region cap without GRANT cannot be transferred",
+        sys.send(XA, xa_ep, b"", Some((x_ro, rights::READ))) == Err(CapError::NoRight)
+    );
+    check!(
+        "the receiver's copy cannot re-transfer (it kept no GRANT)",
+        sys.send(XB, x_recv_h, b"", Some((x_recv_h, rights::READ))) == Err(CapError::NoRight)
+    );
+    // A THIRD capability over the same region (the kernel half granting the
+    // sender a narrower copy) must move the count too, or the two closes
+    // below would free the region twice.
+    check!(
+        "a further grant over a transferred region still counts",
+        sys.region_holders(x_region) == Some(2)
+            && sys.close_region_cap(XA, x_ro).is_ok()
+            && sys.region_live(x_region)
+            && sys.region_holders(x_region) == Some(1)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 0
+    );
+    // ...and now the receiver's close is the LAST one: the pages go back
+    // exactly once, and only now -- the count that made the region survive
+    // the sender's close is the one this close spends.
+    check!(
+        "the LAST holder's close frees the requested pages, once",
+        sys.close_region_cap(XB, x_recv_h).is_ok()
+            && !sys.region_live(x_region)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+    );
+    // A queue that is THROWN AWAY (revocation) must give its counts back:
+    // a revoked endpoint would otherwise pin a requested region's pages
+    // forever, which is the leak this lifetime exists to prevent.
+    TEST_RELEASED.store(0, Ordering::SeqCst);
+    let (x2_region, x2_h, _) = sys
+        .request_region(XA, 1, rights::READ | rights::WRITE | rights::GRANT)
+        .expect("self-test: second region for transfer");
+    check!(
+        "a transfer is queued for a region whose sender will keep a capability",
+        sys.send(XA, xa_ep, b"", Some((x2_h, rights::READ | rights::WRITE))).is_ok()
+            && sys.region_holders(x2_region) == Some(2)
+    );
+    check!(
+        "revocation gives the queued copy's count back",
+        sys.revoke(XB, xep).is_ok()
+            && sys.region_live(x2_region)
+            && sys.region_holders(x2_region) == Some(1)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 0
+    );
+    check!(
+        "...and the sender's own close is then the last one",
+        sys.close_region_cap(XA, x2_h).is_ok()
+            && !sys.region_live(x2_region)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+    );
+    // Teardown of a dead owner's endpoints discards the same queues; the
+    // count must come back the same way (a dead endpoint must not be a
+    // place a region goes to live forever).
+    let (x3_region, x3_h, _) = sys
+        .request_region(XA, 1, rights::READ | rights::WRITE | rights::GRANT)
+        .expect("self-test: third region for transfer");
+    TEST_RELEASED.store(0, Ordering::SeqCst);
+    let _ = sys.send(XA, xa_ep, b"", Some((x3_h, rights::READ | rights::WRITE)));
+    check!(
+        "terminating the owner hands the queued copy's count back",
+        sys.terminate_process(XB).is_ok()
+            && sys.region_live(x3_region)
+            && sys.region_holders(x3_region) == Some(1)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 0
+    );
+    check!(
+        "...and the region dies with its actual last capability",
+        sys.close_region_cap(XA, x3_h).is_ok()
+            && !sys.region_live(x3_region)
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
     );
 
     // §4.3 revocation: O(1), outstanding caps dead, owner mints fresh

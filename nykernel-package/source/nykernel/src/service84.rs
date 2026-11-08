@@ -15,7 +15,7 @@
 //! | 0x44 | `PROCESS_SELF` | — | the running scheduler task's id (`experimental::scheduler`); `0` = the kernel itself |
 //! | 0x45 | `IPC_SEND` | a0=endpoint, a1=seq, OR a1=buffer + a2=len | queues `(sender = caller identity, seq)` or the release's payload message (bytes copied into the kernel); `0`, or the arbiter's errno |
 //! | 0x46 | `IPC_RECV` | a0=endpoint (+ a1=buffer, a2=buflen>=64 for the payload dial), a_xfer = 0 plain / 1 blocking | drains one queued message -> `(sender << 32) | seq`, or the payload byte count with the bytes in the caller's buffer; `-ENODATA` when real-and-empty, `-ENOENT` when it does not exist, `-EAGAIN` when a wait woke with nothing |
-//! | 0x47 | `CAP_SEND` | a0=handle, a1/a2=payload, a_xfer/a_rights | capability-checked send through `experimental::caps`; `0`, or its errno |
+//! | 0x47 | `CAP_SEND` | a0=handle, a1/a2=payload, a_xfer/a_rights = a handle to transfer, attenuated to at most a_rights (u64::MAX = no transfer) | capability-checked send through `experimental::caps`; the transfer is how a region capability reaches a SECOND holder. `0`, or its errno |
 //! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer, a_rights = out-pointer for a transferred handle (0 = not wanted) | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
 //! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
 //! | 0x4a | `CAP_CALL` | a0=endpoint handle, a1/a2=request; a_xfer/a_rights = answer buffer + length for the BLOCKING dial | queues the request carrying a ONE-SHOT `Reply` capability naming the caller -> the endpoint's owner id; with an answer buffer the caller PARKS until the server answers and gets the answer's byte count; its errno otherwise |
@@ -648,13 +648,25 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     for (i, slot) in map.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a0 + 2136 + 8 * i as u64) as *const i64) };
     }
+    // The HANDED-ON region's block (BUF+2344..+2408, eight qwords): the
+    // request's ack, the base the kernel chose for it, the minted handle,
+    // the length, the transfer's ack, the close's ack, the process's own
+    // marker read back AFTER that close (the page survived it), and the
+    // consumed handle's refusal.
+    if !crate::memory::paging::user_range_ok(a0 + 2344, 64, false) {
+        return EFAULT;
+    }
+    let mut mapx = [0i64; 8];
+    for (i, slot) in mapx.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 2344 + 8 * i as u64) as *const i64) };
+    }
     // The PEER process's page (a1): its own results, read from ITS
     // memory after its task was TERMINATED -- the strongest form of
     // "this is what the other process observed".
-    if !crate::memory::paging::user_range_ok(a1, 112, false) {
+    if !crate::memory::paging::user_range_ok(a1, 216, false) {
         return EFAULT;
     }
-    let mut peer = [0i64; 14];
+    let mut peer = [0i64; 27];
     for (i, slot) in peer.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a1 + 8 * i as u64) as *const i64) };
     }
@@ -895,10 +907,19 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // tables, and the frame count is back to the pre-pump
     // baseline: the mapping's pages came back, not just its
     // record.
-    let want_map_base = crate::svc84_proof::SHM_REQUEST_WINDOW as i64;
-    let want_map_base2 =
+    // Slot order in the pump: the HANDED-ON request is step 16, which runs
+    // before the call that parks, so it takes the FIRST window slot; the
+    // two requests of step 15 (after the answer) take the next two. The
+    // release order inverts that for the first leg only: the receiver
+    // closes before it answers, so ITS close is the first release.
+    let want_map_base3 = crate::svc84_proof::SHM_REQUEST_WINDOW as i64;
+    let want_map_base =
         (crate::svc84_proof::SHM_REQUEST_WINDOW + crate::svc84_proof::SHM_REQUEST_STRIDE) as i64;
+    let want_map_base2 =
+        (crate::svc84_proof::SHM_REQUEST_WINDOW + 2 * crate::svc84_proof::SHM_REQUEST_STRIDE) as i64;
     let want_map_value = crate::svc84_proof::SHM_REQUEST_VALUE as i64;
+    let want_transfer_value = crate::svc84_proof::SHM_TRANSFER_VALUE as i64;
+    let want_transfer_write = crate::svc84_proof::SHM_TRANSFER_WRITE as i64;
     let map_report = crate::svc84_proof::requested_region_report();
     let map_ok = match map_report {
         Some(r) => {
@@ -920,18 +941,59 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
                 && map[15] == want_map_base
                 && r.first_unmapped
                 && r.second_unmapped
-                && r.released == 2
-                && r.first_word == want_map_value as u64
+                && r.third_unmapped
+                && r.released == 3
+                // The FIRST release is the region that was HANDED ON, and
+                // its two words are the two processes' writes: the
+                // sender's marker at offset 0 (written BEFORE it closed
+                // its own capability) and the receiver's at offset 8.
+                // Read out of the mapping by the releaser, at the moment
+                // the pages went back -- reported by neither program.
+                && r.first_word == want_transfer_value as u64
+                && r.first_word8 == want_transfer_write as u64
+                // The last two releases are step 15's own requests, never
+                // written by anyone: their words being zero is what says
+                // the release order above is the one the pins describe.
                 && r.last_word == 0
+                && r.last_word8 == 0
                 && r.first_base == crate::svc84_proof::SHM_REQUEST_WINDOW
-                && r.last_base
-                    == crate::svc84_proof::SHM_REQUEST_WINDOW
-                        + crate::svc84_proof::SHM_REQUEST_STRIDE
+                && r.last_base == want_map_base2 as u64
                 && r.frames_in_use == r.frames_baseline
+                // The SENDER's side of the handover: its own request, the
+                // transfer's ack, its own close (accepted, and the region
+                // did NOT die -- the read below proves the mapping lived),
+                // and the consumed handle's refusal. The prototype the
+                // receiver got is compared through ITS page, below.
+                && mapx[0] == 0
+                && mapx[1] == want_map_base3
+                && mapx[2] >= 0
+                && mapx[3] == 4096
+                && mapx[4] == 0
+                && mapx[5] == 0
+                && mapx[6] == want_transfer_value
+                && mapx[7] == EBADF
+                // ...and the RECEIVER's: the message it drained (the first
+                // process's session, four payload bytes), the handle the
+                // machine installed in ITS table, the geometry row through
+                // that handle (the same window, attenuated to READ|WRITE),
+                // the sender's marker read across the handover, its own
+                // write at offset 8, and the close that finally returned
+                // the pages. Zero retries: the message was queued before
+                // the "go" that resumed it.
+                && peer[17] == ((crate::svc84_proof::FIRST_SESSION as i64) << 32 | 4)
+                && peer[18] >= 0
+                && peer[20] == want_map_base3
+                && peer[22]
+                    == (crate::experimental::caps::rights::READ
+                        | crate::experimental::caps::rights::WRITE) as i64
+                && peer[23] == want_transfer_value
+                && peer[24] == want_transfer_write
+                && peer[25] == 0
+                && peer[26] == 0
         }
         None => false,
     };
-    let (map_released, map_first_word, map_last_word, map_first_base, map_last_base, map_in_use, map_baseline, map_unmapped1, map_unmapped2) =
+    let (map_released, map_first_word, map_last_word, map_first_base, map_last_base, map_in_use, map_baseline, map_unmapped1, map_unmapped2, map_first_word8, map_unmapped3) =
         match map_report {
             Some(r) => (
                 r.released,
@@ -943,8 +1005,10 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
                 r.frames_baseline,
                 r.first_unmapped,
                 r.second_unmapped,
+                r.first_word8,
+                r.third_unmapped,
             ),
-            None => (0, 0, 0, 0, 0, 0, 0, false, false),
+            None => (0, 0, 0, 0, 0, 0, 0, false, false, 0, false),
         };
     let peer_ok = peer[0] == 0
         && peer[4] == want_shm_base
@@ -974,7 +1038,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && map_ok;
     let ok = stored_ok && wrote_ok;
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-    crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {}) , MAP {} -- {}
+    crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x} , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , close {:#x} , tries {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , last8 {:#x})) , MAP {} -- {}
 ",
         LAST_CALLER_CPL.load(Ordering::Relaxed),
         want_gfx as u64,
@@ -1072,6 +1136,13 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         peer[12] as u64,
         if two_ok { "matches" } else { "MISMATCH" },
         if peer_ok { "matches" } else { "MISMATCH" },
+        peer[17] as u64,
+        peer[18] as u64,
+        peer[20] as u64,
+        peer[23] as u64,
+        peer[24] as u64,
+        peer[25] as u64,
+        peer[26] as u64,
         map[0] as u64,
         map[1] as u64,
         map[2] as u64,
@@ -1096,6 +1167,13 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         map_baseline,
         map_unmapped1,
         map_unmapped2,
+        map_unmapped3,
+        mapx[0] as u64,
+        mapx[1] as u64,
+        mapx[4] as u64,
+        mapx[5] as u64,
+        mapx[6] as u64,
+        map_first_word8,
         if map_ok { "matches" } else { "MISMATCH" },
         if ok { "OK" } else { "FAILED" }
     );
@@ -1456,10 +1534,15 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 return EFAULT;
             }
             // Handles are u32 table indexes; anything that would TRUNCATE
-            // is not a valid handle claim. Endpoints' u8 right masks carry
-            // exactly SEND|GRANT today, so a wider rights claim is not a
-            // handle either.
-            if a0 > u32::MAX as u64 || a_rights > (crate::experimental::caps::rights::SEND | crate::experimental::caps::rights::GRANT) as u64 {
+            // is not a valid handle claim. The rights bound is the union of
+            // every right ANY kind carries -- a region transfer asking
+            // READ|WRITE|GRANT is a legitimate claim (and the machine's
+            // attenuation check is what decides whether the holder may make
+            // it), so bounding this by the ENDPOINT mask would refuse every
+            // region handover as a malformed handle.
+            if a0 > u32::MAX as u64
+                || a_rights > crate::experimental::caps::rights::ALL as u64
+            {
                 return EBADF;
             }
             if a_xfer != u64::MAX && a_xfer > u32::MAX as u64 {
@@ -1540,13 +1623,22 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                         // same "none" sentinel the SEND side takes, so a
                         // zeroed out-slot can never be read as handle 0.
                         let h = m.transferred.map(|h| h as u64).unwrap_or(u64::MAX);
-                        // FIRST transfer wins (sentinel u64::MAX = unset):
+                        // FIRST REPLY wins (sentinel u64::MAX = unset):
                         // with two ring-3 processes draining calls, the
                         // LAST writer would make the read-back's compare
                         // depend on which process spoke most recently --
                         // and the leg it judges is the FIRST process's
                         // loopback, whose handle is what the pins name.
-                        if CAP_XFER_HANDLE.load(Ordering::Relaxed) == u64::MAX {
+                        // The KIND filter is what keeps that true now that
+                        // the same transfer field also carries REGION
+                        // capabilities between processes: a region handover
+                        // is a transfer, but it is not the call's reply, and
+                        // recording its handle here would make the CALL leg
+                        // compare against the wrong number.
+                        if m.transferred_kind
+                            == Some(crate::experimental::caps::Kind::Reply)
+                            && CAP_XFER_HANDLE.load(Ordering::Relaxed) == u64::MAX
+                        {
                             CAP_XFER_HANDLE.store(h, Ordering::Relaxed);
                         }
                         unsafe {
