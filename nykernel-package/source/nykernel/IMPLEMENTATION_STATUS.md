@@ -6128,3 +6128,45 @@ Checks: `./build.sh` PASS; `svc84_proof_test.sh` PASS with the SPACES and
 wider-ask legs pinned; `qemu_boot_test.sh` PASS with `experimental caps: 86
 clause groups` and the ordinary boot's pinned lines unchanged (the hooks see no
 peer space there and take the early return).
+
+## The long gates and the release discs, on the two-space tree (2026-11-08)
+
+Rerun because the peer's anchor, its address space and the proof's read-back
+all changed, and because the caps self-test line grew (`85 -> 86` clause
+groups). No source file was edited after the runs started.
+
+```
+UEFI_EXIT=0
+PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited
+      cleanly; the GOP framebuffer was handed over, bound, and the shell
+      rendered into it; the C/D/E blocking-receive tape is pinned and matched
+PARITY_EXIT=0
+PASS: BIOS and UEFI kernels' demo chains are line-identical modulo the
+      documented environment-fact allowlist
+      (BIOS 526 chain lines == UEFI 526 chain lines; allowlist deltas only)
+SECBOOT_EXIT=0
+PASS: ms OVMF under enforcement accepts the Authenticode-signed stub ... and
+      the kernel reached Ready
+      dbx shape probe: 1
+```
+
+The parity count is still 526: the two-space proof runs under
+`nyrqis.proof=svc84`, so no demo-chain line changed -- only the clause count
+inside one existing line.
+
+**The release discs** were built from this commit with `make_live_iso.sh` and
+verified from the outside with `check_live_iso.sh` (`--boot` and
+`--uefi-boot`), which is the repository's attribution gate rather than a
+self-report:
+
+```
+dist/nyrqis-live.iso         24037376 bytes  sha256 6bef20399328148d17c7ed1cc3aaef0128a2b6de3e057a203284077d2cc3fe65
+dist/nyrqis-live-uefi.iso    21348352 bytes  sha256 824ebeefaf7b556fc25b4e7d7d827ae3b635fe9095435053538f8c9e2c44713e
+kernel carried by both:      target/kernel.elf  sha256 e1f6421005fdbd074dd499b3dbfe7b2e1510c0ca4cefe55a09e332e1d422936e
+```
+
+`check_live_iso.sh` answered all three questions it exists for: the ISOs match
+their recorded digests, the kernel inside the BIOS disc is the kernel this tree
+built, that disc boots headless to a verified device-mode session, and the UEFI
+disc boots through OUR signed stub (carrier walked, GOP handed over, shell
+rendered).
