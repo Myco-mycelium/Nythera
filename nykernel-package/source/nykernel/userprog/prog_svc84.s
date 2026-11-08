@@ -765,6 +765,57 @@ _start:
     int $0x84
     mov %rax, 2400(%rbx)
 
+    /* 16g. A FOURTH region, for the WINDOW leg (2026-11-08): the kernel
+       maps it in OUR space and mirrors it into the peer's, then we put a
+       marker in it. */
+    mov $4096, %rdi
+    lea 2512(%rbx), %rsi          /* its own 32-byte record... */
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 2504(%rbx)          /* ...and its answer */
+    mov 2512(%rbx), %rcx          /* the base the KERNEL chose */
+    movabs $0x0ddba11cafef00d, %rdx
+    mov %rdx, (%rcx)
+    mov %rdx, 2488(%rbx)          /* our own read-back of the marker */
+
+    /* 16h. DROP OUR WINDOW, KEEP THE CAPABILITY (0x50). Our own space stops
+       mapping the frames; the frames stay, and the peer's space keeps its
+       mirror over them -- its own read (step 7b) is the evidence, and the
+       kernel's read-back checks our window is gone. */
+    mov 2536(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x50, %rax
+    int $0x84
+    mov %rax, 2424(%rbx)
+
+    /* 16h2. ...and the row is not a second success: the SAME call again is
+       -ENOENT by name (nothing left to drop), not 0. */
+    mov 2536(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x50, %rax
+    int $0x84
+    mov %rax, 2432(%rbx)
+
+    /* 16i. The CAPABILITY outlives the window: geometry (0x4c) still
+       answers the kernel's record for it. */
+    mov 2536(%rbx), %rdi
+    lea 2448(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 2440(%rbx)
+
     /* 13c. THE CALL (0x4a, blocking dial): handle 5, the peer's endpoint
        as the capability names it, 8-byte "fromA!" request, the answer
        buffer at BUF+904 and its capacity 32. THIS PARK: the task that

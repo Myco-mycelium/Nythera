@@ -6291,3 +6291,100 @@ kernel carried by both:     sha256 6b880d6193d883c010a969f458f40e715e03a4000616b
 Both discs match their recorded digests, the BIOS disc carries the kernel this
 tree built and boots to a verified device-mode session, and the UEFI disc boots
 through our signed stub.
+
+## A ring-3 page fault kills the PROCESS, not the machine (2026-11-08)
+
+`idt::page_fault_handler` had two outcomes: the boot's armed guard-page demo
+and "print and halt". Both are ring 0. A ring-3 fault -- a process touching a
+page it does not have -- therefore stopped the kernel dead, which made one
+buggy program a machine-wide kill and forced the revocation leg to arm a
+single expected fault to get its evidence.
+
+The policy is now the ordinary one for a protected machine, and there is no
+arming step left to forget (`experimental::user_fault`):
+
+* every fault taken from RING 3 is RECORDED -- CR2, the CPU's error word, the
+  task, its session, and a reason derived from the error bits (`not mapped`
+  when bit 0 is clear, `protection` otherwise);
+* the faulting task's capabilities are released and its session withdrawn
+  (`service84::abandon_gate_session`, the EXIT row's two steps), then the task
+  is TERMINATED through the scheduler's lifecycle -- the same edge `CAP_EXIT`
+  uses -- so a dead holder cannot pin a region by not existing any more;
+* the rest of the machine keeps running. A fault from RING 0 still halts: the
+  kernel contradicting its own mapping record is not recoverable.
+
+```
+  user fault: task 2 (session 8) touched 0x60000100000 (not mapped, a read) -- error 0x4, 2 capability(ies) released, the task is terminated, the kernel keeps running
+```
+
+The revocation leg's verdict now pins the derived reason as well as the
+address/task, so the record is checked, not just the survival:
+`REVOKE (... , err 0x4 , task 2 , ... , reason not mapped , session 8)`.
+
+## A holder drops its own WINDOW while keeping the capability (2026-11-08)
+
+Until now the mapping and the capability travelled together: a close gave the
+capability back and left the window until the region died, and a revocation
+took the frames from under everybody. A holder could not say "stop mapping
+this for me, I am done with the page, but the region is not yours to free".
+
+**The table** (`experimental::caps`): a region entry now records WHICH HOLDERS
+have a live window on it (`mapped: Vec<holder>`), separate from the holder
+count and from the frames. A window is added when a capability is minted
+(the request maps for the requester; the transfer install mirrors into the
+receiver's space) and removed when a holder drops it.
+
+**The row**: 0x50 `CAP_SHM_UNMAP`, a0 = a region handle the caller KEEPS.
+It unmaps the caller's own space -- one window -- and nothing else: the frames
+are not returned (another holder may be reading them), the other holders'
+windows are untouched, and the capability still answers geometry. A holder
+with no window left is refused `ENOENT` by name rather than told a second
+window was dropped. The kernel half is `unmap_region_window` (a new hook,
+separate from the releaser because they act on different things).
+
+**What the proof shows** (step 16g-16i, peer step 7b):
+
+```
+  WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1)
+```
+
+The first process asks for a region, writes a marker, then drops its window
+(`unmap 0x0`) and drops it again (`again -ENOENT`); geometry still answers
+afterwards. The PEER -- the other address space the kernel mirrored those
+frames into -- reads the marker at that window AFTER the drop, from ring 3,
+which is the claim the row exists to make. And `no-window release 1` is the
+machine's own record: when the region finally died (the first process exited
+still holding the capability) the releaser ran in that process's space and
+found NO window there.
+
+**Two bugs this leg found, both fixed:** the releaser captured the region's
+first words by reading the mapping, which faults when the holder had already
+dropped its window (guarded by the machine's own mapping record now); and it
+freed a frame only when the LOCAL unmap succeeded, leaking exactly the dropped
+window's page (it now finds the frame in whichever space still names it --
+`frames 302 == 302`).
+
+**Negative control** (temporary, reverted immediately): the same run with the
+unmap hook turned into a no-op. Every pin still matched except the one that
+matters -- `no-window release 0`, i.e. the release found the window still
+there -- and the check refused to pass:
+
+```
+  FAIL: the window leg's per-holder unmap did not hold (the row, its refusal, the capability's survival or the other window)
+```
+
+Named limits: the per-holder record is keyed by HOLDER, and in this proof a
+holder is one address space, so the row unmaps exactly the caller's space --
+two holders sharing one space, and a region mapped at a different VA per
+holder, remain staged; the frames still belong to the region, not to a
+holder, so this is not a reference count; and 16g's region is released by the
+process's exit rather than by a close, which is why the exit's released count
+went `0 -> 1`.
+
+Checks: `./build.sh` PASS; `svc84_proof_test.sh` PASS with 19 checks (the
+WINDOW leg pinned end to end); `qemu_boot_test.sh` PASS with
+`experimental caps: 93 clause groups` (three new: one holder drops its own
+window while the other's stays and no frame is released, the second drop is
+refused by name, and the frames outlive both windows until the last close);
+`check_svc84_ledger.py` PASS -- 17 served calls, `0x40..0x50`, disjoint from
+the release's ledger.

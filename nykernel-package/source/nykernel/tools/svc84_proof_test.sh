@@ -215,7 +215,7 @@ else
     # ("region live no holders Some(0)"), and the exits are both recorded
     # (2 exits, the last the first process's session 7, one region
     # capability given back by an exit -- the peer's).
-    if [[ "$VERDICT" == *"TWO-PROCESS matches"* ]] && [[ "$VERDICT" == *"PEER matches"* ]] && [[ "$VERDICT" == *"TWO-PROCESS (close 0x0 , geometry 0x0 , call 0x8 , request 0x21416d6f7266 , answer 0x21426d6f7266 , offset8 0xfeedfacedeadbeef , offset16 0xbeefcafedead1234 , last 0x0 , twice 0xfffffffffffffff7 , region live no holders Some(0) , exits 1 session 7 released 0)"* ]] && [[ "$VERDICT" == *"PEER (ack 0x0 , base 0x60000030000 , read 0xfeedfacedeadbeef , recv 0x700000008 , handle 0x3 , request 0x21416d6f7266 , reply 0x0 , wrote 0xbeefcafedead1234)"* ]]; then
+    if [[ "$VERDICT" == *"TWO-PROCESS matches"* ]] && [[ "$VERDICT" == *"PEER matches"* ]] && [[ "$VERDICT" == *"TWO-PROCESS (close 0x0 , geometry 0x0 , call 0x8 , request 0x21416d6f7266 , answer 0x21426d6f7266 , offset8 0xfeedfacedeadbeef , offset16 0xbeefcafedead1234 , last 0x0 , twice 0xfffffffffffffff7 , region live no holders Some(0) , exits 1 session 7 released 1)"* ]] && [[ "$VERDICT" == *"PEER (ack 0x0 , base 0x60000030000 , read 0xfeedfacedeadbeef , recv 0x700000008 , handle 0x3 , request 0x21416d6f7266 , reply 0x0 , wrote 0xbeefcafedead1234)"* ]]; then
         ok "two ring-3 processes on their own tasks shared one region in both directions, one of them parked in a blocking call that the OTHER answered with its own bytes, and the region's record died with its last holder while each exit released its own capabilities"
     else
         bad "the two-process leg's region lifetime, cross-process bytes or parked answer failed their read-back"
@@ -250,7 +250,7 @@ else
     # precedes the queue, the receiver still drains the ONE good message
     # attenuated to READ|WRITE (0x0c), which is the proof that the wider
     # ask queued nothing.
-    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1) , MAP (ack 0x0 , base 0x60000110000 , len 0x1000 , rights 0xe , handle 0x3 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000120000 , len2 0x2000 , handle2 0x4 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000110000 , released 3 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000110000/0x60000100000 , frames 302 == 302 , unmapped true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
+    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1 , reason not mapped , session 8) , WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1) , MAP (ack 0x0 , base 0x60000120000 , len 0x1000 , rights 0xe , handle 0x4 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000130000 , len2 0x2000 , handle2 0x6 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000120000 , released 4 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000120000/0x60000100000 , frames 302 == 302 , unmapped true / true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
         ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; both teardowns unmapped their window and returned every frame"
     else
         bad "the requested-region leg's mapping, kernel-chosen window or page release failed their read-back"
@@ -295,10 +295,23 @@ else
     # scheduler's lifecycle, so the machine kept running to print this.
     # `revoked`/`woke` say the machine accepted the revoke and a message
     # really reached the parked holder.
-    if [[ "$VERDICT" == *"REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1)"* ]]; then
+    if [[ "$VERDICT" == *"REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1 , reason not mapped , session 8)"* ]]; then
         ok "the kernel revoked a region's mapping while a holder still had its capability, and that holder's next read faulted on the revoked page from ring 3 -- recorded and absorbed by the armed probe, with the faulting task terminated through the scheduler instead of halting the machine"
     else
         bad "the revocation leg's page did not fault (or faulted elsewhere, or was not revoked while a holder lived)"
+    fi
+    # THE WINDOW LEG (2026-11-08): a holder drops ITS OWN window (0x50) and
+    # keeps the capability. The row answers 0 once and -ENOENT by name the
+    # second time; the capability still answers geometry afterwards; the
+    # OTHER space the kernel mirrored those frames into reads the dropped
+    # holder's marker -- ring 3, in the other process, after the window was
+    # gone here; and the release that finally frees the region reports it
+    # ran in a space with NO window at all, which is the machine's own
+    # record that the mapping was dropped before the region died.
+    if [[ "$VERDICT" == *"WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1)"* ]]; then
+        ok "a holder dropped its own window on a shared region while keeping the capability: the second drop was refused by name, the capability still answered geometry, the OTHER process's window over the same frames still read the marker, and the region's release found no window left in the dropper's space"
+    else
+        bad "the window leg's per-holder unmap did not hold (the row, its refusal, the capability's survival or the other window)"
     fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.

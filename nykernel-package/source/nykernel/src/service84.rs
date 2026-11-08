@@ -19,6 +19,7 @@
 //! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer, a_rights = out-pointer for a transferred handle (0 = not wanted) | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
 //! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
 //! | 0x4a | `CAP_CALL` | a0=endpoint handle, a1/a2=request; a_xfer/a_rights = answer buffer + length for the BLOCKING dial | queues the request carrying a ONE-SHOT `Reply` capability naming the caller -> the endpoint's owner id; with an answer buffer the caller PARKS until the server answers and gets the answer's byte count; its errno otherwise |
+//! | 0x50 | `CAP_SHM_UNMAP` | a0=region handle | drops the CALLER's window on a region it still holds: frames and every other holder's window stay -> `0`, `-ENOENT` when this holder has no window left, `-EACCES` for a handle of another kind |
 //! | 0x4d | `CAP_SHM_CLOSE` | a0=region handle | gives ONE region capability back; the record dies with its LAST holder -> `0`, `-EBADF` (a double close), `-EACCES` for a handle of another kind |
 //! | 0x4e | `CAP_EXIT` | nothing (every claim refused `-EINVAL`) | releases the caller's whole table (region counts included), withdraws its session, terminates its task; never returns. `-EPERM` for task 0 |
 //! | 0x4c | `CAP_SHM` | a0=region handle, a1=24-byte record ptr | the kernel's own geometry of the mapped region (`{base, len, rights}`) -> `0`, `-EBADF` for a handle that names nothing, `-EACCES` for a handle of another kind |
@@ -270,6 +271,22 @@ pub const CALL_CAP_SHM: u64 = 0x4c;
 pub const CALL_CAP_SHM_CLOSE: u64 = 0x4d;
 pub const CALL_CAP_EXIT: u64 = 0x4e;
 
+/// 0x50 `CAP_SHM_UNMAP`: a0 = a REGION handle the caller KEEPS. Drops the
+/// caller's own WINDOW on the region -- the mapping in its address space --
+/// and nothing else: the frames are not returned (the region still owns
+/// them and another holder may be reading them), the other holders' windows
+/// are untouched, and the capability still answers geometry afterwards. It
+/// is the complement of 0x4d, which gives the capability back and leaves the
+/// window until the region itself dies, and the counterpart of a kernel-side
+/// revocation, which takes the frames from under every holder.
+///
+/// Returns 0, `ENOENT` when this holder has no window to drop (never had
+/// one, or already dropped it -- refused by name rather than answered as a
+/// second success), `EACCES` for a handle of another kind, `EBADF` for a
+/// handle that names nothing. Every other argument must claim nothing
+/// (`a1 == 0`, `a2 == 0`, `a_xfer == u64::MAX`, `a_rights == 0`).
+pub const CALL_CAP_SHM_UNMAP: u64 = 0x50;
+
 /// The release's region REQUEST -- the half that was missing until
 /// 2026-11-07: until then the kernel mapped a region FIRST and a holder
 /// could only be told where it was (0x4c). This row is the other
@@ -350,6 +367,9 @@ fn map_cap_error(e: crate::experimental::caps::CapError) -> i64 {
         // distinct from EBADF's "no such handle".
         WrongType => EACCES,
         NoRight | Revoked | NotOwner | NotOwned => EACCES,
+        // "Nothing is mapped there": the row that only drops a window has
+        // nothing to drop, which is a different answer from "no right".
+        NotMapped => ENOENT,
         PayloadTooLarge | Widening => EMSGSIZE,
         QueueFull => EAGAIN,
         // A second outstanding BLOCKING call from one holder: EAGAIN is
@@ -671,9 +691,22 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // marker read back AFTER that close (the page survived it), the
     // consumed handle's refusal, and the WIDER ask's refusal (the
     // attenuation negative control: it must be refused, not clipped).
-    if !crate::memory::paging::user_range_ok(a0 + 2344, 72, false) {
+    if !crate::memory::paging::user_range_ok(a0 + 2344, 200, false) {
         return EFAULT;
     }
+    // The WINDOW leg's own words (2026-11-08), read by offset because the
+    // program's record is its own layout: the 0x50 row's answer and its
+    // refusal when repeated, the geometry the surviving capability still
+    // answers, and the request that made the region in the first place.
+    let unmap_ack = unsafe { core::ptr::read_unaligned((a0 + 2424) as *const i64) };
+    let unmap_again = unsafe { core::ptr::read_unaligned((a0 + 2432) as *const i64) };
+    let unmap_geom_ack = unsafe { core::ptr::read_unaligned((a0 + 2440) as *const i64) };
+    let unmap_geom_base = unsafe { core::ptr::read_unaligned((a0 + 2448) as *const i64) };
+    let unmap_req_ack = unsafe { core::ptr::read_unaligned((a0 + 2504) as *const i64) };
+    let unmap_base = unsafe { core::ptr::read_unaligned((a0 + 2512) as *const i64) };
+    let unmap_len = unsafe { core::ptr::read_unaligned((a0 + 2520) as *const i64) };
+    let unmap_handle = unsafe { core::ptr::read_unaligned((a0 + 2536) as *const i64) };
+    let unmap_marker = unsafe { core::ptr::read_unaligned((a0 + 2488) as *const i64) };
     let mut mapx = [0i64; 9];
     for (i, slot) in mapx.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a0 + 2344 + 8 * i as u64) as *const i64) };
@@ -692,11 +725,11 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // wrong space or a shared page would show up as equal words.
     let same_va_first = unsafe { core::ptr::read_unaligned((a0 + 8) as *const u64) };
     unsafe { crate::svc84_proof::select_peer_space() };
-    if !crate::memory::paging::user_range_ok(a1, 216, false) {
+    if !crate::memory::paging::user_range_ok(a1, 240, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
         return EFAULT;
     }
-    let mut peer = [0i64; 27];
+    let mut peer = [0i64; 30];
     for (i, slot) in peer.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a1 + 8 * i as u64) as *const i64) };
     }
@@ -922,12 +955,14 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         // region's capability and is TERMINATED by the armed fault, so its
         // table is released by the fault path instead of the EXIT row. The
         // exit therefore releases NO region capability (the first process
-        // had closed both of its own); a double release would show up here
-        // as 1. `fault_released` covers the peer's side, and the REVOKE
-        // segment below covers what its own read did.
+        // had closed both of its own) -- ONE since the WINDOW leg landed:
+        // step 16g's region is deliberately still held when the process
+        // exits, so the exit is what releases it and frees those pages.
+        // `fault_released` covers the peer's side, and the REVOKE segment
+        // below covers what its own read did.
         && exit_count == 1
         && exit_session == crate::svc84_proof::FIRST_SESSION as u64
-        && exit_released == 0
+        && exit_released == 1
         && exit_task != 0;
     // The peer's own observations: the geometry it was told, the
     // FIRST process's write read through its capability, the
@@ -948,11 +983,31 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // two requests of step 15 (after the answer) take the next two. The
     // release order inverts that for the first leg only: the receiver
     // closes before it answers, so ITS close is the first release.
+    // (the handed-on region: the boot's FIRST request, slot 0)
     let want_map_base3 = crate::svc84_proof::SHM_REQUEST_WINDOW as i64;
-    let want_map_base =
+    // The window slot of the region whose window the first process dropped
+    // with 0x50: its SECOND request (the handed-on region was the first),
+    // so one stride in -- slots are handed out in program order, not by
+    // which leg asked.
+    let want_map_base4 =
         (crate::svc84_proof::SHM_REQUEST_WINDOW + crate::svc84_proof::SHM_REQUEST_STRIDE) as i64;
-    let want_map_base2 =
-        (crate::svc84_proof::SHM_REQUEST_WINDOW + 2 * crate::svc84_proof::SHM_REQUEST_STRIDE) as i64;
+    const WINDOW_MARKER: i64 = 0x0ddba11cafef00d;
+    let want_window_marker = WINDOW_MARKER;
+    // The windows are handed out in PROGRAM order, one stride per request,
+    // so the slots are not in the order the legs are described in. Since the
+    // WINDOW leg landed (2026-11-08) the order is: slot 0 = the handed-on
+    // region (the first process's first request), slot 1 = the WINDOW leg's
+    // region, slots 2 and 3 = step 15's two. Naming them by slot keeps the
+    // pins honest about which mapping they are talking about.
+    let slot = |i: u64| {
+        (crate::svc84_proof::SHM_REQUEST_WINDOW + i * crate::svc84_proof::SHM_REQUEST_STRIDE) as i64
+    };
+    let want_map_base = slot(2);
+    let want_map_base2 = slot(3);
+    // (the handed-on region and the window leg's region, for the pins that
+    // name them through their own words)
+    let want_handover_base = slot(0);
+    let want_window_base = slot(1);
     let want_map_value = crate::svc84_proof::SHM_REQUEST_VALUE as i64;
     let want_transfer_value = crate::svc84_proof::SHM_TRANSFER_VALUE as i64;
     let want_transfer_write = crate::svc84_proof::SHM_TRANSFER_WRITE as i64;
@@ -985,7 +1040,10 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
             && r.fault_addr == r.base
             && r.fault_error == 4
             && r.fault_task == r.expected_task
-            && r.from_ring3);
+            && r.from_ring3
+            // The GENERAL policy, not a keyhole: the reason is derived from
+            // the CPU's error word (bit 0 clear = nothing is mapped there).
+            && r.reason == "not mapped");
     let map_report = crate::svc84_proof::requested_region_report();
     let map_ok = match map_report {
         Some(r) => {
@@ -999,16 +1057,45 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
                 && map[7] == want_map_base2
                 && map[8] == 8192
                 && map[9] == want_shm_rights
-                && map[10] == map[4] + 1
+                // The two handles are minted from the same table but are no
+                // longer adjacent: the WINDOW leg's request (16g) is minted
+                // between them, so this pins ORDER (the second request gets
+                // a later handle) rather than arithmetic that would break
+                // every time a leg adds a capability.
+                && map[10] > map[4]
                 && map[11] == 0
                 && map[12] == 0
                 && map[13] == EBADF
                 && map[14] == 0
                 && map[15] == want_map_base
+                // THE WINDOW LEG: the first process's fourth region, whose
+                // window it DROPPED with 0x50 while keeping the capability.
+                // The row answers 0 once, the same call again is -ENOENT by
+                // name, the capability still answers geometry afterwards,
+                // and the peer -- the other space the kernel mirrored the
+                // frames into -- reads the first process's marker at that
+                // window AFTER it was dropped here. One holder's window
+                // went; the frames and the other window did not.
+                && unmap_req_ack == 0
+                && unmap_base == want_map_base4
+                && unmap_len == 4096
+                && unmap_handle >= 0
+                && unmap_marker == want_window_marker
+                && unmap_ack == 0
+                && unmap_again == ENOENT
+                && unmap_geom_ack == 0
+                && unmap_geom_base == want_map_base4
+                && peer[29] == want_window_marker
                 && r.first_unmapped
                 && r.second_unmapped
                 && r.third_unmapped
-                && r.released == 3
+                && r.fourth_unmapped
+                // ...and the release that freed that region found NO window
+                // in the space it ran in: the machine's own record that the
+                // window was dropped before the region died, not merely
+                // that it was unmapped afterwards.
+                && r.released_without_window == 1
+                && r.released == 4
                 // The FIRST release is the region that was HANDED ON, and
                 // its two words are the two processes' writes: the
                 // sender's marker at offset 0 (written BEFORE it closed
@@ -1082,7 +1169,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         }
         None => false,
     };
-    let (map_released, map_first_word, map_last_word, map_first_base, map_last_base, map_in_use, map_baseline, map_unmapped1, map_unmapped2, map_first_word8, map_last_word8_rep, map_unmapped3) =
+    let (map_released, map_first_word, map_last_word, map_first_base, map_last_base, map_in_use, map_baseline, map_unmapped1, map_unmapped2, map_first_word8, map_last_word8_rep, map_unmapped3, map_unmapped4) =
         match map_report {
             Some(r) => (
                 r.released,
@@ -1097,8 +1184,9 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
                 r.first_word8,
                 r.last_word8,
                 r.third_unmapped,
+                r.fourth_unmapped,
             ),
-            None => (0, 0, 0, 0, 0, 0, 0, false, false, 0, 0, false),
+            None => (0, 0, 0, 0, 0, 0, 0, false, false, 0, 0, false, false),
         };
     let peer_ok = peer[0] == 0
         && peer[4] == want_shm_base
@@ -1128,7 +1216,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && map_ok;
     let ok = stored_ok && wrote_ok;
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-    crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
+    crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {} , reason {} , session {}) , WINDOW (req {:#x} , base {:#x} , len {:#x} , handle {:#x} , marker {:#x} , unmap {:#x} , again {:#x} , geom {:#x} , geom base {:#x} , peer read {:#x} , no-window release {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
 ",
         LAST_CALLER_CPL.load(Ordering::Relaxed),
         want_gfx as u64,
@@ -1242,6 +1330,19 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         rv_expected,
         rv_hits,
         rv_woke,
+        revoke_report.map(|r| r.reason).unwrap_or("none"),
+        revoke_report.map(|r| r.session).unwrap_or(u64::MAX),
+        unmap_req_ack as u64,
+        unmap_base as u64,
+        unmap_len as u64,
+        unmap_handle as u64,
+        unmap_marker as u64,
+        unmap_ack as u64,
+        unmap_again as u64,
+        unmap_geom_ack as u64,
+        unmap_geom_base as u64,
+        peer[29] as u64,
+        map_report.map(|r| r.released_without_window).unwrap_or(u64::MAX),
         map[0] as u64,
         map[1] as u64,
         map[2] as u64,
@@ -1267,6 +1368,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         map_unmapped1,
         map_unmapped2,
         map_unmapped3,
+        map_unmapped4,
         mapx[0] as u64,
         mapx[1] as u64,
         mapx[4] as u64,
@@ -1937,6 +2039,21 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 return EINVAL;
             }
             match crate::experimental::caps::close_region_for(
+                crate::experimental::scheduler::session_identity(),
+                a0 as u32,
+            ) {
+                Ok(()) => 0,
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_SHM_UNMAP => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a1 != 0 || a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            match crate::experimental::caps::unmap_region_for(
                 crate::experimental::scheduler::session_identity(),
                 a0 as u32,
             ) {

@@ -252,6 +252,22 @@ _start:
     int $0x84
     mov %rax, 88(%rbx)
 
+    /* 7b. THE OTHER HOLDER'S WINDOW (2026-11-08). The first process asked
+       the kernel for a region, wrote a marker into it, and then dropped ITS
+       OWN window with the 0x50 row. The kernel mirrored that region into
+       THIS space, so the frames are still reachable HERE, at the window the
+       kernel chose -- read it: the value is the other process's marker,
+       which it wrote before it gave its window up. That is the claim the
+       row exists to make: one holder's window goes, the frames do not, and
+       another space's mapping of the same frames still reads them. The
+       window is a fixed slot: the SECOND request of the boot's window
+       (the first process asked for one at 16a, this one at 16g), so
+       SHM_REQUEST_WINDOW + one stride -- a property of the layout, not
+       something we were told. */
+    movabs $0x60000110000, %rcx
+    mov (%rcx), %rcx
+    mov %rcx, 232(%rbx)
+
     /* 8. PARK for the REVOCATION (2026-11-08): the kernel half of the
        region machine takes this region's pages back AFTER this point -- we
        are off-CPU inside this trap, so nobody is touching the page while

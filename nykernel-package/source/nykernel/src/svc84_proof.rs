@@ -107,6 +107,9 @@ static REGION_FRAMES_BASELINE: AtomicU64 = AtomicU64::new(u64::MAX);
 /// the first and last one's first word (written by the holder), and their
 /// bases.
 static REGION_RELEASED: AtomicU64 = AtomicU64::new(0);
+/// Releases that found no window in the releasing space (the holder had
+/// dropped it with 0x50). One is expected: the window leg's own region.
+static REGION_RELEASED_UNMAPPED: AtomicU64 = AtomicU64::new(0);
 static REGION_FIRST_WORD: AtomicU64 = AtomicU64::new(0);
 static REGION_LAST_WORD: AtomicU64 = AtomicU64::new(0);
 /// The LAST released region's second word: what the RECEIVER of a
@@ -124,8 +127,10 @@ static REGION_LAST_BASE: AtomicU64 = AtomicU64::new(0);
 
 /// The REVOCATION leg's own record: the base the kernel took back, whether
 /// the machine accepted the revoke, whether the wake reached the parked
-/// holder, and which task the probe was armed for. The fault facts come
-/// from `experimental::probe_fault` at read-back time.
+/// holder, and which task the coordinator expected to fault. The fault facts
+/// come from `experimental::user_fault` at read-back time: since the policy
+/// landed, no arm step is needed -- a ring-3 fault is recorded and kills only
+/// that task, which is what makes the holder's own read the evidence.
 static REVOKE_BASE: AtomicU64 = AtomicU64::new(0);
 static REVOKE_OK: AtomicU64 = AtomicU64::new(0);
 static REVOKE_WOKE: AtomicU64 = AtomicU64::new(0);
@@ -201,26 +206,32 @@ pub struct RevocationReport {
     pub fault_error: u64,
     pub fault_task: u64,
     pub from_ring3: bool,
+    /// The session the faulting task belonged to when it faulted.
+    pub session: u64,
+    /// `"not mapped"` or `"protection"`, from the error bits.
+    pub reason: &'static str,
 }
 
 pub fn revocation_report() -> Option<RevocationReport> {
     // None on a boot that never reached the leg: `REVOKE_TASK` is only set
-    // when the coordinator arms the probe.
+    // by the coordinator when it revokes.
     let expected_task = REVOKE_TASK.load(Ordering::SeqCst);
     if expected_task == u64::MAX {
         return None;
     }
-    let probe = crate::experimental::probe_fault::report();
+    let probe = crate::experimental::user_fault::report();
     Some(RevocationReport {
         base: REVOKE_BASE.load(Ordering::SeqCst),
         revoked: REVOKE_OK.load(Ordering::SeqCst) == 1,
         woke: REVOKE_WOKE.load(Ordering::SeqCst) == 1,
         expected_task,
-        hits: probe.map(|p| p.hits).unwrap_or(0),
+        hits: crate::experimental::user_fault::count(),
         fault_addr: probe.map(|p| p.addr).unwrap_or(0),
         fault_error: probe.map(|p| p.error).unwrap_or(0),
         fault_task: probe.map(|p| p.task).unwrap_or(u64::MAX),
         from_ring3: probe.map(|p| p.from_ring3).unwrap_or(false),
+        session: probe.map(|p| p.session).unwrap_or(u64::MAX),
+        reason: probe.map(|p| p.reason.name()).unwrap_or("none"),
     })
 }
 
@@ -291,16 +302,32 @@ unsafe fn release_region_mapping(geometry: crate::experimental::caps::Region) {
     if fa.is_null() || geometry.len == 0 {
         return;
     }
-    let word = core::ptr::read_volatile(geometry.base as *const u64);
+    // The capture reads the mapping, so it is only possible while THIS
+    // space maps it: since the 0x50 row landed a holder can drop its window
+    // before the region dies, and the releaser running later -- still in
+    // that same space -- would fault on a page nobody maps any more. The
+    // guard is the machine's own record of the mapping, not a guess.
+    let mapped_here = paging::page_flags_active(VirtAddr::new(geometry.base)).is_some();
+    let word = if mapped_here {
+        core::ptr::read_volatile(geometry.base as *const u64)
+    } else {
+        0
+    };
     // The second word only matters for the region two PROCESSES wrote
     // (the transfer leg): the sender's marker at offset 0 is `word`, the
     // receiver's at offset 8 is this one. Read under the same "still
     // mapped" window so both are facts about the same moment.
-    let word8 = if geometry.len >= 16 {
+    let word8 = if mapped_here && geometry.len >= 16 {
         core::ptr::read_volatile((geometry.base + 8) as *const u64)
     } else {
         0
     };
+    if !mapped_here {
+        // Released in a space that maps nothing at `base`: the holder
+        // dropped its window (0x50) before the region died. Counted so the
+        // verdict can say so with the machine's own record.
+        REGION_RELEASED_UNMAPPED.fetch_add(1, Ordering::SeqCst);
+    }
     let n = REGION_RELEASED.fetch_add(1, Ordering::SeqCst);
     if n == 0 {
         REGION_FIRST_WORD.store(word, Ordering::SeqCst);
@@ -312,18 +339,62 @@ unsafe fn release_region_mapping(geometry: crate::experimental::caps::Region) {
     REGION_LAST_BASE.store(geometry.base, Ordering::SeqCst);
 
     let mut mapper = crate::experimental::address_space::active_mapper();
+    // The MIRROR's tables, taken before the loop so each page's frame can be
+    // found from whichever space still names it: since 0x50 landed, the
+    // holder that drops its window first leaves the releaser running in a
+    // space that maps nothing -- and a frame freed only when the LOCAL unmap
+    // succeeds would leak exactly those pages (this leaked one frame the
+    // first time the window leg ran).
+    let other = other_proof_pml4();
+    let mut other_mapper = if other != 0 {
+        Some(mapper_for_pml4(other))
+    } else {
+        None
+    };
     for i in 0..geometry.len / 4096 {
         let page: Page<Size4KiB> =
             Page::containing_address(VirtAddr::new(geometry.base + i * 4096));
-        if let Ok((frame, flush)) = mapper.unmap(page) {
+        let mut frame = None;
+        if let Ok((f, flush)) = mapper.unmap(page) {
             flush.flush();
-            (*fa).deallocate_frame(frame);
+            frame = Some(f);
+        }
+        if let Some(peer) = other_mapper.as_mut() {
+            if let Ok((f, flush)) = peer.unmap(page) {
+                flush.flush();
+                if frame.is_none() {
+                    frame = Some(f);
+                }
+            }
+        }
+        if let Some(f) = frame {
+            (*fa).deallocate_frame(f);
         }
     }
-    // ...and the peer's tables: the mirror is a mapping, not a reference
-    // count, so leaving it behind would keep a translation to frames the
-    // allocator has taken back.
-    unmirror_from_other_space(geometry.base, geometry.len / 4096);
+}
+
+/// The PER-HOLDER half of the region machine's mapping source: drop ONE
+/// window -- the calling holder's own space, the active one -- and nothing
+/// else. The frames are NOT handed back (the region still owns them, and
+/// another holder may be reading them), the mirror in the other proof space
+/// stays exactly where it is, and the caller's capability survives. This is
+/// what `0x50` calls, and it is the whole difference between a window and a
+/// region: a close gives the capability back, a revocation takes the frames,
+/// this takes one translation.
+unsafe fn unmap_region_window(geometry: crate::experimental::caps::Region) {
+    if geometry.len == 0 {
+        return;
+    }
+    let mut mapper = crate::experimental::address_space::active_mapper();
+    for i in 0..geometry.len / 4096 {
+        let page: Page<Size4KiB> =
+            Page::containing_address(VirtAddr::new(geometry.base + i * 4096));
+        if let Ok((_frame, flush)) = mapper.unmap(page) {
+            // Deliberately no `deallocate_frame`: the frame belongs to the
+            // region, not to this window.
+            flush.flush();
+        }
+    }
 }
 
 /// The PML4 of the proof's OTHER address space -- the one that is not
@@ -436,6 +507,17 @@ pub struct RequestedRegionReport {
     /// The window slot the HANDED-ON region was requested in: a third
     /// request, so a third slot, and it must be unmapped too.
     pub third_unmapped: bool,
+    /// The FOURTH slot: the region whose window the first process dropped
+    /// with the 0x50 row while it still held the capability. Its window in
+    /// the first process's space must be gone, and the PEER's window over
+    /// the same frames must have survived -- which the peer's own read at
+    /// that address proves, not this table.
+    pub fourth_unmapped: bool,
+    /// How many releases found no window in the space they ran in: the
+    /// window leg's region is released exactly that way (its holder dropped
+    /// the window first), so this must be 1 and not 0.
+    pub released_without_window: u64,
+
     pub released: u64,
     pub first_word: u64,
     /// The first released region's SECOND word (the receiver's write).
@@ -455,10 +537,19 @@ pub fn requested_region_report() -> Option<RequestedRegionReport> {
         return None;
     }
     let unmapped = |addr: u64| paging::page_flags_active(VirtAddr::new(addr)).is_none();
+    // The fourth slot is the region whose window the first process DROPPED
+    // (0x50) while keeping the capability. Its mirror in the peer's space is
+    // checked BEFORE it goes, by the peer's own read (the proof's verdict
+    // carries that value); by the time this report runs the first process's
+    // exit has released its last capability, so both windows are gone and
+    // the frames are back -- which is what the cleanup pin below says.
+    let fourth_base = SHM_REQUEST_WINDOW + SHM_REQUEST_STRIDE;
     Some(RequestedRegionReport {
         first_unmapped: unmapped(SHM_REQUEST_WINDOW),
         second_unmapped: unmapped(SHM_REQUEST_WINDOW + SHM_REQUEST_STRIDE),
         third_unmapped: unmapped(SHM_REQUEST_WINDOW + 2 * SHM_REQUEST_STRIDE),
+        fourth_unmapped: unmapped(fourth_base),
+        released_without_window: REGION_RELEASED_UNMAPPED.load(Ordering::SeqCst),
         released: REGION_RELEASED.load(Ordering::SeqCst),
         first_word: REGION_FIRST_WORD.load(Ordering::SeqCst),
         first_word8: REGION_FIRST_WORD8.load(Ordering::SeqCst),
@@ -825,6 +916,7 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         crate::experimental::caps::install_region_hooks(
             allocate_region_mapping,
             release_region_mapping,
+            unmap_region_window,
         );
     }
     serial_println!(
@@ -905,7 +997,6 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
             };
             REVOKE_BASE.store(base, Ordering::SeqCst);
             REVOKE_TASK.store(task_b as u64, Ordering::SeqCst);
-            crate::experimental::probe_fault::arm(base, task_b as u64);
             let revoked_ok = match crate::experimental::caps::region_id_by_base(base) {
                 Some(region) => crate::experimental::caps::revoke_region(region).is_ok(),
                 None => false,

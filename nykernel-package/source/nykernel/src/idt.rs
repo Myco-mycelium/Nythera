@@ -323,39 +323,40 @@ extern "x86-interrupt" fn page_fault_handler(
         crate::memory::guard_demo::fatal_page_fault(accessed, error_code)
     }
 
-    // The 0x84 proof's REVOCATION leg arms one expected user fault: a page
-    // the kernel took back while its holder still had a capability. The
-    // holder's own next read is the evidence, so this fault must be
-    // RECORDED and its task terminated through the scheduler's lifecycle
-    // (the same edge CAP_EXIT uses) rather than halting the machine. A
-    // fault that does not match the armed one falls through to the halting
-    // path below, unchanged: this is a keyhole for one named fault, not a
-    // general user-fault policy.
-    if crate::experimental::probe_fault::is_armed() {
+    // A fault taken from RING 3 is a process's death, not the machine's.
+    // This is the policy, not a keyhole: any ring-3 fault is recorded with
+    // the CPU's own words (CR2, the error code, the task, its session, and a
+    // reason derived from the error bits) and the faulting task is
+    // terminated through the scheduler's lifecycle -- the edge CAP_EXIT
+    // uses -- after its capabilities are released and its session withdrawn,
+    // so a dead process cannot pin a capability by not existing any more.
+    // The 0x84 proof's revocation leg relies on exactly this: the holder
+    // reads the page the kernel took back, faults, and the record is the
+    // evidence while the rest of the machine keeps running. A fault taken
+    // from RING 0 falls through to the halting path below unchanged -- the
+    // kernel contradicting its own mapping record is not recoverable.
+    if stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3 {
         let task = crate::experimental::scheduler::current_task();
-        if crate::experimental::probe_fault::matches(accessed.as_u64(), task) {
-            let from_ring3 = stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3;
-            crate::experimental::probe_fault::record(
-                accessed.as_u64(),
-                error_code.bits() as u64,
-                task,
-                from_ring3,
-            );
-            // The faulted task still holds capabilities (the peer kept its
-            // handle on purpose, so the read could prove the mapping was
-            // gone): release them and withdraw its session before the
-            // lifecycle reaches TERMINATED, exactly as the EXIT row does.
-            let released = crate::service84::abandon_gate_session();
-            serial_println!(
-                "  service-0x84 proof: the revoked page was touched (accessed {:#x}, error {:?}, task {}, from ring 3 {}) -- {} capability(ies) released, the task is terminated, the kernel keeps running",
-                accessed,
-                error_code,
-                task,
-                from_ring3,
-                released
-            );
-            crate::experimental::scheduler::terminate_current();
-        }
+        let session = crate::experimental::scheduler::session_identity() as u64;
+        let rec = crate::experimental::user_fault::record(
+            accessed.as_u64(),
+            error_code.bits() as u64,
+            task,
+            session,
+            true,
+        );
+        let released = crate::service84::abandon_gate_session();
+        serial_println!(
+            "  user fault: task {} (session {}) touched {:#x} ({}{}) -- error {:#x}, {} capability(ies) released, the task is terminated, the kernel keeps running",
+            rec.task,
+            rec.session,
+            rec.addr,
+            rec.reason.name(),
+            if rec.write { ", a write" } else { ", a read" },
+            rec.error,
+            released
+        );
+        crate::experimental::scheduler::terminate_current();
     }
 
     serial_println!(

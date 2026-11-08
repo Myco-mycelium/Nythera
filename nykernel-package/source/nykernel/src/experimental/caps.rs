@@ -211,6 +211,11 @@ pub enum CapError {
     /// the request's own cap). The caller still holds nothing, and the
     /// half-made mapping has already been given back.
     OutOfMemory,
+    /// The holder asked to drop ITS window of a region whose table already
+    /// records no mapping for it: either it never had one or it has already
+    /// dropped it. Refused by name rather than answered as success, so a
+    /// repeated unmap cannot look like a second window was taken away.
+    NotMapped,
 }
 
 /// A message queued at an endpoint: the sender task id, the bounded
@@ -276,6 +281,15 @@ struct RegionEntry {
     geometry: Region,
     holders: u32,
     live: bool,
+    /// WHICH HOLDERS currently have this region mapped in their own address
+    /// space, by holder id. A region's frames are one thing; the window a
+    /// holder reads them through is another, and they come and go
+    /// separately: the 0x50 row drops ONE holder's window while the others
+    /// keep theirs (and the frames stay), while a close or a revocation
+    /// takes the whole region. Kept as ids rather than a count so a
+    /// repeated unmap by the same holder is refused by name instead of
+    /// eating another holder's mapping.
+    mapped: Vec<usize>,
     /// Whether THIS machine created the mapping (a holder's request) and
     /// therefore owns giving its pages back when the last capability goes
     /// away. False for the regions the kernel mapped before minting a
@@ -300,6 +314,10 @@ pub struct CapSystem {
     /// different times and a table must not keep a mapping alive merely
     /// because it once had a way to make one.
     region_releaser: Option<unsafe fn(Region)>,
+    /// The PER-HOLDER half: drop one window (the caller's space) without
+    /// freeing a frame. Separate from the releaser because that one takes
+    /// the whole region back.
+    region_unmapper: Option<unsafe fn(Region)>,
     /// One entry per PARKED caller: the blocking CALL's wait slot. The
     /// answer is deposited here by `reply` (which also unblocks the
     /// caller's task) and consumed by the gate when the parked task
@@ -326,6 +344,7 @@ impl CapSystem {
             endpoints: Vec::new(),
             region_mapper: None,
             region_releaser: None,
+            region_unmapper: None,
             waits: Vec::new(),
             regions: Vec::new(),
         }
@@ -610,6 +629,10 @@ impl CapSystem {
             holders: 0,
             live: true,
             owned: false,
+            // Not a window this table installed: the kernel mapped it, and
+            // the holders that receive a capability over it are recorded by
+            // `bootstrap_region`.
+            mapped: Vec::new(),
         });
         id
     }
@@ -622,9 +645,11 @@ impl CapSystem {
         &mut self,
         mapper: unsafe fn(u64) -> Option<Region>,
         releaser: unsafe fn(Region),
+        unmapper: unsafe fn(Region),
     ) {
         self.region_mapper = Some(mapper);
         self.region_releaser = Some(releaser);
+        self.region_unmapper = Some(unmapper);
     }
 
     /// The release's region CREATE/MAP request: the caller ASKS for a
@@ -646,11 +671,16 @@ impl CapSystem {
         }
         let geometry = unsafe { mapper(pages) }.ok_or(CapError::OutOfMemory)?;
         let id = self.regions.len() as u32;
+        let mut mapped = Vec::new();
+        mapped.push(to);
         self.regions.push(RegionEntry {
             geometry,
             holders: 0,
             live: true,
             owned: true,
+            // The mapper maps for the REQUESTER (its own space, the active
+            // one), so the requester is the first holder with a window.
+            mapped,
         });
         match self.bootstrap_region(to, id, want) {
             Ok(handle) => Ok((id, handle, geometry)),
@@ -686,6 +716,14 @@ impl CapSystem {
         // incremented the count would pin a region alive for a holder
         // that never received it.
         self.regions[region as usize].holders += 1;
+        // ...and the holder has a WINDOW: a requested region is mapped in
+        // the requester's space, and a capability arriving through the
+        // transfer field is mirrored into the receiver's. Idempotent, so a
+        // re-install cannot double-count one space.
+        let entry = &mut self.regions[region as usize];
+        if !entry.mapped.contains(&to) {
+            entry.mapped.push(to);
+        }
         Ok(handle)
     }
 
@@ -707,6 +745,49 @@ impl CapSystem {
     /// The count is NOT cleared: those capabilities still exist, and
     /// `close_region_cap`'s `holders == 0 && live` guard is what keeps the
     /// later closes from freeing the pages a second time.
+    /// This surface's 0x50: the holder drops ITS OWN window on a region it
+    /// still holds a capability on. The frames stay (other holders may be
+    /// reading them, and the capability still answers geometry), and so do
+    /// the other holders' windows -- this unmaps exactly one space, the
+    /// caller's. A holder that never had a window, or that already dropped
+    /// it, is refused `NotMapped` by name rather than told it succeeded.
+    ///
+    /// Deliberately NOT the same thing as the close (0x4d): a close gives a
+    /// capability back and lowers the holder count, while its window stays
+    /// mapped until the region itself goes (that is the fact the queued-copy
+    /// leg pins: the sender's own read still lands after its close). This row
+    /// is the other order -- window first, capability kept.
+    pub fn unmap_region_cap(&mut self, holder: usize, handle: u32) -> Result<(), CapError> {
+        let cap = self.lookup(holder, handle)?;
+        if cap.kind != Kind::SharedMem {
+            return Err(CapError::WrongType);
+        }
+        let region = cap.endpoint;
+        let entry = match self.regions.get_mut(region as usize) {
+            Some(e) if e.live => e,
+            _ => return Err(CapError::BadRegion),
+        };
+        let at = entry.mapped.iter().position(|&h| h == holder);
+        let at = match at {
+            Some(at) => at,
+            None => return Err(CapError::NotMapped),
+        };
+        let geometry = entry.geometry;
+        entry.mapped.remove(at);
+        let unmap = self.region_unmapper;
+        // Outside the record's borrow: unmapping walks page tables.
+        if let Some(unmap) = unmap {
+            unsafe { unmap(geometry) }
+        }
+        Ok(())
+    }
+
+    /// Whether `holder` has a window on `region` right now (the read-back the
+    /// 0x50 leg asks, so the answer is the table's and not a guess).
+    pub fn holder_is_mapped(&self, region: u32, holder: usize) -> bool {
+        matches!(self.regions.get(region as usize), Some(e) if e.live && e.mapped.contains(&holder))
+    }
+
     pub fn revoke_region(&mut self, region: u32) -> Result<(), CapError> {
         let entry = match self.regions.get_mut(region as usize) {
             Some(e) if e.live => e,
@@ -721,6 +802,10 @@ impl CapSystem {
         }
         let geometry = entry.geometry;
         entry.live = false;
+        // Every holder's window goes with the pages: the releaser unmaps in
+        // the space it is called from and removes the mirror, so no space is
+        // left naming frames the allocator takes back.
+        entry.mapped.clear();
         let release = self.region_releaser;
         // Outside the record's borrow, for the same reason
         // `close_region_cap` does it: a releaser walks page tables.
@@ -1279,10 +1364,28 @@ pub fn region_geometry_of(region: u32) -> Result<Region, CapError> {
 pub fn install_region_hooks(
     mapper: unsafe fn(u64) -> Option<Region>,
     releaser: unsafe fn(Region),
+    unmapper: unsafe fn(Region),
 ) {
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
-        sys.install_region_hooks(mapper, releaser)
+        sys.install_region_hooks(mapper, releaser, unmapper)
+    })
+}
+
+/// The gate's 0x50 row: the caller drops ITS OWN window on a region whose
+/// capability it keeps. The frames and every other holder's window stay.
+pub fn unmap_region_for(caller: usize, handle: u32) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.unmap_region_cap(caller, handle)
+    })
+}
+
+/// The 0x50 leg's read-back: does `holder` still have a window on `region`?
+pub fn holder_window(caller: usize, region: u32) -> bool {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.holder_is_mapped(region, caller)
     })
 }
 
@@ -1419,6 +1522,17 @@ fn self_test_region_releaser(geometry: Region) {
     TEST_RELEASED.fetch_add(1, Ordering::SeqCst);
     TEST_RELEASED_BASE.store(geometry.base, Ordering::SeqCst);
 }
+
+/// The per-holder half: one window dropped, no frame returned. Counted
+/// separately from the releaser so the self-test can tell "the window went"
+/// from "the pages went".
+fn self_test_region_unmapper(geometry: Region) {
+    TEST_UNMAPPED.fetch_add(1, Ordering::SeqCst);
+    TEST_UNMAPPED_BASE.store(geometry.base, Ordering::SeqCst);
+}
+
+static TEST_UNMAPPED: AtomicU64 = AtomicU64::new(0);
+static TEST_UNMAPPED_BASE: AtomicU64 = AtomicU64::new(0);
 
 pub fn run() -> bool {
     use crate::serial_println;
@@ -1771,7 +1885,11 @@ pub fn run() -> bool {
         "a region request with no kernel mapper is refused by name",
         sys.request_region(REQ, 1, rights::READ) == Err(CapError::NoRegionMapper)
     );
-    sys.install_region_hooks(self_test_region_mapper, self_test_region_releaser);
+    sys.install_region_hooks(
+        self_test_region_mapper,
+        self_test_region_releaser,
+        self_test_region_unmapper,
+    );
     TEST_RELEASED.store(0, Ordering::SeqCst);
     TEST_RELEASED_BASE.store(0, Ordering::SeqCst);
     let (req_region, req_h, req_geom) = sys
@@ -1988,6 +2106,45 @@ pub fn run() -> bool {
         "a dead region cannot be revoked again",
         sys.revoke_region(rv_region) == Err(CapError::BadRegion)
             && TEST_RELEASED.load(Ordering::SeqCst) == 1
+    );
+    // PER-HOLDER WINDOWS (2026-11-08): a region's frames and the window a
+    // holder reads them through are different things, and the 0x50 row drops
+    // exactly one window -- the caller's -- while the frames and the other
+    // holders' windows stay. Nothing is released here: only the unmapper
+    // fires, and the capability survives so the row can answer geometry
+    // afterwards.
+    TEST_RELEASED.store(0, Ordering::SeqCst);
+    TEST_UNMAPPED.store(0, Ordering::SeqCst);
+    let (w_region, w_h, w_geom) = sys
+        .request_region(XA, 1, rights::READ | rights::WRITE | rights::GRANT)
+        .expect("self-test: region whose window is dropped");
+    let w_h2 = sys
+        .bootstrap_region(XB, w_region, rights::READ)
+        .expect("self-test: second holder keeps its window");
+    check!(
+        "one holder can drop its OWN window while the other holder's stays: the unmapper fires once, no frame is released, and both capabilities survive",
+        sys.holder_is_mapped(w_region, XA)
+            && sys.holder_is_mapped(w_region, XB)
+            && sys.unmap_region_cap(XA, w_h).is_ok()
+            && !sys.holder_is_mapped(w_region, XA)
+            && sys.holder_is_mapped(w_region, XB)
+            && TEST_UNMAPPED.load(Ordering::SeqCst) == 1
+            && TEST_UNMAPPED_BASE.load(Ordering::SeqCst) == w_geom.base
+            && TEST_RELEASED.load(Ordering::SeqCst) == 0
+            && sys.region_holders(w_region) == Some(2)
+            && sys.region_geometry(w_region) == Ok(w_geom)
+    );
+    check!(
+        "dropping the same window twice is refused by name, and a holder that never had one cannot drop another's",
+        sys.unmap_region_cap(XA, w_h) == Err(CapError::NotMapped)
+            && TEST_UNMAPPED.load(Ordering::SeqCst) == 1
+    );
+    check!(
+        "the frames outlive both windows: the last close is what releases, once",
+        sys.close_region_cap(XA, w_h).is_ok()
+            && sys.close_region_cap(XB, w_h2).is_ok()
+            && TEST_RELEASED.load(Ordering::SeqCst) == 1
+            && !sys.region_live(w_region)
     );
     // A queue that is THROWN AWAY (revocation) must give its counts back:
     // a revoked endpoint would otherwise pin a requested region's pages
