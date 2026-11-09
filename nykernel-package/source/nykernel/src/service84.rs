@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves twenty-eight calls:
+//! table), the result goes back in `rax` -- that serves twenty-nine calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -33,9 +33,10 @@
 //! | 0x56 | `CAP_IOPORT_OUT` | a0=IoPort handle, a1=port, a2=byte | same checks with WRITE before the `out` is issued -> `0` |
 //! | 0x57 | `CAP_FB_READ` | a0=FrameBuffer handle, a1=`(x<<32)\|y` | kind + READ, row inside the granted window -> the RAW scan-out word; `-EACCES` outside the window or for another kind |
 //! | 0x58 | `CAP_FB_WRITE` | a0=FrameBuffer handle, a1=`(x<<32)\|y`, a2=word | kind + WRITE, row inside the window -> stores the word -> `0` |
-//! | 0x59 | `CAP_BLOCK_READ` | a0=BlockDevice handle, a1=LBA, a2=buffer, a_xfer=bytes (1..16384) | kind + READ + EVERY sector of the span inside the window, then the span read sector-by-sector into the buffer -> the byte count; `-EACCES` outside the window, `-ENODEV` with no device, `-EIO` on a failed read |
-//! | 0x5a | `CAP_BLOCK_INFO` | a0=BlockDevice handle, a1=24-byte record | kind + READ, then the drive's own geometry (`{sector size, sector count, 0}`) -> `0`; `-ENODEV` with no device, `-EIO` when it will not answer |
+//! | 0x59 | `CAP_BLOCK_READ` | a0=BlockDevice handle, a1=LBA, a2=buffer, a_xfer=bytes (1..16384) | kind + READ + EVERY sector of the span inside the window, then the span read sector-by-sector THROUGH THE SECTOR CACHE into the buffer -> the byte count; `-EACCES` outside the window, `-EIO` on a failed read |
+//! | 0x5a | `CAP_BLOCK_INFO` | a0=BlockDevice handle, a1=24-byte record | kind + READ, then the drive's own geometry (`{sector size, sector count, 0}`) -> `0`; `-EIO` when it will not answer |
 //! | 0x5b | `CAP_BLOCK_WRITE` | a0=BlockDevice handle, a1=LBA, a2=buffer, a_xfer=bytes (1..2048) | kind + WRITE + window containment, then one sector written (LBA28) -> the byte count; `-EROFS` for read-only ATAPI media, `-EACCES` outside the window or for another kind, `-ENODEV`/`-EIO` |
+//! | 0x5c | `CAP_BLOCK_CACHE_STATS` | a0=BlockDevice handle, a1=16-byte record | kind + READ, then `{hits, misses}` of the kernel's sector cache -> `0`; a repeat read through 0x59 is answered from memory and shows as a hit |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
 //! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
@@ -393,8 +394,9 @@ pub const CALL_CAP_FB_WRITE: u64 = 0x58;
 /// is touched, then reads the span sector-by-sector (2048 bytes on ATAPI,
 /// 512 on ATA) and copies the requested prefix -> the byte count.
 /// `-EACCES` for a missing right or a sector outside the window,
-/// `-ENODEV` when the machine has no block device, `-EFAULT` for a bad
-/// buffer, `-EINVAL` for a bad count or a shape claim.
+/// `-EFAULT` for a bad buffer, `-EINVAL` for a bad count or a shape
+/// claim. The capability names its DEVICE (IDE channel), so a handle
+/// whose channel has no device fails at the drive (`-EIO`).
 pub const CALL_CAP_BLOCK_READ: u64 = 0x59;
 
 /// The block device's GEOMETRY: a0 = a BlockDevice capability handle,
@@ -402,7 +404,7 @@ pub const CALL_CAP_BLOCK_READ: u64 = 0x59;
 /// reserved: u64}`. Kind + READ are checked, then the drive is asked
 /// (ATAPI READ CAPACITY, or IDENTIFY DEVICE for an ATA disk) -> `0` with
 /// the record filled; `-EACCES` for a wrong kind or missing READ,
-/// `-ENODEV` with no device, `-EIO` when the drive will not answer.
+/// `-EIO` when the drive will not answer (an empty channel included).
 pub const CALL_CAP_BLOCK_INFO: u64 = 0x5a;
 
 /// The block device's WRITE half: a0 = a BlockDevice capability handle,
@@ -412,9 +414,15 @@ pub const CALL_CAP_BLOCK_INFO: u64 = 0x5a;
 /// is written (LBA28 WRITE SECTORS). The kernel's packet path is
 /// read-only, so an ATAPI device answers `-EROFS` rather than issuing a
 /// command the media cannot take; `-EACCES` for a missing right, a wrong
-/// kind or an LBA outside the window, `-ENODEV` with no device, `-EIO` on
-/// a failed write.
+/// kind or an LBA outside the window, `-EIO` on a failed write. The
+/// capability names its device; a missing one surfaces as `-EIO`.
 pub const CALL_CAP_BLOCK_WRITE: u64 = 0x5b;
+
+/// The block device's CACHE: a0 = a BlockDevice handle, a1 = a 16-byte
+/// record `{hits: u64, misses: u64}`. Kind + READ are checked, then the
+/// kernel answers the sector cache's own counters -> `0`. A repeated read
+/// through 0x59 is answered from memory and shows up here as a hit.
+pub const CALL_CAP_BLOCK_CACHE_STATS: u64 = 0x5c;
 
 /// The block data plane's largest single call: eight 2048-byte sectors.
 /// A span keeps one call from becoming an unbounded device loop while
@@ -1003,11 +1011,17 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         unsafe { core::ptr::read_unaligned((a0 + 2944 + 2048) as *const u64) };
     let mut own_id = [0u8; 32];
     let mut own_next = [0u8; 8];
+    let mut own_root_lba = 0u32;
     let mut volume_read = false;
     if let Some(channel) = crate::ata::boot_channel() {
         let mut sector = [0u8; 2048];
         if unsafe { crate::ata::read_sector(channel, 16, &mut sector) } {
             own_id.copy_from_slice(&sector[40..72]);
+            // The primary descriptor's ROOT directory record: extent LBA
+            // at PVD+158 (LE u32), data length at PVD+166.
+            own_root_lba = u32::from_le_bytes([
+                sector[158], sector[159], sector[160], sector[161],
+            ]);
             volume_read = true;
         }
         if volume_read && unsafe { crate::ata::read_sector(channel, 17, &mut sector) } {
@@ -1031,6 +1045,86 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && ring3_terminator == u64::from_le_bytes(own_next)
         && next_is_descriptor
         && ring3_id == own_id;
+    // The CACHE, SCRATCH and ROOT-DIRECTORY blocks live in BUF+7136..+11264:
+    // two cache queries around a repeated read, the scratch write and its
+    // read-back, and the ISO root directory ring 3 walked.
+    if !crate::memory::paging::user_range_ok(a0 + 7136, 4096, false)
+        || !crate::memory::paging::user_range_ok(a0 + 9216, 2048, false)
+    {
+        return EFAULT;
+    }
+    let read_q = |off: u64| unsafe { core::ptr::read_unaligned((a0 + off) as *const i64) };
+    let cache_ok = read_q(7136) == 0
+        && read_q(7160) == 0
+        && read_q(7168) >= read_q(7144) + 1
+        && read_q(7176) >= read_q(7152);
+    // The scratch disk: ring 3 wrote a pattern to LBA 1000 and read it
+    // back. The kernel reads the SAME LBA itself and compares all three
+    // copies. Without an attached disk the write is -EBADF by name.
+    let mut scratch_ok = false;
+    if let Some(sectors) = unsafe { crate::ata::probe_ata_disk(1) } {
+        scratch_ok = sectors > 1000 && read_q(7184) == 512 && read_q(7192) == 512;
+        if scratch_ok {
+            let mut disk = [0u8; 512];
+            if unsafe { crate::ata::read_sector(1, 1000, &mut disk[..]) } {
+                scratch_ok = disk[0..8] == 0xfeed_face_cafe_beefu64.to_le_bytes();
+                for i in 0..512 {
+                    let wrote = unsafe { core::ptr::read_unaligned((a0 + 8192 + i as u64) as *const u8) };
+                    let back = unsafe { core::ptr::read_unaligned((a0 + 8704 + i as u64) as *const u8) };
+                    if disk[i] != wrote || back != wrote {
+                        scratch_ok = false;
+                        break;
+                    }
+                }
+            } else {
+                scratch_ok = false;
+            }
+        }
+    } else {
+        scratch_ok = read_q(7184) == EBADF && read_q(7192) == EBADF;
+    }
+    // The ISO ROOT DIRECTORY, walked by ring 3 and re-walked here from the
+    // kernel's own read: the same [len][bytes] sequence must come out.
+    let mut own_names = [0u8; 768];
+    let mut own_names_len = 0usize;
+    let mut own_count = 0usize;
+    let mut root_read = false;
+    if volume_read && own_root_lba != 0 {
+        if let Some(channel) = crate::ata::boot_channel() {
+            let mut sector = [0u8; 2048];
+            if unsafe { crate::ata::read_sector(channel, own_root_lba, &mut sector) } {
+                root_read = read_q(7208) == 2048;
+                let mut off = 0usize;
+                while off + 33 <= 2048 && own_count < 12 {
+                    let len = sector[off] as usize;
+                    if len == 0 {
+                        break;
+                    }
+                    let nl = sector[off + 32] as usize;
+                    if nl > 1 && nl <= 64 && off + 33 + nl <= 2048 {
+                        own_names[own_names_len] = nl as u8;
+                        own_names_len += 1;
+                        own_names[own_names_len..own_names_len + nl]
+                            .copy_from_slice(&sector[off + 33..off + 33 + nl]);
+                        own_names_len += nl;
+                        own_count += 1;
+                    }
+                    off += len;
+                }
+            }
+        }
+    }
+    let ring3_count = read_q(7200) as usize;
+    let mut names_ok = root_read && ring3_count == own_count;
+    if names_ok {
+        for i in 0..own_names_len {
+            let b = unsafe { core::ptr::read_unaligned((a0 + 7216 + i as u64) as *const u8) };
+            if b != own_names[i] {
+                names_ok = false;
+                break;
+            }
+        }
+    }
     unsafe { crate::svc84_proof::select_peer_space() };
     if !crate::memory::paging::user_range_ok(a1, 240, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
@@ -1529,7 +1623,10 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && block_ok
         && info_ok
         && span_ok
-        && volume_ok;
+        && volume_ok
+        && cache_ok
+        && scratch_ok
+        && names_ok;
     crate::serial_println!(
         "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x} , send {:#x} , recv {:#x} , tag {:#x} , null-tag {:#x}) , BADGE/NOTIFY {}",
         bn[0] as u64,
@@ -1613,6 +1710,47 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         ring3_terminator,
         if ring3_id == own_id { "matches" } else { "MISMATCH" },
         if volume_ok { "matches" } else { "MISMATCH" }
+    );
+    crate::serial_println!(
+        "  service-0x84 proof: BLOCK-CACHE (hits {} -> {} , misses {} -> {} , queries 0x{:x}/0x{:x}) , BLOCK-CACHE {}",
+        read_q(7144),
+        read_q(7168),
+        read_q(7152),
+        read_q(7176),
+        read_q(7136),
+        read_q(7160),
+        if cache_ok { "matches" } else { "MISMATCH" }
+    );
+    crate::serial_println!(
+        "  service-0x84 proof: BLOCK-SCRATCH (write 0x{:x} , read 0x{:x} , disk and both ring-3 copies agree {}) , BLOCK-SCRATCH {}",
+        read_q(7184) as u64,
+        read_q(7192) as u64,
+        if scratch_ok { "yes" } else { "NO" },
+        if scratch_ok { "matches" } else { "MISMATCH" }
+    );
+    let mut list = [0u8; 128];
+    let mut list_len = 0usize;
+    let mut i = 0usize;
+    let mut shown = 0usize;
+    while i < own_names_len && shown < own_count && list_len + 66 < list.len() {
+        let nl = own_names[i] as usize;
+        if nl == 0 || i + 1 + nl > own_names_len {
+            break;
+        }
+        if shown > 0 {
+            list[list_len] = b',';
+            list_len += 1;
+        }
+        list[list_len..list_len + nl].copy_from_slice(&own_names[i + 1..i + 1 + nl]);
+        list_len += nl;
+        shown += 1;
+        i += 1 + nl;
+    }
+    crate::serial_println!(
+        "  service-0x84 proof: BLOCK-ROOT (entries {} , names \"{}\") , BLOCK-ROOT {}",
+        ring3_count,
+        core::str::from_utf8(&list[..list_len]).unwrap_or("?"),
+        if names_ok { "matches" } else { "MISMATCH" }
     );
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
     crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {} , reason {} , session {}) , WINDOW (req {:#x} , base {:#x} , len {:#x} , handle {:#x} , marker {:#x} , unmap {:#x} , again {:#x} , geom {:#x} , geom base {:#x} , peer read {:#x} , no-window release {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
@@ -2599,13 +2737,9 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 return EFAULT;
             }
             let identity = crate::experimental::scheduler::session_identity();
-            match crate::experimental::caps::block_info_for(identity, a0 as u32) {
-                Ok(()) => {}
+            let channel = match crate::experimental::caps::block_info_for(identity, a0 as u32) {
+                Ok(unit) => unit as usize,
                 Err(e) => return map_cap_error(e),
-            }
-            let channel = match crate::ata::boot_channel() {
-                Some(c) => c,
-                None => return ENODEV,
             };
             match unsafe { crate::ata::read_capacity(channel) } {
                 Some((sector_size, sectors)) => {
@@ -2630,24 +2764,21 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             if from_ring3 && !crate::memory::paging::user_range_ok(a2, a_xfer as usize, true) {
                 return EFAULT;
             }
-            let channel = match crate::ata::boot_channel() {
-                Some(c) => c,
-                None => return ENODEV,
-            };
-            let size = crate::ata::sector_size(channel) as usize;
+            let size = 2048usize;
             let sectors = ((a_xfer as usize) + size - 1) / size;
             let identity = crate::experimental::scheduler::session_identity();
             // The SPAN is checked as a whole: every sector the call will
             // touch must be inside the window, not just the first one.
-            match crate::experimental::caps::block_check_span_for(
+            let channel = match crate::experimental::caps::block_check_span_for(
                 identity,
                 a0 as u32,
                 a1 as u32,
                 sectors as u32,
             ) {
-                Ok(()) => {}
+                Ok(unit) => unit as usize,
                 Err(e) => return map_cap_error(e),
-            }
+            };
+            let size = crate::ata::sector_size(channel) as usize;
             let mut sector = [0u8; 2048];
             let mut done = 0usize;
             for i in 0..sectors {
@@ -2655,7 +2786,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     Some(l) => l,
                     None => return EACCES,
                 };
-                if !unsafe { crate::ata::read_sector(channel, lba, &mut sector) } {
+                if !unsafe { crate::ata::read_sector_cached(channel, lba, &mut sector) } {
                     // A device that answered the probe but not the read is
                     // a real I/O failure, distinct from "no device".
                     return EIO;
@@ -2682,13 +2813,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 return EFAULT;
             }
             let identity = crate::experimental::scheduler::session_identity();
-            match crate::experimental::caps::block_write_check_for(identity, a0 as u32, a1 as u32) {
-                Ok(()) => {}
+            let channel = match crate::experimental::caps::block_write_check_for(
+                identity,
+                a0 as u32,
+                a1 as u32,
+            ) {
+                Ok(unit) => unit as usize,
                 Err(e) => return map_cap_error(e),
-            }
-            let channel = match crate::ata::boot_channel() {
-                Some(c) => c,
-                None => return ENODEV,
             };
             // Authority is settled; now the MEDIA decides. The packet path
             // is read-only, so an ATAPI disc is EROFS by name, not EIO and
@@ -2703,10 +2834,34 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 core::ptr::copy_nonoverlapping(a2 as *const u8, sector.as_mut_ptr(), n);
             }
             if unsafe { crate::ata::write_sector(channel, a1 as u32, &sector) } {
+                crate::ata::cache_invalidate(channel, a1 as u32);
                 n as i64
             } else {
                 EIO
             }
+        }
+        CALL_CAP_BLOCK_CACHE_STATS => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            if from_ring3 && !crate::memory::paging::user_range_ok(a1, 16, true) {
+                return EFAULT;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            if let Err(e) = crate::experimental::caps::block_info_for(identity, a0 as u32) {
+                return map_cap_error(e);
+            }
+            let (hits, misses) = crate::ata::cache_stats();
+            let mut rec = [0u8; 16];
+            rec[0..8].copy_from_slice(&hits.to_le_bytes());
+            rec[8..16].copy_from_slice(&misses.to_le_bytes());
+            unsafe {
+                core::ptr::copy_nonoverlapping(rec.as_ptr(), a1 as *mut u8, 16);
+            }
+            0
         }
         CALL_CAP_IOPORT_IN => {
             if a0 > u32::MAX as u64 || a1 > u16::MAX as u64 {

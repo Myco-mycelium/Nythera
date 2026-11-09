@@ -1391,6 +1391,114 @@ _start:
     mov $32, %rcx
     rep movsb
 
+    /* 24a. CACHE STATS (0x5c) before a repeat read: ack at BUF+7136 and
+       the 16-byte record {hits, misses} at BUF+7144. */
+    mov $6, %rdi
+    lea 7144(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5c, %rax
+    int $0x84
+    mov %rax, 7136(%rbx)
+    /* 24b. The same LBA twice: the first read fills the kernel's sector
+       cache, the second must be answered from memory (a HIT). */
+    mov $6, %rdi
+    mov $18, %rsi
+    lea 8192(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov $6, %rdi
+    mov $18, %rsi
+    lea 8192(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    /* 24c. CACHE STATS again: ack at BUF+7160, record at BUF+7168. The
+       kernel checks that hits ROSE between the two queries. */
+    mov $6, %rdi
+    lea 7168(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5c, %rax
+    int $0x84
+    mov %rax, 7160(%rbx)
+    /* 24d. BLOCK_WRITE on the scratch ATA disk (handle 9, the second
+       block capability the equip minted): a pattern at BUF+8192 is
+       written to LBA 1000. Ack at BUF+7184 must be 512. */
+    movabs $0xfeedfacecafebeef, %rax
+    mov %rax, 8192(%rbx)
+    mov $9, %rdi
+    mov $1000, %rsi
+    lea 8192(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x5b, %rax
+    int $0x84
+    mov %rax, 7184(%rbx)
+    /* 24e. Read it BACK through the same capability into BUF+8704 (ack
+       BUF+7192); the kernel compares both copies with the disk itself. */
+    mov $9, %rdi
+    mov $1000, %rsi
+    lea 8704(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 7192(%rbx)
+
+    /* 25a. The ISO9660 ROOT DIRECTORY: the primary descriptor's root
+       record lives at PVD+156; its extent LBA is the little-endian u32
+       at +2 and its length at +10. Ring 3 reads the directory through
+       the block capability into BUF+9216 (ack BUF+7208). */
+    mov 3102(%rbx), %r12d
+    mov $6, %rdi
+    mov %r12, %rsi
+    lea 9216(%rbx), %rdx
+    mov $2048, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 7208(%rbx)
+    /* 25b. Walk the directory records in RING 3: skip the self/parent
+       entries (name length 0/1), emit each name as [len][bytes] at
+       BUF+7216, and stop at the first zero-length record or 12 names.
+       BUF+7200 gets the count. */
+    lea 7216(%rbx), %r8
+    xor %r9, %r9
+    xor %esi, %esi
+.Ldir_next:
+    cmp $12, %r9
+    jae .Ldir_done
+    lea 9216(%rbx,%rsi), %rdi
+    movzbl (%rdi), %eax
+    test %eax, %eax
+    jz .Ldir_done
+    movzbl 32(%rdi), %ecx
+    cmp $1, %ecx
+    jbe .Ldir_skip
+    mov %cl, (%r8)
+    inc %r8
+    xor %edx, %edx
+.Ldir_copy:
+    movzbl 33(%rdi,%rdx), %eax
+    mov %al, (%r8)
+    inc %r8
+    inc %edx
+    cmp %ecx, %edx
+    jb .Ldir_copy
+    inc %r9
+.Ldir_skip:
+    movzbl (%rdi), %eax
+    add %eax, %esi
+    jmp .Ldir_next
+.Ldir_done:
+    mov %r9, 7200(%rbx)
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

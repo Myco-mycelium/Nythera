@@ -81,6 +81,13 @@ static BOOT_CHANNEL: AtomicU64 = AtomicU64::new(u64::MAX);
 /// handler does NOT drain the 256 words it drains for IDENTIFY.
 static MANUAL: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 
+pub const CHANNEL_COUNT: usize = 2;
+
+/// How many IDE channels this machine probes.
+pub fn channel_count() -> usize {
+    CHANNEL_COUNT
+}
+
 pub fn irqs(channel: usize) -> u64 {
     IRQS[channel].load(Ordering::Relaxed)
 }
@@ -504,6 +511,116 @@ pub unsafe fn read_capacity(channel: usize) -> Option<(u32, u64)> {
     MANUAL[channel].store(0, Ordering::Relaxed);
     Port::<u8>::new(c.ctrl).write(0);
     answer
+}
+
+/// Probe a channel's MASTER for an ATA disk without relying on the boot
+/// having interrupted it: the signature registers are read after a
+/// select, and a zero signature (an ATA device, not ATAPI's 0x14/0xEB)
+/// is answered with a polled IDENTIFY. Returns the sector count, or
+/// `None` for an ATAPI device, an empty channel or a drive that will not
+/// identify. The proof's writable scratch disk is found this way; the
+/// boot device itself is an ATAPI disc and answers `None` here.
+///
+/// # Safety
+/// Same contract as [`read_sector`]: a live IDE channel.
+pub unsafe fn probe_ata_disk(channel: usize) -> Option<u64> {
+    let c = &CHANNELS[channel];
+    write_reg(c.base, REG_DRIVEHEAD, 0xA0);
+    delay_400ns(c.ctrl);
+    let seccount = read_reg(c.base, REG_SECCOUNT);
+    let lba1 = read_reg(c.base, REG_LBA1);
+    let lba2 = read_reg(c.base, REG_LBA2);
+    if seccount == 0x01 && lba1 == 0x14 && lba2 == 0xEB {
+        IS_ATAPI[channel].store(1, Ordering::Relaxed);
+        return None;
+    }
+    let status = read_reg(c.base, REG_STATUS);
+    if status == 0x00 || status == 0xFF {
+        return None;
+    }
+    IS_ATAPI[channel].store(0, Ordering::Relaxed);
+    read_capacity(channel)
+        .filter(|(size, _)| *size == 512)
+        .map(|(_, sectors)| sectors)
+}
+
+// ---- the sector cache ------------------------------------------------
+//
+// A direct-mapped cache of whole sectors, so a repeat read of the same
+// LBA is answered from memory instead of the device. It is deliberately
+// tiny (CACHE_SLOTS sectors): this is the data plane's first cache, not a
+// filesystem buffer pool, and an eviction is a miss, never a wrong
+// answer. Writes INVALIDATE the sector they touch, because a cached copy
+// that survives a write is a stale read.
+
+const CACHE_SLOTS: usize = 8;
+
+#[derive(Clone, Copy)]
+struct CacheEntry {
+    valid: bool,
+    channel: u8,
+    lba: u32,
+    data: [u8; 2048],
+}
+
+const EMPTY_ENTRY: CacheEntry = CacheEntry {
+    valid: false,
+    channel: 0,
+    lba: 0,
+    data: [0; 2048],
+};
+
+static mut CACHE: [CacheEntry; CACHE_SLOTS] = [EMPTY_ENTRY; CACHE_SLOTS];
+static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// `(hits, misses)` since boot, for the capability row that observes the
+/// cache rather than guessing at it.
+pub fn cache_stats() -> (u64, u64) {
+    (
+        CACHE_HITS.load(Ordering::Relaxed),
+        CACHE_MISSES.load(Ordering::Relaxed),
+    )
+}
+
+/// Drop the cached copy of `lba` on `channel` (a write's obligation).
+pub fn cache_invalidate(channel: usize, lba: u32) {
+    let slot = (lba as usize) % CACHE_SLOTS;
+    unsafe {
+        let e = &mut (*core::ptr::addr_of_mut!(CACHE))[slot];
+        if e.valid && e.lba == lba && e.channel as usize == channel {
+            e.valid = false;
+        }
+    }
+}
+
+/// Read one sector THROUGH the cache. A hit is a memory copy; a miss
+/// reads the device and installs the sector. Returns false when the
+/// device read failed (a miss is not a failure).
+///
+/// # Safety
+/// Same as [`read_sector`].
+pub unsafe fn read_sector_cached(channel: usize, lba: u32, out: &mut [u8]) -> bool {
+    let size = sector_size(channel) as usize;
+    if out.len() < size {
+        return false;
+    }
+    let slot = (lba as usize) % CACHE_SLOTS;
+    let entry = &mut (*core::ptr::addr_of_mut!(CACHE))[slot];
+    if entry.valid && entry.lba == lba && entry.channel as usize == channel {
+        out[..size].copy_from_slice(&entry.data[..size]);
+        CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+        return true;
+    }
+    if !read_sector(channel, lba, out) {
+        return false;
+    }
+    entry.valid = true;
+    entry.channel = channel as u8;
+    entry.lba = lba;
+    entry.data[..size].copy_from_slice(&out[..size]);
+    CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+    true
 }
 
 /// Called from the channel's IRQ handler: read the status register

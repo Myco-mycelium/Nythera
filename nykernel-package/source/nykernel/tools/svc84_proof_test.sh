@@ -81,7 +81,17 @@ grub-mkrescue -o "$WORK/svc84.iso" "$WORK" >/dev/null 2>&1 \
 
 SERIAL="$WORK/serial.log"
 rm -f "$SERIAL"
-qemu-system-x86_64 -cdrom "$WORK/svc84.iso" -m 512 \
+# The WRITABLE scratch disk for the block-write leg: 4 MiB of raw sectors
+# on the SECONDARY IDE channel (index 2 = secondary master), so the boot
+# disc stays the primary master and the kernel sees it as channel 1. It is
+# recreated every run, so the proof starts from a known image and a failed
+# write cannot leave state behind.
+SCRATCH="$WORK/scratch.img"
+rm -f "$SCRATCH"
+truncate -s 4M "$SCRATCH"
+qemu-system-x86_64 -m 512 \
+    -drive file="$WORK/svc84.iso",format=raw,if=ide,index=0,media=cdrom \
+    -drive file="$SCRATCH",format=raw,if=ide,index=2,media=disk -boot d \
     -serial "file:$SERIAL" -display none -no-reboot \
     >"$WORK/qemu.log" 2>&1 &
 QPID=$!
@@ -110,7 +120,7 @@ fi
 # Two verdict lines since 2026-11-09: the original ring-3 transcript and
 # the BADGE/NOTIFY leg's own (separate so the 20-row transcript's format
 # string stays readable). Join them; every pattern below is a substring.
-VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK)" "$SERIAL" | tail -9 | tr '\n' ' ')"
+VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK)" "$SERIAL" | tail -12 | tr '\n' ' ')"
 if [[ -z "$VERDICT" ]]; then
     bad "the ring-3 proof never reached its verdict line"
 else
@@ -187,7 +197,7 @@ else
     # once, the SAME handle was then refused -EBADF, the wrong kind
     # (an endpoint handle asked to answer) was refused -EACCES, and the
     # answer came back at the caller's own endpoint with its bytes.
-    if [[ "$VERDICT" == *"REPLY matches"* ]] && [[ "$VERDICT" == *"REPLY (call 0x7 , recv 0x700000008 , handle 0x9 , reply 0x0 , twice 0xfffffffffffffff7 , kind 0xfffffffffffffff3 , answer 0x700000008 , bytes 0x2121726577736e61)"* ]]; then
+    if [[ "$VERDICT" == *"REPLY matches"* ]] && [[ "$VERDICT" == *"REPLY (call 0x7 , recv 0x700000008 , handle 0xa , reply 0x0 , twice 0xfffffffffffffff7 , kind 0xfffffffffffffff3 , answer 0x700000008 , bytes 0x2121726577736e61)"* ]]; then
         ok "one call carried a one-shot reply capability round-trip through the session's OWN table (handle 3), the answer landed back at the caller's endpoint, and the second reply and the wrong-kind reply were refused -EBADF/-EACCES by name"
     else
         bad "the CALL/REPLY leg's round trip or refusals failed their read-back"
@@ -262,6 +272,29 @@ else
     else
         bad "the ISO9660 volume leg's ring-3 id failed the kernel's own read-back"
     fi
+    # The BLOCK-CACHE leg: two queries around the same LBA read, with the
+    # hit counter rising and the device miss counter not going backwards.
+    if [[ "$VERDICT" == *"BLOCK-CACHE matches"* ]] && [[ "$VERDICT" == *"BLOCK-CACHE (hits 0x"* || "$VERDICT" == *"BLOCK-CACHE (hits "* ]]; then
+        ok "the kernel sector cache answered a repeated LBA from memory: the hit counter rose between the two stat queries"
+    else
+        bad "the block cache's hit/miss counters did not show a repeat read being cached"
+    fi
+    # The BLOCK-SCRATCH leg: a real LBA28 write to the attached ATA disk,
+    # read back through the same capability and compared with the kernel's
+    # own read of that LBA.
+    if [[ "$VERDICT" == *"BLOCK-SCRATCH matches"* ]] && [[ "$VERDICT" == *"BLOCK-SCRATCH (write 0x200 , read 0x200 , disk and both ring-3 copies agree yes)"* ]]; then
+        ok "a 512-byte write landed on the writable ATA scratch disk through the capability, read back through the SAME handle, and the kernel's own read of LBA 1000 agreed byte-for-byte"
+    else
+        bad "the scratch-disk write/read-back leg failed"
+    fi
+    # The BLOCK-ROOT leg: ring 3 walked the ISO9660 root directory and the
+    # kernel re-walked it from its own read; the emitted name sequences are
+    # identical.
+    if [[ "$VERDICT" == *"BLOCK-ROOT matches"* ]] && [[ "$VERDICT" == *"BLOCK-ROOT (entries "* ]] && [[ "$VERDICT" == *" , names \""* ]]; then
+        ok "ring 3 walked the ISO9660 root directory from the block capability and the kernel's own re-walk matched it name-for-name"
+    else
+        bad "the ring-3 ISO9660 root listing failed the kernel's own re-walk"
+    fi
     # The TWO-PROCESS leg: two ring-3 processes, each its own scheduler
     # task with its own session and its own trap stack. The first process
     # closes ONE of its two region capabilities (the record survives: the
@@ -310,7 +343,7 @@ else
     # precedes the queue, the receiver still drains the ONE good message
     # attenuated to READ|WRITE (0x0c), which is the proof that the wider
     # ask queued nothing.
-    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1 , reason not mapped , session 8) , WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1) , MAP (ack 0x0 , base 0x60000120000 , len 0x1000 , rights 0xe , handle 0x4 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000130000 , len2 0x2000 , handle2 0x9 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000120000 , released 4 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000120000/0x60000100000 , frames "*"== "*" , unmapped true / true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
+    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1 , reason not mapped , session 8) , WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1) , MAP (ack 0x0 , base 0x60000120000 , len 0x1000 , rights 0xe , handle 0x4 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000130000 , len2 0x2000 , handle2 0xa , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000120000 , released 4 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000120000/0x60000100000 , frames "*"== "*" , unmapped true / true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
         ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; both teardowns unmapped their window and returned every frame"
     else
         bad "the requested-region leg's mapping, kernel-chosen window or page release failed their read-back"

@@ -6875,3 +6875,80 @@ Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
 has no extracted-kernel attribution because the kernel lives inside the
 stub binary; its attribution is the one build run that produced both discs
 from one `target/kernel.elf`.
+## Sector cache, writable ATA media, and a ring-3 root walk (2026-11-09)
+
+Three follow-ons landed together on the block data plane.
+
+**The sector cache.** `ata::read_sector_cached` is a direct-mapped cache of
+eight whole sectors; a repeat read of the same LBA is a memory copy, a
+miss installs the sector, and a write INVALIDATES the sector it touches.
+`0x5c CAP_BLOCK_CACHE_STATS` exposes `{hits, misses}` so the proof can
+observe the cache rather than trust it: it queries, reads LBA 18 twice,
+queries again, and the kernel checks the hit counter rose.
+
+**Block capabilities name their device.** The `Capability` struct gained a
+`unit` (the IDE channel) for BlockDevice, set by `bootstrap_device` and
+carried unchanged through a transfer. 0x59/0x5a/0x5b/0x5c use the handle's
+channel instead of hard-coding the boot channel, which is what lets the
+proof hold the ATAPI boot disc and a writable ATA disk at once.
+
+**A real LBA28 write.** The proof harness now attaches a 4 MiB raw disk on
+the secondary IDE channel (the boot ISO is primary master, `-boot d`), and
+the equip mints it as block handle 9. The program writes a pattern to LBA
+1000, reads it back through the same capability, and the kernel reads that
+LBA itself: all three copies must agree. `probe_ata_disk` finds the disk
+with a polled signature read + IDENTIFY, so the boot's IRQ path is not
+required.
+
+**The ISO9660 root, walked in ring 3.** The program takes the primary
+descriptor's root directory record (extent at PVD+158, length at +166),
+reads the directory through the block capability, and walks the records
+itself, emitting `[len][name]` pairs and skipping self/parent. The kernel
+re-walks the directory from its own read and compares the sequences.
+
+```
+service-0x84 proof: BLOCK-CACHE (hits 1 -> 2 , misses 2 -> 3 , queries
+  0x0/0x0) , BLOCK-CACHE matches
+service-0x84 proof: BLOCK-SCRATCH (write 0x200 , read 0x200 , disk and
+  both ring-3 copies agree yes) , BLOCK-SCRATCH matches
+service-0x84 proof: BLOCK-ROOT (entries 8 , names "BOOT,BOOT.CAT;1,
+  BUILD.LOG;1,EFI,EFI.IMG;1,MACH_KER.;1,SYSTEM,_DISK") , BLOCK-ROOT matches
+```
+
+Two consequences worth naming: the scratch capability takes slot 9, so the
+later proof handles shift by one (REPLY's handle is 0xa, MAP's second
+region 0xa) -- the harness now asserts those; and the proof's QEMU command
+names the drives explicitly instead of using `-cdrom`, because `-cdrom`
+already occupies the secondary master where the scratch disk belongs.
+
+Checks after this slice: `./build.sh` PASS, 29 served calls
+(`0x40..0x5c`); `svc84_proof_test.sh` PASS with the BLOCK-CACHE,
+BLOCK-SCRATCH and BLOCK-ROOT legs; `qemu_boot_test.sh` PASS with
+`experimental caps: 122 clause groups`; `qemu_boot_parity_diff.sh` PASS
+(526 chain lines, BIOS == UEFI); `check_live_iso.sh --boot --uefi-boot`
+PASS.
+
+Named limits: the cache is eight sectors and direct-mapped (no write-back,
+no readahead); the scratch disk is a proof fixture, not a mounted volume;
+and ISO9660 lives in ring 3 -- the kernel still has no filesystem layer.
+
+## The release discs carrying the cache, disk write and root walk (2026-11-09)
+
+Both live discs were rebuilt from this tree with `make_live_iso.sh` after
+this slice and verified outside it with `check_live_iso.sh --boot
+--uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 df59c4c439d5dfc614c2e6ae00d14c599204b67ed653dd00fc04b46b68d1b778
+dist/nyrqis-live-uefi.iso   sha256 09463753731f4334e4188d3820724504acb14bf58fb6830582906fb5e0ad326e
+kernel carried by both:     sha256 45db0360a7da22b9e2ff150b6faa0e4db21c7062fd53a68faa0d9d78ccf911da
+```
+
+Integrity and attribution match, the BIOS disc boots the default entry to a
+verified desktop session, and the UEFI disc boots through our signed stub
+(carrier walked, GOP handed over, shell rendered and verified).
+
+Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
+has no extracted-kernel attribution because the kernel lives inside the
+stub binary; its attribution is the one build run that produced both discs
+from one `target/kernel.elf`.

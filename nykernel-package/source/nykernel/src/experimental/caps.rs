@@ -57,7 +57,11 @@
 //! A 0x59 call may span up to eight sectors (`MAX_BLOCK_SPAN`): EVERY
 //! sector it touches must be inside the window, checked as one span.
 //! 0x5b BLOCK_WRITE is the write half behind WRITE; the packet path is
-//! read-only, so ATAPI media answers `EROFS` after authority passes.
+//! read-only, so ATAPI media answers `EROFS` after authority passes. A
+//! block capability names its DEVICE (the IDE channel), so the proof can
+//! hold the boot disc and a writable scratch disk at once. 0x5c
+//! BLOCK_CACHE_STATS reports the kernel sector cache's hits and misses:
+//! the data plane answers a repeated sector from memory.
 //!
 //! Containers (NPS-007 §3) are the admission policy: each holder belongs
 //! to a container whose mask names the capability KINDS it may hold, and
@@ -228,6 +232,11 @@ pub struct Capability {
     /// an attenuating transfer and can only be NARROWED by `narrow_device`.
     lo: u32,
     hi: u32,
+    /// The resource kinds' DEVICE: for a BlockDevice, the IDE channel
+    /// the window refers to (0 primary, 1 secondary). Zero for kinds
+    /// that name no device. Kernel-set at mint and unchanged by transfer:
+    /// a narrowed copy still names the same drive.
+    unit: u32,
     /// An immutable tag the RECEIVER sees with every message sent
     /// through this capability (0 = unbadged), the release's `badge`.
     /// Set once, by `badge`; a badged capability can never be re-badged
@@ -550,6 +559,7 @@ impl CapSystem {
             lo: 0,
             hi: 0,
             badge: 0,
+            unit: 0,
         };
         let handle = Self::install(self.live(owner)?, cap)?;
         Ok((id, handle))
@@ -594,6 +604,7 @@ impl CapSystem {
             lo: 0,
             hi: 0,
             badge: 0,
+            unit: 0,
         };
         Self::install(self.live(owner)?, cap)
     }
@@ -611,6 +622,7 @@ impl CapSystem {
             lo: 0,
             hi: 0,
             badge: 0,
+            unit: 0,
         };
         Self::install(self.live(to)?, cap)
     }
@@ -629,6 +641,7 @@ impl CapSystem {
             lo: 0,
             hi: 0,
             badge: 0,
+            unit: 0,
         };
         Self::install(self.live(to)?, cap)
     }
@@ -655,7 +668,14 @@ impl CapSystem {
     /// the block-device capability for sectors `[lo, hi)` of the boot
     /// device. Only the kernel ever mints one of these; a holder receives
     /// one by transfer, and can only NARROW its window.
-    pub fn bootstrap_device(&mut self, to: usize, want: u8, lo: u32, hi: u32) -> Result<u32, CapError> {
+    pub fn bootstrap_device(
+        &mut self,
+        to: usize,
+        want: u8,
+        unit: u32,
+        lo: u32,
+        hi: u32,
+    ) -> Result<u32, CapError> {
         let cap = Capability {
             kind: Kind::BlockDevice,
             endpoint: 0,
@@ -664,6 +684,7 @@ impl CapSystem {
             lo,
             hi,
             badge: 0,
+            unit,
         };
         Self::install(self.live(to)?, cap)
     }
@@ -680,6 +701,7 @@ impl CapSystem {
             lo,
             hi,
             badge: 0,
+            unit: 0,
         };
         Self::install(self.live(to)?, cap)
     }
@@ -694,6 +716,7 @@ impl CapSystem {
             lo: 0,
             hi: rows,
             badge: 0,
+            unit: 0,
         };
         Self::install(self.live(to)?, cap)
     }
@@ -716,7 +739,7 @@ impl CapSystem {
     /// device, NoRight unless it carries READ AND `lba` lies inside the
     /// sector window. The window is authority: one sector past `hi` is
     /// refused by the same answer as a missing right.
-    pub fn block_check(&mut self, p: usize, h: u32, lba: u32, need: u8) -> Result<(), CapError> {
+    pub fn block_check(&mut self, p: usize, h: u32, lba: u32, need: u8) -> Result<u32, CapError> {
         let cap = self.lookup(p, h)?;
         if cap.kind != Kind::BlockDevice {
             return Err(CapError::WrongType);
@@ -727,7 +750,7 @@ impl CapSystem {
         if lba < cap.lo || lba >= cap.hi {
             return Err(CapError::NoRight);
         }
-        Ok(())
+        Ok(cap.unit)
     }
 
     /// The BLOCK data plane's SPAN form: the same kind/right checks, and
@@ -741,7 +764,7 @@ impl CapSystem {
         lba: u32,
         sectors: u32,
         need: u8,
-    ) -> Result<(), CapError> {
+    ) -> Result<u32, CapError> {
         let cap = self.lookup(p, h)?;
         if cap.kind != Kind::BlockDevice {
             return Err(CapError::WrongType);
@@ -759,7 +782,7 @@ impl CapSystem {
         if lba < cap.lo || end >= cap.hi {
             return Err(CapError::NoRight);
         }
-        Ok(())
+        Ok(cap.unit)
     }
 
     /// The release's `ioport_window`: the port range a capability covers.
@@ -992,6 +1015,7 @@ impl CapSystem {
             lo: 0,
             hi: 0,
             badge: 0,
+            unit: 0,
         };
         // A server whose container forbids Reply cannot be called: the
         // kernel would be delivering a kind its policy excludes.
@@ -1185,6 +1209,7 @@ impl CapSystem {
             lo: 0,
             hi: 0,
             badge: 0,
+            unit: 0,
         };
         let holder = self.live(to)?;
         let handle = Self::install(holder, cap)?;
@@ -1720,8 +1745,15 @@ pub fn prepare_session_for_proof(sid: usize) -> (u32, u32, u32) {
 pub fn equip_devices_for_proof(sid: usize) -> (u32, u32, u32) {
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        let boot_unit = crate::ata::boot_channel().unwrap_or(0) as u32;
         let block_handle = sys
-            .bootstrap_device(sid, rights::READ | rights::WRITE | rights::GRANT, 0, u32::MAX)
+            .bootstrap_device(
+                sid,
+                rights::READ | rights::WRITE | rights::GRANT,
+                boot_unit,
+                0,
+                u32::MAX,
+            )
             .expect("caps device equip: mint BLOCK");
         let ioport_handle = sys
             .bootstrap_ioport(sid, rights::READ | rights::WRITE | rights::GRANT, 0x80, 0x81)
@@ -1732,6 +1764,27 @@ pub fn equip_devices_for_proof(sid: usize) -> (u32, u32, u32) {
         let fb_handle = sys
             .bootstrap_fb(sid, rights::READ | rights::WRITE | rights::GRANT, rows)
             .expect("caps device equip: mint FRAMEBUFFER");
+        // The proof's WRITABLE scratch disk, when one is attached: a
+        // capability naming the OTHER channel (the boot disc is ATAPI and
+        // read-only). Minted at the next slot (9) so the proof's existing
+        // indexes do not move; absent when the harness attaches no disk,
+        // in which case the proof's write step is -EBADF by construction.
+        for ch in 0..crate::ata::channel_count() {
+            if ch as u32 == boot_unit {
+                continue;
+            }
+            if let Some(sectors) = unsafe { crate::ata::probe_ata_disk(ch) } {
+                let hi = sectors.min(u32::MAX as u64) as u32;
+                let _ = sys.bootstrap_device(
+                    sid,
+                    rights::READ | rights::WRITE | rights::GRANT,
+                    ch as u32,
+                    0,
+                    hi,
+                );
+                break;
+            }
+        }
         (block_handle, ioport_handle, fb_handle)
     })
 }
@@ -1884,7 +1937,7 @@ pub fn device_info_for(caller: usize, handle: u32) -> Result<(u64, u32, u32, u8)
 
 /// Access for the BLOCK-INFO row: kind + READ, no LBA claim (geometry is
 /// about the device, not one sector).
-pub fn block_info_for(caller: usize, handle: u32) -> Result<(), CapError> {
+pub fn block_info_for(caller: usize, handle: u32) -> Result<u32, CapError> {
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         let cap = sys.lookup(caller, handle)?;
@@ -1894,13 +1947,13 @@ pub fn block_info_for(caller: usize, handle: u32) -> Result<(), CapError> {
         if cap.rights & rights::READ == 0 {
             return Err(CapError::NoRight);
         }
-        Ok(())
+        Ok(cap.unit)
     })
 }
 
 /// Access for the BLOCK-READ data-plane row: kind, READ and sector-window
 /// containment BEFORE the device is touched.
-pub fn block_check_for(caller: usize, handle: u32, lba: u32) -> Result<(), CapError> {
+pub fn block_check_for(caller: usize, handle: u32, lba: u32) -> Result<u32, CapError> {
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.block_check(caller, handle, lba, rights::READ)
@@ -1914,7 +1967,7 @@ pub fn block_check_span_for(
     handle: u32,
     lba: u32,
     sectors: u32,
-) -> Result<(), CapError> {
+) -> Result<u32, CapError> {
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.block_check_span(caller, handle, lba, sectors, rights::READ)
@@ -1923,7 +1976,7 @@ pub fn block_check_span_for(
 
 /// Access for the BLOCK-WRITE data-plane row: kind, WRITE and sector-window
 /// containment BEFORE the device is touched.
-pub fn block_write_check_for(caller: usize, handle: u32, lba: u32) -> Result<(), CapError> {
+pub fn block_write_check_for(caller: usize, handle: u32, lba: u32) -> Result<u32, CapError> {
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.block_check(caller, handle, lba, rights::WRITE)
@@ -2933,7 +2986,7 @@ pub fn run() -> bool {
 
     // ---- the resource kinds: windows that only NARROW ----------------
     let blk = sys
-        .bootstrap_device(CLIENT, rights::READ | rights::WRITE | rights::GRANT, 0, u32::MAX)
+        .bootstrap_device(CLIENT, rights::READ | rights::WRITE | rights::GRANT, 0, 0, u32::MAX)
         .expect("self-test: block device");
     check!(
         "a block-device capability answers its whole sector window, and a missing right is NoRight",
