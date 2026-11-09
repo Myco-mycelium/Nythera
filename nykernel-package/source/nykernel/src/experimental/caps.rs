@@ -54,6 +54,10 @@
 //! user buffer after kind, READ and sector-window checks. 0x5a
 //! BLOCK_INFO asks the DRIVE for its geometry (ATAPI READ CAPACITY, or
 //! IDENTIFY DEVICE), so user space can size the device before reading.
+//! A 0x59 call may span up to eight sectors (`MAX_BLOCK_SPAN`): EVERY
+//! sector it touches must be inside the window, checked as one span.
+//! 0x5b BLOCK_WRITE is the write half behind WRITE; the packet path is
+//! read-only, so ATAPI media answers `EROFS` after authority passes.
 //!
 //! Containers (NPS-007 §3) are the admission policy: each holder belongs
 //! to a container whose mask names the capability KINDS it may hold, and
@@ -721,6 +725,38 @@ impl CapSystem {
             return Err(CapError::NoRight);
         }
         if lba < cap.lo || lba >= cap.hi {
+            return Err(CapError::NoRight);
+        }
+        Ok(())
+    }
+
+    /// The BLOCK data plane's SPAN form: the same kind/right checks, and
+    /// EVERY sector the span touches must lie inside the window. A span
+    /// that would wrap the u32 sector space is refused by `checked_add`
+    /// rather than wrapping into the grant.
+    pub fn block_check_span(
+        &mut self,
+        p: usize,
+        h: u32,
+        lba: u32,
+        sectors: u32,
+        need: u8,
+    ) -> Result<(), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::BlockDevice {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & need != need {
+            return Err(CapError::NoRight);
+        }
+        if sectors == 0 {
+            return Err(CapError::NoRight);
+        }
+        let end = match lba.checked_add(sectors - 1) {
+            Some(e) => e,
+            None => return Err(CapError::NoRight),
+        };
+        if lba < cap.lo || end >= cap.hi {
             return Err(CapError::NoRight);
         }
         Ok(())
@@ -1868,6 +1904,29 @@ pub fn block_check_for(caller: usize, handle: u32, lba: u32) -> Result<(), CapEr
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.block_check(caller, handle, lba, rights::READ)
+    })
+}
+
+/// Access for the BLOCK-READ data-plane row's SPAN form: kind, READ and
+/// EVERY touched sector inside the window BEFORE the device is touched.
+pub fn block_check_span_for(
+    caller: usize,
+    handle: u32,
+    lba: u32,
+    sectors: u32,
+) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.block_check_span(caller, handle, lba, sectors, rights::READ)
+    })
+}
+
+/// Access for the BLOCK-WRITE data-plane row: kind, WRITE and sector-window
+/// containment BEFORE the device is touched.
+pub fn block_write_check_for(caller: usize, handle: u32, lba: u32) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.block_check(caller, handle, lba, rights::WRITE)
     })
 }
 

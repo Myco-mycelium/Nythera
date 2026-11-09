@@ -364,6 +364,65 @@ pub unsafe fn read_sector(channel: usize, lba: u32, out: &mut [u8]) -> bool {
     ok
 }
 
+/// Whether `channel`'s device is an ATAPI packet device. The packet path
+/// in this kernel is read-only: the gate refuses a write to it as `EROFS`
+/// rather than issuing a WRITE(10) the media cannot take.
+pub fn is_atapi(channel: usize) -> bool {
+    IS_ATAPI[channel].load(Ordering::Relaxed) != 0
+}
+
+/// Write ONE logical sector to an ATA disk (LBA28 WRITE SECTORS). ATAPI
+/// is refused here too, with `false`, so no gate can bypass the `EROFS`
+/// rule by not asking [`is_atapi`] first. `data` must hold at least
+/// [`sector_size`] bytes; anything past it is ignored.
+///
+/// # Safety
+/// Same contract as [`read_sector`]: a channel confirmed present, and a
+/// caller that has already established WRITE authority over this LBA.
+pub unsafe fn write_sector(channel: usize, lba: u32, data: &[u8]) -> bool {
+    if IS_ATAPI[channel].load(Ordering::Relaxed) != 0 {
+        return false;
+    }
+    let c = &CHANNELS[channel];
+    let size = sector_size(channel) as usize;
+    if data.len() < size {
+        return false;
+    }
+    MANUAL[channel].store(1, Ordering::Relaxed);
+    Port::<u8>::new(c.ctrl).write(0);
+    write_reg(c.base, REG_DRIVEHEAD, 0xE0 | ((lba >> 24) as u8 & 0x0f));
+    delay_400ns(c.ctrl);
+    write_reg(c.base, REG_SECCOUNT, 1);
+    write_reg(c.base, REG_LBA0, lba as u8);
+    write_reg(c.base, REG_LBA1, (lba >> 8) as u8);
+    write_reg(c.base, REG_LBA2, (lba >> 16) as u8);
+    write_reg(c.base, REG_STATUS, 0x30);
+    let mut ok = false;
+    if wait_drq(c) {
+        let mut port: Port<u16> = Port::new(c.base + REG_DATA);
+        for i in 0..(size / 2) {
+            port.write(u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]));
+        }
+        // WRITE SECTORS: the device reports completion by clearing BSY
+        // and DRQ; an error bit is a real failure.
+        for _ in 0..MAX_IRQ_SPINS {
+            let status = read_reg(c.base, REG_STATUS);
+            if status & STATUS_ERR != 0 {
+                break;
+            }
+            if status & STATUS_BSY == 0 {
+                ok = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    }
+    let _ = read_reg(c.base, REG_STATUS);
+    MANUAL[channel].store(0, Ordering::Relaxed);
+    Port::<u8>::new(c.ctrl).write(0);
+    ok
+}
+
 /// The boot device's geometry: `(logical sector size, number of
 /// sectors)`. ATAPI asks the drive with READ CAPACITY(10); an ATA disk
 /// answers from IDENTIFY DEVICE words 60..61. Returns `None` on a

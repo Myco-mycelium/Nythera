@@ -6806,3 +6806,72 @@ Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
 has no extracted-kernel attribution because the kernel lives inside the
 stub binary; its attribution is the one build run that produced both discs
 from one `target/kernel.elf`.
+## Block spans, writes, and the ISO9660 probe (2026-11-09)
+
+`0x59 CAP_BLOCK_READ` now takes a SPAN: up to 16 KiB (eight 2048-byte
+sectors) in one call. The authority check is over the whole span -- the
+first sector being inside the window is not enough, and a span whose last
+sector escapes is `EACCES` before the device is touched. The kernel reads
+the span sector-by-sector and copies the requested prefix.
+
+`0x5b CAP_BLOCK_WRITE` is the write half: kind, WRITE and window
+containment first, then one sector through `ata::write_sector` (LBA28
+WRITE SECTORS). The packet path in this kernel is read-only, so ATAPI
+media answers `EROFS` (a new named refusal, -30) AFTER the right check --
+authority passing is observable separately from the media refusing.
+
+The ring-3 proof uses both: it reads LBA 16 plus LBA 17 in one 4 KiB span
+(the ISO9660 primary volume descriptor and the boot record that follows
+it), copies the descriptor's 32-byte volume id out of its own buffer, and
+the kernel compares that with its own read of the same sector. It also
+feeds a write through the `WRITE`-carrying block handle (ATAPI ->
+`EROFS`), a write past the window (`EACCES`) and a write through the
+framebuffer handle (`EACCES`).
+
+```
+service-0x84 proof: BLOCK-SPAN (ack 0x1000 , past-window
+  0xfffffffffffffff3 , zero-len 0xffffffffffffffea , media
+  0xffffffffffffffe2 , write-window 0xfffffffffffffff3 , write-kind
+  0xfffffffffffffff3) , BLOCK-SPAN matches
+service-0x84 proof: BLOCK-VOLUME (id "ISOIMAGE" , pvd
+  0x0001313030444301 , next 0x4501313030444300 , ring3-id matches) ,
+  BLOCK-VOLUME matches
+```
+
+One bug found on the way: the second descriptor on these discs is the El
+Torito boot record (type 0, `EL TORITO` at byte 7), not a terminator, so
+the chain check is "every descriptor carries CD001 and version 1", not
+"the next sector is 0xFF".
+
+Checks after this slice: `./build.sh` PASS, 28 served calls
+(`0x40..0x5b`); `svc84_proof_test.sh` PASS with the BLOCK-SPAN and
+BLOCK-VOLUME legs; `qemu_boot_test.sh` PASS with `experimental caps: 122
+clause groups`; `qemu_boot_parity_diff.sh` PASS (526 chain lines,
+BIOS == UEFI); `check_live_iso.sh --boot --uefi-boot` PASS.
+
+Named limits, not hidden: a span is at most eight sectors; there is no
+cache and no filesystem layer in the kernel -- the ISO9660 parsing in the
+proof is ring-3 code. The ATA write path exists but no test media is
+writable, so the LBA28 write itself is not exercised by a gate; only its
+authority and media refusals are.
+
+## The release discs carrying spans, writes and the volume probe (2026-11-09)
+
+Both live discs were rebuilt from this tree with `make_live_iso.sh` after
+this slice and verified outside it with `check_live_iso.sh --boot
+--uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 409fc896bd134ab5408ff3485c00bb70925d885fe7394e82d97ad9ccf2feac19
+dist/nyrqis-live-uefi.iso   sha256 28aff806e46c6ea8415bf3625740f4c2de634611ebe546c8557052e3d52d3e0d
+kernel carried by both:     sha256 7624ac0efbde0eec236a9d27abbedb76f067543ee408dc5df162247fda1b405f
+```
+
+Integrity and attribution match, the BIOS disc boots the default entry to a
+verified desktop session, and the UEFI disc boots through our signed stub
+(carrier walked, GOP handed over, shell rendered and verified).
+
+Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
+has no extracted-kernel attribution because the kernel lives inside the
+stub binary; its attribution is the one build run that produced both discs
+from one `target/kernel.elf`.

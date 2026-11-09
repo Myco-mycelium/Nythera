@@ -1318,6 +1318,79 @@ _start:
     int $0x84
     mov %rax, 2928(%rbx)
 
+    /* 23a. BLOCK_READ SPAN (0x59, 4096 bytes): LBA 16 plus LBA 17 in ONE
+       call -- the ISO's primary volume descriptor followed by the
+       terminator -- copied to BUF+2944. The ack at BUF+7040 must be
+       4096, the descriptor is at the START of the buffer (CD001) and
+       the terminator's type byte (0xFF) at +2048. */
+    mov $6, %rdi
+    mov $16, %rsi
+    lea 2944(%rbx), %rdx
+    mov $4096, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 7040(%rbx)
+    /* 23b. The SAME span starting at the last grantable sector: the
+       first sector is inside the window but the second is not, so the
+       WHOLE span is refused EACCES at BUF+7048 before any read. */
+    mov $6, %rdi
+    mov $0xffffffff, %rsi
+    lea 2944(%rbx), %rdx
+    mov $4096, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 7048(%rbx)
+    /* 23c. A zero-length span is EINVAL at BUF+7056. */
+    mov $6, %rdi
+    mov $16, %rsi
+    lea 2944(%rbx), %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 7056(%rbx)
+    /* 23d. BLOCK_WRITE (0x5b) through the block handle: the handle CARRIES
+       WRITE, but the boot device is an ATAPI disc, so the media refuses
+       EROFS (-30) at BUF+7064 -- authority passed, the media decided. */
+    mov $6, %rdi
+    mov $16, %rsi
+    lea 2944(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x5b, %rax
+    int $0x84
+    mov %rax, 7064(%rbx)
+    /* 23e. A write OUTSIDE the sector window is EACCES at BUF+7072 before
+       the device is touched. */
+    mov $6, %rdi
+    mov $0xffffffff, %rsi
+    lea 2944(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x5b, %rax
+    int $0x84
+    mov %rax, 7072(%rbx)
+    /* 23f. A write through the FRAMEBUFFER handle: EACCES at BUF+7080
+       (WrongType), so the write row checks kind before any device. */
+    mov $8, %rdi
+    mov $16, %rsi
+    lea 2944(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x5b, %rax
+    int $0x84
+    mov %rax, 7080(%rbx)
+    /* 23g. The ISO9660 VOLUME ID: the primary descriptor's bytes 40..71
+       (32 bytes, space-padded), read by RING 3 from the span above and
+       copied to BUF+7104 for the kernel to compare against its own read
+       of the same sector. */
+    lea 2984(%rbx), %rsi
+    lea 7104(%rbx), %rdi
+    mov $32, %rcx
+    rep movsb
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

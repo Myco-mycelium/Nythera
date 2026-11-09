@@ -676,11 +676,13 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE
         | PageTableFlags::NO_EXECUTE;
-    let buf_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_BUF), 1, flags);
+    // TWO pages: the multi-sector proof buffer (4 KiB at BUF+2944) plus
+    // its bookkeeping and the volume id it hands back run past one page.
+    let buf_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_BUF), 2, flags);
     let stack_mapped =
         paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_STACK), 1, flags);
     let shm_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_SHM), 1, flags);
-    assert_eq!(buf_mapped, 1, "svc84 proof: results page not mapped");
+    assert_eq!(buf_mapped, 2, "svc84 proof: results pages not mapped");
     assert_eq!(stack_mapped, 1, "svc84 proof: stack page not mapped");
     assert_eq!(shm_mapped, 1, "svc84 proof: shared region not mapped");
     // The kernel's half of the shared region, written through the SAME

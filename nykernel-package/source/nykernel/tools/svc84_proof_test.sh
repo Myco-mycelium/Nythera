@@ -110,7 +110,7 @@ fi
 # Two verdict lines since 2026-11-09: the original ring-3 transcript and
 # the BADGE/NOTIFY leg's own (separate so the 20-row transcript's format
 # string stays readable). Join them; every pattern below is a substring.
-VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK)" "$SERIAL" | tail -6 | tr '\n' ' ')"
+VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK)" "$SERIAL" | tail -9 | tr '\n' ' ')"
 if [[ -z "$VERDICT" ]]; then
     bad "the ring-3 proof never reached its verdict line"
 else
@@ -244,6 +244,23 @@ else
         ok "the block-device geometry row asked the drive itself: 2048-byte sectors and a nonzero sector count reached ring 3, and the wrong-kind call was refused -EACCES"
     else
         bad "the block-info leg's geometry or refusal failed its read-back"
+    fi
+    # The BLOCK-SPAN leg: ONE call read four kilobytes (LBA 16 plus LBA 17,
+    # the descriptor chain), a span whose SECOND sector fell outside the
+    # window was refused as a whole, and the write row's authority/media
+    # split was observed by name (ATAPI is read-only -> EROFS).
+    if [[ "$VERDICT" == *"BLOCK-SPAN matches"* ]] && [[ "$VERDICT" == *"BLOCK-SPAN (ack 0x1000 , past-window 0xfffffffffffffff3 , zero-len 0xffffffffffffffea , media 0xffffffffffffffe2 , write-window 0xfffffffffffffff3 , write-kind 0xfffffffffffffff3)"* ]]; then
+        ok "a 4 KiB block span reached ring 3 in one call, a span crossing the window was refused EACCES, and a write through the block capability was refused by the read-only ATAPI media (EROFS) while a wrong-kind or out-of-window write was EACCES"
+    else
+        bad "the block-span / block-write leg's bytes or refusals failed their read-back"
+    fi
+    # The BLOCK-VOLUME leg: ring 3 parsed the ISO9660 primary volume
+    # descriptor it read and handed the volume id back, and the kernel's
+    # own read of the same sector agreed byte-for-byte.
+    if [[ "$VERDICT" == *"BLOCK-VOLUME matches"* ]] && [[ "$VERDICT" == *"BLOCK-VOLUME (id \""* ]] && [[ "$VERDICT" == *"\" , pvd 0x"* ]] && [[ "$VERDICT" == *" , next 0x"* ]] && [[ "$VERDICT" == *" , ring3-id matches)"* ]]; then
+        ok "ring 3 read the ISO9660 descriptor chain through the block capability, extracted the volume id, and the kernel's own read of LBA 16 confirmed it; the span's second sector was a real descriptor (\"CD001\" and version 1)"
+    else
+        bad "the ISO9660 volume leg's ring-3 id failed the kernel's own read-back"
     fi
     # The TWO-PROCESS leg: two ring-3 processes, each its own scheduler
     # task with its own session and its own trap stack. The first process
