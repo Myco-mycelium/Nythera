@@ -6407,6 +6407,30 @@ ps2-aux bound and the display verified, and the UEFI disc boots under OVMF
 through OUR signed stub (carrier walked, GOP handed over, shell rendered and
 verified) rather than GRUB.
 
+The long gates were rerun against this tree as well, from the released
+sources:
+
+```
+UEFI_EXIT=0
+PASS: OVMF booted the UEFI stub; kernel reached BootPhase::Ready and exited
+      cleanly; the GOP framebuffer was handed over, bound, and the shell
+      rendered into it; the C/D/E blocking-receive tape is pinned and matched
+PARITY_EXIT=0
+PASS: BIOS and UEFI kernels' demo chains are line-identical modulo the
+      documented environment-fact allowlist
+      (BIOS 526 chain lines == UEFI 526 chain lines; allowlist deltas only)
+SECBOOT_EXIT=0
+PASS: ms OVMF under enforcement accepts the Authenticode-signed stub whose
+      signer is chained to the enrolled carrier root, refuses both the
+      unsigned one and the one-byte-tampered signed one, refuses the
+      leaf-signed stub once its signer's To-Be-Signed hash is revoked BY HASH
+      in dbx AND once its certificate is revoked in the whole-certificate dbx
+      form, ACCEPTS a KeK-signed EFI_VARIABLE_AUTHENTICATION_2 dbx update at
+      SetVariable time (read back byte-for-byte) while refusing its
+      non-KeK-signed twin, and the kernel reached Ready
+      dbx shape probe: 1
+```
+
 Named limits: the discs are built from a dirty-set-free source tree but the
 UEFI stub is a `dev` build, the ESP is sized to the stub (7 MiB) rather than
 padded, and the UEFI disc has no extracted-kernel attribution -- the kernel
