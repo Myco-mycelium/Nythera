@@ -110,7 +110,7 @@ fi
 # Two verdict lines since 2026-11-09: the original ring-3 transcript and
 # the BADGE/NOTIFY leg's own (separate so the 20-row transcript's format
 # string stays readable). Join them; every pattern below is a substring.
-VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE)" "$SERIAL" | tail -4 | tr '\n' ' ')"
+VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK)" "$SERIAL" | tail -5 | tr '\n' ' ')"
 if [[ -z "$VERDICT" ]]; then
     bad "the ring-3 proof never reached its verdict line"
 else
@@ -226,6 +226,16 @@ else
         ok "the I/O-port and framebuffer data planes actually moved bytes: a port write/read round-tripped and matched the kernel's own read, a raw pixel word survived write/read, and the out-of-window and wrong-kind operations were refused -EACCES by name"
     else
         bad "the data-plane leg's port/pixel bytes or refusals failed their read-back"
+    fi
+    # The BLOCK-DEVICE leg: one sector read from the boot device at LBA 16
+    # (the ISO volume descriptor) carried "CD001" back to ring 3, an LBA
+    # past the window was refused -EACCES, a zero-length copy was refused
+    # -EINVAL, and a block read through another kind's handle was refused
+    # -EACCES.
+    if [[ "$VERDICT" == *"BLOCK matches"* ]] && [[ "$VERDICT" == *"BLOCK (read 0x8 , lba16 0x1313030444301 (want 0x1313030444301) , past-window 0xfffffffffffffff3 , zero-len 0xffffffffffffffea , wrong-kind 0xfffffffffffffff3)"* ]]; then
+        ok "the block-device data plane read one real sector from the boot device: LBA 16's ISO volume descriptor bytes (\"CD001\") reached ring 3, and the out-of-window, zero-length and wrong-kind claims were refused by name"
+    else
+        bad "the block-device leg's sector bytes or refusals failed their read-back"
     fi
     # The TWO-PROCESS leg: two ring-3 processes, each its own scheduler
     # task with its own session and its own trap stack. The first process

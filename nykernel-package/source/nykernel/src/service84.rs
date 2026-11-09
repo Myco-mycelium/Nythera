@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves twenty-five calls:
+//! table), the result goes back in `rax` -- that serves twenty-six calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -33,6 +33,7 @@
 //! | 0x56 | `CAP_IOPORT_OUT` | a0=IoPort handle, a1=port, a2=byte | same checks with WRITE before the `out` is issued -> `0` |
 //! | 0x57 | `CAP_FB_READ` | a0=FrameBuffer handle, a1=`(x<<32)\|y` | kind + READ, row inside the granted window -> the RAW scan-out word; `-EACCES` outside the window or for another kind |
 //! | 0x58 | `CAP_FB_WRITE` | a0=FrameBuffer handle, a1=`(x<<32)\|y`, a2=word | kind + WRITE, row inside the window -> stores the word -> `0` |
+//! | 0x59 | `CAP_BLOCK_READ` | a0=BlockDevice handle, a1=LBA, a2=buffer, a_xfer=bytes (1..2048) | kind + READ + sector-window containment, then ONE sector from the boot device copied into the buffer -> the byte count; `-EACCES` outside the window, `-ENODEV` with no device, `-EIO` on a failed read |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
 //! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
@@ -383,8 +384,27 @@ pub const CALL_CAP_FB_READ: u64 = 0x57;
 /// Same checks with WRITE before the store -> `0`.
 pub const CALL_CAP_FB_WRITE: u64 = 0x58;
 
+/// The block-device DATA PLANE: a0 = a BlockDevice capability handle,
+/// a1 = a logical block address, a2 = a user buffer, a_xfer = how many
+/// bytes of the sector to copy (1..2048). The machine checks kind, READ
+/// and that the LBA lies inside the sector window BEFORE the device is
+/// touched, then reads ONE logical sector from the kernel's boot device
+/// (2048 bytes on ATAPI, 512 on ATA) and copies the requested prefix ->
+/// the byte count. `-EACCES` for a missing right or an LBA outside the
+/// window, `-ENODEV` when the machine has no block device, `-EFAULT` for
+/// a bad buffer, `-EINVAL` for a bad count or a shape claim.
+pub const CALL_CAP_BLOCK_READ: u64 = 0x59;
+
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
+/// Linux `EIO`: the device is present but the I/O itself failed (a
+/// timeout, an error bit, a short data phase).
+pub const EIO: i64 = -5;
+
+/// Linux `ENODEV`: the call names hardware this machine does not have.
+/// The block-data row uses it rather than pretending a sector was read.
+pub const ENODEV: i64 = -19;
+
 /// Linux `ENOMEM`: the kernel's mapping source could not back a
 /// requested region. The caller holds nothing, and nothing was leaked.
 pub const ENOMEM: i64 = -12;
@@ -881,6 +901,26 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && data[4] == 0x00ff00ff
         && data[5] == EACCES
         && data[6] == EACCES;
+    // The BLOCK-DEVICE block (BUF+2856..+2896, five qwords): the read's
+    // byte count, the first 8 bytes of LBA 16 (the ISO volume
+    // descriptor, whose bytes 1..6 must be "CD001"), an LBA past the
+    // window refused EACCES, a zero-length copy refused EINVAL, and a
+    // block read through another kind's handle refused EACCES.
+    if !crate::memory::paging::user_range_ok(a0 + 2856, 40, false) {
+        return EFAULT;
+    }
+    let mut block = [0i64; 5];
+    for (i, slot) in block.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 2856 + 8 * i as u64) as *const i64) };
+    }
+    let iso_descriptor = u64::from_le_bytes([
+        0x01, b'C', b'D', b'0', b'0', b'1', 0x01, 0x00,
+    ]) as i64;
+    let block_ok = block[0] == 8
+        && block[1] == iso_descriptor
+        && block[2] == EACCES
+        && block[3] == EINVAL
+        && block[4] == EACCES;
     unsafe { crate::svc84_proof::select_peer_space() };
     if !crate::memory::paging::user_range_ok(a1, 240, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
@@ -1371,7 +1411,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && two_ok
         && peer_ok
         && map_ok;
-    let ok = stored_ok && wrote_ok && notify_ok && device_ok && data_ok;
+    let ok = stored_ok && wrote_ok && notify_ok && device_ok && data_ok && block_ok;
     crate::serial_println!(
         "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x} , send {:#x} , recv {:#x} , tag {:#x} , null-tag {:#x}) , BADGE/NOTIFY {}",
         bn[0] as u64,
@@ -1413,6 +1453,16 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         data[5] as u64,
         data[6] as u64,
         if data_ok { "matches" } else { "MISMATCH" }
+    );
+    crate::serial_println!(
+        "  service-0x84 proof: BLOCK (read {:#x} , lba16 {:#x} (want {:#x}) , past-window {:#x} , zero-len {:#x} , wrong-kind {:#x}) , BLOCK {}",
+        block[0] as u64,
+        block[1] as u64,
+        iso_descriptor as u64,
+        block[2] as u64,
+        block[3] as u64,
+        block[4] as u64,
+        if block_ok { "matches" } else { "MISMATCH" }
     );
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
     crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {} , reason {} , session {}) , WINDOW (req {:#x} , base {:#x} , len {:#x} , handle {:#x} , marker {:#x} , unmap {:#x} , again {:#x} , geom {:#x} , geom base {:#x} , peer read {:#x} , no-window release {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
@@ -2386,6 +2436,38 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     ((code as i64) << 32) | held as i64
                 }
                 Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_BLOCK_READ => {
+            if a0 > u32::MAX as u64 || a1 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a_xfer == 0 || a_xfer > 2048 || a_rights != 0 {
+                return EINVAL;
+            }
+            if from_ring3 && !crate::memory::paging::user_range_ok(a2, a_xfer as usize, true) {
+                return EFAULT;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::block_check_for(identity, a0 as u32, a1 as u32) {
+                Ok(()) => {}
+                Err(e) => return map_cap_error(e),
+            }
+            let channel = match crate::ata::boot_channel() {
+                Some(c) => c,
+                None => return ENODEV,
+            };
+            let mut sector = [0u8; 2048];
+            if unsafe { crate::ata::read_sector(channel, a1 as u32, &mut sector) } {
+                let n = (a_xfer as usize).min(sector.len());
+                unsafe {
+                    core::ptr::copy_nonoverlapping(sector.as_ptr(), a2 as *mut u8, n);
+                }
+                n as i64
+            } else {
+                // A device that answered the probe but not the read is a
+                // real I/O failure, distinct from "no device".
+                EIO
             }
         }
         CALL_CAP_IOPORT_IN => {

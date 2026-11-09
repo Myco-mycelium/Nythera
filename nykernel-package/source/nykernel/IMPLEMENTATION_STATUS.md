@@ -6685,3 +6685,47 @@ Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
 has no extracted-kernel attribution because the kernel lives inside the
 stub binary; its attribution is the one build run that produced both discs
 from one `target/kernel.elf`.
+
+## The block-device sector read (2026-11-09)
+
+The last data plane is served: `0x59 CAP_BLOCK_READ` reads ONE logical
+sector from the kernel's boot block device. The machine checks kind, READ
+and that the LBA lies inside the capability's sector window BEFORE the
+device is touched; a sector at `hi` is `EACCES` by name, like any other
+window escape. Then the kernel copies the requested prefix (1..2048
+bytes) into a validated user buffer and answers the byte count.
+
+The device path is PIO in `ata::read_sector`, chosen by what actually
+completed IDENTIFY:
+
+* ATAPI (these discs' boot device): PACKET + READ(10), 2048-byte
+  sectors. The ATA IRQ handler is temporarily barred from draining the
+  data phase (it normally drains IDENTIFY's 256 words), and restored on
+  every exit path.
+* ATA disk: LBA28 READ SECTORS, 512-byte sectors.
+
+Two defects found while porting, both recorded in the code:
+the READ(10) transfer length was written at bytes 8..9 instead of 7..8
+(the drive answered "zero blocks, no data", status 0x50), and the packet
+words were first written big-endian (swapping every CDB byte pair).
+`IS_ATAPI` is now set from the command that ACTUALLY completed, not from
+the power-on signature, which an earlier probe can consume.
+
+The ring-3 proof reads LBA 16 -- the ISO volume descriptor -- and checks
+the descriptor's `CD001` bytes where they landed in its own buffer:
+
+```
+service-0x84 proof: BLOCK (read 0x8 , lba16 0x1313030444301
+  (want 0x1313030444301) , past-window 0xfffffffffffffff3 ,
+  zero-len 0xffffffffffffffea , wrong-kind 0xfffffffffffffff3) ,
+  BLOCK matches
+```
+
+Checks after this slice: `./build.sh` PASS, 26 served calls
+(`0x40..0x59`); `svc84_proof_test.sh` PASS with the BLOCK leg;
+`qemu_boot_test.sh` PASS with `experimental caps: 122 clause groups`;
+`qemu_boot_parity_diff.sh` PASS (526 chain lines, BIOS == UEFI).
+
+Named limits, not hidden: one sector per call, read-only, no filesystem,
+no cache. A block-device WRITE row is not served; the capability can
+carry WRITE, but no row exercises it yet.

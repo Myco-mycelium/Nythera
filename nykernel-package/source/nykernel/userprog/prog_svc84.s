@@ -1255,6 +1255,48 @@ _start:
     int $0x84
     mov %rax, 2848(%rbx)
 
+    /* 21a. BLOCK_READ (0x59): read LBA 16 of the boot device (the ISO's
+       volume descriptor) and copy its first 8 bytes to BUF+2864. The ack
+       at BUF+2856 must be 8. */
+    mov $6, %rdi
+    mov $16, %rsi
+    lea 2864(%rbx), %rdx
+    mov $8, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 2856(%rbx)
+    /* 21b. An LBA OUTSIDE the window (0xffffffff, one past the full
+       range): EACCES at BUF+2872 before the device is touched. */
+    mov $6, %rdi
+    mov $0xffffffff, %rsi
+    lea 2864(%rbx), %rdx
+    mov $8, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 2872(%rbx)
+    /* 21c. A zero copy length is EINVAL (-22) at BUF+2880: the row's
+       shape, refused before the machine is consulted. */
+    mov $6, %rdi
+    mov $16, %rsi
+    lea 2864(%rbx), %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 2880(%rbx)
+    /* 21d. BLOCK_READ through the FRAMEBUFFER handle: EACCES at
+       BUF+2888 (WrongType), so the row refuses a handle of another kind. */
+    mov $8, %rdi
+    mov $16, %rsi
+    lea 2864(%rbx), %rdx
+    mov $8, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 2888(%rbx)
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

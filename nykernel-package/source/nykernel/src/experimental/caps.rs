@@ -48,9 +48,10 @@
 //! reports the kind code and window back. The I/O-port and framebuffer
 //! DATA PLANES are served too (0x55/0x56 port in/out, 0x57/0x58 pixel
 //! read/write), each checking kind, right and window BEFORE touching the
-//! hardware. The block device's sector data plane is still named as the
-//! next slice, not implied: the boot device on these discs is ATAPI, and
-//! a sector read needs the packet path, not a costume ATA command.
+//! hardware. The block device's sector data plane is served too (0x59
+//! BLOCK_READ): one logical sector from the boot device, PIO via the
+//! ATAPI packet path (or LBA28 for an ATA disk), copied to a validated
+//! user buffer after kind, READ and sector-window checks.
 //!
 //! Containers (NPS-007 §3) are the admission policy: each holder belongs
 //! to a container whose mask names the capability KINDS it may hold, and
@@ -703,6 +704,24 @@ impl CapSystem {
             return Err(CapError::NoRight);
         }
         Ok((cap.lo, cap.hi))
+    }
+
+    /// A data-plane block-device check: WrongType unless `h` is a block
+    /// device, NoRight unless it carries READ AND `lba` lies inside the
+    /// sector window. The window is authority: one sector past `hi` is
+    /// refused by the same answer as a missing right.
+    pub fn block_check(&mut self, p: usize, h: u32, lba: u32, need: u8) -> Result<(), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::BlockDevice {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & need != need {
+            return Err(CapError::NoRight);
+        }
+        if lba < cap.lo || lba >= cap.hi {
+            return Err(CapError::NoRight);
+        }
+        Ok(())
     }
 
     /// The release's `ioport_window`: the port range a capability covers.
@@ -1825,6 +1844,15 @@ pub fn device_info_for(caller: usize, handle: u32) -> Result<(u64, u32, u32, u8)
     })
 }
 
+/// Access for the BLOCK-READ data-plane row: kind, READ and sector-window
+/// containment BEFORE the device is touched.
+pub fn block_check_for(caller: usize, handle: u32, lba: u32) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.block_check(caller, handle, lba, rights::READ)
+    })
+}
+
 /// Access for the I/O-port DATA-PLANE rows: the machine's authority check
 /// (kind, right, window containment) before the gate touches a port.
 pub fn ioport_check_for(caller: usize, handle: u32, port: u16, need: u8) -> Result<(), CapError> {
@@ -2882,6 +2910,14 @@ pub fn run() -> bool {
             && sys.ioport_check(CLIENT, iop, 0x80, rights::WRITE).is_ok()
             && sys.ioport_check(CLIENT, iop, 0x81, rights::READ) == Err(CapError::NoRight)
             && sys.ioport_check(CLIENT, blk, 0x80, rights::READ) == Err(CapError::WrongType)
+    );
+    check!(
+        "a block LBA inside the window passes, one at hi is NoRight, and a non-block handle is WrongType",
+        sys.block_check(CLIENT, blk, 0, rights::READ).is_ok()
+            && sys.block_check(CLIENT, narrow_blk, 31, rights::READ).is_ok()
+            && sys.block_check(CLIENT, narrow_blk, 32, rights::READ) == Err(CapError::NoRight)
+            && sys.block_check(CLIENT, blk, 0, rights::SEND) == Err(CapError::NoRight)
+            && sys.block_check(CLIENT, iop, 0, rights::READ) == Err(CapError::WrongType)
     );
     let iop_r = sys
         .bootstrap_ioport(CLIENT, rights::READ, 0x80, 0x81)
