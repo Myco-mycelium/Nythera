@@ -6388,3 +6388,27 @@ window while the other's stays and no frame is released, the second drop is
 refused by name, and the frames outlive both windows until the last close);
 `check_svc84_ledger.py` PASS -- 17 served calls, `0x40..0x50`, disjoint from
 the release's ledger.
+
+## The release discs for the ring-3-fault / per-holder-window tree (2026-11-09)
+
+Both live discs were rebuilt from this commit (`d337255`) with
+`./tools/make_live_iso.sh` and verified outside the tree with
+`check_live_iso.sh --boot --uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 44f204c798c47fd5284884c8cafc86e72636161187d1785dca25bd181346eadc
+dist/nyrqis-live-uefi.iso   sha256 66c811d0a741085a39b0be52701f916d8ddbf8dc731d356867efb272ec978162
+kernel carried by both:     sha256 c063409ae175717b6f6421ce557d49f34ceeeaf416fe0e8f97e28d99768c1cb1
+```
+
+Both discs match their recorded digests, the BIOS disc carries the kernel this
+tree just built and boots the default entry to desktop with the framebuffer and
+ps2-aux bound and the display verified, and the UEFI disc boots under OVMF
+through OUR signed stub (carrier walked, GOP handed over, shell rendered and
+verified) rather than GRUB.
+
+Named limits: the discs are built from a dirty-set-free source tree but the
+UEFI stub is a `dev` build, the ESP is sized to the stub (7 MiB) rather than
+padded, and the UEFI disc has no extracted-kernel attribution -- the kernel
+lives inside the stub binary, so its attribution is the single build run that
+produced both discs from one `target/kernel.elf`.
