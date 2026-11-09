@@ -1090,6 +1090,43 @@ _start:
     int $0x84
     mov %rax, 2680(%rbx)
 
+    /* 18l. SEND through the BADGED handle minted at 18g (read from
+       BUF+2648, never guessed), 6-byte "badge!", no transfer: ack at
+       BUF+2688. */
+    movabs $0x216567646162, %rcx   /* "badge!" little-endian */
+    mov %rcx, 2720(%rbx)
+    mov 2648(%rbx), %rdi
+    lea 2720(%rbx), %rsi
+    mov $6, %rdx
+    xor %r8, %r8
+    movabs $-1, %r10
+    mov $0x47, %rax
+    int $0x84
+    mov %rax, 2688(%rbx)
+    /* 18m. RECV with a NULL badge out-pointer (a_xfer = 0): the validator
+       refuses BEFORE the queue is drained, so -EFAULT lands at BUF+2712
+       and the message stays queued for 18n. A drain-then-check would eat
+       it here. */
+    xor %rdi, %rdi
+    lea 2736(%rbx), %rsi
+    mov $64, %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x48, %rax
+    int $0x84
+    mov %rax, 2712(%rbx)
+    /* 18n. RECV again with a VALID badge out-pointer (BUF+2704): the
+       message 18m did not consume is drained, its badge is written, and
+       (sender<<32)|6 answers at BUF+2696. */
+    xor %rdi, %rdi
+    lea 2736(%rbx), %rsi
+    mov $64, %rdx
+    lea 2704(%rbx), %r10
+    xor %r8, %r8
+    mov $0x48, %rax
+    int $0x84
+    mov %rax, 2696(%rbx)
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

@@ -2002,6 +2002,20 @@ pub fn run() -> bool {
             && matches!(sys.receive(SERVER, ep), Ok(Some(m)) if m.badge == PEER_BADGE)
     );
 
+    check!(
+        "an unbadged send reports badge 0",
+        sys.send(SERVER, srv_h, b"plain", None).is_ok()
+            && matches!(sys.receive(SERVER, ep), Ok(Some(m)) if m.badge == 0)
+    );
+    // The tag survives NARROWING too: a SEND-only copy still names the
+    // same sender. (A badge is not a right, so attenuation cannot drop it.)
+    check!(
+        "a SEND-only transfer keeps the badge",
+        sys.send(CLIENT, badged, b"narrow", Some((badged, rights::SEND))).is_ok()
+            && matches!(sys.receive(SERVER, ep), Ok(Some(m))
+                if m.badge == PEER_BADGE && m.transferred.is_some())
+    );
+
     // ---- the NOTIFY clause (NPS-003 §3) ----
     // Payload-free signal bits: senders OR them in, the OWNER takes and
     // clears them, and nothing is ever queued -- so a notify cannot fill

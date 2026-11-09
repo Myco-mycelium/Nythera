@@ -6487,8 +6487,55 @@ negative);
 allowlist).
 
 Still staged, named rather than implied: the device/window kinds
-(BlockDevice, IoPort, FrameBuffer) and containers (NPS-007). The badge is
-carried on the queued message and reported by the machine's `Message`, but
-the gate's 0x48 `CAP_RECV` does not yet surface it to ring 3 -- the leg
-pins the mint and its refusals, and delivering the tag on the receive row
-is the follow-on slice.
+(BlockDevice, IoPort, FrameBuffer) and containers (NPS-007).
+
+## The badge reaches ring 3 on CAP_RECV (2026-11-09)
+
+The badge row alone proved the tag was minted and carried, but a server
+could not READ it: 0x48 `CAP_RECV` answered `(sender << 32) | len` and the
+optional transferred handle, and nothing else. The row now takes a third
+optional out-pointer: `a_xfer = u64::MAX` means "no badge wanted" (the same
+"none" sentinel SEND uses), and any other value is a u64 where the kernel
+writes the drained message's badge (0 = unbadged). The pointer is validated
+BEFORE the queue is touched, so a bad badge pointer cannot consume a message
+it never delivered -- the same authority/shape-first ordering the input and
+capacity rows already use.
+
+The ring-3 leg sends through the badged handle and then calls RECV twice:
+once with a NULL badge pointer, which answers `-EFAULT` and leaves the
+message queued, and once with a valid pointer, which drains it, copies the
+payload, writes `0xbeef`, and answers the packed identity. The kernel
+verdict pins all four values:
+
+```
+service-0x84 proof: BADGE/NOTIFY (... , send 0x0 , recv 0x700000006 ,
+  tag 0xbeef , null-tag 0xfffffffffffffff2) , BADGE/NOTIFY matches
+```
+
+Checks after this slice: `./build.sh` PASS; `svc84_proof_test.sh` PASS (the
+BADGE/NOTIFY leg now includes the receive-side tag and the pre-drain
+refusal); `qemu_boot_test.sh` PASS with `experimental caps: 106 clause
+groups` (two more: an unbadged send reports 0, and a SEND-only attenuated
+transfer still carries the tag); `qemu_boot_parity_diff.sh` PASS (526 chain
+lines, BIOS == UEFI modulo the allowlist).
+
+## The release discs carrying badge/notify (2026-11-09)
+
+Both live discs were rebuilt from this tree with `make_live_iso.sh` after
+the badge-on-receive slice and verified outside it with
+`check_live_iso.sh --boot --uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 56ec6f0531767041ebddef2bb2a95779b6b3e5f75433baed66d8ff988537d82c
+dist/nyrqis-live-uefi.iso   sha256 7f49da536a5dc1d3dc449b725a6098ce83436fca7366246108b81342e39dba33
+kernel carried by both:     sha256 5ab536d6f9c3e316670978917cb9226c2f94df48b9611d5950fe39721824efe5
+```
+
+Integrity and attribution match, the BIOS disc boots the default entry to a
+verified desktop session, and the UEFI disc boots through our signed stub
+(carrier walked, GOP handed over, shell rendered and verified).
+
+Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
+has no extracted-kernel attribution because the kernel lives inside the
+stub binary; its attribution is the one build run that produced both discs
+from one `target/kernel.elf`.

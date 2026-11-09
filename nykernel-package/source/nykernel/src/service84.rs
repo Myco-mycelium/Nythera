@@ -16,7 +16,7 @@
 //! | 0x45 | `IPC_SEND` | a0=endpoint, a1=seq, OR a1=buffer + a2=len | queues `(sender = caller identity, seq)` or the release's payload message (bytes copied into the kernel); `0`, or the arbiter's errno |
 //! | 0x46 | `IPC_RECV` | a0=endpoint (+ a1=buffer, a2=buflen>=64 for the payload dial), a_xfer = 0 plain / 1 blocking | drains one queued message -> `(sender << 32) | seq`, or the payload byte count with the bytes in the caller's buffer; `-ENODATA` when real-and-empty, `-ENOENT` when it does not exist, `-EAGAIN` when a wait woke with nothing |
 //! | 0x47 | `CAP_SEND` | a0=handle, a1/a2=payload, a_xfer/a_rights = a handle to transfer, attenuated to at most a_rights (u64::MAX = no transfer) | capability-checked send through `experimental::caps`; the transfer is how a region capability reaches a SECOND holder. `0`, or its errno |
-//! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer, a_rights = out-pointer for a transferred handle (0 = not wanted) | drains one message into user memory -> `(sender << 32) | len`; `-ENODATA` when real-and-empty |
+//! | 0x48 | `CAP_RECV` | a0=endpoint, a1/a2=recv buffer, a_rights = out-pointer for a transferred handle (0 = not wanted), a_xfer = out-pointer for the message's BADGE (u64::MAX = not wanted) | drains one message into user memory -> `(sender << 32) | len`; writes the sender capability's badge (`0` = unbadged) where asked; `-ENODATA` when real-and-empty, `-EFAULT` for a bad out-pointer |
 //! | 0x49 | `INPUT_POLL` | a0=handle, a1=record ptr | authority-first Input-capability check, then the oldest RAW input byte -> 16-byte record; `1`, `0` when authorized-and-bare, its errno otherwise |
 //! | 0x4a | `CAP_CALL` | a0=endpoint handle, a1/a2=request; a_xfer/a_rights = answer buffer + length for the BLOCKING dial | queues the request carrying a ONE-SHOT `Reply` capability naming the caller -> the endpoint's owner id; with an answer buffer the caller PARKS until the server answers and gets the answer's byte count; its errno otherwise |
 //! | 0x50 | `CAP_SHM_UNMAP` | a0=region handle | drops the CALLER's window on a region it still holds: frames and every other holder's window stay -> `0`, `-ENOENT` when this holder has no window left, `-EACCES` for a handle of another kind |
@@ -753,7 +753,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // peer's value is the region base its own geometry call answered, so a
     // wrong space or a shared page would show up as equal words.
     let same_va_first = unsafe { core::ptr::read_unaligned((a0 + 8) as *const u64) };
-    // The BADGE/NOTIFY block (BUF+2600..+2688, eleven qwords): the notify
+    // The BADGE/NOTIFY block (BUF+2600..+2720, fifteen qwords): the notify
     // row's ack, the owner's take of the OR-ed bits, the second take's 0
     // (the word was cleared), then three by-name refusals -- notify
     // through an Input capability (WrongType -> EACCES), notify through
@@ -763,13 +763,21 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // re-badge refusal through the handle the kernel itself minted. The
     // bits are the release's OR semantics (one notify of 0x5 here; the
     // machine's self-test pins the multi-call OR).
-    if !crate::memory::paging::user_range_ok(a0 + 2600, 88, false) {
+    //
+    // The last four words are the RECEIVE-side badge: a send through the
+    // badged handle, a RECV with a NULL badge out-pointer (refused EFAULT
+    // BEFORE the drain), the same RECV with a valid pointer (the message
+    // 18m did not consume, its packed identity, and the tag the kernel
+    // wrote), all compared against the tag the program itself asked for.
+    if !crate::memory::paging::user_range_ok(a0 + 2600, 120, false) {
         return EFAULT;
     }
-    let mut bn = [0i64; 11];
+    let mut bn = [0i64; 15];
     for (i, slot) in bn.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a0 + 2600 + 8 * i as u64) as *const i64) };
     }
+    let want_badge_recv =
+        ((crate::svc84_proof::FIRST_SESSION as u64) << 32 | 6) as i64;
     let notify_ok = bn[0] == 0
         && bn[1] == 5
         && bn[2] == 0
@@ -780,7 +788,11 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && bn[7] == EACCES
         && bn[8] == EACCES
         && bn[9] == EBADF
-        && bn[10] == EACCES;
+        && bn[10] == EACCES
+        && bn[11] == 0
+        && bn[12] == want_badge_recv
+        && bn[13] == 0xBEEF
+        && bn[14] == EFAULT;
     unsafe { crate::svc84_proof::select_peer_space() };
     if !crate::memory::paging::user_range_ok(a1, 240, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
@@ -1273,7 +1285,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && map_ok;
     let ok = stored_ok && wrote_ok && notify_ok;
     crate::serial_println!(
-        "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x}) , BADGE/NOTIFY {}",
+        "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x} , send {:#x} , recv {:#x} , tag {:#x} , null-tag {:#x}) , BADGE/NOTIFY {}",
         bn[0] as u64,
         bn[1] as u64,
         bn[2] as u64,
@@ -1285,6 +1297,10 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         bn[8] as u64,
         bn[9] as u64,
         bn[10] as u64,
+        bn[11] as u64,
+        bn[12] as u64,
+        bn[13] as u64,
+        bn[14] as u64,
         if notify_ok { "matches" } else { "MISMATCH" }
     );
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
@@ -1855,14 +1871,21 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             // it". Without it the CALL/REPLY pair is unusable from ring
             // 3: the reply capability would arrive in the caller's table
             // and the caller could never learn its index.
-            if a_xfer != u64::MAX {
-                return EBADF;
-            }
+            // a_xfer is the optional BADGE out-pointer: u64::MAX means
+            // "I do not want the sender's tag" (the same "none" sentinel
+            // SEND uses), and every other value is a u64 the kernel writes
+            // the message's badge into. It is validated BEFORE the queue is
+            // drained, so a bad pointer cannot consume a message it never
+            // delivered.
+            let badge_out = a_xfer != u64::MAX;
             // The user-range validator IS the ring-3 boundary check; a
             // cpl-0 caller is the kernel, whose buffers are its own
             // (a kernel stack address is not USER_ACCESSIBLE and would
             // otherwise be refused its own memory).
             if from_ring3 && a_rights != 0 && !crate::memory::paging::user_range_ok(a_rights, 8, true) {
+                return EFAULT;
+            }
+            if from_ring3 && badge_out && !crate::memory::paging::user_range_ok(a_xfer, 8, true) {
                 return EFAULT;
             }
             if a2 > crate::experimental::caps::MAX_PAYLOAD as u64 {
@@ -1891,6 +1914,14 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                                 a1 as *mut u8,
                                 m.payload.len(),
                             );
+                        }
+                    }
+                    if badge_out {
+                        // The sender's tag, written only after the payload
+                        // copy succeeded: a receive that answered an error
+                        // never half-delivers.
+                        unsafe {
+                            core::ptr::write_unaligned(a_xfer as *mut u64, m.badge as u64);
                         }
                     }
                     if a_rights != 0 {
