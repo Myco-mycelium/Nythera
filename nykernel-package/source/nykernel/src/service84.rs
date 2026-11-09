@@ -343,6 +343,17 @@ pub const CALL_CAP_NOTIFY: u64 = 0x52;
 /// other argument must claim nothing.
 pub const CALL_CAP_NOTIFY_TAKE: u64 = 0x53;
 
+/// The release's RESOURCE kinds (BlockDevice / IoPort / FrameBuffer):
+/// a0 = a capability handle in the caller's own table, a1 = an OPTIONAL
+/// out-pointer (u64::MAX = "no window wanted") where the kernel writes
+/// `(lo << 32) | hi`, the window the capability actually covers. Returns
+/// `(kind_code << 32) | rights`, with the release's kind bits: 2 block
+/// device, 4 I/O ports, 32 framebuffer. Any other kind is `EACCES` by
+/// name (an endpoint handle is not a device), and a bad out-pointer is
+/// `EFAULT` BEFORE anything is written. Every other argument must claim
+/// nothing.
+pub const CALL_CAP_DEVICE_INFO: u64 = 0x54;
+
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
 /// Linux `ENOMEM`: the kernel's mapping source could not back a
@@ -390,6 +401,10 @@ fn map_cap_error(e: crate::experimental::caps::CapError) -> i64 {
     match e {
         BadProcess | TargetDead => ESRCH,
         BadHandle => EBADF,
+        // NPS-007 §3: the receiver's container does not admit this kind.
+        // The capability is valid and the sender may hold it; DELIVERY is
+        // what the policy refuses, so EACCES by name.
+        Contained => EACCES,
         // A handle resolved but named a DIFFERENT kind of object: that is
         // an authorization failure at the type level (the release maps
         // its WrongType to EACCES-family refusals; EACCES by name),
@@ -793,6 +808,29 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && bn[12] == want_badge_recv
         && bn[13] == 0xBEEF
         && bn[14] == EFAULT;
+    // The RESOURCE-KIND block (BUF+2744..+2800, seven qwords): the
+    // DEVICE_INFO answer for the block device (code 2, rights 14), for the
+    // I/O-port capability (code 4) and the window it wrote out, for the
+    // framebuffer (code 32) and the ROW count it wrote out, then the two
+    // by-name refusals -- an endpoint handle asked for a device window,
+    // and a call whose shape claims a payload.
+    if !crate::memory::paging::user_range_ok(a0 + 2744, 56, false) {
+        return EFAULT;
+    }
+    let mut dev = [0i64; 7];
+    for (i, slot) in dev.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 2744 + 8 * i as u64) as *const i64) };
+    }
+    let want_fb_rows = crate::devices::framebuffer::bound_mode()
+        .map(|(_, h)| h as i64)
+        .unwrap_or(0);
+    let device_ok = dev[0] == 0x2_0000_000E
+        && dev[1] == 0x4_0000_000E
+        && dev[2] == 0x80_0000_0081
+        && dev[3] == 0x20_0000_000E
+        && dev[4] == want_fb_rows
+        && dev[5] == EACCES
+        && dev[6] == EINVAL;
     unsafe { crate::svc84_proof::select_peer_space() };
     if !crate::memory::paging::user_range_ok(a1, 240, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
@@ -1283,7 +1321,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && two_ok
         && peer_ok
         && map_ok;
-    let ok = stored_ok && wrote_ok && notify_ok;
+    let ok = stored_ok && wrote_ok && notify_ok && device_ok;
     crate::serial_println!(
         "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x} , send {:#x} , recv {:#x} , tag {:#x} , null-tag {:#x}) , BADGE/NOTIFY {}",
         bn[0] as u64,
@@ -1302,6 +1340,17 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         bn[13] as u64,
         bn[14] as u64,
         if notify_ok { "matches" } else { "MISMATCH" }
+    );
+    crate::serial_println!(
+        "  service-0x84 proof: DEVICE (block {:#x} , ioport {:#x} window {:#x} , fb {:#x} rows {:#x} , endpoint {:#x} , shape {:#x}) , DEVICE {}",
+        dev[0] as u64,
+        dev[1] as u64,
+        dev[2] as u64,
+        dev[3] as u64,
+        dev[4] as u64,
+        dev[5] as u64,
+        dev[6] as u64,
+        if device_ok { "matches" } else { "MISMATCH" }
     );
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
     crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {} , reason {} , session {}) , WINDOW (req {:#x} , base {:#x} , len {:#x} , handle {:#x} , marker {:#x} , unmap {:#x} , again {:#x} , geom {:#x} , geom base {:#x} , peer read {:#x} , no-window release {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
@@ -2248,6 +2297,32 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             let identity = crate::experimental::scheduler::session_identity();
             match crate::experimental::caps::notify_for(identity, a0 as u32, a1) {
                 Ok(()) => 0,
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_DEVICE_INFO => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            // A window report carries no payload, no transfer and no
+            // rights claim; a1 is either "none" or a u64 out-pointer.
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            if from_ring3 && a1 != u64::MAX && !crate::memory::paging::user_range_ok(a1, 8, true) {
+                return EFAULT;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::device_info_for(identity, a0 as u32) {
+                Ok((code, lo, hi, held)) => {
+                    if a1 != u64::MAX {
+                        let window = ((lo as u64) << 32) | hi as u64;
+                        unsafe {
+                            core::ptr::write_unaligned(a1 as *mut u64, window);
+                        }
+                    }
+                    ((code as i64) << 32) | held as i64
+                }
                 Err(e) => map_cap_error(e),
             }
         }

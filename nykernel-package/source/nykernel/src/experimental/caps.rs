@@ -26,17 +26,39 @@
 //!   reported error, never a silent drop (§3.1 "backpressure");
 //! * a dead holder's endpoints fail sends with a defined error (§7.1).
 //!
-//! NOT ported yet, named so their absence is checkable: the device/window
-//! kinds (BlockDevice, IoPort, FrameBuffer -- each needs a hardware window
-//! this tree does not expose to a holder yet; serving them today would be
-//! a costume, not a capability) and containers (NPS-007). Badges and
-//! notify ARE ported (2026-11-09): `badge` derives a one-time, immutable
-//! tag on an endpoint capability that every message sent through the copy
-//! carries (`Message.badge`), and `notify`/`take_notify` are the
-//! release's payload-free signal word -- OR-ed in by senders, cleared by
-//! the owner, never queued. Both are served through the gate (0x51
-//! BADGE, 0x52 NOTIFY, 0x53 NOTIFY_TAKE), and the ring-3 proof pins each
-//! row's answer and its by-name refusals.
+//! Badges and notify ARE ported (2026-11-09): `badge` derives a one-time,
+//! immutable tag on an endpoint capability that every message sent
+//! through the copy carries (`Message.badge`), and `notify`/`take_notify`
+//! are the release's payload-free signal word -- OR-ed in by senders,
+//! cleared by the owner, never queued. Both are served through the gate
+//! (0x51 BADGE, 0x52 NOTIFY, 0x53 NOTIFY_TAKE), and the ring-3 proof pins
+//! each row's answer and its by-name refusals.
+//!
+//! ---- the resource kinds and NPS-007 containers (2026-11-09) --------
+//!
+//! BlockDevice, IoPort and FrameBuffer are the release's RESOURCE kinds.
+//! Each carries the window it authorizes -- sectors, ports, scan-out rows
+//! -- and the ONLY thing a holder can do to that window is NARROW it:
+//! `narrow_device` refuses an empty, overflowing or outside sub-window
+//! with `Widening`, and rights travel unchanged (geography is not
+//! authority). The kernel is the only minter (`bootstrap_device`,
+//! `bootstrap_ioport`, `bootstrap_fb`), exactly as with Input; the proof
+//! session receives the boot device's sector space, the diagnostic port
+//! 0x80, and the display's bound rows, and the 0x54 DEVICE_INFO row
+//! reports the kind code and window back. The DATA-PLANE rows (sector
+//! read/write, port in/out, pixel store) are named as the next slice,
+//! not implied: reporting authority is not the same as exercising it.
+//!
+//! Containers (NPS-007 §3) are the admission policy: each holder belongs
+//! to a container whose mask names the capability KINDS it may hold, and
+//! whose quota bounds its live members. Root (id 0) admits all kinds and
+//! has no quota; created containers are bounded by `MAX_CONTAINERS`. The
+//! check runs where delivery happens -- a transferred capability whose
+//! kind the receiver's container forbids is `Contained` BEFORE the queue
+//! is touched, and a server whose container forbids Reply cannot be
+//! called. A holder in a container id that does not exist admits nothing
+//! (closed by construction). Placement is kernel-only (`set_container`);
+//! no row lets a process move itself out of its policy.
 //! FOUR kinds ARE ported: Endpoint (the queue-based one), Input (the
 //! router `kbdrt`'s prerequisite), Reply (the one-shot answer right, with
 //! the CALL/REPLY pair and its blocking wait) and SharedMem (a region the
@@ -129,6 +151,8 @@ pub const MAX_PAYLOAD: usize = 64;
 pub const QUEUE_CAPACITY: usize = 4;
 /// Per-holder table size.
 pub const CAP_TABLE_SIZE: usize = 32;
+/// NPS-007 §3: bounded container table (index 0 is the root).
+pub const MAX_CONTAINERS: usize = 8;
 
 /// Rights bits. SEND/GRANT are the ENDPOINT-kind rights; READ is the
 /// device/kind rights bit the Input capability uses ("may poll events").
@@ -150,12 +174,20 @@ pub mod rights {
 
 /// The capability kinds THIS machine knows. Endpoint is the queue-based
 /// kind; Input is the release's Phase-9/1-29 poll-authority token
-/// (endpoint 0, never stales). The remaining release kinds are named in
-/// the module doc.
+/// (endpoint 0, never stales). BlockDevice, IoPort and FrameBuffer are
+/// the release's RESOURCE kinds: each names a WINDOW of one resource
+/// (`lo..hi`, in sectors / ports / scan-out rows) that can only ever be
+/// narrowed, never widened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Endpoint,
     Input,
+    /// The boot block device: the window is a sector range.
+    BlockDevice,
+    /// x86 I/O ports: the window is a port range.
+    IoPort,
+    /// The display scan-out: the window is a row range.
+    FrameBuffer,
     /// The release's one-shot right to answer ONE call: minted by the
     /// kernel on the CALL path, naming the CALLER (`endpoint` holds its
     /// identity), carrying SEND and nothing else. Consumed by its first
@@ -181,6 +213,11 @@ pub struct Capability {
     endpoint: u32,
     generation: u32,
     rights: u8,
+    /// The resource kinds' window (`[lo, hi)` in sectors, ports or rows),
+    /// the release's `lo`/`hi`. Empty for every other kind. Travels with
+    /// an attenuating transfer and can only be NARROWED by `narrow_device`.
+    lo: u32,
+    hi: u32,
     /// An immutable tag the RECEIVER sees with every message sent
     /// through this capability (0 = unbadged), the release's `badge`.
     /// Set once, by `badge`; a badged capability can never be re-badged
@@ -230,6 +267,12 @@ pub enum CapError {
     /// dropped it. Refused by name rather than answered as success, so a
     /// repeated unmap cannot look like a second window was taken away.
     NotMapped,
+    /// The receiving holder's container (NPS-007 §3) does not admit the
+    /// KIND of capability that is being delivered. Refused by name at the
+    /// point of delivery, before the queue or the table is touched, so a
+    /// container's policy cannot be bypassed by sending a capability to a
+    /// process inside it.
+    Contained,
 }
 
 /// A message queued at an endpoint: the sender task id, the bounded
@@ -279,7 +322,32 @@ struct Endpoint {
 
 struct Holder {
     alive: bool,
+    /// NPS-007 §3: which container's capability-kind policy this holder
+    /// lives under (0 = the root, which admits every kind and has no
+    /// process quota).
+    container: u32,
     caps: Vec<Option<Capability>>,
+}
+
+/// A container's policy: which capability KINDS its processes may hold
+/// (bit per `kind_bit`) and how many live processes it may contain.
+struct ContainerCfg {
+    mask: u8,
+    quota: u32,
+}
+
+/// The release's stable kind bits (NPS-007 §3 mask vocabulary): root's
+/// `0xff` mask is meaningful only against these values.
+fn kind_bit(k: Kind) -> u8 {
+    match k {
+        Kind::Endpoint => 1,
+        Kind::BlockDevice => 2,
+        Kind::IoPort => 4,
+        Kind::SharedMem => 8,
+        Kind::Reply => 16,
+        Kind::FrameBuffer => 32,
+        Kind::Input => 64,
+    }
 }
 
 /// A shared region: frames the kernel allocated, mapped USER_ACCESSIBLE at
@@ -349,6 +417,9 @@ pub struct CapSystem {
     /// never gets an entry.
     waits: Vec<Waiting>,
     regions: Vec<RegionEntry>,
+    /// NPS-007 §3: index 0 is the root container (admits every kind, no
+    /// quota); created containers are bounded by `MAX_CONTAINERS`.
+    containers: Vec<ContainerCfg>,
 }
 
 /// A caller blocked on a call. `task` is the scheduler task to wake --
@@ -371,6 +442,7 @@ impl CapSystem {
             region_unmapper: None,
             waits: Vec::new(),
             regions: Vec::new(),
+            containers: alloc::vec![ContainerCfg { mask: 0xff, quota: u32::MAX }],
         }
     }
 
@@ -383,13 +455,14 @@ impl CapSystem {
         // of a live holder would silently duplicate capabilities into a
         // second table -- the one thing a capability machine must not do).
         while self.procs.len() <= p {
-            self.procs.push(Holder { alive: false, caps: Vec::new() });
+            self.procs.push(Holder { alive: false, container: 0, caps: Vec::new() });
         }
         if self.procs[p].alive {
             return Err(CapError::BadProcess);
         }
         self.procs[p] = Holder {
             alive: true,
+            container: 0,
             caps: (0..CAP_TABLE_SIZE).map(|_| None).collect(),
         };
         Ok(())
@@ -464,6 +537,8 @@ impl CapSystem {
             endpoint: id,
             generation: 0,
             rights: rights::SEND | rights::GRANT,
+            lo: 0,
+            hi: 0,
             badge: 0,
         };
         let handle = Self::install(self.live(owner)?, cap)?;
@@ -506,6 +581,8 @@ impl CapSystem {
             endpoint: ep,
             generation,
             rights: want & (rights::SEND | rights::GRANT),
+            lo: 0,
+            hi: 0,
             badge: 0,
         };
         Self::install(self.live(owner)?, cap)
@@ -521,6 +598,8 @@ impl CapSystem {
             endpoint: ep,
             generation,
             rights: want & (rights::SEND | rights::GRANT),
+            lo: 0,
+            hi: 0,
             badge: 0,
         };
         Self::install(self.live(to)?, cap)
@@ -537,6 +616,8 @@ impl CapSystem {
             endpoint: 0,
             generation: 0,
             rights: want & (rights::READ | rights::GRANT),
+            lo: 0,
+            hi: 0,
             badge: 0,
         };
         Self::install(self.live(to)?, cap)
@@ -556,6 +637,159 @@ impl CapSystem {
             return Err(CapError::NoRight);
         }
         Ok(())
+    }
+
+    // ---- the resource kinds (BlockDevice / IoPort / FrameBuffer) ----
+
+    /// KERNEL-ONLY bootstrap, the release's `bootstrap_device`: gives `to`
+    /// the block-device capability for sectors `[lo, hi)` of the boot
+    /// device. Only the kernel ever mints one of these; a holder receives
+    /// one by transfer, and can only NARROW its window.
+    pub fn bootstrap_device(&mut self, to: usize, want: u8, lo: u32, hi: u32) -> Result<u32, CapError> {
+        let cap = Capability {
+            kind: Kind::BlockDevice,
+            endpoint: 0,
+            generation: 0,
+            rights: want & (rights::READ | rights::WRITE | rights::GRANT),
+            lo,
+            hi,
+            badge: 0,
+        };
+        Self::install(self.live(to)?, cap)
+    }
+
+    /// KERNEL-ONLY bootstrap: gives `to` I/O ports `[lo, hi)` (the
+    /// release's `bootstrap_ioport`, narrowed by the caller here so the
+    /// kernel can hand out exactly the ports a driver needs).
+    pub fn bootstrap_ioport(&mut self, to: usize, want: u8, lo: u32, hi: u32) -> Result<u32, CapError> {
+        let cap = Capability {
+            kind: Kind::IoPort,
+            endpoint: 0,
+            generation: 0,
+            rights: want & (rights::READ | rights::WRITE | rights::GRANT),
+            lo,
+            hi,
+            badge: 0,
+        };
+        Self::install(self.live(to)?, cap)
+    }
+
+    /// KERNEL-ONLY bootstrap: gives `to` scan-out rows `[0, rows)`.
+    pub fn bootstrap_fb(&mut self, to: usize, want: u8, rows: u32) -> Result<u32, CapError> {
+        let cap = Capability {
+            kind: Kind::FrameBuffer,
+            endpoint: 0,
+            generation: 0,
+            rights: want & (rights::READ | rights::WRITE | rights::GRANT),
+            lo: 0,
+            hi: rows,
+            badge: 0,
+        };
+        Self::install(self.live(to)?, cap)
+    }
+
+    /// The release's `check_device`: WrongType unless `h` names a block
+    /// device, NoRight unless it carries ALL of `need`; answers the sector
+    /// window it actually covers.
+    pub fn check_device(&mut self, p: usize, h: u32, need: u8) -> Result<(u32, u32), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::BlockDevice {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & need != need {
+            return Err(CapError::NoRight);
+        }
+        Ok((cap.lo, cap.hi))
+    }
+
+    /// The release's `ioport_window`: the port range a capability covers.
+    pub fn ioport_window(&mut self, p: usize, h: u32) -> Result<(u32, u32), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::IoPort {
+            return Err(CapError::WrongType);
+        }
+        Ok((cap.lo, cap.hi))
+    }
+
+    /// The release's `fb_window`: the row range a framebuffer capability
+    /// covers, plus its rights (READ|WRITE say whether it may store).
+    pub fn fb_window(&mut self, p: usize, h: u32) -> Result<(u32, u32, u8), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::FrameBuffer {
+            return Err(CapError::WrongType);
+        }
+        Ok((cap.lo, cap.hi, cap.rights))
+    }
+
+    /// The release's `narrow_device`: derive, in `p`'s own table, a copy
+    /// of a resource capability covering `[lo, lo+len)`. The new window
+    /// must lie INSIDE the held one -- anything else (including an empty
+    /// or overflowing window) is `Widening`. Rights and badge travel
+    /// unchanged; narrowing is about geography, not authority to pass on.
+    pub fn narrow_device(&mut self, p: usize, h: u32, lo: u32, len: u32) -> Result<u32, CapError> {
+        let cap = self.lookup(p, h)?;
+        if !matches!(cap.kind, Kind::BlockDevice | Kind::IoPort | Kind::FrameBuffer) {
+            return Err(CapError::WrongType);
+        }
+        let hi = lo.checked_add(len).ok_or(CapError::Widening)?;
+        if len == 0 || lo < cap.lo || hi > cap.hi {
+            return Err(CapError::Widening);
+        }
+        Self::install(self.live(p)?, Capability { lo, hi, ..cap })
+    }
+
+    // ---- containers (NPS-007 §3) ------------------------------------
+
+    /// New container admitting only the capability kinds in `mask` (see
+    /// `kind_bit`) with at most `quota` live processes. Returns its id.
+    pub fn create_container(&mut self, mask: u8, quota: u32) -> Result<u32, CapError> {
+        if self.containers.len() >= MAX_CONTAINERS {
+            return Err(CapError::TableFull);
+        }
+        self.containers.push(ContainerCfg { mask, quota });
+        Ok((self.containers.len() - 1) as u32)
+    }
+
+    /// Which container a holder is in (0 for an unknown holder).
+    pub fn container_of(&self, p: usize) -> u32 {
+        self.procs.get(p).map(|x| x.container).unwrap_or(0)
+    }
+
+    pub fn container_exists(&self, c: u32) -> bool {
+        (c as usize) < self.containers.len()
+    }
+
+    pub fn container_members(&self, c: u32) -> Vec<usize> {
+        self.procs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.alive && p.container == c)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Whether the container has room for one more live holder.
+    pub fn container_has_room(&self, c: u32) -> bool {
+        self.containers
+            .get(c as usize)
+            .map_or(false, |cfg| (self.container_members(c).len() as u64) < cfg.quota as u64)
+    }
+
+    /// KERNEL-ONLY placement, the release's `set_container`: a normal boot
+    /// puts a task in its container when it spawns; user code has no row
+    /// that can move itself (that would let it escape its policy).
+    pub fn set_container(&mut self, p: usize, c: u32) {
+        if let Some(pr) = self.procs.get_mut(p) {
+            pr.container = c;
+        }
+    }
+
+    /// The policy check at delivery: does `p`'s container admit `k`?
+    fn admits(&self, p: usize, k: Kind) -> bool {
+        self.procs
+            .get(p)
+            .and_then(|pr| self.containers.get(pr.container as usize))
+            .map_or(false, |c| c.mask & kind_bit(k) != 0)
     }
 
     /// The release's `badge`: derive, in `p`'s OWN table, a BADGED copy of
@@ -660,8 +894,16 @@ impl CapSystem {
             endpoint: from as u32,
             generation: 0,
             rights: rights::SEND,
+            lo: 0,
+            hi: 0,
             badge: 0,
         };
+        // A server whose container forbids Reply cannot be called: the
+        // kernel would be delivering a kind its policy excludes.
+        let owner = self.endpoints.get(cap.endpoint as usize).ok_or(CapError::BadHandle)?.owner;
+        if !self.admits(owner, Kind::Reply) {
+            return Err(CapError::Contained);
+        }
         let e = self.endpoints.get_mut(cap.endpoint as usize).ok_or(CapError::BadHandle)?;
         if !e.alive {
             return Err(CapError::TargetDead);
@@ -845,6 +1087,8 @@ impl CapSystem {
             endpoint: region,
             generation: 0,
             rights: want & (rights::READ | rights::WRITE | rights::GRANT),
+            lo: 0,
+            hi: 0,
             badge: 0,
         };
         let holder = self.live(to)?;
@@ -1168,6 +1412,10 @@ impl CapSystem {
                         }
                     }
                     Kind::Input => {}
+                    // The resource kinds have no endpoint to go stale and
+                    // no revoke: their authority is the WINDOW they carry,
+                    // which travels unchanged and can only be narrowed.
+                    Kind::BlockDevice | Kind::IoPort | Kind::FrameBuffer => {}
                     // Unreachable as written: the GRANT check above
                     // already refused a Reply capability (it carries SEND
                     // only). Kept explicit so the day a right is added
@@ -1194,6 +1442,16 @@ impl CapSystem {
                 Some(Capability { rights: want, ..held })
             }
         };
+        // NPS-007 §3: the RECEIVER's container decides which kinds may be
+        // delivered into it. Checked before the queue is touched, so a
+        // refused delivery cannot consume a queue slot or leak a region
+        // count.
+        if let Some(c) = moved {
+            let owner = self.endpoints.get(cap.endpoint as usize).ok_or(CapError::BadHandle)?.owner;
+            if !self.admits(owner, c.kind) {
+                return Err(CapError::Contained);
+            }
+        }
         let e = self.endpoints.get_mut(cap.endpoint as usize).ok_or(CapError::BadHandle)?;
         if !e.alive {
             return Err(CapError::TargetDead);
@@ -1358,6 +1616,31 @@ pub fn prepare_session_for_proof(sid: usize) -> (u32, u32, u32) {
     })
 }
 
+/// The resource-kind equip, run AFTER the session's endpoint, Input and
+/// region capabilities have taken slots 0..5 so the proof's existing
+/// indexes do not move: the boot block device's whole sector space, the
+/// diagnostic port this proof may name, and the display's scan-out rows
+/// as the loader bound them. Returns the three handles in install order
+/// (the proof asserts 6, 7, 8).
+pub fn equip_devices_for_proof(sid: usize) -> (u32, u32, u32) {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        let block_handle = sys
+            .bootstrap_device(sid, rights::READ | rights::WRITE | rights::GRANT, 0, u32::MAX)
+            .expect("caps device equip: mint BLOCK");
+        let ioport_handle = sys
+            .bootstrap_ioport(sid, rights::READ | rights::WRITE | rights::GRANT, 0x80, 0x81)
+            .expect("caps device equip: mint IOPORT");
+        let rows = crate::devices::framebuffer::bound_mode()
+            .map(|(_, h)| h)
+            .unwrap_or(0);
+        let fb_handle = sys
+            .bootstrap_fb(sid, rights::READ | rights::WRITE | rights::GRANT, rows)
+            .expect("caps device equip: mint FRAMEBUFFER");
+        (block_handle, ioport_handle, fb_handle)
+    })
+}
+
 /// The two-process proof's equip: `sid` becomes a second SESSION holding
 /// a NEW endpoint (the peer's own, whose owner capability RECV uses) and
 /// a grant of the SHARED region -- so the region has three live
@@ -1483,6 +1766,33 @@ pub fn input_check_for(caller: usize, handle: u32) -> Result<(), CapError> {
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.input_check(caller, handle)
+    })
+}
+
+/// Access for the DEVICE_INFO row: the KIND-CODE and WINDOW of a resource
+/// capability in the caller's own table. Only BlockDevice (2), IoPort (4)
+/// and FrameBuffer (32) answer; any other kind is `WrongType`, so an
+/// endpoint handle cannot be queried as if it were a device.
+pub fn device_info_for(caller: usize, handle: u32) -> Result<(u64, u32, u32, u8), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        let cap = sys.lookup(caller, handle)?;
+        let code = match cap.kind {
+            Kind::BlockDevice => 2,
+            Kind::IoPort => 4,
+            Kind::FrameBuffer => 32,
+            _ => return Err(CapError::WrongType),
+        };
+        Ok((code, cap.lo, cap.hi, cap.rights))
+    })
+}
+
+/// Access for the device-narrowing path (kernel self-test today; the
+/// release's `narrow_device`, attenuation-only).
+pub fn narrow_for(caller: usize, handle: u32, lo: u32, len: u32) -> Result<u32, CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.narrow_device(caller, handle, lo, len)
     })
 }
 
@@ -2459,6 +2769,107 @@ pub fn run() -> bool {
             && TEST_RELEASED.load(Ordering::SeqCst) == 1
     );
 
+    // ---- the resource kinds: windows that only NARROW ----------------
+    let blk = sys
+        .bootstrap_device(CLIENT, rights::READ | rights::WRITE | rights::GRANT, 0, u32::MAX)
+        .expect("self-test: block device");
+    check!(
+        "a block-device capability answers its whole sector window, and a missing right is NoRight",
+        sys.check_device(CLIENT, blk, rights::READ | rights::WRITE) == Ok((0, u32::MAX))
+            && sys.check_device(CLIENT, blk, rights::SEND) == Err(CapError::NoRight)
+    );
+    check!(
+        "check_device on a non-block capability is WrongType, not a zero window",
+        sys.check_device(CLIENT, cli_h, rights::READ) == Err(CapError::WrongType)
+    );
+    let narrow_blk = sys
+        .narrow_device(CLIENT, blk, 16, 16)
+        .expect("self-test: narrowed block window");
+    check!(
+        "narrowing derives an INSIDE window and widening/empty/overflow are refused",
+        sys.check_device(CLIENT, narrow_blk, rights::READ) == Ok((16, 32))
+            && sys.narrow_device(CLIENT, narrow_blk, 8, 32) == Err(CapError::Widening)
+            && sys.narrow_device(CLIENT, narrow_blk, 16, 0) == Err(CapError::Widening)
+            && sys.narrow_device(CLIENT, blk, u32::MAX, 2) == Err(CapError::Widening)
+            && sys.narrow_device(CLIENT, cli_h, 0, 1) == Err(CapError::WrongType)
+    );
+    let iop = sys
+        .bootstrap_ioport(CLIENT, rights::READ | rights::WRITE, 0x80, 0x81)
+        .expect("self-test: ioport");
+    check!(
+        "the I/O-port window is exactly the granted ports and can only shrink",
+        sys.ioport_window(CLIENT, iop) == Ok((0x80, 0x81))
+            && sys.narrow_device(CLIENT, iop, 0x80, 1).is_ok()
+            && sys.narrow_device(CLIENT, iop, 0x80, 2) == Err(CapError::Widening)
+            && sys.ioport_window(CLIENT, blk) == Err(CapError::WrongType)
+    );
+    let fb = sys
+        .bootstrap_fb(CLIENT, rights::READ | rights::WRITE | rights::GRANT, 600)
+        .expect("self-test: framebuffer");
+    let fb_narrow = sys
+        .narrow_device(CLIENT, fb, 0, 300)
+        .expect("self-test: narrowed framebuffer rows");
+    check!(
+        "the framebuffer window is a ROW range: rows narrow, rights travel, endpoints are refused",
+        sys.fb_window(CLIENT, fb) == Ok((0, 600, rights::READ | rights::WRITE | rights::GRANT))
+            && sys.fb_window(CLIENT, fb_narrow) == Ok((0, 300, rights::READ | rights::WRITE | rights::GRANT))
+            && sys.narrow_device(CLIENT, fb, 300, 400) == Err(CapError::Widening)
+            && sys.fb_window(CLIENT, cli_h) == Err(CapError::WrongType)
+    );
+
+    // ---- NPS-007 §3 containers --------------------------------------
+    // The root admits every kind; a created container's mask does not.
+    check!(
+        "every holder starts in the root container, which admits all kinds",
+        sys.container_of(CLIENT) == 0
+            && sys.container_exists(0)
+            && sys.container_members(0).len() >= 2
+    );
+    let narrow_c = sys
+        .create_container(1 | 64, 2) // Endpoint | Input only
+        .expect("self-test: container");
+    check!(
+        "a container exists and starts empty with room under its quota",
+        sys.container_exists(narrow_c) && sys.container_members(narrow_c).is_empty() && sys.container_has_room(narrow_c)
+    );
+    sys.set_container(SERVER, narrow_c);
+    check!(
+        "a kind the receiver's container forbids is Contained BEFORE the queue is touched",
+        sys.send(CLIENT, cli_h, b"dev", Some((blk, rights::READ))) == Err(CapError::Contained)
+            && sys.call_send(CLIENT, cli_h, b"call") == Err(CapError::Contained)
+    );
+    sys.set_container(CLIENT, narrow_c);
+    check!(
+        "the quota is a LIVE-member count: a second member fills a quota of two",
+        !sys.container_has_room(narrow_c) && sys.container_members(narrow_c).len() == 2
+    );
+    sys.set_container(SERVER, 0);
+    sys.set_container(CLIENT, 0);
+    check!(
+        "back in the root container the SAME delivery is admitted, and the copy keeps its kind",
+        sys.send(CLIENT, cli_h, b"dev", Some((blk, rights::READ))).is_ok()
+            && matches!(sys.receive(SERVER, ep), Ok(Some(m))
+                if m.transferred.is_some() && m.transferred_kind == Some(Kind::BlockDevice))
+    );
+    // A container id nobody created admits nothing: the check is by policy,
+    // not by absence of a field.
+    sys.set_container(SERVER, 99);
+    check!(
+        "a holder in a nonexistent container admits NOTHING (closed by construction)",
+        sys.send(CLIENT, cli_h, b"dev", Some((blk, rights::READ))) == Err(CapError::Contained)
+    );
+    sys.set_container(SERVER, 0);
+    // Bounded table: the root, the container made above, then creations
+    // until the table refuses, which must be exactly at MAX_CONTAINERS.
+    let mut made = sys.containers.len();
+    while sys.create_container(0xff, 1).is_ok() {
+        made += 1;
+    }
+    check!(
+        "the container table is bounded and its overflow is TableFull by name",
+        made == MAX_CONTAINERS
+    );
+
     // §4.3 revocation: O(1), outstanding caps dead, owner mints fresh
     check!("revoke", sys.revoke(SERVER, ep).is_ok());
     check!("stale generation refused", sys.send(CLIENT, cli_h, b"after revoke", None) == Err(CapError::Revoked));
@@ -2478,7 +2889,7 @@ pub fn run() -> bool {
 
     if failed.is_empty() {
         serial_println!(
-            "  experimental caps: {} clause groups proven positive+negative (handles forge-proof, attenuation-only transfers, O(1) revocation, bounded payloads and queues, the Input kind's poll authority) -- OK",
+            "  experimental caps: {} clause groups proven positive+negative (handles forge-proof, attenuation-only transfers, O(1) revocation, bounded payloads and queues, the Input kind's poll authority, the resource kinds' narrow-only windows, NPS-007 container admissibility) -- OK",
             groups
         );
         true

@@ -6539,3 +6539,56 @@ Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
 has no extracted-kernel attribution because the kernel lives inside the
 stub binary; its attribution is the one build run that produced both discs
 from one `target/kernel.elf`.
+
+## The resource kinds and containers (2026-11-09)
+
+The last named capability gap was the device/window kinds and NPS-007
+containers. BlockDevice, IoPort and FrameBuffer are now kinds in
+`experimental::caps`, each carrying the WINDOW it authorizes -- sectors,
+I/O ports, scan-out rows -- plus READ/WRITE/GRANT. The kernel alone mints
+them (`bootstrap_device`, `bootstrap_ioport`, `bootstrap_fb`), and
+`narrow_device` can only SHRINK a window: an empty window, a sub-window
+outside the held one, or an overflowing `lo + len` is `Widening` by name.
+Rights and badges travel through narrowing unchanged, because geography
+is not authority.
+
+Containers carry the admission policy instead of the geography: a mask of
+the capability kinds a holder may receive and a quota of live members.
+Root (id 0) admits every kind and has no quota; `create_container` is
+bounded at `MAX_CONTAINERS = 8`. The check runs where delivery happens --
+a transferred capability whose kind the receiver's container forbids is
+`Contained` BEFORE the send touches the queue, and a server in a
+container without Reply cannot be called at all. A holder placed in a
+container id that does not exist admits nothing. Placement is kernel-only
+(`set_container`); no `0x84` row can move a process out of its policy.
+
+The gate row is `0x54 CAP_DEVICE_INFO`: a0 = a handle, a1 = an optional
+window out-pointer (`u64::MAX` = none); it answers
+`(kind_code << 32) | rights` with the release's kind bits (2 block, 4
+I/O ports, 32 framebuffer), and writes `(lo << 32) | hi`. Any other kind
+is `EACCES` (an endpoint is not a device), a bad out-pointer is `EFAULT`
+before anything is written, and a payload-shaped call is `EINVAL`.
+
+The proof session receives three kernel-minted windows after its
+existing slots: the boot device's whole sector space at handle 6, ports
+0x80..0x81 at handle 7, and the bound display's rows at handle 8. Ring 3
+reads all three back and pins:
+
+```
+service-0x84 proof: DEVICE (block 0x20000000e , ioport 0x40000000e
+  window 0x8000000081 , fb 0x200000000e rows 0x300 , endpoint
+  0xfffffffffffffff3 , shape 0xffffffffffffffea) , DEVICE matches
+```
+
+Checks after this slice: `./build.sh` PASS, ledger 21 served calls
+(0x40..0x54); `svc84_proof_test.sh` PASS with the DEVICE leg;
+`qemu_boot_test.sh` PASS with `experimental caps: 118 clause groups`
+(twelve more: window/narrow positive and negative controls, container
+admission, quota and bounded-table refusals); `qemu_boot_parity_diff.sh`
+PASS (526 chain lines, BIOS == UEFI modulo the allowlist).
+
+Named limit, not hidden: the KINDS and their policy are proven, but the
+data-plane rows -- sector read/write, port in/out, pixel store -- are not
+served yet. A holder can name and narrow hardware authority; it cannot
+yet exercise it through the gate. That is the next slice, and it needs a
+real consumer (a driver), not a costume row.

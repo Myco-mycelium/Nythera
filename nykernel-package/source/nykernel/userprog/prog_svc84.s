@@ -1127,6 +1127,62 @@ _start:
     int $0x84
     mov %rax, 2696(%rbx)
 
+    /* 19a. DEVICE_INFO (0x54) on the BLOCK-DEVICE handle (slot 6): no
+       out-pointer, so only the packed answer is stored -- code 2 and the
+       rights that travelled with the kernel's mint (READ|WRITE|GRANT =
+       14). */
+    mov $6, %rdi
+    movabs $-1, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x54, %rax
+    int $0x84
+    mov %rax, 2744(%rbx)
+    /* 19b. DEVICE_INFO (0x54) on the I/O-PORT handle (slot 7), asking
+       for the window: the answer at BUF+2752 and the out-word at
+       BUF+2760 must name exactly the ports the kernel granted. (Each
+       pair gets its own 8 bytes: an answer stored under a window word
+       would overlap it and read back half of each.) */
+    mov $7, %rdi
+    lea 2760(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x54, %rax
+    int $0x84
+    mov %rax, 2752(%rbx)
+    /* 19c. DEVICE_INFO on the FRAMEBUFFER handle (slot 8): code 32, and
+       the out-word is the ROW window (0 .. display height). */
+    mov $8, %rdi
+    lea 2776(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x54, %rax
+    int $0x84
+    mov %rax, 2768(%rbx)
+    /* 19d. An ENDPOINT handle (slot 1) asked for a device window: the row
+       answers EACCES by name (-13), never a zero window. */
+    mov $1, %rdi
+    movabs $-1, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x54, %rax
+    int $0x84
+    mov %rax, 2784(%rbx)
+    /* 19e. The row's SHAPE check: a payload claim in rdx is EINVAL
+       (-22), refused before the machine is consulted. */
+    mov $6, %rdi
+    movabs $-1, %rsi
+    mov $1, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x54, %rax
+    int $0x84
+    mov %rax, 2792(%rbx)
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

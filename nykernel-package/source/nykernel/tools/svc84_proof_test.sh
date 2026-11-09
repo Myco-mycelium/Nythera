@@ -110,7 +110,7 @@ fi
 # Two verdict lines since 2026-11-09: the original ring-3 transcript and
 # the BADGE/NOTIFY leg's own (separate so the 20-row transcript's format
 # string stays readable). Join them; every pattern below is a substring.
-VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY)" "$SERIAL" | tail -2 | tr '\n' ' ')"
+VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE)" "$SERIAL" | tail -3 | tr '\n' ' ')"
 if [[ -z "$VERDICT" ]]; then
     bad "the ring-3 proof never reached its verdict line"
 else
@@ -187,7 +187,7 @@ else
     # once, the SAME handle was then refused -EBADF, the wrong kind
     # (an endpoint handle asked to answer) was refused -EACCES, and the
     # answer came back at the caller's own endpoint with its bytes.
-    if [[ "$VERDICT" == *"REPLY matches"* ]] && [[ "$VERDICT" == *"REPLY (call 0x7 , recv 0x700000008 , handle 0x6 , reply 0x0 , twice 0xfffffffffffffff7 , kind 0xfffffffffffffff3 , answer 0x700000008 , bytes 0x2121726577736e61)"* ]]; then
+    if [[ "$VERDICT" == *"REPLY matches"* ]] && [[ "$VERDICT" == *"REPLY (call 0x7 , recv 0x700000008 , handle 0x9 , reply 0x0 , twice 0xfffffffffffffff7 , kind 0xfffffffffffffff3 , answer 0x700000008 , bytes 0x2121726577736e61)"* ]]; then
         ok "one call carried a one-shot reply capability round-trip through the session's OWN table (handle 3), the answer landed back at the caller's endpoint, and the second reply and the wrong-kind reply were refused -EBADF/-EACCES by name"
     else
         bad "the CALL/REPLY leg's round trip or refusals failed their read-back"
@@ -204,6 +204,17 @@ else
         ok "the shared-memory kind reported the kernel's own mapping, ring 3 read the kernel's sentinel THROUGH it and wrote back a value the kernel then read out of the region, and the forged/wrong-kind handles were refused -EBADF/-EACCES by name"
     else
         bad "the shared-region leg's geometry, two-party bytes or refusals failed their read-back"
+    fi
+    # The RESOURCE-KIND leg: the block device's and framebuffer's answers
+    # carry the kernel's kind bits (2 and 32) with the rights it minted
+    # (0xe), the I/O-port capability's out-word names exactly the granted
+    # ports, the framebuffer's names its ROW window, and an endpoint handle
+    # asked for a device window and a payload-shaped device call were
+    # refused -EACCES and -EINVAL by name.
+    if [[ "$VERDICT" == *"DEVICE matches"* ]] && [[ "$VERDICT" == *"DEVICE (block 0x20000000e , ioport 0x40000000e window 0x8000000081 , fb 0x200000000e rows"* ]] && [[ "$VERDICT" == *"endpoint 0xfffffffffffffff3 , shape 0xffffffffffffffea)"* ]]; then
+        ok "the resource kinds reported their kernel-minted authority (block-device code 2, I/O-port code 4 over ports 0x80..0x81, framebuffer code 32 over the bound rows) and refused a non-device handle -EACCES and a payload-shaped call -EINVAL"
+    else
+        bad "the resource-kind leg's windows, kind codes or refusals failed their read-back"
     fi
     # The TWO-PROCESS leg: two ring-3 processes, each its own scheduler
     # task with its own session and its own trap stack. The first process
@@ -253,7 +264,7 @@ else
     # precedes the queue, the receiver still drains the ONE good message
     # attenuated to READ|WRITE (0x0c), which is the proof that the wider
     # ask queued nothing.
-    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1 , reason not mapped , session 8) , WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1) , MAP (ack 0x0 , base 0x60000120000 , len 0x1000 , rights 0xe , handle 0x4 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000130000 , len2 0x2000 , handle2 0x6 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000120000 , released 4 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000120000/0x60000100000 , frames 302 == 302 , unmapped true / true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
+    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1 , reason not mapped , session 8) , WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1) , MAP (ack 0x0 , base 0x60000120000 , len 0x1000 , rights 0xe , handle 0x4 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000130000 , len2 0x2000 , handle2 0x9 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000120000 , released 4 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000120000/0x60000100000 , frames 302 == 302 , unmapped true / true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
         ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; both teardowns unmapped their window and returned every frame"
     else
         bad "the requested-region leg's mapping, kernel-chosen window or page release failed their read-back"

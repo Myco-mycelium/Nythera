@@ -808,6 +808,17 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
             peer_ep, peer_owner, peer_region_handle, caller_region2, send_handle
         );
     }
+    // The resource kinds go in AFTER the table's existing slots, so the
+    // indexes the program already names do not move: block at 6, I/O
+    // ports at 7, framebuffer at 8.
+    let (block_handle, ioport_handle, fb_handle) =
+        crate::experimental::caps::equip_devices_for_proof(PROOF_SESSION_ID);
+    if (block_handle, ioport_handle, fb_handle) != (6, 7, 8) {
+        panic!(
+            "svc84 proof: device equip produced handles {} {} {} -- the program names 6, 7, 8",
+            block_handle, ioport_handle, fb_handle
+        );
+    }
     PROOF_REGION.store(region_id, Ordering::SeqCst);
     let region_holders = crate::experimental::caps::region_holders(region_id).unwrap_or(0);
     if region_holders != 3 {
