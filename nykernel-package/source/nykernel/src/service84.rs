@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves twenty-six calls:
+//! table), the result goes back in `rax` -- that serves twenty-seven calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -34,6 +34,7 @@
 //! | 0x57 | `CAP_FB_READ` | a0=FrameBuffer handle, a1=`(x<<32)\|y` | kind + READ, row inside the granted window -> the RAW scan-out word; `-EACCES` outside the window or for another kind |
 //! | 0x58 | `CAP_FB_WRITE` | a0=FrameBuffer handle, a1=`(x<<32)\|y`, a2=word | kind + WRITE, row inside the window -> stores the word -> `0` |
 //! | 0x59 | `CAP_BLOCK_READ` | a0=BlockDevice handle, a1=LBA, a2=buffer, a_xfer=bytes (1..2048) | kind + READ + sector-window containment, then ONE sector from the boot device copied into the buffer -> the byte count; `-EACCES` outside the window, `-ENODEV` with no device, `-EIO` on a failed read |
+//! | 0x5a | `CAP_BLOCK_INFO` | a0=BlockDevice handle, a1=24-byte record | kind + READ, then the drive's own geometry (`{sector size, sector count, 0}`) -> `0`; `-ENODEV` with no device, `-EIO` when it will not answer |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
 //! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
@@ -394,6 +395,14 @@ pub const CALL_CAP_FB_WRITE: u64 = 0x58;
 /// window, `-ENODEV` when the machine has no block device, `-EFAULT` for
 /// a bad buffer, `-EINVAL` for a bad count or a shape claim.
 pub const CALL_CAP_BLOCK_READ: u64 = 0x59;
+
+/// The block device's GEOMETRY: a0 = a BlockDevice capability handle,
+/// a1 = a 24-byte record `{sector size: u64, sector count: u64,
+/// reserved: u64}`. Kind + READ are checked, then the drive is asked
+/// (ATAPI READ CAPACITY, or IDENTIFY DEVICE for an ATA disk) -> `0` with
+/// the record filled; `-EACCES` for a wrong kind or missing READ,
+/// `-ENODEV` with no device, `-EIO` when the drive will not answer.
+pub const CALL_CAP_BLOCK_INFO: u64 = 0x5a;
 
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
@@ -921,6 +930,26 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && block[2] == EACCES
         && block[3] == EINVAL
         && block[4] == EACCES;
+    // The BLOCK-INFO block (BUF+2896..+2936, five qwords): the geometry
+    // row's ack, the sector size and sector count it wrote, the reserved
+    // word, and a geometry call through the framebuffer handle refused
+    // EACCES before any device register is touched.
+    if !crate::memory::paging::user_range_ok(a0 + 2896, 40, false) {
+        return EFAULT;
+    }
+    let mut info = [0i64; 5];
+    for (i, slot) in info.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 2896 + 8 * i as u64) as *const i64) };
+    }
+    let want_sector_size = crate::ata::boot_channel()
+        .map(crate::ata::sector_size)
+        .unwrap_or(0) as i64;
+    let info_ok = info[0] == 0
+        && info[1] == want_sector_size
+        && want_sector_size != 0
+        && info[2] > 0
+        && info[3] == 0
+        && info[4] == EACCES;
     unsafe { crate::svc84_proof::select_peer_space() };
     if !crate::memory::paging::user_range_ok(a1, 240, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
@@ -1411,7 +1440,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && two_ok
         && peer_ok
         && map_ok;
-    let ok = stored_ok && wrote_ok && notify_ok && device_ok && data_ok && block_ok;
+    let ok = stored_ok && wrote_ok && notify_ok && device_ok && data_ok && block_ok && info_ok;
     crate::serial_println!(
         "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x} , send {:#x} , recv {:#x} , tag {:#x} , null-tag {:#x}) , BADGE/NOTIFY {}",
         bn[0] as u64,
@@ -1463,6 +1492,15 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         block[3] as u64,
         block[4] as u64,
         if block_ok { "matches" } else { "MISMATCH" }
+    );
+    crate::serial_println!(
+        "  service-0x84 proof: BLOCK-INFO (ack {:#x} , sector-size {:#x} , sectors {:#x} , reserved {:#x} , wrong-kind {:#x}) , BLOCK-INFO {}",
+        info[0] as u64,
+        info[1] as u64,
+        info[2] as u64,
+        info[3] as u64,
+        info[4] as u64,
+        if info_ok { "matches" } else { "MISMATCH" }
     );
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
     crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {} , reason {} , session {}) , WINDOW (req {:#x} , base {:#x} , len {:#x} , handle {:#x} , marker {:#x} , unmap {:#x} , again {:#x} , geom {:#x} , geom base {:#x} , peer read {:#x} , no-window release {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
@@ -2436,6 +2474,38 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     ((code as i64) << 32) | held as i64
                 }
                 Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_BLOCK_INFO => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            if from_ring3 && !crate::memory::paging::user_range_ok(a1, 24, true) {
+                return EFAULT;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::block_info_for(identity, a0 as u32) {
+                Ok(()) => {}
+                Err(e) => return map_cap_error(e),
+            }
+            let channel = match crate::ata::boot_channel() {
+                Some(c) => c,
+                None => return ENODEV,
+            };
+            match unsafe { crate::ata::read_capacity(channel) } {
+                Some((sector_size, sectors)) => {
+                    let mut rec = [0u8; 24];
+                    rec[0..8].copy_from_slice(&(sector_size as u64).to_le_bytes());
+                    rec[8..16].copy_from_slice(&sectors.to_le_bytes());
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(rec.as_ptr(), a1 as *mut u8, 24);
+                    }
+                    0
+                }
+                None => EIO,
             }
         }
         CALL_CAP_BLOCK_READ => {

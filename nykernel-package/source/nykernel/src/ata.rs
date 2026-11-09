@@ -364,6 +364,89 @@ pub unsafe fn read_sector(channel: usize, lba: u32, out: &mut [u8]) -> bool {
     ok
 }
 
+/// The boot device's geometry: `(logical sector size, number of
+/// sectors)`. ATAPI asks the drive with READ CAPACITY(10); an ATA disk
+/// answers from IDENTIFY DEVICE words 60..61. Returns `None` on a
+/// timeout/error or a device that reports a nonsensical block length.
+///
+/// # Safety
+/// Same contract as [`read_sector`]: a channel confirmed present, with
+/// its IRQ handler installed.
+pub unsafe fn read_capacity(channel: usize) -> Option<(u32, u64)> {
+    let c = &CHANNELS[channel];
+    let atapi = IS_ATAPI[channel].load(Ordering::Relaxed) != 0;
+    MANUAL[channel].store(1, Ordering::Relaxed);
+    Port::<u8>::new(c.ctrl).write(0);
+    write_reg(c.base, REG_DRIVEHEAD, 0xA0);
+    delay_400ns(c.ctrl);
+    write_reg(c.base, REG_SECCOUNT, 0);
+
+    let mut answer: Option<(u32, u64)> = None;
+    if atapi {
+        // READ CAPACITY(10) returns last-LBA and block length, each a
+        // big-endian u32 in the first two words; the byte-count limit is
+        // the 8-byte response (low byte in LBA1, high in LBA2).
+        write_reg(c.base, REG_LBA0, 0);
+        write_reg(c.base, REG_LBA1, 0x08);
+        write_reg(c.base, REG_LBA2, 0x00);
+        write_reg(c.base, REG_STATUS, 0xA0);
+        if wait_drq(c) {
+            let cdb: [u8; 12] = [0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            let mut data: Port<u16> = Port::new(c.base + REG_DATA);
+            for pair in cdb.chunks_exact(2) {
+                data.write(u16::from_le_bytes([pair[0], pair[1]]));
+            }
+            if wait_drq(c) {
+                let mut words = [0u16; 4];
+                for w in words.iter_mut() {
+                    *w = data.read();
+                }
+                // PIO gives each big-endian response word as a
+                // little-endian u16, so rebuild the BYTES, not a
+                // shifted word: low byte of word0 is the first byte.
+                let last_lba = u32::from_be_bytes([
+                    words[0] as u8,
+                    (words[0] >> 8) as u8,
+                    words[1] as u8,
+                    (words[1] >> 8) as u8,
+                ]);
+                let block_len = u32::from_be_bytes([
+                    words[2] as u8,
+                    (words[2] >> 8) as u8,
+                    words[3] as u8,
+                    (words[3] >> 8) as u8,
+                ]);
+                if block_len != 0 {
+                    answer = Some((block_len, last_lba as u64 + 1));
+                }
+            }
+        }
+    } else {
+        // IDENTIFY DEVICE: words 60..61 are the LBA28 total sector count.
+        write_reg(c.base, REG_SECCOUNT, 0);
+        write_reg(c.base, REG_LBA0, 0);
+        write_reg(c.base, REG_LBA1, 0);
+        write_reg(c.base, REG_LBA2, 0);
+        write_reg(c.base, REG_STATUS, 0xEC);
+        if wait_drq(c) {
+            let mut data: Port<u16> = Port::new(c.base + REG_DATA);
+            let mut words = [0u16; 256];
+            for w in words.iter_mut() {
+                *w = data.read();
+            }
+            let sectors = ((words[61] as u32) << 16) | words[60] as u32;
+            if sectors != 0 {
+                answer = Some((512, sectors as u64));
+            }
+        }
+    }
+
+    let _ = read_reg(c.base, REG_STATUS);
+    MANUAL[channel].store(0, Ordering::Relaxed);
+    Port::<u8>::new(c.ctrl).write(0);
+    answer
+}
+
 /// Called from the channel's IRQ handler: read the status register
 /// (which acknowledges/deasserts the device's interrupt line), record
 /// it, drain the IDENTIFY result if data is ready, and count the

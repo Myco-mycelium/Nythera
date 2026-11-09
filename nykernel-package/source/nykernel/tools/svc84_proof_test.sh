@@ -110,7 +110,7 @@ fi
 # Two verdict lines since 2026-11-09: the original ring-3 transcript and
 # the BADGE/NOTIFY leg's own (separate so the 20-row transcript's format
 # string stays readable). Join them; every pattern below is a substring.
-VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK)" "$SERIAL" | tail -5 | tr '\n' ' ')"
+VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK)" "$SERIAL" | tail -6 | tr '\n' ' ')"
 if [[ -z "$VERDICT" ]]; then
     bad "the ring-3 proof never reached its verdict line"
 else
@@ -236,6 +236,14 @@ else
         ok "the block-device data plane read one real sector from the boot device: LBA 16's ISO volume descriptor bytes (\"CD001\") reached ring 3, and the out-of-window, zero-length and wrong-kind claims were refused by name"
     else
         bad "the block-device leg's sector bytes or refusals failed their read-back"
+    fi
+    # The BLOCK-INFO leg: the drive's OWN geometry (2048-byte sectors, a
+    # nonzero sector count, the reserved word zero) reached ring 3, and a
+    # geometry call through another kind's handle was refused -EACCES.
+    if [[ "$VERDICT" == *"BLOCK-INFO matches"* ]] && [[ "$VERDICT" == *"BLOCK-INFO (ack 0x0 , sector-size 0x800 , sectors 0x"* ]] && [[ "$VERDICT" == *" , reserved 0x0 , wrong-kind 0xfffffffffffffff3)"* ]]; then
+        ok "the block-device geometry row asked the drive itself: 2048-byte sectors and a nonzero sector count reached ring 3, and the wrong-kind call was refused -EACCES"
+    else
+        bad "the block-info leg's geometry or refusal failed its read-back"
     fi
     # The TWO-PROCESS leg: two ring-3 processes, each its own scheduler
     # task with its own session and its own trap stack. The first process

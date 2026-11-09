@@ -1297,6 +1297,27 @@ _start:
     int $0x84
     mov %rax, 2888(%rbx)
 
+    /* 22a. BLOCK_INFO (0x5a): ask the boot device for its geometry. The
+       ack lands at BUF+2896 and the 24-byte record at BUF+2904. */
+    mov $6, %rdi
+    lea 2904(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5a, %rax
+    int $0x84
+    mov %rax, 2896(%rbx)
+    /* 22b. BLOCK_INFO through the FRAMEBUFFER handle: EACCES at
+       BUF+2928 (WrongType), before any device register is touched. */
+    mov $8, %rdi
+    lea 2904(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5a, %rax
+    int $0x84
+    mov %rax, 2928(%rbx)
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

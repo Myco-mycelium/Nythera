@@ -51,7 +51,9 @@
 //! hardware. The block device's sector data plane is served too (0x59
 //! BLOCK_READ): one logical sector from the boot device, PIO via the
 //! ATAPI packet path (or LBA28 for an ATA disk), copied to a validated
-//! user buffer after kind, READ and sector-window checks.
+//! user buffer after kind, READ and sector-window checks. 0x5a
+//! BLOCK_INFO asks the DRIVE for its geometry (ATAPI READ CAPACITY, or
+//! IDENTIFY DEVICE), so user space can size the device before reading.
 //!
 //! Containers (NPS-007 §3) are the admission policy: each holder belongs
 //! to a container whose mask names the capability KINDS it may hold, and
@@ -1841,6 +1843,22 @@ pub fn device_info_for(caller: usize, handle: u32) -> Result<(u64, u32, u32, u8)
             _ => return Err(CapError::WrongType),
         };
         Ok((code, cap.lo, cap.hi, cap.rights))
+    })
+}
+
+/// Access for the BLOCK-INFO row: kind + READ, no LBA claim (geometry is
+/// about the device, not one sector).
+pub fn block_info_for(caller: usize, handle: u32) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        let cap = sys.lookup(caller, handle)?;
+        if cap.kind != Kind::BlockDevice {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & rights::READ == 0 {
+            return Err(CapError::NoRight);
+        }
+        Ok(())
     })
 }
 

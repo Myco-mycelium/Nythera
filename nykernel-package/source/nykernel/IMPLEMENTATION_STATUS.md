@@ -6750,3 +6750,59 @@ Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
 has no extracted-kernel attribution because the kernel lives inside the
 stub binary; its attribution is the one build run that produced both discs
 from one `target/kernel.elf`.
+## The block-device geometry query (2026-11-09)
+
+`0x5a CAP_BLOCK_INFO` answers what the DRIVE says it is, so user space can
+size the device before reading it: a 24-byte record of
+`{sector size, sector count, 0}`. The same authority rule as the read
+applies first -- the handle must be a `BlockDevice` with `READ`, checked
+before the device is touched; a handle of another kind is `EACCES` by
+name, no device is `ENODEV`, a silent drive is `EIO`.
+
+The geometry comes from the device itself, not from a constant:
+
+* ATAPI: `PACKET` + `READ CAPACITY(10)`, whose big-endian response words
+  are rebuilt as BYTES (`{last_lba, block_len}`), not as shifted words --
+  a first attempt shifted the words and reported an 8-byte sector.
+* ATA disk: `IDENTIFY DEVICE` words 60..61.
+
+The ring-3 proof asks for the geometry and then tries the framebuffer
+handle against it:
+
+```
+service-0x84 proof: BLOCK-INFO (ack 0x0 , sector-size 0x800 ,
+  sectors 0x2e92 , reserved 0x0 , wrong-kind 0xfffffffffffffff3) ,
+  BLOCK-INFO matches
+```
+
+Checks after this slice: `./build.sh` PASS, 27 served calls
+(`0x40..0x5a`); `svc84_proof_test.sh` PASS with the BLOCK-INFO leg;
+`qemu_boot_test.sh` PASS with `experimental caps: 122 clause groups`;
+`qemu_boot_parity_diff.sh` PASS (526 chain lines, BIOS == UEFI);
+`check_live_iso.sh --boot --uefi-boot` PASS.
+
+Named limits, not hidden: geometry is reported, not enforced -- the
+sector window is the authority and an LBA past the drive's own capacity
+still fails at the drive (`EIO`). Multi-sector reads, writes and a
+filesystem remain staged.
+
+## The release discs carrying the geometry query (2026-11-09)
+
+Both live discs were rebuilt from this tree with `make_live_iso.sh` after
+the geometry slice and verified outside it with
+`check_live_iso.sh --boot --uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 00c2653dfe85a3fa219e8db04c7ae4ada0cba9561eb9df8aa61d14e9a272d6ee
+dist/nyrqis-live-uefi.iso   sha256 b54a889ab99965e5092a496407798845e97f25975d0f96265dc80fe5d0d344be
+kernel carried by both:     sha256 ba9a31e30518f1ccb14c3d11ac4d8c2d3f8e0e17d177ab6cfb1c93b9e0e86366
+```
+
+Integrity and attribution match, the BIOS disc boots the default entry to a
+verified desktop session, and the UEFI disc boots through our signed stub
+(carrier walked, GOP handed over, shell rendered and verified).
+
+Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
+has no extracted-kernel attribution because the kernel lives inside the
+stub binary; its attribution is the one build run that produced both discs
+from one `target/kernel.elf`.
