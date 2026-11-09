@@ -977,6 +977,119 @@ _start:
     int $0x84
     mov %rax, 2240(%rbx)
 
+    /* 18. BADGE and NOTIFY (2026-11-09), the release's endpoint tag and
+       payload-free signal clauses. Results from BUF+2600, eleven qwords:
+         notify ack, take bits, second take, wrong-kind refusal, forged
+         refusal, non-owner refusal, badge ack (a NEW handle), zero-badge
+         refusal, wrong-kind badge refusal, forged badge refusal, and the
+         re-badge refusal through the badged handle. The badge is minted
+         from HANDLE 1 (SEND|GRANT); the take is through HANDLE 0 (the
+         session's OWN owner capability); the non-owner take is through
+         HANDLE 5 (the peer endpoint's SEND grant, owned by session 8). */
+    /* 18a. NOTIFY (0x52): HANDLE 1, bits 0x5. */
+    mov $1, %rdi
+    mov $5, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x52, %rax
+    int $0x84
+    mov %rax, 2600(%rbx)
+    /* 18b. NOTIFY_TAKE (0x53): HANDLE 0, the owner's own capability.
+       Expected the OR-ed bits, 0x5. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x53, %rax
+    int $0x84
+    mov %rax, 2608(%rbx)
+    /* 18c. The SAME take again: the word was cleared, so 0. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x53, %rax
+    int $0x84
+    mov %rax, 2616(%rbx)
+    /* 18d. NOTIFY through HANDLE 2 (the Input kind): -EACCES. */
+    mov $2, %rdi
+    mov $1, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x52, %rax
+    int $0x84
+    mov %rax, 2624(%rbx)
+    /* 18e. NOTIFY through FORGED handle 31: -EBADF. */
+    mov $31, %rdi
+    mov $1, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x52, %rax
+    int $0x84
+    mov %rax, 2632(%rbx)
+    /* 18f. NOTIFY_TAKE through HANDLE 5 (the PEER's endpoint, owned by
+       session 8): a non-owner's take is -EACCES. */
+    mov $5, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x53, %rax
+    int $0x84
+    mov %rax, 2640(%rbx)
+    /* 18g. BADGE (0x51): HANDLE 1, badge 0xBEEF -> a new handle. */
+    mov $1, %rdi
+    movabs $0xBEEF, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x51, %rax
+    int $0x84
+    mov %rax, 2648(%rbx)
+    /* 18h. A zero badge is not a badge: -EACCES. */
+    mov $1, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x51, %rax
+    int $0x84
+    mov %rax, 2656(%rbx)
+    /* 18i. Badging the INPUT capability (HANDLE 2): -EACCES (WrongType). */
+    mov $2, %rdi
+    mov $1, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x51, %rax
+    int $0x84
+    mov %rax, 2664(%rbx)
+    /* 18j. Badging through FORGED handle 31: -EBADF. */
+    mov $31, %rdi
+    mov $1, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x51, %rax
+    int $0x84
+    mov %rax, 2672(%rbx)
+    /* 18k. Re-badging the handle the kernel just minted: the badge is
+       immutable, so -EACCES. The handle is read from the program's own
+       memory, not guessed. */
+    mov 2648(%rbx), %rdi
+    mov $1, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x51, %rax
+    int $0x84
+    mov %rax, 2680(%rbx)
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

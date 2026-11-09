@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves fifteen calls:
+//! table), the result goes back in `rax` -- that serves twenty calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -25,6 +25,9 @@
 //! | 0x4c | `CAP_SHM` | a0=region handle, a1=24-byte record ptr | the kernel's own geometry of the mapped region (`{base, len, rights}`) -> `0`, `-EBADF` for a handle that names nothing, `-EACCES` for a handle of another kind |
 //! | 0x4f | `CAP_SHM_MAP` | a0=length in bytes (4096-aligned, <= 16 pages), a1=32-byte record ptr | the release's region REQUEST: the kernel maps fresh pages at its own window, records the region, mints the caller a capability and answers `{base, len, rights, handle}` -> `0`; `-EINVAL` for a shape it does not own, `-EFAULT` for a bad record pointer, `-ENOMEM` when the kernel refused the mapping, `-ENOSYS` when no mapping source is installed |
 //! | 0x4b | `CAP_REPLY` | a0=reply handle, a1/a2=answer | answers one call at the caller's own endpoint and CONSUMES the handle; `0`, `-EBADF` on a second use, `-EACCES` on a wrong-kind handle |
+//! | 0x51 | `CAP_BADGE` | a0=endpoint handle, a1=nonzero badge | derives a badged copy in the caller's own table -> its handle; `-EACCES` without GRANT, for a zero badge or an already-badged source, `-EACCES` for another kind, `-EBADF` for an empty slot |
+//! | 0x52 | `CAP_NOTIFY` | a0=endpoint handle, a1=bits | ORs payload-free signal bits into the endpoint (never queues, so it cannot fill the queue) -> `0`; its errno otherwise |
+//! | 0x53 | `CAP_NOTIFY_TAKE` | a0=endpoint handle | the OWNER collects and clears its endpoint's signal word -> the bits; `-EACCES` for a non-owner or another kind, `-EBADF` for an empty slot |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
 //! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
@@ -313,6 +316,32 @@ pub const CALL_CAP_SHM_MAP: u64 = 0x4f;
 /// exactly the largest that cannot run into the next request's window --
 /// the bound is a property of the mapping layout, not a policy guess.
 pub const MAX_REGION_REQUEST_PAGES: u64 = 16;
+
+/// The release's `badge`: a0 = an endpoint capability handle the caller
+/// holds, a1 = a NON-ZERO u32 tag. The machine installs a badged copy in
+/// the CALLER's own table and returns its handle; every message sent
+/// through the copy carries the tag, so a server can tell its clients
+/// apart without trusting payload bytes. The source must be unbadged and
+/// carry GRANT (a badge is minted once and cannot be rewritten or
+/// widened), which is why a zero badge or a second badge is `EACCES` by
+/// name. Every other argument must claim nothing (`a2 == 0`,
+/// `a_xfer == u64::MAX`, `a_rights == 0`).
+pub const CALL_CAP_BADGE: u64 = 0x51;
+
+/// The release's `notify` (NPS-003 §3): a0 = an endpoint capability
+/// handle with SEND, a1 = signal bits. The bits are OR-ed into the
+/// endpoint's notification word; nothing is queued, so this row can never
+/// return `-EAGAIN`/`-ENOMEM` for queue pressure and cannot be used to
+/// flood the message queue. The same checks as SEND (kind, right, live
+/// generation) apply. Every other argument must claim nothing.
+pub const CALL_CAP_NOTIFY: u64 = 0x52;
+
+/// The receiving half of `notify`: a0 = an endpoint capability handle in
+/// the caller's own table, and the caller must be that endpoint's OWNER
+/// -- a SEND-only grant cannot take another holder's signals. Returns the
+/// accumulated bits and CLEARS them, so a second take answers 0. Every
+/// other argument must claim nothing.
+pub const CALL_CAP_NOTIFY_TAKE: u64 = 0x53;
 
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
@@ -724,6 +753,34 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // peer's value is the region base its own geometry call answered, so a
     // wrong space or a shared page would show up as equal words.
     let same_va_first = unsafe { core::ptr::read_unaligned((a0 + 8) as *const u64) };
+    // The BADGE/NOTIFY block (BUF+2600..+2688, eleven qwords): the notify
+    // row's ack, the owner's take of the OR-ed bits, the second take's 0
+    // (the word was cleared), then three by-name refusals -- notify
+    // through an Input capability (WrongType -> EACCES), notify through
+    // an empty slot (EBADF), and a non-owner's take (NotOwner -> EACCES);
+    // then the badge row's minted handle, a zero badge's refusal, a
+    // wrong-kind badge's refusal, a forged handle's refusal, and the
+    // re-badge refusal through the handle the kernel itself minted. The
+    // bits are the release's OR semantics (one notify of 0x5 here; the
+    // machine's self-test pins the multi-call OR).
+    if !crate::memory::paging::user_range_ok(a0 + 2600, 88, false) {
+        return EFAULT;
+    }
+    let mut bn = [0i64; 11];
+    for (i, slot) in bn.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 2600 + 8 * i as u64) as *const i64) };
+    }
+    let notify_ok = bn[0] == 0
+        && bn[1] == 5
+        && bn[2] == 0
+        && bn[3] == EACCES
+        && bn[4] == EBADF
+        && bn[5] == EACCES
+        && bn[6] >= 0
+        && bn[7] == EACCES
+        && bn[8] == EACCES
+        && bn[9] == EBADF
+        && bn[10] == EACCES;
     unsafe { crate::svc84_proof::select_peer_space() };
     if !crate::memory::paging::user_range_ok(a1, 240, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
@@ -1214,7 +1271,22 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && two_ok
         && peer_ok
         && map_ok;
-    let ok = stored_ok && wrote_ok;
+    let ok = stored_ok && wrote_ok && notify_ok;
+    crate::serial_println!(
+        "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x}) , BADGE/NOTIFY {}",
+        bn[0] as u64,
+        bn[1] as u64,
+        bn[2] as u64,
+        bn[3] as u64,
+        bn[4] as u64,
+        bn[5] as u64,
+        bn[6] as u64,
+        bn[7] as u64,
+        bn[8] as u64,
+        bn[9] as u64,
+        bn[10] as u64,
+        if notify_ok { "matches" } else { "MISMATCH" }
+    );
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
     crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {} , reason {} , session {}) , WINDOW (req {:#x} , base {:#x} , len {:#x} , handle {:#x} , marker {:#x} , unmap {:#x} , again {:#x} , geom {:#x} , geom base {:#x} , peer read {:#x} , no-window release {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
 ",
@@ -2119,6 +2191,48 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             0
         }
         CALL_CAP_SHM_MAP => serve_region_request(a0, a1, a2, a_xfer, a_rights, from_ring3),
+        CALL_CAP_BADGE => {
+            // A ZERO badge is the MACHINE's refusal (NotOwner: zero is
+            // "unbadged", not a tag), not a shape error here -- the row
+            // must not steal a by-name refusal the clause owns.
+            if a0 > u32::MAX as u64 || a1 > u32::MAX as u64 {
+                return EINVAL;
+            }
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::badge_for(identity, a0 as u32, a1 as u32) {
+                Ok(h) => h as i64,
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_NOTIFY => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::notify_for(identity, a0 as u32, a1) {
+                Ok(()) => 0,
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_NOTIFY_TAKE => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a1 != 0 || a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::take_notify_for(identity, a0 as u32) {
+                Ok(bits) => bits as i64,
+                Err(e) => map_cap_error(e),
+            }
+        }
         _ => {
             if from_ring3 {
                 RET_ENOSYS.store(ENOSYS, Ordering::Relaxed);

@@ -29,7 +29,14 @@
 //! NOT ported yet, named so their absence is checkable: the device/window
 //! kinds (BlockDevice, IoPort, FrameBuffer -- each needs a hardware window
 //! this tree does not expose to a holder yet; serving them today would be
-//! a costume, not a capability), badges, containers (NPS-007), notify.
+//! a costume, not a capability) and containers (NPS-007). Badges and
+//! notify ARE ported (2026-11-09): `badge` derives a one-time, immutable
+//! tag on an endpoint capability that every message sent through the copy
+//! carries (`Message.badge`), and `notify`/`take_notify` are the
+//! release's payload-free signal word -- OR-ed in by senders, cleared by
+//! the owner, never queued. Both are served through the gate (0x51
+//! BADGE, 0x52 NOTIFY, 0x53 NOTIFY_TAKE), and the ring-3 proof pins each
+//! row's answer and its by-name refusals.
 //! FOUR kinds ARE ported: Endpoint (the queue-based one), Input (the
 //! router `kbdrt`'s prerequisite), Reply (the one-shot answer right, with
 //! the CALL/REPLY pair and its blocking wait) and SharedMem (a region the
@@ -174,6 +181,13 @@ pub struct Capability {
     endpoint: u32,
     generation: u32,
     rights: u8,
+    /// An immutable tag the RECEIVER sees with every message sent
+    /// through this capability (0 = unbadged), the release's `badge`.
+    /// Set once, by `badge`; a badged capability can never be re-badged
+    /// or un-badged, and an attenuating transfer carries it unchanged --
+    /// so a server can tell its clients apart without trusting the
+    /// payload.
+    badge: u32,
 }
 
 /// The typed refusals (the release's IpcError, ENDPOINT half).
@@ -230,6 +244,9 @@ struct Queued {
     payload: Vec<u8>,
     /// `None` when the caller claimed no transfer.
     moved: Option<Capability>,
+    /// The badge of the capability the SENDER used (0 = unbadged),
+    /// carried with the message exactly as the release does.
+    badge: u32,
 }
 
 /// What a receive hands back. `transferred` is the handle (in the
@@ -238,6 +255,8 @@ struct Queued {
 pub struct Message {
     pub sender: usize,
     pub payload: Vec<u8>,
+    /// The badge of the capability the sender used (0 = unbadged).
+    pub badge: u32,
     pub transferred: Option<u32>,
     /// The KIND of the capability that arrived in the transfer field
     /// (`None` when nothing did). The gate reports the handle it installed
@@ -251,6 +270,11 @@ struct Endpoint {
     generation: u32,
     alive: bool,
     queue: VecDeque<Queued>,
+    /// The release's NPS-003 §3 `notify`: payload-free signal bits,
+    /// OR-ed in by senders and cleared by the owner's take. It never
+    /// queues, so it can never fill up and cannot be used to flood the
+    /// message queue.
+    notify: u64,
 }
 
 struct Holder {
@@ -428,8 +452,20 @@ impl CapSystem {
     pub fn create_endpoint(&mut self, owner: usize) -> Result<(u32, u32), CapError> {
         self.live(owner)?;
         let id = self.endpoints.len() as u32;
-        self.endpoints.push(Endpoint { owner, generation: 0, alive: true, queue: VecDeque::new() });
-        let cap = Capability { kind: Kind::Endpoint, endpoint: id, generation: 0, rights: rights::SEND | rights::GRANT };
+        self.endpoints.push(Endpoint {
+            owner,
+            generation: 0,
+            alive: true,
+            queue: VecDeque::new(),
+            notify: 0,
+        });
+        let cap = Capability {
+            kind: Kind::Endpoint,
+            endpoint: id,
+            generation: 0,
+            rights: rights::SEND | rights::GRANT,
+            badge: 0,
+        };
         let handle = Self::install(self.live(owner)?, cap)?;
         Ok((id, handle))
     }
@@ -465,7 +501,13 @@ impl CapSystem {
             }
             e.generation
         };
-        let cap = Capability { kind: Kind::Endpoint, endpoint: ep, generation, rights: want & (rights::SEND | rights::GRANT) };
+        let cap = Capability {
+            kind: Kind::Endpoint,
+            endpoint: ep,
+            generation,
+            rights: want & (rights::SEND | rights::GRANT),
+            badge: 0,
+        };
         Self::install(self.live(owner)?, cap)
     }
 
@@ -474,7 +516,13 @@ impl CapSystem {
     /// capability into `to`'s table directly.
     pub fn bootstrap_grant(&mut self, to: usize, ep: u32, want: u8) -> Result<u32, CapError> {
         let generation = self.endpoints.get(ep as usize).map(|e| e.generation).ok_or(CapError::BadHandle)?;
-        let cap = Capability { kind: Kind::Endpoint, endpoint: ep, generation, rights: want & (rights::SEND | rights::GRANT) };
+        let cap = Capability {
+            kind: Kind::Endpoint,
+            endpoint: ep,
+            generation,
+            rights: want & (rights::SEND | rights::GRANT),
+            badge: 0,
+        };
         Self::install(self.live(to)?, cap)
     }
 
@@ -484,7 +532,13 @@ impl CapSystem {
     /// attenuated). Only the kernel ever mints an Input capability; a
     /// holder receives one by transfer, never by minting.
     pub fn bootstrap_input(&mut self, to: usize, want: u8) -> Result<u32, CapError> {
-        let cap = Capability { kind: Kind::Input, endpoint: 0, generation: 0, rights: want & (rights::READ | rights::GRANT) };
+        let cap = Capability {
+            kind: Kind::Input,
+            endpoint: 0,
+            generation: 0,
+            rights: want & (rights::READ | rights::GRANT),
+            badge: 0,
+        };
         Self::install(self.live(to)?, cap)
     }
 
@@ -502,6 +556,77 @@ impl CapSystem {
             return Err(CapError::NoRight);
         }
         Ok(())
+    }
+
+    /// The release's `badge`: derive, in `p`'s OWN table, a BADGED copy of
+    /// an endpoint capability. It needs GRANT on the source (§5.2's
+    /// transfer right), the source must be UNBADGED (a badge can never be
+    /// changed or removed -- only the holder of the unbadged capability
+    /// can mint one), and the badge must be non-zero (zero IS "unbadged").
+    /// The copy keeps the source's rights and endpoint generation, so
+    /// revocation still stales it like any other endpoint capability.
+    pub fn badge(&mut self, p: usize, h: u32, badge: u32) -> Result<u32, CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::Endpoint {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & rights::GRANT == 0 {
+            return Err(CapError::NoRight);
+        }
+        if badge == 0 || cap.badge != 0 {
+            return Err(CapError::NotOwner);
+        }
+        let e = self.endpoints.get(cap.endpoint as usize).ok_or(CapError::BadHandle)?;
+        if e.generation != cap.generation {
+            return Err(CapError::Revoked);
+        }
+        Self::install(self.live(p)?, Capability { badge, ..cap })
+    }
+
+    /// The release's `notify` (NPS-003 §3): asynchronous, PAYLOAD-FREE
+    /// signal. It needs exactly what `send` needs (an Endpoint capability
+    /// with SEND, in a live generation) but ORs `bits` into the endpoint's
+    /// notification word instead of queueing, so it can never return
+    /// QueueFull and cannot be used to flood the message queue.
+    pub fn notify(&mut self, from: usize, h: u32, bits: u64) -> Result<(), CapError> {
+        let cap = self.lookup(from, h)?;
+        if cap.kind != Kind::Endpoint {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & rights::SEND == 0 {
+            return Err(CapError::NoRight);
+        }
+        let e = self.endpoints.get_mut(cap.endpoint as usize).ok_or(CapError::BadHandle)?;
+        if !e.alive {
+            return Err(CapError::TargetDead);
+        }
+        if e.generation != cap.generation {
+            return Err(CapError::Revoked);
+        }
+        e.notify |= bits;
+        Ok(())
+    }
+
+    /// The owner collects (and CLEARS) its endpoint's notification word.
+    /// The handle must name an Endpoint capability in the CURRENT
+    /// generation, and its endpoint must be owned by `owner` -- a holder
+    /// of a SEND-only grant cannot take another holder's signals.
+    pub fn take_notify(&mut self, owner: usize, h: u32) -> Result<u64, CapError> {
+        let cap = self.lookup(owner, h)?;
+        if cap.kind != Kind::Endpoint {
+            return Err(CapError::WrongType);
+        }
+        let e = self.endpoints.get_mut(cap.endpoint as usize).ok_or(CapError::BadHandle)?;
+        if e.owner != owner {
+            return Err(CapError::NotOwner);
+        }
+        if !e.alive {
+            return Err(CapError::TargetDead);
+        }
+        if e.generation != cap.generation {
+            return Err(CapError::Revoked);
+        }
+        Ok(core::mem::replace(&mut e.notify, 0))
     }
 
     /// The release's `call_send`: a send that ALSO mints a one-shot Reply
@@ -535,6 +660,7 @@ impl CapSystem {
             endpoint: from as u32,
             generation: 0,
             rights: rights::SEND,
+            badge: 0,
         };
         let e = self.endpoints.get_mut(cap.endpoint as usize).ok_or(CapError::BadHandle)?;
         if !e.alive {
@@ -547,7 +673,12 @@ impl CapSystem {
             return Err(CapError::QueueFull);
         }
         let owner = e.owner;
-        e.queue.push_back(Queued { sender: from, payload: payload.to_vec(), moved: Some(reply) });
+        e.queue.push_back(Queued {
+            sender: from,
+            payload: payload.to_vec(),
+            moved: Some(reply),
+            badge: cap.badge,
+        });
         Ok(owner)
     }
 
@@ -612,7 +743,12 @@ impl CapSystem {
                 Ok(u32::MAX)
             }
             None => {
-                self.endpoints[slot].queue.push_back(Queued { sender: p, payload: payload.to_vec(), moved: None });
+                self.endpoints[slot].queue.push_back(Queued {
+                    sender: p,
+                    payload: payload.to_vec(),
+                    moved: None,
+                    badge: 0,
+                });
                 Ok(slot as u32)
             }
         }
@@ -709,6 +845,7 @@ impl CapSystem {
             endpoint: region,
             generation: 0,
             rights: want & (rights::READ | rights::WRITE | rights::GRANT),
+            badge: 0,
         };
         let holder = self.live(to)?;
         let handle = Self::install(holder, cap)?;
@@ -1051,6 +1188,9 @@ impl CapSystem {
                         }
                     }
                 }
+                // The badge travels unchanged through an attenuating
+                // transfer: it names the SENDER'S authority, not a right
+                // the receiver may widen or rewrite.
                 Some(Capability { rights: want, ..held })
             }
         };
@@ -1075,7 +1215,12 @@ impl CapSystem {
             .as_ref()
             .filter(|c| c.kind == Kind::SharedMem)
             .map(|c| c.endpoint);
-        e.queue.push_back(Queued { sender: from, payload: payload.to_vec(), moved });
+        e.queue.push_back(Queued {
+            sender: from,
+            payload: payload.to_vec(),
+            moved,
+            badge: cap.badge,
+        });
         if let Some(region) = queued_region {
             if let Some(entry) = self.regions.get_mut(region as usize) {
                 entry.holders += 1;
@@ -1135,7 +1280,12 @@ impl CapSystem {
                         // but the message is already consumed here: hand its
                         // region count back rather than leak a holder.
                         let mut orphan = VecDeque::new();
-                        orphan.push_back(Queued { sender: q.sender, payload: Vec::new(), moved: Some(c) });
+                        orphan.push_back(Queued {
+                            sender: q.sender,
+                            payload: Vec::new(),
+                            moved: Some(c),
+                            badge: q.badge,
+                        });
                         self.drop_queued(orphan);
                         return Err(e);
                     }
@@ -1146,6 +1296,7 @@ impl CapSystem {
         Ok(Some(Message {
             sender: q.sender,
             payload: q.payload,
+            badge: q.badge,
             transferred,
             transferred_kind: if transferred.is_some() { moved_kind } else { None },
         }))
@@ -1270,6 +1421,33 @@ pub fn send_for(
     interrupts::without_interrupts(|| unsafe {
         let sys = SYSTEM.get_or_insert_with(CapSystem::new);
         sys.send(caller, handle, payload, transfer)
+    })
+}
+
+/// Access for the 0x84 BADGE row: derive a badged copy of the caller's
+/// endpoint capability in its own table.
+pub fn badge_for(caller: usize, handle: u32, badge: u32) -> Result<u32, CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.badge(caller, handle, badge)
+    })
+}
+
+/// Access for the 0x84 NOTIFY row: OR payload-free signal bits into the
+/// endpoint a capability names.
+pub fn notify_for(caller: usize, handle: u32, bits: u64) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.notify(caller, handle, bits)
+    })
+}
+
+/// Access for the 0x84 NOTIFY_TAKE row: the endpoint's OWNER collects and
+/// clears its notification word.
+pub fn take_notify_for(caller: usize, handle: u32) -> Result<u64, CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.take_notify(caller, handle)
     })
 }
 
@@ -1784,6 +1962,80 @@ pub fn run() -> bool {
     check!(
         "a wider region rights claim is masked, not widened",
         matches!(sys.bootstrap_region(CLIENT, region, 0xff), Ok(h) if sys.region_cap(CLIENT, h) == Ok((region, rights::READ | rights::WRITE | rights::GRANT)))
+    );
+
+    // ---- the BADGE clause (the release's `badge`) ----
+    // A badge is minted ONCE from an unbadged, GRANT-carrying endpoint
+    // capability, and every message sent through the copy carries it. The
+    // receiver's own `Message` is the evidence -- not a kernel record.
+    const PEER_BADGE: u32 = 0xBEEF;
+    let badged = sys.badge(CLIENT, cli_h, PEER_BADGE).expect("self-test: badge");
+    check!(
+        "send through a badged capability delivers the badge",
+        sys.send(CLIENT, badged, b"tagged", None).is_ok()
+            && matches!(sys.receive(SERVER, ep), Ok(Some(m)) if m.badge == PEER_BADGE && m.payload == b"tagged")
+    );
+    check!(
+        "a badge cannot be changed or added twice",
+        sys.badge(CLIENT, badged, 0x1) == Err(CapError::NotOwner)
+    );
+    check!(
+        "a zero badge is not a badge",
+        sys.badge(CLIENT, cli_h, 0) == Err(CapError::NotOwner)
+    );
+    check!(
+        "badging a non-endpoint capability is WrongType",
+        sys.badge(CLIENT, input_h, 0x1) == Err(CapError::WrongType)
+    );
+    // The badge travels unchanged through an ATTENUATING transfer: the
+    // receiver's installed copy names the same sender tag.
+    check!(
+        "a transfer carries the badge unchanged",
+        sys.send(CLIENT, badged, b"moved", Some((badged, rights::SEND | rights::GRANT))).is_ok()
+    );
+    let moved = sys.receive(SERVER, ep).ok().flatten();
+    check!(
+        "the received copy still sends under the same badge",
+        matches!(&moved, Some(m) if m.badge == PEER_BADGE && m.transferred.is_some())
+            && matches!(moved.and_then(|m| m.transferred), Some(h)
+                if sys.send(SERVER, h, b"again", None).is_ok())
+            && matches!(sys.receive(SERVER, ep), Ok(Some(m)) if m.badge == PEER_BADGE)
+    );
+
+    // ---- the NOTIFY clause (NPS-003 §3) ----
+    // Payload-free signal bits: senders OR them in, the OWNER takes and
+    // clears them, and nothing is ever queued -- so a notify cannot fill
+    // the message queue and an empty receive stays empty.
+    // CLIENT owns this endpoint, SERVER holds a SEND grant for it: two
+    // DISTINCT holders, so "the owner's take" and "a sender cannot take"
+    // are different tables' answers, not one holder grading itself. No new
+    // process id is created here -- the later REQUEST section reserves 5,
+    // and `create_process` PADS the table up to the id it is given.
+    let (nep, owner_h) = sys.create_endpoint(CLIENT).expect("self-test: notify endpoint");
+    let sender_h = sys
+        .bootstrap_grant(SERVER, nep, rights::SEND | rights::GRANT)
+        .expect("self-test: notify sender");
+    check!(
+        "notify ORs payload-free bits",
+        sys.notify(SERVER, sender_h, 0x5).is_ok()
+            && sys.notify(SERVER, sender_h, 0x2).is_ok()
+            && sys.take_notify(CLIENT, owner_h) == Ok(0x7)
+    );
+    check!(
+        "taking the word CLEARS it",
+        sys.take_notify(CLIENT, owner_h) == Ok(0)
+    );
+    check!(
+        "notify queues no message",
+        matches!(sys.receive(CLIENT, nep), Ok(None))
+    );
+    check!(
+        "notify through a non-endpoint capability is WrongType",
+        sys.notify(CLIENT, input_h, 0x1) == Err(CapError::WrongType)
+    );
+    check!(
+        "a non-owner cannot take the word",
+        sys.take_notify(SERVER, sender_h) == Err(CapError::NotOwner)
     );
 
     // ---- the region's LIFETIME ----

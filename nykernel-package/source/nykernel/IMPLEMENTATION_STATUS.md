@@ -6436,3 +6436,59 @@ UEFI stub is a `dev` build, the ESP is sized to the stub (7 MiB) rather than
 padded, and the UEFI disc has no extracted-kernel attribution -- the kernel
 lives inside the stub binary, so its attribution is the single build run that
 produced both discs from one `target/kernel.elf`.
+
+## The endpoint BADGE and NOTIFY clauses, served through the gate (2026-11-09)
+
+Two of the release's capability clauses that the port manifest still named
+as missing are now ported and served. Neither needed a new kernel object:
+both are properties of the ENDPOINT capability this machine already had.
+
+**Badges** (`capability.rs`'s `badge`). A holder with GRANT on an unbadged
+endpoint capability can mint ONE badged copy in its own table. The badge is
+immutable (no re-badge, no un-badge, zero is "unbadged"), and an attenuating
+transfer carries it unchanged. Every message sent through the copy reports
+it as `Message.badge`, so a server can tell its clients apart without
+trusting payload bytes. Served as 0x51 `CAP_BADGE`; a zero badge, another
+kind, an empty slot and a re-badge are all refused by name.
+
+**Notify** (NPS-003 §3). The endpoint record gained a payload-free signal
+word: `notify` ORs bits in with SEND's exact authority checks, and the
+OWNER's `take_notify` returns and CLEARS the word. It never queues, so it
+cannot fill the message queue and an empty receive stays empty. Served as
+0x52 `CAP_NOTIFY` and 0x53 `CAP_NOTIFY_TAKE`; a non-owner's take, a
+wrong-kind handle and an empty slot are refused by name.
+
+```
+service-0x84 proof: BADGE/NOTIFY (notify 0x0 , take 0x5 , again 0x0 ,
+  wrong-kind 0xfffffffffffffff3 , forged 0xfffffffffffffff7 ,
+  non-owner 0xfffffffffffffff3 , badge 0x4 , zero 0xfffffffffffffff3 ,
+  kind 0xfffffffffffffff3 , forged-badge 0xfffffffffffffff7 ,
+  twice 0xfffffffffffffff3) , BADGE/NOTIFY matches
+```
+
+The first run of the leg caught a real ordering defect: the gate refused a
+zero badge as a SHAPE error (`-EINVAL`) before the machine's own
+`NotOwner` (`-EACCES`) could answer, stealing a by-name clause refusal. The
+gate now bounds only the u32 shape and lets the machine own the zero-badge
+rule. The kernel self-test's first run likewise panicked `BadProcess` after
+the new section created holder id 5, which the later region-REQUEST section
+reserves; the clause now uses the existing SERVER/CLIENT holders and its
+own endpoint instead of a new id, so `create_process`'s pad-to-id behaviour
+cannot collide with a later reservation.
+
+Checks: `./build.sh` PASS (ledger gate: 20 served calls, `0x40..0x53`,
+disjoint from the release ledger and exercised by the proof);
+`svc84_proof_test.sh` PASS with the BADGE/NOTIFY leg pinned end to end;
+`qemu_boot_test.sh` PASS with `experimental caps: 104 clause groups`
+(including the new badge mint/carry/transfer/immutability and the notify
+word's OR/take/clear/no-queue/non-owner/wrong-kind rules, positive and
+negative);
+`qemu_boot_parity_diff.sh` PASS (526 chain lines, BIOS == UEFI modulo the
+allowlist).
+
+Still staged, named rather than implied: the device/window kinds
+(BlockDevice, IoPort, FrameBuffer) and containers (NPS-007). The badge is
+carried on the queued message and reported by the machine's `Message`, but
+the gate's 0x48 `CAP_RECV` does not yet surface it to ring 3 -- the leg
+pins the mint and its refusals, and delivering the tag on the receive row
+is the follow-on slice.
