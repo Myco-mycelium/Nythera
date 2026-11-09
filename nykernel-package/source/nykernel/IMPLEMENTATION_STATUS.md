@@ -6592,3 +6592,24 @@ data-plane rows -- sector read/write, port in/out, pixel store -- are not
 served yet. A holder can name and narrow hardware authority; it cannot
 yet exercise it through the gate. That is the next slice, and it needs a
 real consumer (a driver), not a costume row.
+
+## The release discs carrying the resource kinds (2026-11-09)
+
+Both live discs were rebuilt from this tree with `make_live_iso.sh` after
+the resource-kind/container slice and verified outside it with
+`check_live_iso.sh --boot --uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 6e1e208de61a591ce46023a1d1a612c97e5852ffcef6d6c9bdd6f42b0de890de
+dist/nyrqis-live-uefi.iso   sha256 213b24ab0be3e7ceff57a647cc49a6b36fcedf6dc0b8a9389373b62d82078f9c
+kernel carried by both:     sha256 b9f036f4a4945705c6e5b4535496b540c683d546a7da6cf14156260d87e93d44
+```
+
+Integrity and attribution match, the BIOS disc boots the default entry to a
+verified desktop session, and the UEFI disc boots through our signed stub
+(carrier walked, GOP handed over, shell rendered and verified).
+
+Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
+has no extracted-kernel attribution because the kernel lives inside the
+stub binary; its attribution is the one build run that produced both discs
+from one `target/kernel.elf`.
