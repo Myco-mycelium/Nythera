@@ -6664,3 +6664,24 @@ not served. The boot device on these discs is ATAPI, so a sector read
 needs the SCSI packet path and a real consumer, not a nearly-right ATA
 command. The capability names and narrows the sector window; it does not
 yet read it.
+
+## The release discs carrying the data planes (2026-11-09)
+
+Both live discs were rebuilt from this tree with `make_live_iso.sh` after
+the I/O-port/framebuffer data-plane slice and verified outside it with
+`check_live_iso.sh --boot --uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 524caef1445dce1b4a5d1240171926db0bcba17e69047f2fe166087083b7c87f
+dist/nyrqis-live-uefi.iso   sha256 9cb7cff344f39273d1ceeef670018b4dbfa4c28cb6127b7c8de425736aaa5cf5
+kernel carried by both:     sha256 c9e66a83b995faf30bde28bf53722b96fdfc2f4a1eb4cd3dbcc69f6375cef7e8
+```
+
+Integrity and attribution match, the BIOS disc boots the default entry to a
+verified desktop session, and the UEFI disc boots through our signed stub
+(carrier walked, GOP handed over, shell rendered and verified).
+
+Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
+has no extracted-kernel attribution because the kernel lives inside the
+stub binary; its attribution is the one build run that produced both discs
+from one `target/kernel.elf`.
