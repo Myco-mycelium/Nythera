@@ -6729,3 +6729,24 @@ Checks after this slice: `./build.sh` PASS, 26 served calls
 Named limits, not hidden: one sector per call, read-only, no filesystem,
 no cache. A block-device WRITE row is not served; the capability can
 carry WRITE, but no row exercises it yet.
+
+## The release discs carrying the sector read (2026-11-09)
+
+Both live discs were rebuilt from this tree with `make_live_iso.sh` after
+the block-device sector-read slice and verified outside it with
+`check_live_iso.sh --boot --uefi-boot`:
+
+```
+dist/nyrqis-live.iso        sha256 0464db85eb22e0eeaed14014a23e30ece3329866972cda09e2bf363879a7e068
+dist/nyrqis-live-uefi.iso   sha256 a18c36d2d061a173b131ab1b8a9c73143444fea1df79a0f1fe885b0f9f612390
+kernel carried by both:     sha256 ab9882da401f75bb777d41750ac756f5ec624928ebea2cb263cbe47b0e78dc1a
+```
+
+Integrity and attribution match, the BIOS disc boots the default entry to a
+verified desktop session, and the UEFI disc boots through our signed stub
+(carrier walked, GOP handed over, shell rendered and verified).
+
+Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
+has no extracted-kernel attribution because the kernel lives inside the
+stub binary; its attribution is the one build run that produced both discs
+from one `target/kernel.elf`.
