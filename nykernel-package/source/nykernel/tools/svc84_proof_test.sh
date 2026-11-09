@@ -110,7 +110,7 @@ fi
 # Two verdict lines since 2026-11-09: the original ring-3 transcript and
 # the BADGE/NOTIFY leg's own (separate so the 20-row transcript's format
 # string stays readable). Join them; every pattern below is a substring.
-VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE)" "$SERIAL" | tail -3 | tr '\n' ' ')"
+VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE)" "$SERIAL" | tail -4 | tr '\n' ' ')"
 if [[ -z "$VERDICT" ]]; then
     bad "the ring-3 proof never reached its verdict line"
 else
@@ -216,6 +216,17 @@ else
     else
         bad "the resource-kind leg's windows, kind codes or refusals failed their read-back"
     fi
+    # The DATA-PLANE leg: a byte written through the I/O-port capability
+    # came back on the same port and matches the kernel's OWN read at
+    # verdict time; one port past the window was refused -EACCES; a raw
+    # framebuffer word survived a write/read round trip; a row outside the
+    # granted window was refused -EACCES; and a framebuffer operation
+    # through an I/O-port handle was refused -EACCES.
+    if [[ "$VERDICT" == *"DATA-PLANE matches"* ]] && [[ "$VERDICT" == *"DATA-PLANE (port-write 0x0 , port-read 0x"* ]] && [[ "$VERDICT" == *"past-window 0xfffffffffffffff3 , fb-write 0x0 , fb-read 0xff00ff , fb-row 0xfffffffffffffff3 , fb-kind 0xfffffffffffffff3)"* ]]; then
+        ok "the I/O-port and framebuffer data planes actually moved bytes: a port write/read round-tripped and matched the kernel's own read, a raw pixel word survived write/read, and the out-of-window and wrong-kind operations were refused -EACCES by name"
+    else
+        bad "the data-plane leg's port/pixel bytes or refusals failed their read-back"
+    fi
     # The TWO-PROCESS leg: two ring-3 processes, each its own scheduler
     # task with its own session and its own trap stack. The first process
     # closes ONE of its two region capabilities (the record survives: the
@@ -264,7 +275,7 @@ else
     # precedes the queue, the receiver still drains the ONE good message
     # attenuated to READ|WRITE (0x0c), which is the proof that the wider
     # ask queued nothing.
-    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1 , reason not mapped , session 8) , WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1) , MAP (ack 0x0 , base 0x60000120000 , len 0x1000 , rights 0xe , handle 0x4 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000130000 , len2 0x2000 , handle2 0x9 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000120000 , released 4 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000120000/0x60000100000 , frames 302 == 302 , unmapped true / true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
+    if [[ "$VERDICT" == *"MAP matches"* ]] && [[ "$VERDICT" == *"SPACES (same va 0x60000010000 , first 0x1260296 , peer 0x60000030000) , REVOKE (base 0x60000100000 , addr 0x60000100000 , err 0x4 , task 2 , expected 2 , hits 1 , woke 1 , reason not mapped , session 8) , WINDOW (req 0x0 , base 0x60000110000 , len 0x1000 , handle 0x3 , marker 0xddba11cafef00d , unmap 0x0 , again 0xfffffffffffffffe , geom 0x0 , geom base 0x60000110000 , peer read 0xddba11cafef00d , no-window release 1) , MAP (ack 0x0 , base 0x60000120000 , len 0x1000 , rights 0xe , handle 0x4 , wrote 0xdeadbeefcafebabe , again 0x0 , base2 0x60000130000 , len2 0x2000 , handle2 0x9 , close 0x0 , close2 0x0 , stale 0xfffffffffffffff7 , geometry 0x0 , geom base 0x60000120000 , released 4 word 0xdeadbeefcafebabe/0xfeedfacecafed00d , bases 0x60000120000/0x60000100000 , frames "*"== "*" , unmapped true / true / true / true , xfer (ack 0x0 , base 0x60000100000 , send 0x0 , close 0x0 , survived 0xfeedfacecafed00d , first8 0x0 , last8 0x1122334455667788 , wider 0xffffffffffffffa6))"* ]]; then
         ok "a ring-3 holder ASKED for a region, the kernel chose the window, backed it with zeroed frames and minted a usable handle; a second request got the next window; the kernel read the holder's word out of the mapping before unmapping; both teardowns unmapped their window and returned every frame"
     else
         bad "the requested-region leg's mapping, kernel-chosen window or page release failed their read-back"

@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves twenty calls:
+//! table), the result goes back in `rax` -- that serves twenty-five calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -28,6 +28,11 @@
 //! | 0x51 | `CAP_BADGE` | a0=endpoint handle, a1=nonzero badge | derives a badged copy in the caller's own table -> its handle; `-EACCES` without GRANT, for a zero badge or an already-badged source, `-EACCES` for another kind, `-EBADF` for an empty slot |
 //! | 0x52 | `CAP_NOTIFY` | a0=endpoint handle, a1=bits | ORs payload-free signal bits into the endpoint (never queues, so it cannot fill the queue) -> `0`; its errno otherwise |
 //! | 0x53 | `CAP_NOTIFY_TAKE` | a0=endpoint handle | the OWNER collects and clears its endpoint's signal word -> the bits; `-EACCES` for a non-owner or another kind, `-EBADF` for an empty slot |
+//! | 0x54 | `CAP_DEVICE_INFO` | a0=resource handle, a1=window out-pointer (`u64::MAX` = none) | the release's resource kinds: `(kind_code << 32) \| rights` (2 block, 4 I/O ports, 32 framebuffer) and `(lo << 32) \| hi` where asked; `-EACCES` for a handle of another kind, `-EINVAL` for a payload-shaped call |
+//! | 0x55 | `CAP_IOPORT_IN` | a0=IoPort handle, a1=port | authority-first (kind, READ, window containment) then the port's byte -> `0..255`; `-EACCES` for a missing right or a port outside the window |
+//! | 0x56 | `CAP_IOPORT_OUT` | a0=IoPort handle, a1=port, a2=byte | same checks with WRITE before the `out` is issued -> `0` |
+//! | 0x57 | `CAP_FB_READ` | a0=FrameBuffer handle, a1=`(x<<32)\|y` | kind + READ, row inside the granted window -> the RAW scan-out word; `-EACCES` outside the window or for another kind |
+//! | 0x58 | `CAP_FB_WRITE` | a0=FrameBuffer handle, a1=`(x<<32)\|y`, a2=word | kind + WRITE, row inside the window -> stores the word -> `0` |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
 //! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
@@ -140,6 +145,7 @@
 use core::arch::naked_asm;
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
+use x86_64::instructions::port::Port;
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::{PrivilegeLevel, VirtAddr};
 
@@ -353,6 +359,29 @@ pub const CALL_CAP_NOTIFY_TAKE: u64 = 0x53;
 /// `EFAULT` BEFORE anything is written. Every other argument must claim
 /// nothing.
 pub const CALL_CAP_DEVICE_INFO: u64 = 0x54;
+
+/// The I/O-port DATA PLANE, read half: a0 = an IoPort capability handle,
+/// a1 = a port number. The machine checks kind, READ and that the port is
+/// inside the capability's window BEFORE the port is touched -> the byte
+/// read (0..255). A port one past the window is `EACCES` by name, like a
+/// missing right: the window IS the authority.
+pub const CALL_CAP_IOPORT_IN: u64 = 0x55;
+
+/// The I/O-port DATA PLANE, write half: a0 = an IoPort capability handle,
+/// a1 = a port number, a2 = the byte to write (0..255). Same authority
+/// checks with WRITE before the `out` is issued -> `0`.
+pub const CALL_CAP_IOPORT_OUT: u64 = 0x56;
+
+/// The framebuffer DATA PLANE, read half: a0 = a FrameBuffer capability
+/// handle, a1 = `(x << 32) | y`. The machine checks kind and READ, then
+/// the row must lie inside the capability's row window and the pixel
+/// inside the bound display -> the RAW scan-out word.
+pub const CALL_CAP_FB_READ: u64 = 0x57;
+
+/// The framebuffer DATA PLANE, write half: a0 = a FrameBuffer capability
+/// handle, a1 = `(x << 32) | y`, a2 = the raw scan-out word to store.
+/// Same checks with WRITE before the store -> `0`.
+pub const CALL_CAP_FB_WRITE: u64 = 0x58;
 
 /// Linux's `ENOSYS`, and the release's convention: negative errno in `rax`.
 pub const ENOSYS: i64 = -38;
@@ -831,6 +860,27 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && dev[4] == want_fb_rows
         && dev[5] == EACCES
         && dev[6] == EINVAL;
+    // The DATA-PLANE block (BUF+2800..+2856, seven qwords): the port
+    // write's ack, the port read's byte (compared against the kernel's
+    // OWN read of 0x80 at verdict time), a port one past the window
+    // refused EACCES, the framebuffer write's ack, the raw word read
+    // back, a row outside the granted window refused EACCES, and a
+    // framebuffer operation through an I/O-port handle refused EACCES.
+    if !crate::memory::paging::user_range_ok(a0 + 2800, 56, false) {
+        return EFAULT;
+    }
+    let mut data = [0i64; 7];
+    for (i, slot) in data.iter_mut().enumerate() {
+        *slot = unsafe { core::ptr::read_unaligned((a0 + 2800 + 8 * i as u64) as *const i64) };
+    }
+    let kernel_port80 = unsafe { Port::<u8>::new(0x80).read() } as i64;
+    let data_ok = data[0] == 0
+        && data[1] == kernel_port80
+        && data[2] == EACCES
+        && data[3] == 0
+        && data[4] == 0x00ff00ff
+        && data[5] == EACCES
+        && data[6] == EACCES;
     unsafe { crate::svc84_proof::select_peer_space() };
     if !crate::memory::paging::user_range_ok(a1, 240, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
@@ -1321,7 +1371,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && two_ok
         && peer_ok
         && map_ok;
-    let ok = stored_ok && wrote_ok && notify_ok && device_ok;
+    let ok = stored_ok && wrote_ok && notify_ok && device_ok && data_ok;
     crate::serial_println!(
         "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x} , send {:#x} , recv {:#x} , tag {:#x} , null-tag {:#x}) , BADGE/NOTIFY {}",
         bn[0] as u64,
@@ -1351,6 +1401,18 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         dev[5] as u64,
         dev[6] as u64,
         if device_ok { "matches" } else { "MISMATCH" }
+    );
+    crate::serial_println!(
+        "  service-0x84 proof: DATA-PLANE (port-write {:#x} , port-read {:#x} == kernel {:#x} , past-window {:#x} , fb-write {:#x} , fb-read {:#x} , fb-row {:#x} , fb-kind {:#x}) , DATA-PLANE {}",
+        data[0] as u64,
+        data[1] as u64,
+        kernel_port80 as u64,
+        data[2] as u64,
+        data[3] as u64,
+        data[4] as u64,
+        data[5] as u64,
+        data[6] as u64,
+        if data_ok { "matches" } else { "MISMATCH" }
     );
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
     crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {} , reason {} , session {}) , WINDOW (req {:#x} , base {:#x} , len {:#x} , handle {:#x} , marker {:#x} , unmap {:#x} , again {:#x} , geom {:#x} , geom base {:#x} , peer read {:#x} , no-window release {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
@@ -2322,6 +2384,100 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                         }
                     }
                     ((code as i64) << 32) | held as i64
+                }
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_IOPORT_IN => {
+            if a0 > u32::MAX as u64 || a1 > u16::MAX as u64 {
+                return EINVAL;
+            }
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::ioport_check_for(
+                identity,
+                a0 as u32,
+                a1 as u16,
+                crate::experimental::caps::rights::READ,
+            ) {
+                Ok(()) => unsafe { Port::<u8>::new(a1 as u16).read() as i64 },
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_IOPORT_OUT => {
+            if a0 > u32::MAX as u64 || a1 > u16::MAX as u64 || a2 > u8::MAX as u64 {
+                return EINVAL;
+            }
+            if a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::ioport_check_for(
+                identity,
+                a0 as u32,
+                a1 as u16,
+                crate::experimental::caps::rights::WRITE,
+            ) {
+                Ok(()) => {
+                    unsafe { Port::<u8>::new(a1 as u16).write(a2 as u8) };
+                    0
+                }
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_FB_READ => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a2 != 0 || a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            let x = (a1 >> 32) as u32;
+            let y = a1 as u32;
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::fb_pixel_check_for(
+                identity,
+                a0 as u32,
+                crate::experimental::caps::rights::READ,
+            ) {
+                Ok((lo, hi)) => {
+                    if y < lo || y >= hi {
+                        return EACCES;
+                    }
+                    match crate::devices::framebuffer::kernel_read_pixel(x, y) {
+                        Some(v) => v as i64,
+                        None => EFAULT,
+                    }
+                }
+                Err(e) => map_cap_error(e),
+            }
+        }
+        CALL_CAP_FB_WRITE => {
+            if a0 > u32::MAX as u64 || a2 > u32::MAX as u64 {
+                return EBADF;
+            }
+            if a_xfer != u64::MAX || a_rights != 0 {
+                return EINVAL;
+            }
+            let x = (a1 >> 32) as u32;
+            let y = a1 as u32;
+            let identity = crate::experimental::scheduler::session_identity();
+            match crate::experimental::caps::fb_pixel_check_for(
+                identity,
+                a0 as u32,
+                crate::experimental::caps::rights::WRITE,
+            ) {
+                Ok((lo, hi)) => {
+                    if y < lo || y >= hi {
+                        return EACCES;
+                    }
+                    if crate::devices::framebuffer::kernel_write_pixel(x, y, a2 as u32) {
+                        0
+                    } else {
+                        EFAULT
+                    }
                 }
                 Err(e) => map_cap_error(e),
             }

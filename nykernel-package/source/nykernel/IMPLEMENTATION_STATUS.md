@@ -6613,3 +6613,54 @@ Named limits unchanged: the UEFI stub is a `dev` build, and the UEFI disc
 has no extracted-kernel attribution because the kernel lives inside the
 stub binary; its attribution is the one build run that produced both discs
 from one `target/kernel.elf`.
+
+## The I/O-port and framebuffer data planes (2026-11-09)
+
+The kinds alone could name hardware authority; the previous slice named
+the data plane as the next step. Two of the three now move real bytes
+through the gate, each checking authority BEFORE touching hardware:
+
+```
+0x55 CAP_IOPORT_IN   a0 = IoPort handle, a1 = port       -> the byte
+0x56 CAP_IOPORT_OUT  a0 = IoPort handle, a1 = port, a2 = byte -> 0
+0x57 CAP_FB_READ     a0 = FrameBuffer handle, a1 = (x<<32)|y -> raw word
+0x58 CAP_FB_WRITE    a0 = FrameBuffer handle, a1, a2 = word -> 0
+```
+
+The machine checks kind, the required right, and for ports that the
+ported number lies inside `[lo, hi)`. A port one past the window is
+`EACCES`, the same answer as a missing right, because the window IS the
+authority. The framebuffer rows check kind/right, then the row must lie
+inside the capability's row window and the pixel inside the display; a
+row outside is `EACCES` before the scan-out is touched. Both refuse a
+handle of another kind (`EACCES`, the release's WrongType).
+
+The scan-out helpers (`framebuffer::kernel_read_pixel` /
+`kernel_write_pixel`) work on the RAW word, so a word the gate writes is
+the same word a read returns; channel order is already applied by the
+renderer, and these rows are not a renderer.
+
+The ring-3 proof writes 0xAB to port 0x80 through the I/O-port
+capability, reads it back and compares against the kernel's OWN read of
+0x80 at verdict time, tries port 0x81 (outside the window), then writes
+and reads a raw pixel through the framebuffer capability, tries a row
+past the bound display, and tries a framebuffer operation through the
+I/O-port handle:
+
+```
+service-0x84 proof: DATA-PLANE (port-write 0x0 , port-read 0xff ==
+  kernel 0xff , past-window 0xfffffffffffffff3 , fb-write 0x0 ,
+  fb-read 0xff00ff , fb-row 0xfffffffffffffff3 , fb-kind
+  0xfffffffffffffff3) , DATA-PLANE matches
+```
+
+Checks after this slice: `./build.sh` PASS, 25 served calls
+(`0x40..0x58`); `svc84_proof_test.sh` PASS with the DATA-PLANE leg;
+`qemu_boot_test.sh` PASS with `experimental caps: 121 clause groups`;
+`qemu_boot_parity_diff.sh` PASS (526 chain lines, BIOS == UEFI).
+
+Named limit, not hidden: the BLOCK DEVICE's sector data plane is still
+not served. The boot device on these discs is ATAPI, so a sector read
+needs the SCSI packet path and a real consumer, not a nearly-right ATA
+command. The capability names and narrows the sector window; it does not
+yet read it.

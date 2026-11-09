@@ -17,7 +17,7 @@
 //! open Phase 7 work, and FIND-KERNEL-002 (GPU memory clearing between
 //! containers) is untouched by a framebuffer driver.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use x86_64::structures::paging::mapper::MapToError;
 use x86_64::structures::paging::{
@@ -43,6 +43,11 @@ pub enum FbError {
 /// framebuffer is bound, which is a different fact from a 0x0 display.
 static BOUND_W: AtomicU32 = AtomicU32::new(0);
 static BOUND_H: AtomicU32 = AtomicU32::new(0);
+/// The bound scan-out mapping, published for the capability gate's
+/// FrameBuffer DATA-PLANE rows: the base address the kernel mapped at
+/// virtual == physical and its pitch in PIXELS. Zero means no mapping.
+static SURFACE_BASE: AtomicU64 = AtomicU64::new(0);
+static SURFACE_STRIDE: AtomicU32 = AtomicU32::new(0);
 
 pub fn bound_mode() -> Option<(u32, u32)> {
     let w = BOUND_W.load(Ordering::Relaxed);
@@ -111,6 +116,8 @@ pub unsafe fn init(
     }
     BOUND_W.store(info.width, Ordering::Relaxed);
     BOUND_H.store(info.height, Ordering::Relaxed);
+    SURFACE_BASE.store(info.addr, Ordering::Relaxed);
+    SURFACE_STRIDE.store((info.pitch / 4) as u32, Ordering::Relaxed);
     Ok(Framebuffer {
         base: info.addr as *mut u32,
         width: info.width,
@@ -118,6 +125,45 @@ pub unsafe fn init(
         stride_px: (info.pitch / 4) as usize,
         rgb_first: info.rgb_first,
     })
+}
+
+/// Read one RAW scan-out word. The capability gate checks the holder's
+/// row window and rights first; this function only enforces the display's
+/// own geometry, and answers `None` rather than touching a pixel the
+/// display does not have. The value is the display's word as stored
+/// (channel order already applied), so a read of a word the gate wrote is
+/// the same word back.
+pub fn kernel_read_pixel(x: u32, y: u32) -> Option<u32> {
+    let (w, h) = bound_mode()?;
+    if x >= w || y >= h {
+        return None;
+    }
+    let base = SURFACE_BASE.load(Ordering::Relaxed) as *mut u32;
+    let stride = SURFACE_STRIDE.load(Ordering::Relaxed) as usize;
+    if base.is_null() || stride == 0 {
+        return None;
+    }
+    Some(unsafe { core::ptr::read_volatile(base.add(y as usize * stride + x as usize)) })
+}
+
+/// Store one RAW scan-out word, under the same geometry guard.
+/// Returns false when the display does not have that pixel or no mapping
+/// is published.
+pub fn kernel_write_pixel(x: u32, y: u32, argb: u32) -> bool {
+    let (w, h) = match bound_mode() {
+        Some(v) => v,
+        None => return false,
+    };
+    if x >= w || y >= h {
+        return false;
+    }
+    let base = SURFACE_BASE.load(Ordering::Relaxed) as *mut u32;
+    let stride = SURFACE_STRIDE.load(Ordering::Relaxed) as usize;
+    if base.is_null() || stride == 0 {
+        return false;
+    }
+    unsafe { core::ptr::write_volatile(base.add(y as usize * stride + x as usize), argb) };
+    true
 }
 
 impl Framebuffer {

@@ -1183,6 +1183,78 @@ _start:
     int $0x84
     mov %rax, 2792(%rbx)
 
+    /* 20a. IOPORT_OUT (0x56): write 0xAB to port 0x80 through the I/O-port
+       capability (slot 7). Port 0x80 is the diagnostic port the kernel
+       granted; the ack lands at BUF+2800. */
+    mov $7, %rdi
+    mov $0x80, %rsi
+    mov $0xab, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x56, %rax
+    int $0x84
+    mov %rax, 2800(%rbx)
+    /* 20b. IOPORT_IN (0x55) on the same port: the byte comes back at
+       BUF+2808 (compared against the kernel's own read of 0x80). */
+    mov $7, %rdi
+    mov $0x80, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x55, %rax
+    int $0x84
+    mov %rax, 2808(%rbx)
+    /* 20c. One port PAST the window (0x81): EACCES by name at BUF+2816,
+       even though the capability is a valid IoPort. */
+    mov $7, %rdi
+    mov $0x81, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x55, %rax
+    int $0x84
+    mov %rax, 2816(%rbx)
+    /* 20d. FB_WRITE (0x58) at pixel (1,1): stores the raw word
+       0x00ff00ff through the framebuffer capability (slot 8). */
+    mov $8, %rdi
+    movabs $0x100000001, %rsi
+    mov $0xff00ff, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x58, %rax
+    int $0x84
+    mov %rax, 2824(%rbx)
+    /* 20e. FB_READ (0x57) at the same pixel: the same RAW word comes
+       back at BUF+2832. */
+    mov $8, %rdi
+    movabs $0x100000001, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x57, %rax
+    int $0x84
+    mov %rax, 2832(%rbx)
+    /* 20f. A row OUTSIDE the granted window (1023, past the bound 768):
+       EACCES at BUF+2840 before the scan-out is touched. */
+    mov $8, %rdi
+    mov $0x3ff, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x57, %rax
+    int $0x84
+    mov %rax, 2840(%rbx)
+    /* 20g. FB_WRITE through the I/O-PORT handle: EACCES (WrongType) at
+       BUF+2848, so the data rows refuse a handle of another kind. */
+    mov $7, %rdi
+    movabs $0x100000001, %rsi
+    mov $0xff00ff, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x58, %rax
+    int $0x84
+    mov %rax, 2848(%rbx)
+
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which
        is why this program does not ask for it. */

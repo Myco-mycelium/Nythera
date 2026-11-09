@@ -45,9 +45,12 @@
 //! `bootstrap_ioport`, `bootstrap_fb`), exactly as with Input; the proof
 //! session receives the boot device's sector space, the diagnostic port
 //! 0x80, and the display's bound rows, and the 0x54 DEVICE_INFO row
-//! reports the kind code and window back. The DATA-PLANE rows (sector
-//! read/write, port in/out, pixel store) are named as the next slice,
-//! not implied: reporting authority is not the same as exercising it.
+//! reports the kind code and window back. The I/O-port and framebuffer
+//! DATA PLANES are served too (0x55/0x56 port in/out, 0x57/0x58 pixel
+//! read/write), each checking kind, right and window BEFORE touching the
+//! hardware. The block device's sector data plane is still named as the
+//! next slice, not implied: the boot device on these discs is ATAPI, and
+//! a sector read needs the packet path, not a costume ATA command.
 //!
 //! Containers (NPS-007 §3) are the admission policy: each holder belongs
 //! to a container whose mask names the capability KINDS it may hold, and
@@ -719,6 +722,41 @@ impl CapSystem {
             return Err(CapError::WrongType);
         }
         Ok((cap.lo, cap.hi, cap.rights))
+    }
+
+    /// A data-plane I/O-port check: WrongType unless `h` is an IoPort
+    /// capability, NoRight unless it carries `need` AND `port` lies inside
+    /// the capability's window. The window is authority, not advice: a
+    /// port one past `hi` is refused by the same answer as a missing
+    /// right, because both mean "this capability does not authorize it".
+    pub fn ioport_check(&mut self, p: usize, h: u32, port: u16, need: u8) -> Result<(), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::IoPort {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & need != need {
+            return Err(CapError::NoRight);
+        }
+        let port = port as u32;
+        if port < cap.lo || port >= cap.hi {
+            return Err(CapError::NoRight);
+        }
+        Ok(())
+    }
+
+    /// A data-plane framebuffer check: WrongType unless `h` is a
+    /// FrameBuffer capability, NoRight unless it carries `need`; answers
+    /// the ROW window the caller may touch (the gate then bounds x/y
+    /// against the display itself).
+    pub fn fb_check_pixel(&mut self, p: usize, h: u32, need: u8) -> Result<(u32, u32), CapError> {
+        let cap = self.lookup(p, h)?;
+        if cap.kind != Kind::FrameBuffer {
+            return Err(CapError::WrongType);
+        }
+        if cap.rights & need != need {
+            return Err(CapError::NoRight);
+        }
+        Ok((cap.lo, cap.hi))
     }
 
     /// The release's `narrow_device`: derive, in `p`'s own table, a copy
@@ -1787,6 +1825,25 @@ pub fn device_info_for(caller: usize, handle: u32) -> Result<(u64, u32, u32, u8)
     })
 }
 
+/// Access for the I/O-port DATA-PLANE rows: the machine's authority check
+/// (kind, right, window containment) before the gate touches a port.
+pub fn ioport_check_for(caller: usize, handle: u32, port: u16, need: u8) -> Result<(), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.ioport_check(caller, handle, port, need)
+    })
+}
+
+/// Access for the framebuffer DATA-PLANE rows: kind + right check,
+/// answering the row window so the gate can refuse before touching the
+/// scan-out.
+pub fn fb_pixel_check_for(caller: usize, handle: u32, need: u8) -> Result<(u32, u32), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        sys.fb_check_pixel(caller, handle, need)
+    })
+}
+
 /// Access for the device-narrowing path (kernel self-test today; the
 /// release's `narrow_device`, attenuation-only).
 pub fn narrow_for(caller: usize, handle: u32, lo: u32, len: u32) -> Result<u32, CapError> {
@@ -2815,6 +2872,33 @@ pub fn run() -> bool {
             && sys.fb_window(CLIENT, fb_narrow) == Ok((0, 300, rights::READ | rights::WRITE | rights::GRANT))
             && sys.narrow_device(CLIENT, fb, 300, 400) == Err(CapError::Widening)
             && sys.fb_window(CLIENT, cli_h) == Err(CapError::WrongType)
+    );
+
+    // The DATA-PLANE authority checks: a port is inside the window or it
+    // is not authorized, and a framebuffer right gates the rows.
+    check!(
+        "a port inside the window passes, one past hi is NoRight even with READ, and a non-port capability is WrongType",
+        sys.ioport_check(CLIENT, iop, 0x80, rights::READ).is_ok()
+            && sys.ioport_check(CLIENT, iop, 0x80, rights::WRITE).is_ok()
+            && sys.ioport_check(CLIENT, iop, 0x81, rights::READ) == Err(CapError::NoRight)
+            && sys.ioport_check(CLIENT, blk, 0x80, rights::READ) == Err(CapError::WrongType)
+    );
+    let iop_r = sys
+        .bootstrap_ioport(CLIENT, rights::READ, 0x80, 0x81)
+        .expect("self-test: READ-only ioport");
+    check!(
+        "a READ-only port capability cannot write its own port (NoRight)",
+        sys.ioport_check(CLIENT, iop_r, 0x80, rights::WRITE) == Err(CapError::NoRight)
+    );
+    let fb_w = sys
+        .bootstrap_fb(CLIENT, rights::WRITE, 600)
+        .expect("self-test: WRITE-only framebuffer");
+    check!(
+        "the framebuffer pixel check answers the row window and enforces the right it was asked for",
+        sys.fb_check_pixel(CLIENT, fb, rights::READ) == Ok((0, 600))
+            && sys.fb_check_pixel(CLIENT, fb_narrow, rights::WRITE) == Ok((0, 300))
+            && sys.fb_check_pixel(CLIENT, fb_w, rights::READ) == Err(CapError::NoRight)
+            && sys.fb_check_pixel(CLIENT, iop, rights::READ) == Err(CapError::WrongType)
     );
 
     // ---- NPS-007 §3 containers --------------------------------------
