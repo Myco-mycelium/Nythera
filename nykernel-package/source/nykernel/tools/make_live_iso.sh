@@ -104,6 +104,34 @@ menuentry "Nyrqis (automatic: display class decides)" {
     multiboot2 /boot/kernel.elf
     boot
 }
+
+# One entry per platform identity (crate::platform_mode). The kernel
+# detects the identity from the firmware by default and keys 1..5 switch
+# it at runtime; these entries pin one from the menu, for hardware whose
+# firmware does not identify itself. An unknown token is reported by the
+# kernel, and this menu only uses the five it accepts.
+submenu "Nyrqis platform identity (default: auto-detect)" {
+    menuentry "Nyrqis native" {
+        multiboot2 /boot/kernel.elf nyrqis.persona=nyrqis
+        boot
+    }
+    menuentry "Android mode" {
+        multiboot2 /boot/kernel.elf nyrqis.persona=android
+        boot
+    }
+    menuentry "Windows mode" {
+        multiboot2 /boot/kernel.elf nyrqis.persona=windows
+        boot
+    }
+    menuentry "macOS mode" {
+        multiboot2 /boot/kernel.elf nyrqis.persona=macos
+        boot
+    }
+    menuentry "Console mode" {
+        multiboot2 /boot/kernel.elf nyrqis.persona=console
+        boot
+    }
+}
 EOF
 
 mkdir -p "$(dirname "$OUT")"

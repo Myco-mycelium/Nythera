@@ -33,6 +33,18 @@ pub struct Inventory {
     /// Bit mask of USB host-controller kinds: 1 UHCI, 2 OHCI, 4 EHCI,
     /// 8 xHCI (class 0x0C, subclass 0x03, prog-if 0x00/0x10/0x20/0x30).
     pub usb: u8,
+    /// Distinct vendor IDs seen on the bus, in discovery order. The
+    /// platform selector reads these the way it reads the ACPI OEM ID:
+    /// Apple's 0x106B or Microsoft's 0x1414 in the machine is the
+    /// firmware telling us what family of device this is.
+    pub vendors: [u16; 8],
+    pub vendor_count: u8,
+}
+
+impl Inventory {
+    pub fn has_vendor(&self, id: u16) -> bool {
+        self.vendors[..self.vendor_count as usize].contains(&id)
+    }
 }
 
 impl Inventory {
@@ -69,6 +81,14 @@ pub fn scan() -> Inventory {
                     continue;
                 }
                 inv.functions += 1;
+                let vendor = (cfg_read(bus, dev, func, 0) & 0xFFFF) as u16;
+                if vendor != 0xFFFF
+                    && (inv.vendor_count as usize) < inv.vendors.len()
+                    && !inv.has_vendor(vendor)
+                {
+                    inv.vendors[inv.vendor_count as usize] = vendor;
+                    inv.vendor_count += 1;
+                }
                 let cls = cfg_read(bus, dev, func, 0x08);
                 // (class << 24) | (subclass << 16) | (prog-if << 8) | revision
                 let class = (cls >> 24) & 0xFF;

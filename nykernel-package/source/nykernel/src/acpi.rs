@@ -46,6 +46,33 @@ pub struct AcpiInfo {
     pub table_count: u32,
     /// One of these is non-zero; which root table was used.
     pub used_xsdt: bool,
+    /// The FADT's OEM ID (header bytes 10..16): the firmware vendor's
+    /// own signature. `crate::platform_mode` reads this to tell an
+    /// Apple or Microsoft machine from a generic one by what the
+    /// firmware says about itself, not by guessing from the display.
+    pub oem_id: [u8; 6],
+    /// The FADT's OEM TABLE ID (header bytes 16..24): the board or
+    /// product name the OEM wrote, for the boot transcript.
+    pub oem_table_id: [u8; 8],
+    /// Whether a FADT ("FACP") was found at all. The OEM fields are
+    /// zero when it was not -- a fact the caller can see.
+    pub fadt_found: bool,
+}
+
+impl AcpiInfo {
+    pub fn oem_id(&self) -> &[u8] {
+        &self.oem_id
+    }
+
+    pub fn oem_table_id(&self) -> &[u8] {
+        &self.oem_table_id
+    }
+}
+
+/// A table header's 4-byte signature.
+fn table_signature(addr: u64) -> [u8; 4] {
+    let p = addr as *const u8;
+    unsafe { [*p, *p.add(1), *p.add(2), *p.add(3)] }
 }
 
 /// Validates the RSDP and enumerates the tables reachable from it.
@@ -73,6 +100,9 @@ pub fn validate_and_enumerate(rsdp: &AcpiRsdp) -> Option<AcpiInfo> {
     let entries = core::cmp::min(entries, MAX_TABLES as u64) as u32;
 
     let mut valid = 0u32;
+    let mut oem_id = [0u8; 6];
+    let mut oem_table_id = [0u8; 8];
+    let mut fadt_found = false;
     for i in 0..entries {
         let entry_ptr = (root_addr + TABLE_HEADER_LEN as u64 + i as u64 * entry_size) as *const u8;
         let table_addr: u64 = if used_xsdt {
@@ -85,6 +115,20 @@ pub fn validate_and_enumerate(rsdp: &AcpiRsdp) -> Option<AcpiInfo> {
         }
         if table_checksum_ok(table_addr) {
             valid += 1;
+            // The FADT is mandatory on every ACPI system and carries the
+            // OEM identity fields in its header, so it is the one table
+            // worth reading beyond counting. Its checksum was already
+            // verified above, so a signature match here is trustworthy.
+            if !fadt_found && table_signature(table_addr) == *b"FACP" {
+                fadt_found = true;
+                let base = table_addr as *const u8;
+                for i in 0..6 {
+                    oem_id[i] = unsafe { *base.add(10 + i) };
+                }
+                for i in 0..8 {
+                    oem_table_id[i] = unsafe { *base.add(16 + i) };
+                }
+            }
         }
     }
 
@@ -92,6 +136,9 @@ pub fn validate_and_enumerate(rsdp: &AcpiRsdp) -> Option<AcpiInfo> {
         revision: rsdp.revision,
         table_count: valid,
         used_xsdt,
+        oem_id,
+        oem_table_id,
+        fadt_found,
     })
 }
 
@@ -150,6 +197,17 @@ pub fn init(rsdp: Option<AcpiRsdp>) -> Option<AcpiInfo> {
                 if info.used_xsdt { "XSDT" } else { "RSDT" },
                 info.table_count
             );
+            if info.fadt_found {
+                let oem = core::str::from_utf8(info.oem_id()).unwrap_or("??????").trim_end();
+                let table = core::str::from_utf8(info.oem_table_id())
+                    .unwrap_or("????????")
+                    .trim_end();
+                serial_println!(
+                    "  acpi: FADT OEM ID \"{}\", OEM table ID \"{}\" (the firmware names its vendor)",
+                    oem,
+                    table
+                );
+            }
             Some(info)
         }
         None => {

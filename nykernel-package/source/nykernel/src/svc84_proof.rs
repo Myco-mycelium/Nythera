@@ -779,6 +779,25 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         Ordering::SeqCst,
     );
     PEER_RSP0.store(peer_space.kernel_stack_top(), Ordering::SeqCst);
+    // The session -> space registry, populated for the two proof sessions:
+    // the display work looks spaces up by session, and "the other space"
+    // must be a fact in a table rather than a pair of statics only this file
+    // knows. Registration is idempotent and refused by name, so a drift
+    // fails here instead of turning into a window nobody can map.
+    match crate::experimental::space_registry::register(
+        PROOF_SESSION_ID as u64,
+        PROOF_PML4.load(Ordering::SeqCst),
+    ) {
+        Ok(_) => {}
+        Err(e) => panic!("space registry: proof session refused ({})", e),
+    }
+    match crate::experimental::space_registry::register(
+        PEER_SESSION_ID as u64,
+        PEER_PML4.load(Ordering::SeqCst),
+    ) {
+        Ok(_) => {}
+        Err(e) => panic!("space registry: peer session refused ({})", e),
+    }
     unsafe { space.activate() };
 
     // The two sessions' equips. The install order is asserted, not
@@ -931,6 +950,14 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
             allocate_region_mapping,
             release_region_mapping,
             unmap_region_window,
+        );
+        // The DISPLAY's windows are a different budget, and a reclaimed one:
+        // a surface is opened and given back for as long as a server runs,
+        // so it must not spend one of the proof's monotonic slots (nor
+        // disturb the bases this verdict pins). Armed with the same
+        // allocator, so the frame accounting above still covers them.
+        let _ = crate::experimental::region_window::install_surface_allocator(
+            frame_allocator as *mut BumpFrameAllocator,
         );
     }
     serial_println!(

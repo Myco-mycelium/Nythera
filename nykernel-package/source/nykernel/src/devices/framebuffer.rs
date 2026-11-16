@@ -48,6 +48,10 @@ static BOUND_H: AtomicU32 = AtomicU32::new(0);
 /// virtual == physical and its pitch in PIXELS. Zero means no mapping.
 static SURFACE_BASE: AtomicU64 = AtomicU64::new(0);
 static SURFACE_STRIDE: AtomicU32 = AtomicU32::new(0);
+/// The loader's scan-out order, published for the same reason: a second
+/// handle onto the bound surface must write the same channel order the
+/// boot session's handle does.
+static SURFACE_RGB_FIRST: AtomicU32 = AtomicU32::new(0);
 
 pub fn bound_mode() -> Option<(u32, u32)> {
     let w = BOUND_W.load(Ordering::Relaxed);
@@ -57,6 +61,33 @@ pub fn bound_mode() -> Option<(u32, u32)> {
     } else {
         Some((w, h))
     }
+}
+
+/// A second handle onto the BOUND surface, for kernel code that must
+/// draw without owning the boot session's handle. The `0x84` identity
+/// row is exactly that case: a ring-3 caller asks the kernel to switch
+/// the session identity, and the gate has no `&mut Framebuffer` of its
+/// own. The handle shares the one mapping and the one scan-out order.
+///
+/// # Safety
+/// The caller must not hold another `&mut Framebuffer` over the surface
+/// at the same time. In this kernel that is true by construction: the
+/// gate is entered from a trap, while the boot session's handle is not
+/// borrowed across the trap.
+pub unsafe fn from_bound() -> Option<Framebuffer> {
+    let (w, h) = bound_mode()?;
+    let base = SURFACE_BASE.load(Ordering::Relaxed);
+    let stride = SURFACE_STRIDE.load(Ordering::Relaxed);
+    if base == 0 || stride == 0 {
+        return None;
+    }
+    Some(Framebuffer {
+        base: base as *mut u32,
+        width: w,
+        height: h,
+        stride_px: stride as usize,
+        rgb_first: SURFACE_RGB_FIRST.load(Ordering::Relaxed) != 0,
+    })
 }
 
 pub struct Framebuffer {
@@ -118,6 +149,7 @@ pub unsafe fn init(
     BOUND_H.store(info.height, Ordering::Relaxed);
     SURFACE_BASE.store(info.addr, Ordering::Relaxed);
     SURFACE_STRIDE.store((info.pitch / 4) as u32, Ordering::Relaxed);
+    SURFACE_RGB_FIRST.store(if info.rgb_first { 1 } else { 0 }, Ordering::Relaxed);
     Ok(Framebuffer {
         base: info.addr as *mut u32,
         width: info.width,

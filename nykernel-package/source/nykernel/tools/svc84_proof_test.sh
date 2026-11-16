@@ -89,7 +89,12 @@ rm -f "$SERIAL"
 SCRATCH="$WORK/scratch.img"
 rm -f "$SCRATCH"
 truncate -s 4M "$SCRATCH"
-qemu-system-x86_64 -m 512 \
+# `setsid`: the emulator gets its own session, so the teardown below can
+# take down the WHOLE group. Under a user-space root (proot) the wrapper does
+# not forward SIGTERM to the emulator it traces, and a plain `kill` on the
+# wrapper left qemu running and `wait` blocked forever -- the gate hung after
+# the proof had already finished, with no verdict printed.
+setsid qemu-system-x86_64 -m 512 \
     -drive file="$WORK/svc84.iso",format=raw,if=ide,index=0,media=cdrom \
     -drive file="$SCRATCH",format=raw,if=ide,index=2,media=disk -boot d \
     -serial "file:$SERIAL" -display none -no-reboot \
@@ -103,7 +108,10 @@ while [[ $waited -lt 240 ]]; do
     sleep 0.5
     waited=$((waited + 1))
 done
-kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
+kill -- -"$QPID" 2>/dev/null
+sleep 1
+kill -9 -- -"$QPID" 2>/dev/null
+wait "$QPID" 2>/dev/null
 
 if grep -q "KERNEL PANIC" "$SERIAL"; then
     bad "the kernel panicked before the proof finished"
@@ -117,10 +125,12 @@ else
     tail -6 "$SERIAL" 2>/dev/null | sed 's/^/        /'
 fi
 
-# Two verdict lines since 2026-11-09: the original ring-3 transcript and
-# the BADGE/NOTIFY leg's own (separate so the 20-row transcript's format
-# string stays readable). Join them; every pattern below is a substring.
-VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK)" "$SERIAL" | tail -12 | tr '\n' ' ')"
+# The verdict is several lines (the original ring-3 transcript, BADGE/NOTIFY,
+# the device/data-plane/block legs, and the platform identity rows). Join
+# them; every pattern below is a substring. The tail bound is generous on
+# purpose: a row that joins the surface must not push an earlier row's line
+# out of the window its assertion reads.
+VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK|PLATFORM|DISPLAY)" "$SERIAL" | tail -40 | tr '\n' ' ')"
 if [[ -z "$VERDICT" ]]; then
     bad "the ring-3 proof never reached its verdict line"
 else
@@ -295,6 +305,67 @@ else
     else
         bad "the ring-3 ISO9660 root listing failed the kernel's own re-walk"
     fi
+    # The PLATFORM rows (0x5d/0x5e): a ring-3 process read the identity
+    # the session presents, switched it to the Windows posture, read the
+    # new one back, had an out-of-range switch refused -EINVAL, confirmed
+    # the refusal changed nothing, and restored the identity the machine
+    # booted with (compared against the kernel's OWN live identity).
+    if [[ "$VERDICT" == *", PLATFORM matches"* ]] && [[ "$VERDICT" == *"PLATFORM (get 0x"* ]] \
+        && [[ "$VERDICT" == *" , set windows 0x0 , get after 0x2 , bad set 0xffffffffffffffea , after refusal 0x2"* ]]; then
+        ok "ring 3 read the session identity, switched it to the Windows posture and read the new identity back, had an out-of-range switch refused -EINVAL with the identity unchanged, and restored the identity the machine booted with"
+    else
+        bad "the platform identity rows' read-back failed"
+    fi
+    # The PLATFORM-INFO leg (0x5f): one record carried the identity, the
+    # form factor, the bound display's width and height, the status-bar
+    # height and the accent colour, each compared against the kernel's
+    # own live values. Only the machine-independent words are pinned here.
+    if [[ "$VERDICT" == *", PLATFORM-INFO matches"* ]] && [[ "$VERDICT" == *"PLATFORM-INFO (ack 0x0 , identity 0x"* ]]; then
+        ok "one PLATFORM_INFO call carried the session shape (identity, form factor, display geometry, status-bar height, accent) and the kernel's own live values matched every word"
+    else
+        bad "the platform-info record did not match the kernel's live session values"
+    fi
+    # The PLATFORM-MODE leg (0x60): ring 3 asked for the phone form
+    # factor, read the new layout back through PLATFORM_INFO, restored the
+    # form factor it booted with (read, not assumed) and read that back.
+    # Only the machine-independent words are pinned here.
+    if [[ "$VERDICT" == *", PLATFORM-MODE matches"* ]] && [[ "$VERDICT" == *"PLATFORM-MODE (set phone 0x0 , info2 ack 0x0 , mode 0x2"* ]]; then
+        ok "ring 3 requested the phone form factor, the kernel re-laid-out the session and reported the new geometry and status-bar height back, and the original form factor was restored and read back"
+    else
+        bad "the runtime form-factor request did not re-lay-out and report the session correctly"
+    fi
+    # The supervised display (0x64..0x6b): one ring-3 session SERVED the
+    # display before it parked, with a policy that grants clients the
+    # identity bit only. A second ring-3 process attached under it, was
+    # CLAMPED to that bit (it asked for both), changed the identity -- and
+    # was refused the form factor with -EACCES, which the peer's own page
+    # records for the kernel to check. The server could not be claimed
+    # exclusively while it was served (-EBUSY), reported zero clients
+    # before the attach and one while the client was attached, used its own
+    # authority for the form factor no client could touch, and its
+    # withdrawal dissolved the server and detached the parked client. At
+    # verdict time the identity and form factor it set are still the
+    # kernel's live state. Its second process also got a SURFACE (0x69) --
+    # a page the kernel mapped and mirrored into the server's address space
+    # -- and drew three pixels straight into that window; the server's
+    # composition (0x6a) read them through the mirror and put them on the
+    # display, and the three probes at the surface's origin, one to its
+    # right and at (3,2) are read back out of the FRAMEBUFFER here. Only
+    # the machine-independent words are pinned. It also asks the
+    # session -> address-space registry (0x6b): two sessions registered, the
+    # caller and its server both among them, and the caller's row gone after
+    # its withdrawal -- no PML4 address crosses the gate.
+    if [[ "$VERDICT" == *", DISPLAY matches"* ]] \
+        && [[ "$VERDICT" == *"DISPLAY (serve 0x1 , status first 0x"* ]] \
+        && [[ "$VERDICT" == *" , owner 0x0 , acquire beside server 0xfffffffffffffff0 , self client 0x0 , status serving 0x"* ]] \
+        && [[ "$VERDICT" == *" , server at verdict 0x0 , clients 0x0 , surfaces at verdict 0x0 ,"* ]] \
+        && [[ "$VERDICT" == *" , churn 12/"* ]] \
+        && [[ "$VERDICT" == *" , compose 0x1 , spaces 0x200000003 , churn 12/"* ]] \
+        && [[ "$VERDICT" == *" , tile 0x224466/0x335577/0xabcdef ,"* ]]; then
+        ok "a ring-3 session served the display under a published policy, clamped a second process's client grant to it, that client changed the identity it was granted and was refused the form factor it was not, its own surface tile's pixels were composed onto the display by the server and read back out of the framebuffer, the server's own authority covered the difference, and its exit dissolved the server and detached the still-parked client with its chosen identity and form factor left standing"
+    else
+        bad "the supervised display did not grant, clamp and withdraw authority as documented"
+    fi
     # The TWO-PROCESS leg: two ring-3 processes, each its own scheduler
     # task with its own session and its own trap stack. The first process
     # closes ONE of its two region capabilities (the record survives: the
@@ -305,10 +376,15 @@ else
     # FIRST process's capability, and offset 8 is the first process's value
     # read by the peer -- sharing in both directions. The last close is by
     # the last holder: the kernel's own table says the record is GONE
+    # The HANDLE numbers below are one higher than they were before the
+    # surface leg existed, and that is the increment's own arithmetic: the
+    # peer's SURFACE (0x69) mints a capability handle BEFORE these region
+    # legs run, so the same legs get 4 and 3 instead of 3 and 2. They stay
+    # pinned exactly, because a shifted number is evidence, not noise.
     # ("region live no holders Some(0)"), and the exits are both recorded
     # (2 exits, the last the first process's session 7, one region
     # capability given back by an exit -- the peer's).
-    if [[ "$VERDICT" == *"TWO-PROCESS matches"* ]] && [[ "$VERDICT" == *"PEER matches"* ]] && [[ "$VERDICT" == *"TWO-PROCESS (close 0x0 , geometry 0x0 , call 0x8 , request 0x21416d6f7266 , answer 0x21426d6f7266 , offset8 0xfeedfacedeadbeef , offset16 0xbeefcafedead1234 , last 0x0 , twice 0xfffffffffffffff7 , region live no holders Some(0) , exits 1 session 7 released 1)"* ]] && [[ "$VERDICT" == *"PEER (ack 0x0 , base 0x60000030000 , read 0xfeedfacedeadbeef , recv 0x700000008 , handle 0x3 , request 0x21416d6f7266 , reply 0x0 , wrote 0xbeefcafedead1234)"* ]]; then
+    if [[ "$VERDICT" == *"TWO-PROCESS matches"* ]] && [[ "$VERDICT" == *"PEER matches"* ]] && [[ "$VERDICT" == *"TWO-PROCESS (close 0x0 , geometry 0x0 , call 0x8 , request 0x21416d6f7266 , answer 0x21426d6f7266 , offset8 0xfeedfacedeadbeef , offset16 0xbeefcafedead1234 , last 0x0 , twice 0xfffffffffffffff7 , region live no holders Some(0) , exits 1 session 7 released 1)"* ]] && [[ "$VERDICT" == *"PEER (ack 0x0 , base 0x60000030000 , read 0xfeedfacedeadbeef , recv 0x700000008 , handle 0x4 , request 0x21416d6f7266 , reply 0x0 , wrote 0xbeefcafedead1234)"* ]]; then
         ok "two ring-3 processes on their own tasks shared one region in both directions, one of them parked in a blocking call that the OTHER answered with its own bytes, and the region's record died with its last holder while each exit released its own capabilities"
     else
         bad "the two-process leg's region lifetime, cross-process bytes or parked answer failed their read-back"
@@ -358,7 +434,7 @@ else
     # copy arrived attenuated (the geometry row answers rights 0xc for a
     # peer whose sender held 0xe), and the message was already queued, so
     # the drain needed no retry (tries 0).
-    if [[ "$VERDICT" == *"PEER-XFER (recv 0x700000004 , handle 0x2 , base 0x60000100000 , read 0xfeedfacecafed00d , wrote 0x1122334455667788 , parked 0x63 , tries 0)"* ]]; then
+    if [[ "$VERDICT" == *"PEER-XFER (recv 0x700000004 , handle 0x3 , base 0x60000100000 , read 0xfeedfacecafed00d , wrote 0x1122334455667788 , parked 0x63 , tries 0)"* ]]; then
         ok "one ring-3 process handed its requested region to the OTHER through the capability transfer field; the receiver's copy was counted as a holder (the sender's close freed nothing), the page stayed mapped across that close, and the receiver's own close freed it with both processes' bytes in the kernel's record"
     else
         bad "the region handover's receiver-side facts failed their read-back"
@@ -430,4 +506,4 @@ if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
 fi
-echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed, handed one of those requested regions to the OTHER process through the capability transfer field -- the receiver's copy counted as a holder, so the sender's own close freed nothing and the page stayed mapped until the receiver closed last, with both processes' bytes in the kernel's release record -- both processes ran in address spaces of their own, their identical virtual addresses resolving to different pages, and the kernel revoked that region's mapping while one process still held its capability -- the holder's own next read faulted on the revoked page from ring 3, was recorded by the armed probe, and terminated only that task, and the notify row OR-ed payload-free signal bits that the endpoint's owner collected and cleared while a zero badge, another kind, a forged slot and a re-badge were refused by name, and a message sent through a badged capability delivered its tag to RECV's badge out-pointer (with a null pointer refused before the drain)."
+echo "PASS: a ring-3 program called int 0x84, received the gfx/input answers in its own memory, was refused -ENOSYS for an unported call, had a validated write land in its buffer, the identity call answered the scheduler's own running-task id, the widened rsi/rdx/r10/r8 pass reached the dispatcher exactly as sent, one IPC message round-tripped through the kernel's real mailbox primitive with the shape and empty refusals observed by name, one capability-payload round-tripped through the caller's OWN session table with the forged-handle and oversize refusals observed by name, the kernel's controller-injected scancodes round-tripped through the INPUT kind with the empty and forged-handle answers observed by name, one call carried a one-shot reply capability that answered exactly once, and one shared region was read and written by BOTH the kernel and ring 3, two ring-3 processes on their own tasks shared that region in both directions while one of them parked in a blocking call the other answered, and a ring-3 holder ASKED the kernel for a region (at a window the kernel chose), had it backed with zeroed frames and minted a usable handle, and saw every page unmapped and returned when its last capability closed, handed one of those requested regions to the OTHER process through the capability transfer field -- the receiver's copy counted as a holder, so the sender's own close freed nothing and the page stayed mapped until the receiver closed last, with both processes' bytes in the kernel's release record -- both processes ran in address spaces of their own, their identical virtual addresses resolving to different pages, and the kernel revoked that region's mapping while one process still held its capability -- the holder's own next read faulted on the revoked page from ring 3, was recorded by the armed probe, and terminated only that task, and the notify row OR-ed payload-free signal bits that the endpoint's owner collected and cleared while a zero badge, another kind, a forged slot and a re-badge were refused by name, and a message sent through a badged capability delivered its tag to RECV's badge out-pointer (with a null pointer refused before the drain), and the session identity was read from ring 3, switched to another posture and read back, had an out-of-range switch refused by name, was restored to the identity the machine booted with, and one PLATFORM_INFO call carried the whole session shape -- identity, form factor, display geometry, status-bar height and accent -- back to ring 3 word-for-word, and a runtime form-factor request re-laid-out the session at the phone layout and restored the one it booted with, with the geometry and status-bar height verified at both modes, and a ring-3 session served the display under a published policy -- clamping a second process's client grant to that policy, letting it change the identity it was granted while refusing it the form factor it was not, keeping the server above a second exclusive claim, and dissolving server and clients on withdrawal while the identity and form factor it chose stayed standing as the kernel's live state."

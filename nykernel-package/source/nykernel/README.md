@@ -90,6 +90,8 @@ and `qemu-system-x86_64`. On Ubuntu the last three are `apt` packages;
 | PE32+ exception-table (`.pdata`) walk: startup `IMAGE_DIRECTORY_ENTRY_EXCEPTION` composed from the client's own section-table facts by a checked patcher, runtime-function entries bounds-checked against the section table, UNWIND_INFO version nibble walked; typed `MalformedExceptionTable` refusals every boot (genuinely overlapping second entry, undefined ABI version 3) | `src/experimental/pe_exception_demo.rs`, `tools/patch_pe_pdata.py` | 🔷 Phase 5 increment |
 | PE32+ resource-directory walk: startup `IMAGE_DIRECTORY_ENTRY_RESOURCE` composed the same way, two-level resource tree walked to a ring-3 leaf string; typed `MalformedResourceDirectory` refusals every boot (leaf size past the image footprint, empty length-0 name string, array slot past the named/ID cap) | `src/experimental/pe_resource_demo.rs`, `tools/patch_pe_res.py` | 🔷 Phase 5 increment |
 | Minimal DEX (Android) parser + checksum/SHA-1 verify | `src/experimental/dex.rs`, `crypto.rs`, `dex_demo.rs` | 🔷 first real Phase 6 capability |
+| Platform identities: native Nyrqis (the mycelium mark), Android, Windows, macOS and console postures -- palette + chrome contract each, auto-detected per machine from the ACPI FADT OEM ID, PCI vendor IDs and the panel's own width, selected explicitly with `nyrqis.persona=`, and switchable at runtime with keys 1..5 (every switch repaints and re-verifies) | `src/platform_mode.rs`, `src/acpi.rs`, `src/devices/pci.rs`, `src/lib.rs` | ✅ implemented, self-tested on boot |
+| Console mode's prompt and session lines rendered with the release's real 5x7 font instead of rule-block stand-ins | `src/device_mode.rs` | ✅ placeholder removed |
 
 🔶 **"Pre-normative" is a real, repo-enforced distinction, not hedging.**
 NPS-002 (Process/Thread Model) and NPS-003 (IPC/Capability Passing) are
@@ -107,6 +109,124 @@ an actual first piece of Phase 5 itself (loading Windows' own
 executable format). It's still not Windows *application* compatibility
 (see "What's honestly still missing" below), but it's a genuinely
 different category of progress than everything else in this table.
+
+## Platform identities
+
+`crate::device_mode` picks the **form factor** (desktop, tablet, phone,
+console) from the panel. `crate::platform_mode` picks the **identity**
+the session presents on it, and the two are independent:
+
+| identity | chrome | accent |
+|---|---|---|
+| `nyrqis` | the kernel's own look: spore-cluster mark, wordmark, accent rule under the status strip | bio-luminescent mint `#2eeea6` |
+| `android` | status strip with an accent chip, bottom gesture pill | Material You blue `#a8c7ff` |
+| `windows` | bottom taskbar with the four-square start mark, window title bar with minimise / maximise / close | Windows blue `#4cc2ff` |
+| `macos` | top menu bar (mark, menus, clock), bottom dock, traffic lights on the content window | system blue `#0a84ff` |
+| `console` | no desktop chrome: terminal frame with the identity mark and wordmark | terminal green `#3ddc84` |
+
+Selection is a per-machine decision printed with the signal behind it:
+
+* explicit — `nyrqis.persona=nyrqis|android|windows|macos|console` on the
+  loader command line; an unknown token is reported, never silently
+  replaced by the default;
+* automatic — the ACPI FADT's OEM ID first (`APPLE`, `MSFT`), then the
+  PCI vendor IDs on the bus (`0x106b` Apple, `0x1414` Microsoft), then a
+  phone-sized panel (`< 800 px` wide) as an Android posture, otherwise
+  the native identity;
+* runtime — keys `1..5` during the boot session's one-second hotkey
+  window call the same `platform_mode::switch` a session owner would:
+  the device chrome is repainted first (no pixel of the previous
+  posture can survive), the identity is applied, its landmarks are read
+  back, and the surface hash is published.
+
+The `qemu_test` boot gate (or `nyrqis.persona_selftest=1`) additionally
+runs the cycle proof: all five identities are rendered, each one's
+read-back landmark is checked, the five surface hashes are asserted
+distinct, and the selected identity is restored. The live ISO's GRUB
+menu carries one entry per identity beside the per-device-mode entries.
+
+A ring-3 session can drive the identity itself through the `0x84` gate:
+`PLATFORM_GET` (0x5d) answers the live identity, `PLATFORM_SET` (0x5e)
+switches and repaints it (verified through the skin's own landmark,
+refused `-EINVAL`/`-ENODEV`/`-EIO` by name), and `PLATFORM_INFO` (0x5f)
+writes one record -- identity, form factor, display width and height,
+status-bar height and accent -- that the boot proof compares word-for-word
+against the kernel's live values. `PLATFORM_MODE_SET` (0x60) is the other
+direction: it re-renders the device chrome at a requested form factor,
+re-applies the current identity, publishes the new layout only after both
+read-backs verify, and is therefore refused `-EIO` (nothing published)
+when either render fails.
+
+Who may change the display is decided by a small supervisor in
+`src/display.rs`, and there are two forms of it. `DISPLAY_SERVE` (0x64)
+makes the calling session the display SERVER and publishes a POLICY mask
+(`1` identity, `2` form factor, `3` both); `DISPLAY_ATTACH` (0x65) then
+attaches another session as a CLIENT, granted `requested & policy` and
+returned as `(slot << 32) | grant`; `DISPLAY_DETACH` (0x66) frees the
+slot, `DISPLAY_CLIENT` (0x67) queries any session's grant, and
+`DISPLAY_STATUS` (0x68) answers `server | client count | caller grant` in
+one word. The server always may mutate; a client may call exactly the rows
+its own bits name, and nothing else gets through -- `-EACCES`. Without a
+server, `DISPLAY_ACQUIRE` (0x61) is the older, blunter form: one session
+holds the display outright (`DISPLAY_OWNER` 0x63 answers it,
+`DISPLAY_RELEASE` 0x62 gives it back), and the two forms refuse each other
+with `-EBUSY`.
+
+A server outlives its clients by construction: a client's withdrawal frees
+its slot and nothing else, so the policy and the remaining clients keep
+supervising the display. A server's own withdrawal dissolves it and
+detaches every client, because an orphaned policy would refuse every later
+session for the rest of the boot. The identity and form factor are kernel
+state, so they survive both -- the authority dies, the picture stays.
+
+Each client can then own a surface, and a surface is a MAPPED REGION.
+`DISPLAY_SURFACE` (0x69) requests one page for the calling client, maps it
+into a window the kernel chooses, mints the caller a capability over it,
+and hands back `{base, len, rights, handle}` -- the client DRAWS INTO `base`
+with ordinary stores. `DISPLAY_COMPOSE` (0x6a) is the server's alone: it
+reads each client's region through the **window the region machine mirrored
+into the server's own address space** (same frames, same VA, installed by
+`allocate_region_mapping` when the region was requested), blits the tiles
+onto the display in slot order, reads its own work back, and answers how
+many tiles it composed. That mirror is the cross-address-space window -- no
+CR3 switch, no copy -- and it is the same mechanism that made the earlier
+capability handover work. A client can only address its own slot: the slot
+comes from the kernel's client record, not from arithmetic, and the surface
+goes away with the slot.
+
+Two facts had to stop being proof-only for that to work on a plain boot.
+`src/experimental/space_registry.rs` is a small table from SESSION id to the
+PML4 of the space that session runs in: the 0x84 proof registers its two
+processes when it builds their spaces, a display server registers the space
+it is running in when it starts serving, and a session's row leaves with its
+withdrawal. `src/experimental/region_window.rs` installs the general region
+windows over the boot's own frame allocator: a requested region is mapped at
+a window of its own, and mirrored into the DISPLAY SERVER's registered space
+when that space is known and different -- which is what lets composition read
+a client's surface in a boot that never ran the 0x84 proof. When the server
+shares the caller's space, no mirror is needed and the same address is the
+window. Windows are SLOTS rather than an ever-advancing address: a window's
+base comes from its slot, a release clears the slot so its base is handed out
+again, and each slot remembers the space its mirror was placed in so the
+release removes the mirror from the space that actually has it. That is what
+keeps a server that opens and closes surfaces for hours down to the same few
+windows.
+
+Surface tiles come from a SECOND table of the same shape, deliberately
+separate from the capability machine's region windows: a surface is opened,
+drawn into, composed and given back for as long as a server runs, so it must
+not spend the same budget as a transferable region -- and on the proof boot
+it must not take one of the monotonic window slots the region verdict pins.
+`DISPLAY_SURFACE` (0x69) maps the tile from that table and mints the
+capability over the mapping the kernel already made, so nothing in the
+capability machine owns those frames; `DISPLAY_SURFACE_RELEASE` (0x6c) gives
+the record back first, then the capability, then the window itself -- frames,
+mirror and slot -- and answers the table's packed live and issued counts, so
+a caller can watch the issue count climb while the live count returns to
+where it started. A session that withdraws gives its surface window back with
+it. `DISPLAY_SPACES` (0x6b) reports the registry as three facts -- how
+many sessions are registered, whether the caller is one, whether the server
+is -- and never the PML4 addresses themselves.
 
 ## How it's organized
 

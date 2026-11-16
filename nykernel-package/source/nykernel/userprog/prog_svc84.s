@@ -133,6 +133,35 @@ _start:
        is the same expression). */
     movabs $BUF, %rbx
 
+    /* 0. DISPLAY_SERVE (0x64): this session becomes the display SERVER
+       before anything else, publishing a policy that grants clients the
+       IDENTITY bit only (mask 1). The peer process attaches under it and
+       proves, from ring 3, that a client gets exactly what the policy
+       allows; this session keeps full authority as the server, which is
+       why its own identity and form-factor rows below still pass.
+
+       STATUS (0x68) right after serve pins the starting shape: this
+       session is the server, zero clients, and the server's own grant
+       word is 3. It is taken BEFORE this process ever parks, so no client
+       can have attached yet -- the word is deterministic. */
+    mov $1, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x64, %rax
+    int $0x84
+    mov %rax, 11624(%rbx)
+
+    mov $0, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x68, %rax
+    int $0x84
+    mov %rax, 11632(%rbx)
+
     /* 1. GFX_MODE (0x41) */
     mov $0x41, %rax
     int $0x84
@@ -1498,6 +1527,361 @@ _start:
     jmp .Ldir_next
 .Ldir_done:
     mov %r9, 7200(%rbx)
+
+    /* 13b. the PLATFORM rows: the session identity the kernel presents.
+
+       GET (0x5d) must answer the live identity; SET (0x5e) to the
+       Windows posture (index 2) must apply it, and GET must read the new
+       identity back; SET 99 must be refused -EINVAL with the identity
+       unchanged; the restore must put the ORIGINAL identity (whatever
+       the machine auto-detected, so it is read back out of this buffer,
+       never assumed to be 0) back, and GET must confirm it. The
+       coordinator compares all seven words against the kernel's own
+       live identity. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5d, %rax
+    int $0x84
+    mov %rax, 11296(%rbx)
+
+    mov $2, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5e, %rax
+    int $0x84
+    mov %rax, 11304(%rbx)
+
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5d, %rax
+    int $0x84
+    mov %rax, 11312(%rbx)
+
+    mov $99, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5e, %rax
+    int $0x84
+    mov %rax, 11320(%rbx)
+
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5d, %rax
+    int $0x84
+    mov %rax, 11328(%rbx)
+
+    mov 11296(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5e, %rax
+    int $0x84
+    mov %rax, 11336(%rbx)
+
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5d, %rax
+    int $0x84
+    mov %rax, 11344(%rbx)
+
+    /* 13c. PLATFORM_INFO (0x5f): one call answers the whole session
+       shape -- identity, form factor, display width and height, the
+       status-bar height the layout contract reserved, and the skin's
+       accent colour -- into a 48-byte record at BUF+11400. The ack lands
+       at BUF+11360; the coordinator compares every record word with the
+       kernel's own live values and with the BOUND display. */
+    lea 11400(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5f, %rax
+    int $0x84
+    mov %rax, 11360(%rbx)
+
+    /* 13d. PLATFORM_MODE_SET (0x60): the form factor at runtime.
+
+       Ask for the phone layout (index 2), read the resulting session
+       shape through PLATFORM_INFO into BUF+11456 (ack BUF+11376), then
+       ask for the ORIGINAL form factor -- read out of the first record at
+       BUF+11408, never assumed -- and read it back into BUF+11512 (ack
+       BUF+11392). The coordinator checks both records' geometry and
+       status-bar height against `device_mode::layout` at the mode the
+       kernel then reports. */
+    mov $2, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x60, %rax
+    int $0x84
+    mov %rax, 11368(%rbx)
+
+    lea 11456(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5f, %rax
+    int $0x84
+    mov %rax, 11376(%rbx)
+
+    mov 11408(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x60, %rax
+    int $0x84
+    mov %rax, 11384(%rbx)
+
+    lea 11512(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5f, %rax
+    int $0x84
+    mov %rax, 11392(%rbx)
+
+    /* 13e. the supervised display (0x63/0x61/0x67/0x68/0x5e/0x60).
+
+       OWNER (0x63) is still 0 -- a SERVER is not an exclusive owner, and
+       the two forms never overlap. ACQUIRE (0x61) must therefore be
+       refused -EBUSY: the display is already supervised, and a second
+       blunter claim on it would race the thing that protects it. CLIENT
+       (0x67, a0 = 0) says the server is NOT its own client (0).
+
+       STATUS (0x68) now reports ONE client: the peer attached before it
+       sent the wake this process was parked on, so the count is
+       deterministic even though the two processes interleave freely.
+
+       The server then uses its full authority -- the peer's policy grants
+       clients the IDENTITY bit only, so the FORM FACTOR set below is
+       something no client could have done -- and reads both back through
+       PLATFORM_INFO into BUF+11688.
+
+       Then EXIT (0x4e): the server's withdrawal dissolves the server and
+       detaches the parked client, which the coordinator checks after both
+       processes are gone. The identity and form factor it set here are
+       kernel state and stay standing. */
+    mov $0, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x63, %rax
+    int $0x84
+    mov %rax, 11640(%rbx)
+
+    mov $0, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x61, %rax
+    int $0x84
+    mov %rax, 11648(%rbx)
+
+    mov $0, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x67, %rax
+    int $0x84
+    mov %rax, 11656(%rbx)
+
+    /* DISPLAY_SPACES (0x6b): the session -> address-space registry as
+       three facts. The proof registered BOTH processes' spaces and this
+       session is the display server, so the answer must be: two sessions
+       registered, the caller among them, the server among them. No PML4
+       address is handed to ring 3. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x6b, %rax
+    int $0x84
+    mov %rax, 11760(%rbx)
+
+    /* RELEASE (0x62) is refused -EACCES for a session that holds no
+       exclusive claim -- a display SERVER is not that claim, and the
+       release row must not be a way for a client to unseat a server. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x62, %rax
+    int $0x84
+    mov %rax, 11744(%rbx)
+
+    mov $0, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x68, %rax
+    int $0x84
+    mov %rax, 11664(%rbx)
+
+    mov $2, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5e, %rax
+    int $0x84
+    mov %rax, 11672(%rbx)
+
+    mov $2, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x60, %rax
+    int $0x84
+    mov %rax, 11680(%rbx)
+
+    /* COMPOSE (0x6a): the server blits every client surface -- the peer's
+       tile, written before it sent the wake this process was parked on --
+       onto the display and reads its own work back. The answer is the
+       number of tiles composed, and the coordinator checks the PIXELS. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x6a, %rax
+    int $0x84
+    mov %rax, 11752(%rbx)
+
+    /* SURFACE CHURN (0x69 then 0x6c), twelve times: the server attaches IT
+       SELF as a client, opens a tile, gives it back, and repeats. This is the
+       leg that proves the display's window table is RECLAIMED rather than
+       consumed: twelve openings against an eight-slot table can only work if
+       every release returns its slot, and the two numbers the release row
+       answers say so from the kernel's own counters -- the ISSUED count kept
+       climbing while the LIVE count came back to where it started, and the
+       base the kernel chose was the SAME address every time.
+
+       The words are read by the coordinator's verdict:
+         11768 openings+releases completed   11776 live before
+         11784 live after                    11792 issued at the first release
+         11800 issued at the last release    11808 first base
+         11816 last base                     11824 self-attach grant
+         11832 failures                      11880 loop counter
+         11872 the errno the failure came back as (0 when the churn ran)
+       The 32-byte surface record lands at 11840, past everything read. */
+    mov $3, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x65, %rax
+    int $0x84
+    mov %rax, 11824(%rbx)
+    movq $0, 11768(%rbx)
+    movq $0, 11776(%rbx)
+    movq $0, 11784(%rbx)
+    movq $0, 11792(%rbx)
+    movq $0, 11800(%rbx)
+    movq $0, 11808(%rbx)
+    movq $0, 11816(%rbx)
+    movq $0, 11832(%rbx)
+    movq $0, 11872(%rbx)
+    movq $0, 11880(%rbx)
+.Lchurn:
+    /* The record goes in a1 (rsi), NOT a0: DISPLAY_SURFACE validates its
+       SECOND argument as the 32-byte record pointer. Passing it in rdi made
+       the kernel see a null pointer and refuse -EFAULT before the window
+       table was ever touched -- which is exactly what the churn's first
+       boot reported ("churn fails 1", nothing issued). */
+    xor %rdi, %rdi
+    lea 11840(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x69, %rax
+    int $0x84
+    test %rax, %rax
+    jne .Lchurn_fail
+    mov 11840(%rbx), %rcx           /* the base the KERNEL chose */
+    cmpq $0, 11880(%rbx)
+    jne 1f
+    mov %rcx, 11808(%rbx)           /* the FIRST base */
+1:
+    mov %rcx, 11816(%rbx)           /* the LAST base */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x6c, %rax
+    int $0x84
+    test %rax, %rax
+    js .Lchurn_fail
+    mov %rax, %rcx
+    shr $32, %rcx
+    mov %rcx, 11784(%rbx)           /* windows LIVE after */
+    mov %eax, %ecx                  /* the low half: ISSUED (zero-extended) */
+    mov %rcx, 11800(%rbx)           /* windows ISSUED after */
+    cmpq $0, 11880(%rbx)
+    jne 2f
+    mov %rcx, 11792(%rbx)           /* issued at the FIRST release */
+    mov 11784(%rbx), %rcx
+    mov %rcx, 11776(%rbx)           /* LIVE before: where the churn started */
+2:
+    incq 11880(%rbx)
+    incq 11768(%rbx)
+    cmpq $12, 11880(%rbx)
+    jb .Lchurn
+    jmp .Lchurn_done
+    /* The refusal itself is kept, not just the fact of it: a churn that
+       stops short has to name the row and the errno that stopped it, or the
+       verdict can only say "zero" and nobody learns anything. */
+.Lchurn_fail:
+    incq 11832(%rbx)
+    mov %rax, 11872(%rbx)
+.Lchurn_done:
+    /* DETACH (0x66): the self-attached client slot goes back, so the
+       verdict's client count is zero for the right reason and not merely
+       because the session died. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x66, %rax
+    int $0x84
+
+    lea 11688(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5f, %rax
+    int $0x84
+    mov %rax, 11736(%rbx)
 
     /* 14. EXIT (0x4e): releases what this table still holds and
        terminates THIS task. The proof's verdict is read by task 0, which

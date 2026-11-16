@@ -33,6 +33,7 @@ pub mod ata;
 pub mod boot_phase;
 pub mod cursor;
 pub mod device_mode;
+pub mod display;
 pub mod ps2_aux;
 pub mod service84;
 pub mod svc84_proof;
@@ -62,6 +63,7 @@ pub mod keyboard;
 pub mod memory;
 pub mod multiboot;
 pub mod pic;
+pub mod platform_mode;
 pub mod rtc;
 pub mod serial;
 #[cfg(feature = "qemu_test")]
@@ -427,6 +429,73 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
             mode_source
         ),
     }
+
+    // ---- platform personas: one kernel, five identities ----------------
+    // The device mode above is the FORM FACTOR. This is the platform
+    // IDENTITY the session presents on it: Nyrqis's own look, or the
+    // Android / Windows / macOS / console posture. The firmware decides
+    // by default (ACPI OEM ID, PCI vendor, display class), an explicit
+    // `nyrqis.persona=` wins, and keys 1..5 move between identities at
+    // runtime -- each switch repaints and re-verifies, so "the switch
+    // works" is a measured fact rather than a menu entry.
+    let (platform, platform_source, platform_problem) =
+        platform_mode::select(&devices.hardware, acpi_info.as_ref(), cmdline, mode);
+    if let Some(problem) = platform_problem {
+        serial_println!(
+            "  platform: {} -- falling back to {} ({})",
+            problem,
+            platform.as_str(),
+            platform_source
+        );
+    }
+    let persona_ok = match devices.framebuffer.as_mut() {
+        Some(fb) => {
+            let skin = platform_mode::apply(platform, mode, fb);
+            serial_println!(
+                "  platform: {} (source: {}) -- bar {}px, accent #{:06x}, surface hash {:#010x}, read-back {}",
+                skin.platform.as_str(),
+                platform_source,
+                skin.bar,
+                skin.platform.palette().accent & 0xff_ffff,
+                skin.hash,
+                if skin.verified { "verified" } else { "MISMATCH" }
+            );
+            // The cycle proof re-renders every identity and restores the
+            // selected one, so it runs where a full render proof belongs
+            // (the qemu_test gate or an explicit request) -- and BEFORE
+            // the driver report below, so a gate that screenshots on the
+            // render line is not racing a listen window.
+            let selftest = cfg!(feature = "qemu_test")
+                || platform_mode::selftest_requested(cmdline);
+            let cycle_ok = if selftest {
+                platform_mode::cycle_self_test(fb, mode, platform)
+            } else {
+                true
+            };
+            skin.verified && cycle_ok
+        }
+        None => {
+            serial_println!(
+                "  platform: {} (source: {}) -- no framebuffer bound, identity reported but not rendered",
+                platform.as_str(),
+                platform_source
+            );
+            true
+        }
+    };
+    assert!(
+        persona_ok,
+        "platform persona self-test failed: a skin did not read back, or a runtime switch re-rendered the wrong identity"
+    );
+    // Display ownership starts with NOBODY. The boot session renders
+    // through the framebuffer it owns; it does not take a ring-3 claim on
+    // it, because a claim present at boot would silently refuse every
+    // session that follows. Asserted, not assumed.
+    assert!(
+        display::owner() == display::NO_OWNER,
+        "display ownership was already claimed at boot: the boot session must not hold a ring-3 claim"
+    );
+
     // The aux driver's own proof (decoder arithmetic, packet assembler,
     // stray-ID handling) runs on every boot; whether a mouse answered on
     // IRQ12 is a per-machine fact already carried by the bind row.
@@ -445,6 +514,19 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         "ps2-aux self-test failed: the mouse packet decoder or assembler is wrong"
     );
     devices::report(&devices);
+
+    // ---- runtime identity switch (keys 1..5) ----------------------------
+    // After the transcript, for the same reason the pointer session is:
+    // a one-second listen window must not sit between a gate's trigger
+    // line and the facts it reads. Each key press repaints the device
+    // chrome, applies the identity and re-verifies it.
+    if let Some(fb) = devices.framebuffer.as_mut() {
+        let hotkey_ok = platform_mode::hotkey_session(fb, mode);
+        assert!(
+            hotkey_ok,
+            "platform persona hotkey switch failed: a keypress re-rendered the wrong identity"
+        );
+    }
 
     // ---- the pointer: hardware motion -> a drawn, verified pixel --------
     // Deliberately AFTER the transcript above: the session's two-second
@@ -471,6 +553,41 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
         serial_println!("  service-0x84 proof: nyrqis.proof=svc84 requested");
         unsafe { svc84_proof::run(&mut frame_allocator) }
     }
+
+    // ---- the general region window -------------------------------------
+    // A requested region (a display surface among them) needs a mapping
+    // source, and until now only the proof boot installed one. This installs
+    // the general half over the boot's own allocator, so a session that
+    // serves a display on an ORDINARY boot can hand a client a surface it
+    // draws into, mirrored into the server's registered address space. The
+    // proof boot overwrites these hooks a few lines above when it is
+    // requested; nothing here touches that path.
+    let region_window_ok = unsafe {
+        experimental::region_window::install(&mut frame_allocator as *mut _)
+    };
+    // The slot table's own rules, exercised before anything can ask: every
+    // slot taken once, an exhausted table refused, released slots reused
+    // lowest-first. A window that is released must not cost a boot a slot
+    // for the rest of its life.
+    let slot_ok = experimental::region_window::slot_self_test();
+    serial_println!(
+        "  region window: general surface mappings installed = {} (windows at {:#x}, {} slots, stride {:#x}, slot table self-test = {}, issued {}, live {})",
+        region_window_ok,
+        experimental::region_window::WINDOW_BASE,
+        experimental::region_window::SLOTS,
+        experimental::region_window::WINDOW_STRIDE,
+        slot_ok,
+        experimental::region_window::windows_issued(),
+        experimental::region_window::windows_in_use()
+    );
+    assert!(
+        region_window_ok,
+        "the general region window failed to install: a surface request would have no mapping source"
+    );
+    assert!(
+        slot_ok,
+        "the region window slot table failed its self-test: a released surface window would not be reusable"
+    );
 
     advance(BootPhase::Ready);
     serial_println!("nyrqis kernel: phase 1+2+3-prep complete, boot phase = {} (Ready)", boot_phase::current());

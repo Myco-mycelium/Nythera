@@ -78,7 +78,14 @@ EOF
     grub-mkrescue -o "$dir/nyrqis-$label.iso" "$dir" >/dev/null 2>&1 \
         || { bad "$label: grub-mkrescue failed"; return 1; }
 
-    local serial="$dir/serial.log" mon="$dir/monitor.sock" ppm="$dir/screen.ppm"
+    # The monitor socket lives at a SHORT path on purpose: a unix socket's
+    # path is capped at 108 bytes (sun_path), and a run from a deep workspace
+    # directory would otherwise fail to CREATE it -- qemu is silent about it,
+    # and the failure surfaces later as "QEMU produced no screendump", which
+    # says nothing about the kernel under test. Ported: 2026-11-16, a
+    # /workspace/chats/<id>/... checkout is 120 bytes to target/.
+    local serial="$dir/serial.log" ppm="$dir/screen.ppm"
+    local mon="/tmp/nyrqis-mon-$$-${label}.sock"
     rm -f "$serial" "$mon" "$ppm"
     qemu-system-x86_64 \
         -cdrom "$dir/nyrqis-$label.iso" \

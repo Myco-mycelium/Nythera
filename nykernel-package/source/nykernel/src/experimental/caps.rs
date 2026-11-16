@@ -2103,6 +2103,22 @@ pub fn request_region_for(caller: usize, pages: u64) -> Result<(u32, u32, Region
     })
 }
 
+/// The DISPLAY's form of a region request: the kernel has already mapped
+/// the pages at `base`/`len`, and `caller` is minted a capability over
+/// them. The table records the geometry but does NOT own the mapping
+/// (`owned` is false), so a close or an exit never frees those frames --
+/// the display that made the window gives it back, which is what makes a
+/// surface window's lifetime the display's business and not the capability
+/// machine's.
+pub fn adopt_region_for(caller: usize, base: u64, len: u64) -> Result<(u32, u32), CapError> {
+    interrupts::without_interrupts(|| unsafe {
+        let sys = SYSTEM.get_or_insert_with(CapSystem::new);
+        let region = sys.create_region(base, len);
+        sys.bootstrap_region(caller, region, rights::READ | rights::WRITE | rights::GRANT)
+            .map(|handle| (region, handle))
+    })
+}
+
 /// Proof-boot equip for the region kind: the kernel records the region it
 /// has ALREADY mapped and mints `to` a capability over it. Returns the
 /// region id and the holder's handle, so the caller and the kernel's

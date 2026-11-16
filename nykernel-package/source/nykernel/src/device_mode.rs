@@ -30,6 +30,8 @@
 //! the Material home screen's pixels are on the display and verified;
 //! it does not mean a touch on it does anything yet.
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use crate::devices::framebuffer::Framebuffer;
 use crate::devices::Hardware;
 use crate::shell;
@@ -64,6 +66,32 @@ impl DeviceMode {
         }
     }
 
+    /// Stable numeric identity for the `0x84` gate: the order `select`
+    /// prints, and the same value `PLATFORM_INFO` reports. Not a wire
+    /// format beyond this kernel.
+    pub const fn id(self) -> u64 {
+        match self {
+            DeviceMode::Desktop => 0,
+            DeviceMode::Tablet => 1,
+            DeviceMode::Phone => 2,
+            DeviceMode::Console => 3,
+        }
+    }
+
+    pub fn from_id(id: u64) -> Option<Self> {
+        match id {
+            0 => Some(DeviceMode::Desktop),
+            1 => Some(DeviceMode::Tablet),
+            2 => Some(DeviceMode::Phone),
+            3 => Some(DeviceMode::Console),
+            _ => None,
+        }
+    }
+
+    const fn code(self) -> u8 {
+        self.id() as u8
+    }
+
     /// The mode a display class implies, with no explicit request.
     fn for_display(width: Option<u32>) -> Self {
         match width {
@@ -72,6 +100,30 @@ impl DeviceMode {
             Some(w) if w < 1400 => DeviceMode::Tablet,
             Some(_) => DeviceMode::Desktop,
         }
+    }
+}
+
+/// The mode selected for THIS machine, published so kernel code that is
+/// not handed the boot session's layout (the `0x84` identity rows) can
+/// re-render the same form factor a caller is looking at. Defaults to
+/// desktop until `select` runs, which every boot does before any draw.
+static MODE: AtomicU8 = AtomicU8::new(DeviceMode::Desktop.code());
+
+/// Publishes a runtime form-factor request. The caller (the `0x84`
+/// `PLATFORM_MODE_SET` row) has already re-rendered and verified the new
+/// layout; this makes the override the value every later consumer reads,
+/// so the identity switch, `PLATFORM_INFO` and a second request cannot
+/// disagree about which layout is on screen.
+pub fn set_current(mode: DeviceMode) {
+    MODE.store(mode.code(), Ordering::Relaxed);
+}
+
+pub fn current() -> DeviceMode {
+    match MODE.load(Ordering::Relaxed) {
+        1 => DeviceMode::Tablet,
+        2 => DeviceMode::Phone,
+        3 => DeviceMode::Console,
+        _ => DeviceMode::Desktop,
     }
 }
 
@@ -117,7 +169,7 @@ pub fn parse_cmdline(cmdline: &[u8]) -> Option<(Option<DeviceMode>, &'static str
 
 /// The per-machine decision, and the reason for it.
 pub fn select(hardware: &Hardware, cmdline: &[u8]) -> (DeviceMode, &'static str, Option<&'static str>) {
-    match parse_cmdline(cmdline) {
+    let decision = match parse_cmdline(cmdline) {
         Some((Some(mode), source)) => {
             // A console request on a machine with a framebuffer is
             // honoured (the loader may be serving a serial-only
@@ -134,7 +186,9 @@ pub fn select(hardware: &Hardware, cmdline: &[u8]) -> (DeviceMode, &'static str,
             "display class",
             None,
         ),
-    }
+    };
+    MODE.store(decision.0.code(), Ordering::Relaxed);
+    decision
 }
 
 /// The geometry for a mode on a given display. `content_w` is the
@@ -435,6 +489,26 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
     }
 }
 
+/// Draws a text run through the shell's own font and applies the
+/// loader's scan-out order to exactly the rows it wrote. Shared with
+/// `crate::platform_mode`, so the console and every persona's wordmark
+/// speak with one font implementation instead of two.
+pub fn draw_text(fb: &mut Framebuffer, x: u32, y: u32, s: &[u8], scale: i32, color: u32) {
+    if scale <= 0 || x >= fb.width || y >= fb.height {
+        return;
+    }
+    let (base, pitch) = fb.surface();
+    let mut surface = shell::Fb {
+        base,
+        pitch,
+        w: fb.width as i32,
+        h: fb.height as i32,
+    };
+    shell::text(&mut surface, x as i32, y as i32, s, scale, color);
+    let tw = shell::text_w(s, scale).max(0) as u32 + scale as u32;
+    fb.convert_scanout_region(x, y, tw.min(fb.width - x), (7 * scale) as u32);
+}
+
 /// Console mode: no window chrome, because there is no window manager
 /// in it -- a full-screen terminal surface with a frame, a prompt caret
 /// and a scroll strip. Drawn with the same framebuffer, so the four
@@ -451,11 +525,16 @@ fn render_console(fb: &mut Framebuffer, l: &Layout) {
     fb.stroke_rect(l.margin, l.status + l.margin, w - l.margin * 2, h - l.status - l.margin * 2, OUTLINE);
     // prompt caret
     fb.fill_rect(l.margin + 12, l.status + l.margin + 12, 3, 18, CONSOLE_FG);
-    // three completed prompt lines, as solid rule blocks (no font yet)
-    for i in 0..3u32 {
-        let y = l.status + l.margin + 44 + i * 22;
-        fb.fill_rect(l.margin + 24, y, 220 - i * 40, 6, SURFACE_HI);
-    }
+    // Real glyphs, not rule-block stand-ins: the release's 5x7 font (the
+    // same table the shell draws its labels with) puts the session's
+    // facts on the console surface. The font carries A-Z, 0-9, space and
+    // colon, so the console speaks in that alphabet rather than growing
+    // a second, half-complete font of its own.
+    let line = l.status + l.margin + 12;
+    draw_text(fb, l.margin + 24, line, b"NYRQIS>", 1, CONSOLE_FG);
+    draw_text(fb, l.margin + 24, line + 20, b"MODE CONSOLE", 1, SURFACE_HI);
+    draw_text(fb, l.margin + 24, line + 38, b"BOOT OK", 1, CONSOLE_FG);
+    draw_text(fb, l.margin + 24, line + 56, b"12:30", 1, SURFACE_HI);
     // scroll strip
     fb.fill_rect(w - l.margin - 10, l.status + l.margin + 8, 4, h / 3, OUTLINE);
 }

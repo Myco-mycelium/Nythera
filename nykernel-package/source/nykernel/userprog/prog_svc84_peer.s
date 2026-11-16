@@ -96,6 +96,118 @@ _start:
        is the same expression). */
     movabs $PEN, %rbx
 
+    /* 0. THE CLIENT HALF OF THE DISPLAY (0x65/0x5e/0x60/0x67/0x66).
+
+       The first process is the display SERVER (0x64) and publishes a
+       policy granting clients the IDENTITY bit only. This process asks
+       for BOTH bits, so the grant it receives must be clamped to 1 -- and
+       that grant is what decides the two mutation attempts below:
+
+         SET identity Windows (0x5e)  -> 0        (bit 1, granted)
+         MODE phone (0x60)            -> -EACCES  (bit 2, not granted)
+
+       The identity it sets is the one the server sets later anyway, so
+       the interleaving of two live processes cannot make the server's
+       read-backs flaky; the refused form factor changes nothing at all.
+
+       DETACH (0x66) then frees the slot and the second ATTACH proves the
+       server hands the same slot back -- supervision outlives the client
+       session's claims, not just the process.
+
+       The attach RETRIES while it is refused -ENODEV (the server has not
+       served yet): the retry count at PEN+336 is a report on the race, not
+       a workaround for a hang, and it is bounded so a machine with no
+       server reports instead of spinning forever. */
+    xor %r9, %r9
+    mov %r9, 336(%rbx)
+.client_retry:
+    mov $3, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x65, %rax
+    int $0x84
+    mov %rax, 288(%rbx)
+    cmp $-19, %rax              /* -ENODEV: no server has served yet */
+    jne .client_attached
+    inc %r9
+    mov %r9, 336(%rbx)
+    cmp $4096, %r9
+    jb .client_retry
+.client_attached:
+    mov $2, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5e, %rax
+    int $0x84
+    mov %rax, 296(%rbx)
+
+    mov $2, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x60, %rax
+    int $0x84
+    mov %rax, 304(%rbx)
+
+    mov $0, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x67, %rax
+    int $0x84
+    mov %rax, 312(%rbx)
+
+    mov $0, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x66, %rax
+    int $0x84
+    mov %rax, 320(%rbx)
+
+    mov $3, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x65, %rax
+    int $0x84
+    mov %rax, 328(%rbx)
+
+    /* 0b. ITS OWN SURFACE (0x69), then DRAWN INTO DIRECTLY.
+
+       The call requests one page, the kernel maps it at a window it
+       chooses and writes {base, len, rights, handle} to PEN+352 -- and the
+       SAME frames are mirrored into the other proof address space, so the
+       server can read this client's pixels without a copy and without a
+       CR3 switch. That mirror is the cross-address-space window.
+
+       Everything below is plain stores into the window the kernel
+       reported. The values are what the server's composition has to put
+       on the display: 0x224466 at the surface origin, 0x335577 one to its
+       right, 0xabcdef at (3,2) -- the third one exists so a composition
+       that only ever wrote the origin would be caught. */
+    xor %rdi, %rdi
+    lea 352(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x69, %rax
+    int $0x84
+    mov %rax, 344(%rbx)
+
+    mov 352(%rbx), %rcx           /* the base the KERNEL chose */
+    movl $0x224466, 0(%rcx)       /* (0,0) */
+    movl $0x335577, 4(%rcx)       /* (1,0) */
+    movl $0xabcdef, 268(%rcx)     /* (3,2) = (2*32+3)*4 */
+
     /* 1. The WAKE: SEND to mailbox 0 (the first process's endpoint) in the
        surface's (sender, seq) form -- rsi is the seq, a2 = 0 keeps that
        form, r10 = -1 is the no-transfer claim. */

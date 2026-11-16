@@ -4,7 +4,7 @@
 //! What this is: a ring-3-callable gate (`int $0x84`, DPL 3, call number in
 //! `rax`) in the release's five-argument ABI -- `rdi/rsi/rdx/r10/r8` all
 //! reach `dispatch` (the arguments each row consumes are named in the
-//! table), the result goes back in `rax` -- that serves twenty-nine calls:
+//! table), the result goes back in `rax` -- that serves forty-five calls:
 //!
 //! | nr | call | argument | returns |
 //! |---|---|---|---|
@@ -37,6 +37,22 @@
 //! | 0x5a | `CAP_BLOCK_INFO` | a0=BlockDevice handle, a1=24-byte record | kind + READ, then the drive's own geometry (`{sector size, sector count, 0}`) -> `0`; `-EIO` when it will not answer |
 //! | 0x5b | `CAP_BLOCK_WRITE` | a0=BlockDevice handle, a1=LBA, a2=buffer, a_xfer=bytes (1..2048) | kind + WRITE + window containment, then one sector written (LBA28) -> the byte count; `-EROFS` for read-only ATAPI media, `-EACCES` outside the window or for another kind, `-ENODEV`/`-EIO` |
 //! | 0x5c | `CAP_BLOCK_CACHE_STATS` | a0=BlockDevice handle, a1=16-byte record | kind + READ, then `{hits, misses}` of the kernel's sector cache -> `0`; a repeat read through 0x59 is answered from memory and shows as a hit |
+//! | 0x5d | `PLATFORM_GET` | -- | the session identity the kernel presents, as `Platform::ALL`'s index (0 nyrqis, 1 android, 2 windows, 3 macos, 4 console) |
+//! | 0x5e | `PLATFORM_SET` | a0 = identity index | repaints the device chrome, applies that identity through `platform_mode::switch`, and reads its landmark back -> `0`; `-EINVAL` for an index no identity owns, `-ENODEV` when no display is bound, `-EIO` when the skin failed its read-back |
+//! | 0x5f | `PLATFORM_INFO` | a0 = 48-byte record ptr | writes `{identity, form factor, width, height, status-bar height, accent RGB}` as six u64s -> `0`; `-EFAULT` for a pointer the user-range walker refuses, `-ENODEV` when no display is bound |
+//! | 0x60 | `PLATFORM_MODE_SET` | a0 = form-factor index | re-renders the device chrome at that form factor, re-applies the current identity, and publishes the new mode only after BOTH read-backs verify -> `0`; `-EINVAL` for an index no form factor owns, `-ENODEV` when no display is bound, `-EIO` when either render failed its read-back (nothing is published then) |
+//! | 0x61 | `DISPLAY_ACQUIRE` | — | claims the display for the CALLER's gate session -> `0` (idempotent for the owner); `-EBUSY` when another session owns it, `-EPERM` from ring 0 (the kernel is not a tenant of its own display) |
+//! | 0x62 | `DISPLAY_RELEASE` | — | gives ownership back -> `0`; `-EACCES` for any session that does not own it. A session that EXITs releases it automatically |
+//! | 0x63 | `DISPLAY_OWNER` | — | the owning session id, or `0` when nobody owns the display. While an owner exists, `PLATFORM_SET` / `PLATFORM_MODE_SET` from any OTHER ring-3 session are refused `-EACCES` |
+//! | 0x64 | `DISPLAY_SERVE` | a0 = policy mask (`1` identity, `2` form factor, `3` both) | becomes the display SERVER -> `0`, or `-EBUSY` beside a server or an exclusive owner, `-EINVAL` for an empty/unknown mask, `-EPERM` from ring 0. Re-publishing from the same session updates the policy |
+//! | 0x65 | `DISPLAY_ATTACH` | a0 = requested mask | attaches the caller's session as a client, granted `a0 & policy` -> `(slot << 32) | grant`; `-ENODEV` when no server runs, `-EBUSY` when already attached or the four slots are full, `-EACCES` when the policy grants none of the bits, `-EINVAL`, `-EPERM` |
+//! | 0x66 | `DISPLAY_DETACH` | — | frees the caller's slot -> `0`; `-EACCES` when the caller holds none |
+//! | 0x67 | `DISPLAY_CLIENT` | a0 = session to query (`0` = the caller) | that session's `(slot << 32) | grant`, or `0` when it is not a client. A query, never authority |
+//! | 0x68 | `DISPLAY_STATUS` | — | packed `server << 32 | client count << 16 | caller grant`, where the server reports `3` for itself |
+//! | 0x69 | `DISPLAY_SURFACE` | a1 = 32-byte record | gives the CALLER's client slot a SURFACE: the kernel requests one page, maps it into a window it chooses, mints the caller a handle over it, and writes `{base, len, rights, handle}` to `a1` -> `0`; `-EACCES` when the caller is not a client, `-EBUSY` when it already has one, `-EFAULT` for a bad record pointer, `-EPERM` from ring 0. The client draws into `base` directly; the region machine mirrors the same frames into the OTHER address space, which is how the server reads them |
+//! | 0x6c | `DISPLAY_SURFACE_RELEASE` | — | a client gives its surface tile back: the window's frames, its mirror and its slot return to the display's reclaiming window table, and the answer packs `live << 32 | issued` so a caller can watch the issue count climb while the live count stays flat |
+//! | 0x6b | `DISPLAY_SPACES` | — | packed `registry count << 32 | server-registered << 1 | caller-registered`: the session-to-address-space registry, as three facts. No address is handed to ring 3 |
+//! | 0x6a | `DISPLAY_COMPOSE` | — | SERVER only: blits every client surface (read through the mirrored window at the region's base) onto the bound display and reads its own work back -> the number of tiles composed; `-EACCES` for anyone but the server, `-ENODEV` with no display, `-EIO` when a blit or read-back failed |
 //!
 //! The capability rows (0x47/0x48) are the release's ENDPOINT-capability
 //! shape (NPS-003 §4/§5) served through THIS tree's own handle-table
@@ -423,6 +439,39 @@ pub const CALL_CAP_BLOCK_WRITE: u64 = 0x5b;
 /// kernel answers the sector cache's own counters -> `0`. A repeated read
 /// through 0x59 is answered from memory and shows up here as a hit.
 pub const CALL_CAP_BLOCK_CACHE_STATS: u64 = 0x5c;
+/// `PLATFORM_GET` (0x5d): the session identity the kernel presents.
+pub const CALL_PLATFORM_GET: u64 = 0x5d;
+/// `PLATFORM_SET` (0x5e): switch the session identity (and repaint it).
+pub const CALL_PLATFORM_SET: u64 = 0x5e;
+/// `PLATFORM_INFO` (0x5f): the session shape in one record.
+pub const CALL_PLATFORM_INFO: u64 = 0x5f;
+/// `PLATFORM_MODE_SET` (0x60): request a form factor at runtime.
+pub const CALL_PLATFORM_MODE_SET: u64 = 0x60;
+/// `DISPLAY_ACQUIRE` (0x61): claim the display for the caller's session.
+pub const CALL_DISPLAY_ACQUIRE: u64 = 0x61;
+/// `DISPLAY_RELEASE` (0x62): give ownership back.
+pub const CALL_DISPLAY_RELEASE: u64 = 0x62;
+/// `DISPLAY_OWNER` (0x63): who owns the display right now.
+pub const CALL_DISPLAY_OWNER: u64 = 0x63;
+/// `DISPLAY_SERVE` (0x64): become the display server, publishing a policy.
+pub const CALL_DISPLAY_SERVE: u64 = 0x64;
+/// `DISPLAY_ATTACH` (0x65): attach the caller's session as a client.
+pub const CALL_DISPLAY_ATTACH: u64 = 0x65;
+/// `DISPLAY_DETACH` (0x66): give the caller's client slot back.
+pub const CALL_DISPLAY_DETACH: u64 = 0x66;
+/// `DISPLAY_CLIENT` (0x67): a session's client grant, or zero.
+pub const CALL_DISPLAY_CLIENT: u64 = 0x67;
+/// `DISPLAY_STATUS` (0x68): the supervised display in one word.
+pub const CALL_DISPLAY_STATUS: u64 = 0x68;
+/// `DISPLAY_SURFACE` (0x69): claim the caller's own surface tile.
+pub const CALL_DISPLAY_SURFACE: u64 = 0x69;
+/// `DISPLAY_COMPOSE` (0x6a): server-side composition of every surface.
+pub const CALL_DISPLAY_COMPOSE: u64 = 0x6a;
+/// `DISPLAY_SPACES` (0x6b): the session -> address-space registry, as facts.
+pub const CALL_DISPLAY_SPACES: u64 = 0x6b;
+/// `DISPLAY_SURFACE_RELEASE` (0x6c): give a surface tile back, answering the
+/// display's packed window counts.
+pub const CALL_DISPLAY_SURFACE_RELEASE: u64 = 0x6c;
 
 /// The block data plane's largest single call: eight 2048-byte sectors.
 /// A span keeps one call from becoming an unbounded device loop while
@@ -549,6 +598,14 @@ pub fn attach_gate_session(sid: usize) {
 /// Returns how many capabilities were released, for the caller's record.
 pub fn abandon_gate_session() -> usize {
     let identity = crate::experimental::scheduler::session_identity();
+    // Display state FIRST, and through the same release path CAP_EXIT uses: a
+    // task that dies holding a surface tile must give its window back here,
+    // in this space -- the only one that maps it -- or the tile outlives the
+    // session that could have freed it. (Order matches CAP_EXIT: the tile's
+    // capability is closed by `release_tile`, then the rest of the table.)
+    if let Some(tile) = crate::display::release_on_withdrawal(identity as u64) {
+        let _ = release_tile(identity as u64, tile);
+    }
     let released = crate::experimental::caps::release_holder_caps(identity);
     let _ = crate::experimental::scheduler::withdraw_session();
     released
@@ -571,6 +628,9 @@ static CPL3_CALLS: AtomicU32 = AtomicU32::new(0);
 /// static written by whichever process spoke last would make the compare
 /// depend on scheduling order.)
 static SELF_TASK: AtomicU64 = AtomicU64::new(u64::MAX);
+/// The last identity a ring-3 caller read / set, for the proof's read-back.
+static RET_PLATFORM: AtomicI64 = AtomicI64::new(-1);
+static RET_PLATFORM_SET: AtomicI64 = AtomicI64::new(i64::MIN);
 /// CAP_EXIT's record of the LAST exit: the task that asked (it is gone by
 /// the time anyone reads this), the session identity it withdrew, and how
 /// many region capabilities it gave back. Read by the proof's read-back,
@@ -966,19 +1026,33 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     if !crate::memory::paging::user_range_ok(a0 + 2896, 40, false) {
         return EFAULT;
     }
-    let mut info = [0i64; 5];
-    for (i, slot) in info.iter_mut().enumerate() {
+    // `block_info`, not `info`: this function also builds the PLATFORM_INFO
+    // record into a local called `info` (BUF+11400) a few hundred lines
+    // below, and Rust's shadowing made the print at the end of this file
+    // report THAT array under the BLOCK-INFO label -- {identity 2, mode 1,
+    // 1024, 768, status 28} came out as "ack 0x2, sector-size 0x1,
+    // sectors 0x400, reserved 0x300, wrong-kind 0x1c". The check below was
+    // reading the right words the whole time, which is why the leg printed
+    // nonsense and still said "matches".
+    let mut block_info = [0i64; 5];
+    for (i, slot) in block_info.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a0 + 2896 + 8 * i as u64) as *const i64) };
     }
     let want_sector_size = crate::ata::boot_channel()
         .map(crate::ata::sector_size)
         .unwrap_or(0) as i64;
-    let info_ok = info[0] == 0
-        && info[1] == want_sector_size
+    // Named for its own leg on purpose: `info_ok` below is the PLATFORM
+    // info leg's result, and an earlier version of this file reused the same
+    // name -- which shadowed THIS one, so the block geometry claim never
+    // reached `ok` and its print reported the platform leg's verdict. A leg
+    // whose result nothing reads cannot fail, which is the worst kind of
+    // green.
+    let block_info_ok = block_info[0] == 0
+        && block_info[1] == want_sector_size
         && want_sector_size != 0
-        && info[2] > 0
-        && info[3] == 0
-        && info[4] == EACCES;
+        && block_info[2] > 0
+        && block_info[3] == 0
+        && block_info[4] == EACCES;
     // The BLOCK-SPAN block (BUF+7040..+7088, six qwords): the 4096-byte
     // two-sector read's byte count, a span whose SECOND sector is outside
     // the window refused EACCES as a whole, a zero-length span refused
@@ -1126,11 +1200,11 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         }
     }
     unsafe { crate::svc84_proof::select_peer_space() };
-    if !crate::memory::paging::user_range_ok(a1, 240, false) {
+    if !crate::memory::paging::user_range_ok(a1, 384, false) {
         unsafe { crate::svc84_proof::select_proof_space() };
         return EFAULT;
     }
-    let mut peer = [0i64; 30];
+    let mut peer = [0i64; 48];
     for (i, slot) in peer.iter_mut().enumerate() {
         *slot = unsafe { core::ptr::read_unaligned((a1 + 8 * i as u64) as *const i64) };
     }
@@ -1516,7 +1590,12 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
                 && r.last_word8 == want_transfer_write as u64
                 && r.first_base == want_map_base as u64
                 && r.last_base == want_map_base3 as u64
-                && r.frames_in_use == r.frames_baseline
+                // The region legs' own frames must all come back. The baseline
+                // was taken before their pump, and the PEER's surface tile is
+                // alive across it by design, so the display's own holdings are
+                // named exactly rather than ignored.
+                && r.frames_in_use
+                    == r.frames_baseline + crate::experimental::region_window::surface_frames_held()
                 // The SENDER's side of the handover: its own request, the
                 // transfer's ack, its own close (accepted, and the region
                 // did NOT die -- the read below proves the mapping lived),
@@ -1589,7 +1668,33 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
             ),
             None => (0, 0, 0, 0, 0, 0, 0, false, false, 0, 0, false, false),
         };
-    let peer_ok = peer[0] == 0
+    // The peer's CLIENT half of the supervised display: its attach was
+    // clamped to the server's policy (IDENTITY only, mask 1 -- the high
+    // word is the slot the kernel chose, not a constant here), the
+    // identity change under that grant was allowed (or `-ENODEV` with no
+    // display bound), the form-factor request was refused by AUTHORITY
+    // before the device could be consulted, the self-query reported the
+    // same grant, detach freed it and the second attach got the same slot
+    // back with the same mask.
+    let peer_fb = crate::devices::framebuffer::bound_mode().is_some();
+    let peer_client_ok = peer[36] & 0xffff == crate::display::AUTH_IDENTITY as i64
+        && peer[37] == if peer_fb { 0 } else { ENODEV }
+        && peer[38] == EACCES
+        && peer[39] == peer[36]
+        && peer[40] == 0
+        && peer[41] == peer[36]
+        && peer[42] >= 0
+        // ...and its own SURFACE: the claim succeeded, and its three pixel
+        // rows were accepted (a client's pixels, in a client's slot).
+        && peer[43] == 0
+        && peer[44] != 0
+        && peer[45] == 4096
+        && peer[46]
+            == (crate::experimental::caps::rights::READ
+                | crate::experimental::caps::rights::WRITE
+                | crate::experimental::caps::rights::GRANT) as i64;
+    let peer_ok = peer_client_ok
+        && peer[0] == 0
         && peer[4] == want_shm_base
         && peer[5] == 4096
         && peer[6] == want_shm_offset8
@@ -1615,13 +1720,373 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         && two_ok
         && peer_ok
         && map_ok;
-    let ok = stored_ok
+    // ---- the platform + display rows ---------------------------------
+    // 0x5d GET, 0x5e SET, 0x5f INFO, 0x60 MODE_SET, 0x61/0x62/0x63
+    // ownership. The program RECORDS what it set and read; the live kernel
+    // state is checked at the END, after the owning session has exited --
+    // the identity and form factor are kernel state and outlive the
+    // process that chose them, while ownership does not outlive it.
+    let plat_range_ok = crate::memory::paging::user_range_ok(a0 + 11296, 56, false);
+    let plat = if plat_range_ok {
+        [
+            read_q(11296),
+            read_q(11304),
+            read_q(11312),
+            read_q(11320),
+            read_q(11328),
+            read_q(11336),
+            read_q(11344),
+        ]
+    } else {
+        [i64::MIN; 7]
+    };
+    let windows = crate::platform_mode::Platform::Windows.id() as i64;
+    let fb_bound = crate::devices::framebuffer::bound_mode().is_some();
+    // plat[0] is the identity the machine booted with (read by the
+    // program), plat[6] the read-back AFTER its restore: they must be the
+    // same value, and the SET/GET words around them must be the statuses
+    // the sequence promises. The live tie-in happens in the DISPLAY leg.
+    let platform_ok = plat_range_ok
+        && plat[3] == EINVAL
+        && plat[6] == plat[0]
+        && if fb_bound {
+            plat[0] == plat[6]
+                && plat[1] == 0
+                && plat[2] == windows
+                && plat[4] == windows
+                && plat[5] == 0
+        } else {
+            plat[0] == plat[6]
+                && plat[1] == ENODEV
+                && plat[2] == plat[0]
+                && plat[4] == plat[0]
+                && plat[5] == ENODEV
+        };
+    crate::serial_println!(
+        "  service-0x84 proof: PLATFORM (get {:#x} , set windows {:#x} , get after {:#x} , bad set {:#x} , after refusal {:#x} , restore {:#x} , get restored {:#x}) , PLATFORM {}",
+        plat[0] as u64, plat[1] as u64, plat[2] as u64, plat[3] as u64,
+        plat[4] as u64, plat[5] as u64, plat[6] as u64,
+        if platform_ok { "matches" } else { "MISMATCH" }
+    );
+
+    // PLATFORM_INFO (0x5f): one record, six facts. The record was taken
+    // while the machine was in its BOOT posture, so the expected layout
+    // and accent are derived from the record's OWN identity/mode words --
+    // a record that merely echoed the request cannot satisfy that.
+    let info_range_ok = crate::memory::paging::user_range_ok(a0 + 11400, 48, false);
+    let info = if info_range_ok {
+        let mut words = [0u64; 6];
+        for (i, w) in words.iter_mut().enumerate() {
+            *w = unsafe {
+                core::ptr::read_unaligned((a0 + 11400 + 8 * i as u64) as *const u64)
+            };
+        }
+        words
+    } else {
+        [u64::MAX; 6]
+    };
+    let info_ack = read_q(11360);
+    let original_mode = info[1];
+    let info_ok = if let Some((w, h)) = crate::devices::framebuffer::bound_mode() {
+        let recorded_mode = crate::device_mode::DeviceMode::from_id(info[1]);
+        let recorded_platform = crate::platform_mode::Platform::from_id(info[0]);
+        match (recorded_mode, recorded_platform) {
+            (Some(mode), Some(platform)) => {
+                let layout = crate::device_mode::layout(mode, w, h);
+                info_ack == 0
+                    && info_range_ok
+                    && info[0] == plat[0] as u64
+                    && info[2] == w as u64
+                    && info[3] == h as u64
+                    && info[4] == layout.status as u64
+                    && info[5] == (platform.palette().accent & 0xff_ffff) as u64
+            }
+            _ => false,
+        }
+    } else {
+        info_ack == ENODEV
+    };
+    crate::serial_println!(
+        "  service-0x84 proof: PLATFORM-INFO (ack {:#x} , identity {:#x} , mode {:#x} , width {:#x} , height {:#x} , bar {:#x} , accent {:#x}) , PLATFORM-INFO {}",
+        info_ack as u64, info[0], info[1], info[2], info[3], info[4], info[5],
+        if info_ok { "matches" } else { "MISMATCH" }
+    );
+
+    // PLATFORM_MODE_SET (0x60): phone, read back, then the ORIGINAL form
+    // factor (read out of the first record, never assumed) and read back.
+    let mode_ack = read_q(11368);
+    let info2_ack = read_q(11376);
+    let restore_ack = read_q(11384);
+    let info3_ack = read_q(11392);
+    let mut info2 = [u64::MAX; 6];
+    let mut info3 = [u64::MAX; 6];
+    let mode_records_ok = crate::memory::paging::user_range_ok(a0 + 11456, 96, false);
+    if mode_records_ok {
+        for i in 0..6 {
+            info2[i] = unsafe { core::ptr::read_unaligned((a0 + 11456 + 8 * i as u64) as *const u64) };
+            info3[i] = unsafe { core::ptr::read_unaligned((a0 + 11512 + 8 * i as u64) as *const u64) };
+        }
+    }
+    let phone = crate::device_mode::DeviceMode::Phone;
+    let mode_ok = if let Some((w, h)) = crate::devices::framebuffer::bound_mode() {
+        let phone_layout = crate::device_mode::layout(phone, w, h);
+        let restored_mode = crate::device_mode::DeviceMode::from_id(original_mode);
+        mode_ack == 0
+            && mode_records_ok
+            && info2_ack == 0
+            && info2[0] == plat[0] as u64
+            && info2[1] == phone.id()
+            && info2[2] == w as u64
+            && info2[3] == h as u64
+            && info2[4] == phone_layout.status as u64
+            && restore_ack == 0
+            && info3_ack == 0
+            && match restored_mode {
+                Some(m) => {
+                    let back = crate::device_mode::layout(m, w, h);
+                    info3[1] == m.id() && info3[4] == back.status as u64
+                }
+                None => false,
+            }
+    } else {
+        mode_ack == ENODEV && restore_ack == ENODEV
+    };
+    crate::serial_println!(
+        "  service-0x84 proof: PLATFORM-MODE (set phone {:#x} , info2 ack {:#x} , mode {:#x} , bar {:#x} , restore {:#x} , info3 ack {:#x} , mode {:#x} , bar {:#x}) , PLATFORM-MODE {}",
+        mode_ack as u64, info2_ack as u64, info2[1], info2[4],
+        restore_ack as u64, info3_ack as u64, info3[1], info3[4],
+        if mode_ok { "matches" } else { "MISMATCH" }
+    );
+
+    // ---- the supervised display (0x64..0x68, beside 0x61/0x63) --------
+    // The first process SERVED the display before it ever parked, with a
+    // policy that grants clients the IDENTITY bit only. The peer attached
+    // under it (retrying -ENODEV until the server existed), was clamped to
+    // that bit, switched the identity -- and was refused the form factor.
+    // Those facts live in the peer's page and are checked in `peer_ok`.
+    //
+    // What is checked HERE is the server's side, at verdict time, after
+    // both processes are gone: the display could not be claimed
+    // exclusively while it was served (-EBUSY), the server reported zero
+    // clients before the peer attached and one while it was attached, its
+    // own authority covered the form factor no client could touch, and its
+    // withdrawal dissolved the server and detached the parked client. The
+    // identity and form factor it set are kernel state and stand.
+    let dl_range_ok = crate::memory::paging::user_range_ok(a0 + 11624, 216, false);
+    let (
+        serve_ack,
+        status_first,
+        owner_seen,
+        acquire_try,
+        client_self,
+        status_serving,
+        set_served,
+        mode_served,
+        release_try,
+        compose_ack,
+        spaces_word,
+        dl_info_ack,
+    ) = if dl_range_ok {
+        (
+            read_q(11624),
+            read_q(11632),
+            read_q(11640),
+            read_q(11648),
+            read_q(11656),
+            read_q(11664),
+            read_q(11672),
+            read_q(11680),
+            read_q(11744),
+            read_q(11752),
+            read_q(11760),
+            read_q(11736),
+        )
+    } else {
+        (
+            i64::MIN, i64::MIN, i64::MIN, i64::MIN, i64::MIN, i64::MIN, i64::MIN, i64::MIN,
+            i64::MIN, i64::MIN, i64::MIN, i64::MIN,
+        )
+    };
+    let mut dl_info = [u64::MAX; 6];
+    if dl_range_ok {
+        for i in 0..6 {
+            dl_info[i] = unsafe {
+                core::ptr::read_unaligned((a0 + 11688 + 8 * i as u64) as *const u64)
+            };
+        }
+    }
+    let session = crate::svc84_proof::FIRST_SESSION as u64;
+    // The proof registered BOTH sessions (the program's and the peer's), and
+    // the server's own registration is idempotent over the first, so at the
+    // moment the program asks, the registry holds two entries, the caller is
+    // one of them and its server is too. After the server's withdrawal the
+    // caller's row must be gone.
+    let spaces_expected = ((2u64 << 32) | 0b11) as i64;
+    // The SURFACE CHURN record: the server attached itself as a client, then
+    // opened and gave back a surface tile twelve times. What must hold is the
+    // PAIR of numbers, not just the count of successes: the windows ISSUED
+    // climbed by exactly one per opening while the windows LIVE came back to
+    // where they started, and the base the kernel handed out was the same one
+    // every time -- a slot returned, not a range consumed.
+    let churn = if dl_range_ok {
+        let mut words = [0u64; 10];
+        for (index, word) in words.iter_mut().enumerate() {
+            *word = unsafe {
+                core::ptr::read_unaligned((a0 + 11768 + 8 * index as u64) as *const u64)
+            };
+        }
+        words
+    } else {
+        [0u64; 10]
+    };
+    // Between the FIRST and the LAST release answer, eleven further windows
+    // were issued: twelve openings, the first of them already counted in the
+    // "before" number because that answer is the first release's. The LIVE
+    // number is the one that must not grow, and the base is the one that must
+    // come back.
+    // The BASE comparison is deliberately NOT part of the verdict: the peer's
+    // own surface may be given back somewhere inside the churn, which shifts
+    // which free slot the churn takes without saying anything about
+    // reclamation. The two numbers that cannot be explained away are the live
+    // count (flat) and the completed openings (twelve, against eight slots).
+    let churn_flat = churn[0] == 12
+        && churn[1] == churn[2]
+        && churn[3].wrapping_add(11) == churn[4]
+        && churn[7] > 0
+        && churn[8] == 0;
+    // "The surface table is empty" is only worth asserting together with the
+    // table's other number: the issue count the program saw at its LAST
+    // release is the kernel's own count, and nothing opens a surface after the
+    // churn, so a table that was never armed (or never handed out a window)
+    // cannot satisfy this by having nothing to report. Empty, and empty after
+    // at least a churn's worth of windows was genuinely issued and returned.
+    let surfaces_returned = churn_flat
+        && crate::experimental::region_window::surface_in_use() == 0
+        && crate::experimental::region_window::surface_issued() == churn[4]
+        && churn[4] >= 12;
+    let caller_unregistered =
+        crate::experimental::space_registry::pml4_of(session).is_none();
+    // STATUS packs `server << 32 | clients << 16 | caller grant`; a server
+    // reports the full mask for itself.
+    let status_word = |clients: u64| -> i64 {
+        ((session << 32) | ((clients & 0xffff) << 16) | crate::display::AUTH_ALL) as i64
+    };
+    let live_identity = crate::platform_mode::current();
+    let live_mode = crate::device_mode::current();
+    let owner_now = crate::display::owner();
+    let server_now = crate::display::server();
+    let clients_now = crate::display::client_count();
+    let surfaces_now = crate::display::surface_count();
+    // The tile the client filled through DISPLAY_SURFACE_PIXEL, as the
+    // DISPLAY now holds it. The origin is the kernel's own placement rule,
+    // computed at the mode the composition ran in, and the three probes are
+    // the three words the client wrote -- one of them not at the origin.
+    let (tile_x, tile_y) = match crate::devices::framebuffer::bound_mode() {
+        Some((w, h)) => crate::display::surface_origin(
+            0,
+            w,
+            h,
+            crate::device_mode::layout(phone, w, h).status as u32,
+        ),
+        None => (0, 0),
+    };
+    let tile_pixels = (
+        crate::devices::framebuffer::kernel_read_pixel(tile_x, tile_y),
+        crate::devices::framebuffer::kernel_read_pixel(tile_x + 1, tile_y),
+        crate::devices::framebuffer::kernel_read_pixel(tile_x + 3, tile_y + 2),
+    );
+    let display_ok = match crate::devices::framebuffer::bound_mode() {
+        Some((w, h)) => {
+            let phone_layout = crate::device_mode::layout(phone, w, h);
+            dl_range_ok
+                && serve_ack == crate::display::AUTH_IDENTITY as i64
+                && status_first == status_word(0)
+                && owner_seen == 0
+                && acquire_try == crate::display::EBUSY
+                && client_self == 0
+                && status_serving == status_word(1)
+                && set_served == 0
+                && mode_served == 0
+                && release_try == crate::display::EACCES
+                && spaces_word == spaces_expected
+                && caller_unregistered
+                && surfaces_returned
+                && compose_ack == 1
+                && tile_pixels.0 == Some(0x0022_4466)
+                && tile_pixels.1 == Some(0x0033_5577)
+                && tile_pixels.2 == Some(0x00ab_cdef)
+                && surfaces_now == 0
+                && dl_info_ack == 0
+                && dl_info[0] == windows as u64
+                && dl_info[1] == phone.id()
+                && dl_info[2] == w as u64
+                && dl_info[3] == h as u64
+                && dl_info[4] == phone_layout.status as u64
+                && server_now == 0
+                && clients_now == 0
+                && crate::display::policy() == 0
+                && owner_now == 0
+                && live_identity.id() as i64 == windows
+                && live_mode.id() == phone.id()
+        }
+        None => {
+            dl_range_ok
+                && serve_ack == crate::display::AUTH_IDENTITY as i64
+                && status_first == status_word(0)
+                && owner_seen == 0
+                && acquire_try == crate::display::EBUSY
+                && client_self == 0
+                && status_serving == status_word(1)
+                && set_served == ENODEV
+                && mode_served == ENODEV
+                && release_try == crate::display::EACCES
+                && spaces_word == spaces_expected
+                && caller_unregistered
+                && surfaces_returned
+                && compose_ack == ENODEV
+                && surfaces_now == 0
+                && dl_info_ack == ENODEV
+                && server_now == 0
+                && clients_now == 0
+                && crate::display::policy() == 0
+                && owner_now == 0
+                && live_identity.id() as i64 == plat[0]
+                && live_mode.id() == original_mode
+        }
+    };
+    crate::serial_println!(
+        "  service-0x84 proof: DISPLAY (serve {:#x} , status first {:#x} , owner {:#x} , acquire beside server {:#x} , self client {:#x} , status serving {:#x} , set {:#x} , mode {:#x} , release {:#x} , compose {:#x} , spaces {:#x} , churn {}/{}/{}..{} , churn fails {} refuse {:#x} , window live/issued {}/{} , tile {:#x}/{:#x}/{:#x} , info ack {:#x} , identity {:#x} , mode word {:#x} , server at verdict {:#x} , clients {:#x} , surfaces at verdict {:#x} , live identity {:#x} , live mode {:#x}) , DISPLAY {}",
+        serve_ack as u64, status_first as u64, owner_seen as u64, acquire_try as u64,
+        client_self as u64, status_serving as u64, set_served as u64, mode_served as u64,
+        release_try as u64, compose_ack as u64, spaces_word as u64,
+        churn[0], churn[1], churn[3], churn[4],
+        // A churn that stopped short names what stopped it: the loop's own
+        // failure count and the errno the refused row answered with, beside
+        // the display's OWN window counters -- so "zero openings" can be told
+        // apart from "openings that the program never counted".
+        churn[8],
+        churn[9],
+        crate::experimental::region_window::surface_in_use(),
+        crate::experimental::region_window::surface_issued(),
+        tile_pixels.0.unwrap_or(0) as u64, tile_pixels.1.unwrap_or(0) as u64,
+        tile_pixels.2.unwrap_or(0) as u64,
+        dl_info_ack as u64, dl_info[0], dl_info[1], server_now, clients_now, surfaces_now,
+        live_identity.id(), live_mode.id(),
+        if display_ok { "matches" } else { "MISMATCH" }
+    );
+
+    let ok = platform_ok
+        && info_ok
+        && mode_ok
+        && display_ok
+        && stored_ok
+        && stored_ok
         && wrote_ok
         && notify_ok
         && device_ok
         && data_ok
         && block_ok
-        && info_ok
+        && block_info_ok
         && span_ok
         && volume_ok
         && cache_ok
@@ -1681,12 +2146,12 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     );
     crate::serial_println!(
         "  service-0x84 proof: BLOCK-INFO (ack {:#x} , sector-size {:#x} , sectors {:#x} , reserved {:#x} , wrong-kind {:#x}) , BLOCK-INFO {}",
-        info[0] as u64,
-        info[1] as u64,
-        info[2] as u64,
-        info[3] as u64,
-        info[4] as u64,
-        if info_ok { "matches" } else { "MISMATCH" }
+        block_info[0] as u64,
+        block_info[1] as u64,
+        block_info[2] as u64,
+        block_info[3] as u64,
+        block_info[4] as u64,
+        if block_info_ok { "matches" } else { "MISMATCH" }
     );
     crate::serial_println!(
         "  service-0x84 proof: BLOCK-SPAN (ack {:#x} , past-window {:#x} , zero-len {:#x} , media {:#x} , write-window {:#x} , write-kind {:#x}) , BLOCK-SPAN {}",
@@ -2035,6 +2500,30 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             }
             me
         }
+        CALL_PLATFORM_GET => {
+            // The kernel's LIVE identity, never a canned answer: a session
+            // that switched identity moves this value with it.
+            let v = crate::platform_mode::current().id() as i64;
+            if from_ring3 {
+                RET_PLATFORM.store(v, Ordering::Relaxed);
+            }
+            v
+        }
+        CALL_PLATFORM_SET => serve_platform_set(a0, from_ring3),
+        CALL_PLATFORM_INFO => serve_platform_info(a0),
+        CALL_PLATFORM_MODE_SET => serve_platform_mode_set(a0, from_ring3),
+        CALL_DISPLAY_ACQUIRE => serve_display_acquire(from_ring3),
+        CALL_DISPLAY_RELEASE => serve_display_release(from_ring3),
+        CALL_DISPLAY_OWNER => crate::display::owner() as i64,
+        CALL_DISPLAY_SERVE => serve_display_serve(a0, from_ring3),
+        CALL_DISPLAY_ATTACH => serve_display_attach(a0, from_ring3),
+        CALL_DISPLAY_DETACH => serve_display_detach(from_ring3),
+        CALL_DISPLAY_CLIENT => serve_display_client(a0),
+        CALL_DISPLAY_STATUS => serve_display_status(),
+        CALL_DISPLAY_SURFACE => serve_display_surface(a1, from_ring3),
+        CALL_DISPLAY_COMPOSE => serve_display_compose(from_ring3),
+        CALL_DISPLAY_SPACES => serve_display_spaces(),
+        CALL_DISPLAY_SURFACE_RELEASE => serve_display_surface_release(from_ring3),
         CALL_IPC_SEND => {
             // Two dials, and the difference is a2:
             //
@@ -2625,6 +3114,20 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 return EPERM;
             }
             let identity = crate::experimental::scheduler::session_identity();
+            // A surface window is NOT a capability this machine frees: the
+            // display owns those frames, so the display's withdrawal HANDS
+            // BACK whatever tile this session still held and the same release
+            // path the 0x6c row uses frees it -- in THIS space, the only one
+            // that maps it. A server's clients' tiles are not handed back
+            // here: they stay parked under their own sessions, which give
+            // them back themselves (or on their own death). A session that
+            // never asked for a tile hands back nothing.
+            if let Some(tile) = crate::display::release_on_withdrawal(identity as u64) {
+                let _ = release_tile(identity as u64, tile);
+            }
+            // ...and its address space leaves with it: a stale row would
+            // name page tables that no longer exist.
+            let _ = crate::experimental::space_registry::unregister(identity as u64);
             // Capabilities first: the region counts must be consistent
             // BEFORE the identity record goes away, or a region would be
             // pinned alive by a holder that no longer exists.
@@ -2764,8 +3267,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             if from_ring3 && !crate::memory::paging::user_range_ok(a2, a_xfer as usize, true) {
                 return EFAULT;
             }
-            let size = 2048usize;
-            let sectors = ((a_xfer as usize) + size - 1) / size;
+            // The probe's OWN unit for turning a byte count into sectors,
+            // named apart from the drive's answer below. Both were called
+            // `size` and the second shadowed the first: harmless on an ATAPI
+            // CD (both 2048), a stack overread the day a drive answers more
+            // than the sector buffer holds.
+            let probe_sector = 2048usize;
+            let sectors = ((a_xfer as usize) + probe_sector - 1) / probe_sector;
             let identity = crate::experimental::scheduler::session_identity();
             // The SPAN is checked as a whole: every sector the call will
             // touch must be inside the window, not just the first one.
@@ -2778,7 +3286,7 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                 Ok(unit) => unit as usize,
                 Err(e) => return map_cap_error(e),
             };
-            let size = crate::ata::sector_size(channel) as usize;
+            let sector_bytes = crate::ata::sector_size(channel) as usize;
             let mut sector = [0u8; 2048];
             let mut done = 0usize;
             for i in 0..sectors {
@@ -2791,7 +3299,9 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
                     // a real I/O failure, distinct from "no device".
                     return EIO;
                 }
-                let n = (a_xfer as usize - done).min(size);
+                let n = (a_xfer as usize - done)
+                    .min(sector_bytes)
+                    .min(sector.len());
                 unsafe {
                     core::ptr::copy_nonoverlapping(sector.as_ptr(), (a2 as *mut u8).add(done), n);
                 }
@@ -3083,6 +3593,416 @@ extern "C" fn service_dispatch_c(
 /// user page and refuses a kernel one. The privilege transition itself is
 /// proven separately by `svc84_proof`, which runs a real ring-3 program
 /// (`userprog/prog_svc84.s`) and closes via `PROOF_DONE`.
+/// The `PLATFORM_SET` (0x5e) row, out of line for the same reason
+/// `serve_region_request` is: `dispatch`'s frame is shared by every arm,
+/// and repainting the display is a deep call chain (device chrome, the
+/// shell renderer, the skin). In its own frame it costs stack only when
+/// a caller actually asks for a switch.
+#[inline(never)]
+fn serve_platform_set(a0: u64, from_ring3: bool) -> i64 {
+    let Some(platform) = crate::platform_mode::Platform::from_id(a0) else {
+        return EINVAL; // no identity owns that number
+    };
+    if !caller_may_mutate_display(from_ring3, crate::display::AUTH_IDENTITY) {
+        return EACCES; // no identity authority for this session
+    }
+    match crate::platform_mode::switch_bound(platform) {
+        Ok(skin) => {
+            if from_ring3 {
+                RET_PLATFORM_SET.store(skin.platform.id() as i64, Ordering::Relaxed);
+            }
+            0
+        }
+        Err(e) => e,
+    }
+}
+
+/// The `PLATFORM_INFO` (0x5f) row: one validated write of a six-word
+/// record. Out of line for the same stack reason the other two rows are.
+fn serve_platform_info(a0: u64) -> i64 {
+    if !crate::memory::paging::user_range_ok(a0, 48, true) {
+        return EFAULT;
+    }
+    let Some((w, h)) = crate::devices::framebuffer::bound_mode() else {
+        return ENODEV;
+    };
+    let mode = crate::device_mode::current();
+    let layout = crate::device_mode::layout(mode, w, h);
+    let platform = crate::platform_mode::current();
+    let words: [u64; 6] = [
+        platform.id(),
+        mode.id(),
+        w as u64,
+        h as u64,
+        layout.status as u64,
+        (platform.palette().accent & 0xff_ffff) as u64,
+    ];
+    for (i, word) in words.iter().enumerate() {
+        unsafe { core::ptr::write_unaligned((a0 + 8 * i as u64) as *mut u64, *word) };
+    }
+    0
+}
+
+/// The `PLATFORM_MODE_SET` (0x60) row: validates the index, then hands
+/// the render+verify+publish path to `platform_mode`. Out of line for the
+/// same stack reason the other identity rows are.
+#[inline(never)]
+fn serve_platform_mode_set(a0: u64, from_ring3: bool) -> i64 {
+    let Some(mode) = crate::device_mode::DeviceMode::from_id(a0) else {
+        return EINVAL; // no form factor owns that number
+    };
+    if !caller_may_mutate_display(from_ring3, crate::display::AUTH_MODE) {
+        return EACCES; // no form-factor authority for this session
+    }
+    match crate::platform_mode::switch_mode_bound(mode) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+/// The display authority rule, as the mutating rows apply it. Ring 0 is
+/// the boot session -- the kernel is not a tenant of its own display --
+/// and a ring-3 caller is whatever session the kernel recorded for it,
+/// never a number it chose.
+fn caller_may_mutate_display(from_ring3: bool, bit: u64) -> bool {
+    if !from_ring3 {
+        return true;
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    crate::display::may_mutate_bit(session, bit)
+}
+
+/// `DISPLAY_ACQUIRE` (0x61): the owner is the CALLER's gate session.
+#[inline(never)]
+fn serve_display_acquire(from_ring3: bool) -> i64 {
+    if !from_ring3 {
+        return EPERM; // ring 0 owns the display by construction
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    match crate::display::acquire(session) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+/// `DISPLAY_RELEASE` (0x62): only the owner may clear its own claim.
+fn serve_display_release(from_ring3: bool) -> i64 {
+    if !from_ring3 {
+        return EPERM;
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    match crate::display::release(session) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+/// `DISPLAY_SERVE` (0x64): the serving session is the caller.
+fn serve_display_serve(policy: u64, from_ring3: bool) -> i64 {
+    if !from_ring3 {
+        return EPERM; // ring 0 supervises the boot display, not a server
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    match crate::display::serve(session, policy) {
+        Ok(granted) => {
+            // A serving session is a session whose ADDRESS SPACE the kernel
+            // must be able to name: client surfaces are mirrored into it so
+            // composition can read them. The space is the one it is running
+            // in right now, which is a fact the CPU's own CR3 carries.
+            match crate::experimental::space_registry::register_active(session) {
+                Ok(_) => granted as i64,
+                Err(e) => {
+                    // A server the kernel cannot locate cannot compose: undo
+                    // the claim rather than leave one that cannot work.
+                    let _ = crate::display::stop(session);
+                    e
+                }
+            }
+        }
+        Err(e) => e,
+    }
+}
+
+/// `DISPLAY_SPACES` (0x6b): three facts about the session -> space registry
+/// -- how many sessions are registered, whether the CALLER is one of them,
+/// and whether the display server is. The PML4 addresses themselves stay in
+/// the kernel: ring 3 gets the answer to "can a window be placed for me, and
+/// for my server", not a map of physical memory.
+fn serve_display_spaces() -> i64 {
+    use crate::experimental::space_registry;
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    let count = space_registry::count() as u64;
+    let caller = space_registry::pml4_of(session).is_some();
+    let server = crate::display::server() != crate::display::NO_SERVER
+        && space_registry::pml4_of(crate::display::server()).is_some();
+    ((count << 32) | ((server as u64) << 1) | caller as u64) as i64
+}
+
+/// `DISPLAY_ATTACH` (0x65): the client is the caller. The answer packs the
+/// slot (high 32) and the granted mask (low 32), so the caller learns both
+/// without a second call and without a user-memory record.
+fn serve_display_attach(wanted: u64, from_ring3: bool) -> i64 {
+    if !from_ring3 {
+        return EPERM;
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    match crate::display::attach(session, wanted) {
+        Ok((slot, grant)) => (((slot as u64) << 32) | (grant & 0xffff_ffff)) as i64,
+        Err(e) => e,
+    }
+}
+
+/// `DISPLAY_DETACH` (0x66): only the holder's own slot, by session.
+fn serve_display_detach(from_ring3: bool) -> i64 {
+    if !from_ring3 {
+        return EPERM;
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    match crate::display::detach(session) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+/// `DISPLAY_CLIENT` (0x67): a read-only query. a0 = session, `0` = caller.
+fn serve_display_client(a0: u64) -> i64 {
+    let session = if a0 == 0 {
+        crate::experimental::scheduler::session_identity() as u64
+    } else {
+        a0
+    };
+    match crate::display::client_grant(session) {
+        Some((slot, grant)) => (((slot as u64) << 32) | (grant & 0xffff_ffff)) as i64,
+        None => 0,
+    }
+}
+
+/// `DISPLAY_STATUS` (0x68): `server << 32 | clients << 16 | caller grant`.
+/// The grant word is the CALLER's: a server reports `3` for itself (it may
+/// mutate everything), a client reports its own mask, anyone else `0`.
+fn serve_display_status() -> i64 {
+    let server = crate::display::server();
+    let clients = crate::display::client_count() as u64;
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    let caller_grant = match crate::display::client_grant(session) {
+        Some((_, grant)) => grant,
+        None => {
+            if server != crate::display::NO_SERVER && server == session {
+                crate::display::AUTH_ALL
+            } else {
+                0
+            }
+        }
+    };
+    ((server << 32) | ((clients & 0xffff) << 16) | (caller_grant & 0xffff)) as i64
+}
+
+/// `DISPLAY_SURFACE` (0x69): a client gets a surface it can DRAW INTO.
+///
+/// The mapping is the release's own region-request path: one page, a
+/// window the kernel chooses, and a capability over it minted into the
+/// CALLER's table. `allocate_region_mapping` mirrors that mapping into the
+/// other proof address space over the same frames, which is the
+/// cross-address-space window the server composes through -- no CR3 switch
+/// and no copy. The record written to a1 carries the base and length (so
+/// the client needs no constant) and the handle (so it can close it).
+fn serve_display_surface(record: u64, from_ring3: bool) -> i64 {
+    if !from_ring3 {
+        return EPERM;
+    }
+    if !crate::memory::paging::user_range_ok(record, 32, true) {
+        return EFAULT;
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    // The slot must be the caller's, attached, and without a surface yet:
+    // refused BEFORE the request so a refusal never leaves a region behind.
+    if let Err(e) = crate::display::surface_free(session) {
+        return e;
+    }
+    // The window comes from the DISPLAY's own window table, not the
+    // capability machine's region windows: a surface is opened and given
+    // back for as long as a server runs, so it must spend a RECLAIMED
+    // budget (and, on the proof boot, must not take one of the monotonic
+    // slots the region verdict pins). The capability over it is minted on
+    // the mapping the kernel already made, so nothing in the capability
+    // machine owns these frames -- the display releases them.
+    let Some(geometry) = (unsafe { crate::experimental::region_window::map_surface(1) }) else {
+        return ENOMEM; // no window: a real refusal, with nothing mapped
+    };
+    let (region, handle) = match crate::experimental::caps::adopt_region_for(
+        session as usize,
+        geometry.base,
+        geometry.len,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            unsafe { crate::experimental::region_window::release_surface(geometry) };
+            return map_cap_error(e);
+        }
+    };
+    if let Err(e) = crate::display::surface_record(
+        session,
+        region,
+        handle,
+        geometry.base,
+        geometry.len,
+    ) {
+        // The slot changed under us: give the capability and the window back
+        // rather than record a surface nobody owns.
+        let _ = crate::experimental::caps::close_region_for(session as usize, handle);
+        unsafe { crate::experimental::region_window::release_surface(geometry) };
+        return e;
+    }
+    // The rights are read back from the capability itself, not assumed.
+    let held = match crate::experimental::caps::region_cap_for(session as usize, handle) {
+        Ok((_, held)) => held,
+        Err(e) => return map_cap_error(e),
+    };
+    let mut rec = [0u8; 32];
+    rec[0..8].copy_from_slice(&geometry.base.to_le_bytes());
+    rec[8..16].copy_from_slice(&geometry.len.to_le_bytes());
+    rec[16..24].copy_from_slice(&(held as u64).to_le_bytes());
+    rec[24..32].copy_from_slice(&(handle as u64).to_le_bytes());
+    unsafe {
+        core::ptr::copy_nonoverlapping(rec.as_ptr(), record as *mut u8, 32);
+    }
+    0
+}
+
+/// THE single release path for a surface tile: close the capability (best
+/// effort -- its record is the capability machine's business) and give the
+/// WINDOW back, which is the display's. Every path that takes a surface record
+/// ends here: the 0x6c row, a session's own withdrawal, and a faulted task's
+/// abandonment. Returns whether the capability was closed, for the caller's
+/// reporting; the window goes back either way, because the frames belong to
+/// the display and not to the capability that named them.
+fn release_tile(session: u64, tile: crate::display::SurfaceRecord) -> bool {
+    let closed = crate::experimental::caps::close_region_for(session as usize, tile.handle).is_ok();
+    unsafe {
+        crate::experimental::region_window::release_surface(crate::experimental::caps::Region {
+            base: tile.base,
+            len: tile.len,
+        })
+    };
+    closed
+}
+
+/// `DISPLAY_SURFACE_RELEASE` (0x6c): a client gives its surface tile back.
+/// The record goes first (so a second release is `-ENOENT` by name), then
+/// the capability, then the window itself: frames, mirror and slot return
+/// to the display's table, which is what lets a server open and close
+/// surfaces all boot without ever running out of windows. The answer packs
+/// the display's LIVE and ISSUED window counts, so the caller can see
+/// reclamation rather than take it on faith: `issued` climbs with every
+/// opening, `live` returns to where it started.
+fn serve_display_surface_release(from_ring3: bool) -> i64 {
+    if !from_ring3 {
+        return EPERM;
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    match release_surface_window(session) {
+        // The two counts the caller gets back are the display's, read after
+        // the window went: `live` where the table stands now, `issued` where
+        // it has got to. That pair is the whole evidence for reclamation.
+        Ok((live, issued)) => ((live << 32) | (issued & 0xffff_ffff)) as i64,
+        Err(e) => e,
+    }
+}
+
+/// THE release path for a surface tile -- one path, two callers: the 0x6c row
+/// and a session's own withdrawal. Splitting these was the bug worth avoiding:
+/// a row that frees a window one way and a teardown that frees it another is
+/// how a tile ends up unmapped but with its slot still spent, or freed twice.
+///
+/// The order is the record, the capability, the window. The record goes
+/// FIRST so a second release is refused `-ENOENT` by name; the capability
+/// next because its record is the capability machine's; then the window --
+/// frames, mirror and slot -- because those frames belong to the DISPLAY, not
+/// to the capability that named them, and they must go back even when the
+/// close found nothing left to do.
+///
+/// A session that never asked for a tile answers whatever
+/// `surface_take` answered (`-EACCES` for a non-client, `-ENOENT` for a
+/// client between tiles), which is why a withdrawal can ignore the result
+/// without pretending it released anything.
+///
+/// The window comes out of the display's OWN record, never out of a
+/// capability lookup: the tile has already been taken away by the time this
+/// runs, so a lookup that failed would leave the window mapped with nothing
+/// left in the kernel naming it. The capability is closed best-effort
+/// afterwards -- the frames are the display's, and they go back either way.
+fn release_surface_window(session: u64) -> Result<(u64, u64), i64> {
+    let tile = crate::display::surface_take(session)?;
+    if !release_tile(session, tile) {
+        return Err(crate::display::ENOENT);
+    }
+    Ok((
+        crate::experimental::region_window::surface_in_use(),
+        crate::experimental::region_window::surface_issued(),
+    ))
+}
+
+/// `DISPLAY_COMPOSE` (0x6b): the server blits every client surface onto the
+/// display, in slot order, and reads its own work back before answering
+/// with a count. A blit that did not land is `-EIO`, not a smaller number:
+/// composition that half-worked is a failure.
+fn serve_display_compose(from_ring3: bool) -> i64 {
+    if !from_ring3 {
+        return EPERM;
+    }
+    let session = crate::experimental::scheduler::session_identity() as u64;
+    if crate::display::server() != session {
+        return EACCES; // composition is the server's job, not a client's
+    }
+    let Some((width, height)) = crate::devices::framebuffer::bound_mode() else {
+        return ENODEV;
+    };
+    let mode = crate::device_mode::current();
+    let status = crate::device_mode::layout(mode, width, height).status as u32;
+    let tile = crate::display::SURFACE_TILE;
+    let mut composed = 0i64;
+    for slot in 0..crate::display::CLIENT_SLOTS {
+        let Some((base, len)) = crate::display::surface_geometry(slot) else {
+            continue; // this client has nothing to show
+        };
+        if len < (tile * tile * 4) as u64 {
+            return EIO; // a surface smaller than a tile is not one
+        }
+        // The client drew into THIS window; the region machine mirrored it
+        // into this address space over the same frames, so the server reads
+        // the client's pixels without a copy and without a CR3 switch.
+        let mut first = 0u32;
+        let mut last = 0u32;
+        let (x0, y0) = crate::display::surface_origin(slot, width, height, status);
+        for y in 0..tile {
+            for x in 0..tile {
+                let word = unsafe {
+                    core::ptr::read_volatile(
+                        (base + ((y * tile + x) * 4) as u64) as *const u32
+                    ) & 0x00ff_ffff
+                };
+                if x == 0 && y == 0 {
+                    first = word;
+                }
+                if x == tile - 1 && y == tile - 1 {
+                    last = word;
+                }
+                if !crate::devices::framebuffer::kernel_write_pixel(x0 + x, y0 + y, word) {
+                    return EIO;
+                }
+            }
+        }
+        let read_first = crate::devices::framebuffer::kernel_read_pixel(x0, y0);
+        let read_last =
+            crate::devices::framebuffer::kernel_read_pixel(x0 + tile - 1, y0 + tile - 1);
+        if read_first != Some(first) || read_last != Some(last) {
+            return EIO; // the pixels are not where the composition put them
+        }
+        composed += 1;
+    }
+    composed
+}
+
 pub fn self_test() -> bool {
     let gfx = dispatch(CALL_GFX_MODE, 0, 0, 0, 0, 0, 0);
     let gfx_ok = match crate::devices::framebuffer::bound_mode() {
@@ -3173,7 +4093,226 @@ pub fn self_test() -> bool {
         && dispatch(CALL_INPUT_POLL, u64::MAX, 0, 0, u64::MAX, 0, 0) == EBADF
         && dispatch(CALL_INPUT_POLL, 0, 0, 5, u64::MAX, 0, 0) == EINVAL;
 
-    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok && ipc_shape_ok && caps_rows_ok && input_row_ok;
+    // The identity rows: GET must answer the kernel's OWN live identity
+    // (not a constant), and an out-of-range SET must be refused by name
+    // with nothing repainted. A successful SET runs from ring 3 in the
+    // proof -- doing it here would repaint the boot screen for no reason.
+    let platform_get_ok =
+        dispatch(CALL_PLATFORM_GET, 0, 0, 0, 0, 0, 0) == crate::platform_mode::current().id() as i64;
+    let platform_set_refused = dispatch(CALL_PLATFORM_SET, 99, 0, 0, 0, 0, 0) == EINVAL
+        && dispatch(CALL_PLATFORM_SET, u64::MAX, 0, 0, 0, 0, 0) == EINVAL;
+    // PLATFORM_INFO's validator half: a kernel-stack record pointer and
+    // a null one must both be refused before anything is written. The
+    // served half is proven from ring 3 against the live identity.
+    let platform_info_refused =
+        dispatch(CALL_PLATFORM_INFO, scratch.as_mut_ptr() as u64, 0, 0, 0, 0, 0) == EFAULT
+            && dispatch(CALL_PLATFORM_INFO, 0, 0, 0, 0, 0, 0) == EFAULT;
+    // PLATFORM_MODE_SET's refusal half: an index no form factor owns is
+    // refused by name, before anything is re-rendered. A valid request
+    // repaints the display, so it is proven from ring 3 instead.
+    let platform_mode_refused = dispatch(CALL_PLATFORM_MODE_SET, 4, 0, 0, 0, 0, 0) == EINVAL
+        && dispatch(CALL_PLATFORM_MODE_SET, u64::MAX, 0, 0, 0, 0, 0) == EINVAL;
+    // The display authority rule on its REAL functions: acquisition from
+    // The display authority rule on its REAL functions. Ring 0 owns the
+    // boot display and can neither claim nor serve nor attach; a served
+    // display clamps every client to the server's policy; a client's
+    // withdrawal frees its slot and leaves the server standing; a server's
+    // withdrawal dissolves everything it supervised. No test-only path:
+    // these are the functions the gate calls.
+    use crate::display::{AUTH_ALL, AUTH_IDENTITY, AUTH_MODE};
+    let display_kernel_refused = dispatch(CALL_DISPLAY_ACQUIRE, 0, 0, 0, 0, 0, 0) == EPERM
+        && dispatch(CALL_DISPLAY_SERVE, AUTH_ALL, 0, 0, 0, 0, 0) == EPERM
+        && dispatch(CALL_DISPLAY_ATTACH, AUTH_ALL, 0, 0, 0, 0, 0) == EPERM
+        && dispatch(CALL_DISPLAY_DETACH, 0, 0, 0, 0, 0, 0) == EPERM;
+    let attach_without_server =
+        crate::display::attach(8, AUTH_ALL) == Err(crate::display::ENODEV);
+    let served = crate::display::serve(7, AUTH_IDENTITY).is_ok();
+    let serve_busy = crate::display::serve(8, AUTH_ALL) == Err(crate::display::EBUSY);
+    let serve_bad_policy = crate::display::serve(7, 0) == Err(crate::display::EINVAL)
+        && crate::display::serve(7, 1 << 7) == Err(crate::display::EINVAL);
+    let acquire_beside_server =
+        crate::display::acquire(9) == Err(crate::display::EBUSY);
+    let clamped = match crate::display::attach(8, AUTH_ALL) {
+        Ok((slot, grant)) => {
+            grant == AUTH_IDENTITY
+                && crate::display::client_count() == 1
+                && crate::display::client_grant(8) == Some((slot, AUTH_IDENTITY))
+        }
+        Err(_) => false,
+    };
+    let per_client_authority =
+        crate::display::may_mutate_bit(8, AUTH_IDENTITY)
+            && !crate::display::may_mutate_bit(8, AUTH_MODE)
+            && crate::display::may_mutate_bit(7, AUTH_MODE)
+            && !crate::display::may_mutate_bit(9, AUTH_IDENTITY);
+    let attach_twice = crate::display::attach(8, AUTH_ALL) == Err(crate::display::EBUSY);
+    let attach_bad_mask = crate::display::attach(9, 0) == Err(crate::display::EINVAL)
+        && crate::display::attach(9, 1 << 7) == Err(crate::display::EINVAL);
+    let detach_ok = crate::display::detach(8).is_ok()
+        && crate::display::detach(8) == Err(crate::display::EACCES);
+    // The server supervises the slot it just got back: detaching is not
+    // leaving, and the same session can be re-granted the same slot.
+    let no_grant = crate::display::attach(8, AUTH_MODE) == Err(crate::display::EACCES);
+    let slot_reused = no_grant
+        && matches!(crate::display::attach(8, AUTH_ALL), Ok((_, grant)) if grant == AUTH_IDENTITY);
+    // THE PERSISTENCE CLAIM, kernel-side: a CLIENT's withdrawal frees its
+    // slot and nothing else -- the server, its policy and its authority to
+    // change the display all survive the client that just died.
+    let _ = crate::display::release_on_withdrawal(8);
+    let server_outlives_client = crate::display::client_count() == 0
+        && crate::display::server() == 7
+        && crate::display::policy() == AUTH_IDENTITY
+        && crate::display::may_mutate_bit(7, AUTH_MODE)
+        && crate::display::may_mutate_bit(7, AUTH_IDENTITY);
+    // A SERVER's withdrawal dissolves the server and its clients, because
+    // an orphaned policy would refuse every session for the rest of boot.
+    let _ = crate::display::release_on_withdrawal(7);
+    let server_dissolved = crate::display::server() == 0
+        && crate::display::policy() == 0
+        && crate::display::client_count() == 0
+        && crate::display::attach(9, AUTH_ALL) == Err(crate::display::ENODEV)
+        && crate::display::may_mutate_bit(9, AUTH_IDENTITY);
+    // The exclusive form still works when nothing is served.
+    let exclusive =
+        crate::display::acquire(10).is_ok() && crate::display::release(10).is_ok();
+    // Client surfaces: ring 0 may not claim, write or compose; a session
+    // that is not a client has no surface; a client's tile is its own, is
+    // bounded, cannot be claimed twice, and goes away with the slot.
+    let surface_kernel_refused = dispatch(CALL_DISPLAY_SURFACE, 0, 0, 0, 0, 0, 0) == EPERM
+        && dispatch(CALL_DISPLAY_COMPOSE, 0, 0, 0, 0, 0, 0) == EPERM;
+    // The region itself belongs to the ring-3 proof (a request needs the
+    // gate's mapping source, which the ordinary boot does not install), so
+    // what the boot can prove is the SLOT bookkeeping the surface row is
+    // built on: a non-client has none, the record lands in the caller's
+    // own slot, a second ask is refused, and the slot frees the surface.
+    let surface_needs_client = crate::display::surface_free(9) == Err(crate::display::EACCES);
+    let surface_ok = crate::experimental::region_window::surface_in_use() == 0
+        && surface_kernel_refused
+        && surface_needs_client
+        && crate::display::serve(7, AUTH_ALL).is_ok()
+        && matches!(
+            crate::display::attach(8, AUTH_ALL),
+            Ok((_, grant)) if grant == AUTH_ALL
+        )
+        && match crate::display::surface_free(8) {
+            Ok(slot) => {
+                let recorded = crate::display::surface_record(8, 3, 7, 0x4000_2000_0000, 4096)
+                    .is_ok()
+                    && crate::display::surface_region(slot) == Some((3, 7))
+                    && crate::display::surface_geometry(slot)
+                        == Some((0x4000_2000_0000, 4096))
+                    // THE TEARDOWN CONTRACT: a client holding a tile cannot
+                    // detach -- it gives the tile back first -- because a
+                    // detach that dropped the record would leave the window
+                    // mapped with nothing naming it.
+                    && crate::display::detach(8) == Err(crate::display::EBUSY)
+                    // Still held: the slot keeps refusing a second ask, and
+                    // the record is counted, BEFORE the take below.
+                    && crate::display::surface_free(8) == Err(crate::display::EBUSY)
+                    && crate::display::surface_count() == 1
+                    && matches!(
+                        crate::display::surface_take(8),
+                        Ok(tile)
+                            if tile.base == 0x4000_2000_0000
+                                && tile.len == 4096
+                                && tile.region == 3
+                                && tile.handle == 7
+                    );
+                recorded
+                    && crate::display::detach(8).is_ok()
+                    && crate::display::surface_count() == 0
+            }
+            Err(_) => false,
+        };
+    // Dissolve the server again: a self-test must not leave the boot with a
+    // claimed display or a live tile.
+    let _ = crate::display::release_on_withdrawal(7);
+    // STOP PARKS, IT DOES NOT DROP. A server's death dissolves its clients, but
+    // their tiles are mapped in THEIR address spaces: a server's context cannot
+    // free one, so dropping the record here would leave a window mapped with
+    // nothing in the kernel naming it. `stop` therefore PARKS each held tile
+    // under its owner's session, and the owner can still take it afterwards --
+    // which is the only way it can ever be given back.
+    //
+    // The parked base is deliberately different from the tile above, so what
+    // comes back can only be the parked record's own geometry.
+    let stop_parked = crate::display::serve(7, AUTH_ALL).is_ok()
+        && matches!(
+            crate::display::attach(8, AUTH_ALL),
+            Ok((_, grant)) if grant == AUTH_ALL
+        )
+        && match crate::display::surface_free(8) {
+            Ok(slot) => {
+                let recorded = crate::display::surface_record(8, 5, 9, 0x4000_2000_1000, 4096)
+                    .is_ok()
+                    && crate::display::surface_geometry(slot) == Some((0x4000_2000_1000, 4096))
+                    // The server dies with the client still holding the tile.
+                    && crate::display::stop(7).is_ok()
+                    && crate::display::server() == 0
+                    && crate::display::client_count() == 0
+                    // PARKED, not dropped: the record and its WINDOW are still
+                    // the display's to account for.
+                    && crate::display::surface_count() == 1
+                    && crate::display::surface_geometry(slot) == Some((0x4000_2000_1000, 4096))
+                    // The owner takes it BY SESSION, with no client slot left
+                    // to resolve it through: this is the parked lookup.
+                    && matches!(
+                        crate::display::surface_take(8),
+                        Ok(tile)
+                            if tile.base == 0x4000_2000_1000
+                                && tile.len == 4096
+                                && tile.region == 5
+                                && tile.handle == 9
+                    )
+                    && crate::display::surface_count() == 0
+                    // Consumed, not merely hidden: a second take is refused by
+                    // name.
+                    && crate::display::surface_take(8) == Err(crate::display::ENOENT)
+                    // The client cannot detach any more -- its slot went with
+                    // the server it was attached to (`-EACCES`, not a silent
+                    // success). The tile-less detach itself is covered above,
+                    // where a client gives its tile back and then detaches.
+                    && crate::display::detach(8) == Err(crate::display::EACCES);
+                recorded
+            }
+            Err(_) => false,
+        };
+    let surface_cleared =
+        crate::display::server() == 0 && crate::display::surface_count() == 0;
+    // The session -> space registry: its own rules first, then the row that
+    // reports it. Ring 0 has no session identity, so the row answers "no
+    // caller registered, no server, zero entries" -- and the table must be
+    // empty again after the self-test, or every later boot would start with
+    // a space nobody owns.
+    let spaces_ok = crate::experimental::space_registry::self_test()
+        && crate::experimental::space_registry::count() == 0
+        && dispatch(CALL_DISPLAY_SPACES, 0, 0, 0, 0, 0, 0) == 0;
+    let display_ok = display_kernel_refused
+        && attach_without_server
+        && served
+        && serve_busy
+        && serve_bad_policy
+        && acquire_beside_server
+        && clamped
+        && per_client_authority
+        && attach_twice
+        && attach_bad_mask
+        && detach_ok
+        && slot_reused
+        && server_outlives_client
+        && server_dissolved
+        && exclusive
+        && surface_ok
+        && surface_cleared
+        && stop_parked
+        && spaces_ok;
+    let platform_ok = platform_get_ok
+        && platform_set_refused
+        && platform_info_refused
+        && platform_mode_refused
+        && display_ok;
+
+    let ok = gfx_ok && input_ok && refused && validator_ok && self_ok && ipc_shape_ok && caps_rows_ok && input_row_ok && platform_ok;
     crate::serial_println!(
         "  service-0x84: gfx/input calls -- GFX_MODE {}, INPUT_STATE {}, unported calls refused with -ENOSYS {}, pointer validator refuses a kernel address and null {}, process SELF names the running task {} , IPC shape claims refused by name {} , capability rows refused by name on an empty table {} , INPUT_POLL refused by name on an empty table {} ; gate installed at DPL3 -- {}",
         if gfx_ok { "OK" } else { "FAILED" },
@@ -3185,6 +4324,20 @@ pub fn self_test() -> bool {
         if caps_rows_ok { "OK" } else { "FAILED" },
         if input_row_ok { "OK" } else { "FAILED" },
         if ok { "OK" } else { "FAILED" }
+    );
+    crate::serial_println!(
+        "  service-0x84: identity rows -- PLATFORM_GET names the live identity {} ({}), an out-of-range PLATFORM_SET is refused -EINVAL {} ; a successful switch is proven from ring 3",
+        crate::platform_mode::current().as_str(),
+        if platform_get_ok { "OK" } else { "FAILED" },
+        if platform_set_refused { "OK" } else { "FAILED" }
+    );
+    crate::serial_println!(
+        "  service-0x84: identity rows -- PLATFORM_INFO refuses a kernel-stack and a null record pointer before writing {} (the served record is proven from ring 3)",
+        if platform_info_refused { "OK" } else { "FAILED" }
+    );
+    crate::serial_println!(
+        "  service-0x84: identity rows -- PLATFORM_MODE_SET refuses a form factor no index owns -EINVAL {} before re-rendering (a served request is proven from ring 3)",
+        if platform_mode_refused { "OK" } else { "FAILED" }
     );
     ok
 }
