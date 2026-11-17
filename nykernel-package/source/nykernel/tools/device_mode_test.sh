@@ -36,6 +36,15 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# The environment this gate assumes, named before it is assumed: a missing
+# qemu, a path too long for proot's monitor socket, or a clippy-less host now
+# fails HERE with a sentence instead of later with a 127 or a hang. --quiet
+# prints only the failures and warnings.
+if ! ./tools/gate_env.sh --quiet; then
+    echo "FAIL: the gate environment is not ready (the requirements above are missing)"
+    exit 1
+fi
+
 WORK=target/device-mode-test
 FAILS=0
 ok()  { echo "  OK: $*"; }

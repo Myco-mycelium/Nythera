@@ -823,7 +823,10 @@ jobs:
           # SHADOW_CHECK_REQUIRED: build.sh runs the shadowing gate inside
           # this one. A skip (clippy missing from the runner) must fail the
           # job rather than pass with the check never having looked.
-          SHADOW_CHECK_REQUIRED=1 ./tools/qemu_boot_test.sh > target/bios-gate.log 2>&1; S=$?
+          # run_gate wraps the gate: same exit status, plus a kept
+          # transcript and a JSON receipt (target/receipts/) that the
+          # next run can diff.
+          SHADOW_CHECK_REQUIRED=1 ./tools/run_gate.sh qemu_boot_test.sh > target/bios-gate.log 2>&1; S=$?
           set -e
           # ...and it must have RUN: the transcript owes the verdict line.
           if ! grep -q "shadow check: OK" target/bios-gate.log; then
@@ -836,6 +839,10 @@ jobs:
             . /etc/os-release
             echo "::error::BIOSgate env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1) / $(grub-mkrescue --version 2>&1 | head -1) / rustc $(rustc -vV | sed -n 's/^release: //p')"
             ./tools/ci_emit_annotations.sh target/bios-gate.log BIOSgate
+          fi
+          if [[ $S -eq 0 ]]; then
+            grep -q '"verdict": "PASS"' target/receipts/qemu_boot_test.json \
+              || { echo "::error::no PASS receipt at target/receipts/qemu_boot_test.json -- the gate's own verdict is missing"; exit 1; }
           fi
           exit $S
       - name: Device modes + driver autoload (real framebuffer, screendumps)
@@ -854,7 +861,10 @@ jobs:
           # SHADOW_CHECK_REQUIRED: build.sh runs the shadowing gate inside
           # this one. A skip (clippy missing from the runner) must fail the
           # job rather than pass with the check never having looked.
-          SHADOW_CHECK_REQUIRED=1 ./tools/device_mode_test.sh > target/device-mode.log 2>&1; S=$?
+          # run_gate wraps the gate: same exit status, plus a kept
+          # transcript and a JSON receipt (target/receipts/) that the
+          # next run can diff.
+          SHADOW_CHECK_REQUIRED=1 ./tools/run_gate.sh device_mode_test.sh > target/device-mode.log 2>&1; S=$?
           set -e
           # ...and it must have RUN: the transcript owes the verdict line.
           if ! grep -q "shadow check: OK" target/device-mode.log; then
@@ -866,7 +876,21 @@ jobs:
           if [[ $S -ne 0 ]]; then
             ./tools/ci_emit_annotations.sh target/device-mode.log DeviceMode
           fi
+          if [[ $S -eq 0 ]]; then
+            grep -q '"verdict": "PASS"' target/receipts/device_mode_test.json \
+              || { echo "::error::no PASS receipt at target/receipts/device_mode_test.json -- the gate's own verdict is missing"; exit 1; }
+          fi
           exit $S
+      - name: Gate receipts
+        # The diffable half of the gates: verdict, OK/FAIL line counts, the
+        # leg count and the pinned hashes, one JSON per gate. Kept even when a
+        # gate fails -- a failing receipt is the interesting one.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-receipts
+          path: target/receipts/
+          if-no-files-found: warn
       - name: Live ISO artifact (integrity, attribution, one headless boot)
         # dist/nyrqis-live.iso is a binary in the repository, so it needs a
         # gate that can tell the recorded artifact from a stale one: the

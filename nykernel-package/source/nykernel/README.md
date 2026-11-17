@@ -66,8 +66,8 @@ shims on `PATH`, so the boot gates run unchanged.
 a 108-byte unix socket (proot's monitor-socket trap), the QEMU/GRUB pair, the
 `/tmp/nybin` shims, clippy, and whether `/usr/bin/time` exists (on this image
 it does not) -- and names the broken assumption instead of leaving a 127 or a
-hang. It is the first thing to run when a gate behaves differently here than
-elsewhere.
+hang. All three boot gates run it first (`--quiet`), so a missing requirement
+fails at the top with a sentence rather than in the middle with a 127.
 
 `build.sh` runs two style gates on every build, so all four boot gates inherit
 them. Both skip cleanly when clippy is absent (install it with `rustup
@@ -113,6 +113,8 @@ cannot leave a smaller, quieter green.
 `target/receipts/`, writes a JSON receipt with the verdict, the OK/FAIL line
 counts, the leg count and the pinned hashes, and compares it with the previous
 run so a verdict that shrank is reported as drift instead of scrolling past.
+CI runs the BIOS and device gates through it, requires the receipt to say
+PASS when the gate does, and uploads `target/receipts/` as an artifact.
 The proof gate can also replay a saved transcript with no QEMU
 (`./tools/svc84_proof_test.sh --replay <log>`), which is what makes the
 meta-gate possible and what makes a verdict re-checkable in a second.

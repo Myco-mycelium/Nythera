@@ -86,6 +86,8 @@ command -v grub-mkrescue >/dev/null 2>&1 || { echo "FAIL: grub-mkrescue missing"
 # Everything that needs a machine lives here, so the verdict checks
 # below can also run against a saved transcript (see REPLAY above).
 run_boot() {
+    # Replay needs none of this; a real boot needs all of it, named.
+    ./tools/gate_env.sh --quiet || { echo "FAIL: the gate environment is not ready"; exit 1; }
 echo "==> building the kernel"
 if ! ./build.sh >"$WORK/build.log" 2>&1; then
     echo "FAIL: ./build.sh failed (see $WORK/build.log)"
