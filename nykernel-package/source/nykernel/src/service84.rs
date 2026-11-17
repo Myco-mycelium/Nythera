@@ -3337,9 +3337,13 @@ pub fn dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a_xfer: u64, a_rights: u64, 
             if crate::ata::is_atapi(channel) {
                 return EROFS;
             }
-            let size = crate::ata::sector_size(channel) as usize;
+            // Bounded by the BUFFER as well as by the request: `size` is
+            // what the DRIVE says its sector is, and the staging buffer is
+            // 2048 bytes fixed, so a device answering anything larger would
+            // have overrun it from caller-supplied bytes.
+            let sector_bytes = crate::ata::sector_size(channel) as usize;
             let mut sector = [0u8; 2048];
-            let n = (a_xfer as usize).min(size);
+            let n = (a_xfer as usize).min(sector_bytes).min(sector.len());
             unsafe {
                 core::ptr::copy_nonoverlapping(a2 as *const u8, sector.as_mut_ptr(), n);
             }
