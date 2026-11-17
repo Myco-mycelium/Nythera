@@ -331,8 +331,8 @@ else
     # so this assertion pins EVERY cell's errno, not just the row count. A
     # cell that starts being served instead of refused changes its byte and
     # fails here by name.
-    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0x6 , matched 0x6 , packed 0xfef3f7f7f7f2)"* ]]; then
-        ok "the refusal matrix refused every cell it pins from ring 3 with the typed errno the row's own rule names (0x42 misaligned non-user pointer -> EFAULT, 0x5a/0x5b/0x5c forged block handles -> EBADF, 0x66 detach with no slot -> EACCES, 0x6c release with no tile -> ENOENT)"
+    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0x7 , matched 0x7 , packed 0xeafef3f7f7f7f2)"* ]]; then
+        ok "the refusal matrix refused every cell it pins from ring 3 with the typed errno the row's own rule names (0x42 misaligned non-user pointer -> EFAULT, 0x5a/0x5b/0x5c forged block handles -> EBADF, 0x66 detach with no slot -> EACCES, 0x6c release with no tile -> ENOENT, 0x4f non-page-aligned length -> EINVAL)"
     else
         bad "the refusal matrix did not hold (see the REFUSAL-MATRIX line and any ROW line naming a mismatch)"
     fi

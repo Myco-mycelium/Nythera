@@ -13,7 +13,7 @@ against what that row's own documented rule says it should be.
 
 ## What is probed
 
-Six cells, in this order, all of them run from ring 3 at the end of
+Seven cells, in this order, all of them run from ring 3 at the end of
 `userprog/prog_svc84.s`, after the program has detached its own display slot
 and given back every surface tile it opened:
 
@@ -25,15 +25,16 @@ and given back every surface tile it opened:
 | 3 | `0x5b` | `CAP_BLOCK_WRITE` | `a0 = 31`: forged handle, buffer and length legal | `-EBADF` | `0xf7` |
 | 4 | `0x66` | `DISPLAY_DETACH` | nothing to detach: its slot is already back | `-EACCES` | `0xf3` |
 | 5 | `0x6c` | `DISPLAY_SURFACE_RELEASE` | no tile left: the churn gave them all back | `-ENOENT` | `0xfe` |
+| 6 | `0x4f` | `CAP_SHM_MAP` | `a0 = 100`: length in bytes, not a multiple of the page size | `-EINVAL` | `0xea` |
 
 The kernel packs those bytes into one word in cell order, low byte first, and
 prints it:
 
 ```
-service-0x84 proof: REFUSAL-MATRIX (rows 0x6 , matched 0x6 , packed 0xfef3f7f7f7f2) , REFUSAL-MATRIX matches
+service-0x84 proof: REFUSAL-MATRIX (rows 0x7 , matched 0x7 , packed 0xeafef3f7f7f7f2) , REFUSAL-MATRIX matches
 ```
 
-`0xfef3f7f7f7f2` is the whole matrix at a glance. A cell that starts being
+`0xeafef3f7f7f7f2` is the whole matrix at a glance. A cell that starts being
 served instead of refused changes its byte, the gate's exact-string assertion
 fails, and the kernel prints a `REFUSAL-MATRIX ROW 0x…` line naming the row, the
 bad argument and both values. Rows 4 and 5 are the reason the matrix is worth
@@ -67,10 +68,15 @@ above, so no slot or record overlaps a live result or the stack.
   8 bytes land at an odd address. The matrix cell pins the refusal that is real
   (`-EFAULT` for a non-user page) and this note records the other half, rather
   than blessing an expectation the kernel does not hold.
-- **`0x4f CAP_SHM_MAP` aligns rather than refuses** a non-page-aligned length.
-  Measured, not assumed — it is what broke the first attempt. Either the doc row
-  or the row itself is wrong about that; the matrix cannot hold a cell for it
-  until one of them changes.
+- **`0x4f CAP_SHM_MAP` refuses a non-page-aligned length with `-EINVAL`, and it
+  was the harness that was wrong about it.** The first attempt at this matrix
+  blamed that row for four red legs ("it aligns the length and maps"). Read
+  `serve_region_request`: `a0 % 4096` is checked before the mapping source is
+  asked, so nothing is allocated and no frame is consumed. The red legs were the
+  overlapping answer slots — rule 2, not the row. The cell was added once the
+  real cause was known, and the pack word (`0xea` in byte 6) plus the MAP leg's
+  frame accounting (`frames N == N`) now hold the row to both halves of that
+  claim: refuses the length, consumes nothing.
 
 ## Adding a cell
 
@@ -90,7 +96,7 @@ above, so no slot or record overlaps a live result or the stack.
 
 ## What is still not swept
 
-43 rows; 6 cells. The remaining rows are covered by the legs that exercise
+43 rows; 7 cells. The remaining rows are covered by the legs that exercise
 them, and those legs do assert refusals inline — forged handles (`-EBADF`),
 out-of-window or wrong-kind accesses (`-EACCES`), zero or oversized lengths
 (`-EINVAL`), unmapped releases (`-ENOENT`). What no leg does is sweep each row
@@ -98,9 +104,10 @@ with each class of malformed argument, which is what a full matrix would be:
 
 - `0x43 PROOF_DONE`, `0x4e CAP_EXIT`: never return to the caller, so a refusal
   cell does not exist for them in the same sense.
-- Rows that allocate, map, queue or write before they finish validating
-  (`0x4f`, the region rows, `0x45`/`0x46` under load): a probe for these needs
+- Rows that allocate, map, queue or write before they finish validating (the
+  region rows behind `0x4f`, `0x45`/`0x46` under load): a probe for these needs
   its own process, so that a mutation is contained by that process's exit
-  rather than by the proof continuing.
+  rather than by the proof continuing. `0x4f` itself is not one of them — its
+  shape is settled first, which is why it is a cell.
 - The rest: safe in principle, simply not written yet. Each one is a
   `RefusalRow` and about ten instructions of assembly.

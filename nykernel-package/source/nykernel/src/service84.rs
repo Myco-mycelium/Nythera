@@ -757,9 +757,14 @@ fn pack_gfx() -> i64 {
 //    allocates, maps, writes or queues before it discovers the argument is
 //    bad, the probe mutates live state and the other legs go red -- which is
 //    the row's real order of operations, not a false alarm. The first
-//    attempt included CAP_SHM_MAP (0x4f) with a non-page-aligned length.
-//    That row ALIGNS the length and maps; it does not refuse it. Frames were
-//    consumed and three unrelated legs failed.
+//    attempt at this matrix included CAP_SHM_MAP (0x4f) with a
+//    non-page-aligned length and went red in four unrelated legs, and the row
+//    was blamed for it -- "it aligns the length instead of refusing it". That
+//    was wrong. `serve_region_request` checks `a0 % 4096` and answers EINVAL
+//    BEFORE it asks the mapping source for a single frame; the red legs were
+//    the overlapping answer slots (rule 2). The blame cost a round trip and
+//    is why 0x4f is now the seventh cell rather than an exception: a row is
+//    not guilty of what the harness did to it.
 // 2. Answers live in their own page. REFUSAL_MATRIX_SLOT is 12288, the first
 //    byte of the FOURTH results page, which exists only because this table
 //    does (svc84_proof.rs maps four, not three). At 12160 the slots
@@ -791,7 +796,7 @@ pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
 /// The cells, in the order `prog_svc84.s` writes them. Every one of these
 /// rows settles its arguments before it touches anything, which is what lets
 /// the probes run inside a live proof.
-pub const REFUSAL_MATRIX: [RefusalRow; 6] = [
+pub const REFUSAL_MATRIX: [RefusalRow; 7] = [
     RefusalRow {
         call: CALL_GFX_MODE_INTO,
         want: EFAULT,
@@ -821,6 +826,11 @@ pub const REFUSAL_MATRIX: [RefusalRow; 6] = [
         call: CALL_DISPLAY_SURFACE_RELEASE,
         want: ENOENT,
         what: "DISPLAY_SURFACE_RELEASE with no tile to give back",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM_MAP,
+        want: EINVAL,
+        what: "CAP_SHM_MAP with a length that is not a multiple of the page size",
     },
 ];
 

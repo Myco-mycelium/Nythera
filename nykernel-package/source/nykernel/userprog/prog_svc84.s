@@ -1972,6 +1972,21 @@ _start:
     int $0x84
     mov %rax, 12328(%rbx)
 
+    /* Row 0x4f CAP_SHM_MAP, a0 = 100: a length in bytes that is NOT a
+       multiple of the page size, with a real 32-byte record pointer. The row
+       settles its shape before it asks the mapping source for anything, so
+       this cell must be EINVAL and must leave no frames behind -- which is
+       why it is safe HERE and why the matrix's first attempt was wrong to
+       blame this row for what the overlapping slots had done. */
+    mov $100, %rdi
+    lea 12416(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 12336(%rbx)
+
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi
     xor %rdx, %rdx
