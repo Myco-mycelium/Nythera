@@ -1987,6 +1987,89 @@ _start:
     int $0x84
     mov %rax, 12336(%rbx)
 
+    /* Row 0x59 CAP_BLOCK_READ, transfer length 0. The row's shape check
+       (`a_xfer == 0 || a_xfer > MAX_BLOCK_SPAN || a_rights != 0`) runs
+       before the handle is resolved and long before the drive is asked, so
+       a zero-length read is -EINVAL and reaches no sector. */
+    mov $1, %rdi
+    xor %rsi, %rsi
+    lea 12416(%rbx), %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 12344(%rbx)
+
+    /* Row 0x5b CAP_BLOCK_WRITE, transfer length 0. Same shape check, same
+       answer, and again before authority is resolved and long before any
+       sector is staged -- a zero-length write must never reach the media. */
+    mov $1, %rdi
+    xor %rsi, %rsi
+    lea 12416(%rbx), %rdx
+    xor %r10, %r10
+    xor %r8, %r8
+    mov $0x5b, %rax
+    int $0x84
+    mov %rax, 12352(%rbx)
+
+    /* Row 0x4f CAP_SHM_MAP, length 0. `a0 == 0` is part of the same shape
+       check as the alignment gate, so a zero-length request is -EINVAL and
+       asks the mapping source for nothing. */
+    xor %rdi, %rdi
+    lea 12416(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 12360(%rbx)
+
+    /* Row 0x4f CAP_SHM_MAP, record pointer 0x1001: misaligned AND not user-
+       accessible, with a legal length, so the refusal is the pointer. The
+       range check runs before `request_region_for`, so this cell proves the
+       row refuses a bad record without consuming a frame. (As with 0x42:
+       `user_range_ok` does not look at alignment, so the page is what makes
+       this a refusal -- svc84_refusals.md states that rather than implying
+       the row validates alignment.) */
+    mov $4096, %rdi
+    mov $0x1001, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 12368(%rbx)
+
+    /* Row 0x4c CAP_SHM (geometry), record pointer 0x1001: misaligned and not
+       user-accessible. This row validates the record BEFORE it resolves the
+       handle (a0 = 31 here is forged), so the cell pins the pointer's answer
+       and not the handle's -- the order is the point, and it is why the same
+       bad pointer would answer EBADF on a row that looked the handle up
+       first. */
+    mov $31, %rdi
+    mov $0x1001, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 12376(%rbx)
+
+    /* Row 0x5a CAP_BLOCK_INFO, record pointer 0x1001: misaligned and not
+       user-accessible, handle forged. This block row also validates the
+       record before it resolves the handle, so the cell pins EFAULT -- the
+       counterpart of the earlier 0x5a cell, which passes a REAL record and
+       gets EBADF from the handle. Two cells, one row, two names: that is the
+       difference a per-row matrix is for. */
+    mov $31, %rdi
+    mov $0x1001, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5a, %rax
+    int $0x84
+    mov %rax, 12384(%rbx)
+
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi
     xor %rdx, %rdx

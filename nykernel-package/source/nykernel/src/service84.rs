@@ -796,7 +796,7 @@ pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
 /// The cells, in the order `prog_svc84.s` writes them. Every one of these
 /// rows settles its arguments before it touches anything, which is what lets
 /// the probes run inside a live proof.
-pub const REFUSAL_MATRIX: [RefusalRow; 7] = [
+pub const REFUSAL_MATRIX: [RefusalRow; 13] = [
     RefusalRow {
         call: CALL_GFX_MODE_INTO,
         want: EFAULT,
@@ -831,6 +831,36 @@ pub const REFUSAL_MATRIX: [RefusalRow; 7] = [
         call: CALL_CAP_SHM_MAP,
         want: EINVAL,
         what: "CAP_SHM_MAP with a length that is not a multiple of the page size",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_READ,
+        want: EINVAL,
+        what: "CAP_BLOCK_READ with a zero transfer length",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_WRITE,
+        want: EINVAL,
+        what: "CAP_BLOCK_WRITE with a zero transfer length",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM_MAP,
+        want: EINVAL,
+        what: "CAP_SHM_MAP with a zero length",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM_MAP,
+        want: EFAULT,
+        what: "CAP_SHM_MAP with a misaligned, non-user record pointer",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM,
+        want: EFAULT,
+        what: "CAP_SHM with a misaligned, non-user record pointer",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_INFO,
+        want: EFAULT,
+        what: "CAP_BLOCK_INFO with a misaligned, non-user record pointer",
     },
 ];
 
@@ -2291,18 +2321,27 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     let matrix_range_ok =
         crate::memory::paging::user_range_ok(matrix_at, 8 * matrix_len, false);
     let mut matrix_matched = 0u64;
-    // The packing is the diagnostic: one word carrying every answer's low
-    // byte, so a single mismatched cell can be read off the serial log
-    // (`0xf2` = -14 EFAULT, `0xf7` = -9 EBADF, `0xf3` = -13 EACCES,
-    // `0xfe` = -2 ENOENT) without another boot.
-    let mut matrix_packed = 0u64;
+    // The packing is the diagnostic: each answer's low byte, eight per word,
+    // so a single mismatched cell can be read off the serial log (`0xf2` =
+    // -14 EFAULT, `0xf7` = -9 EBADF, `0xf3` = -13 EACCES, `0xfe` = -2 ENOENT,
+    // `0xea` = -22 EINVAL) without another boot. TWO words, because eight
+    // cells filled one: the ninth cell shifted a byte by 64 and panicked the
+    // kernel mid-verdict. The fix is the packing, not a cell limit -- a matrix
+    // that silently caps at eight rows is the blind spot this replaces.
+    let mut matrix_packed_lo = 0u64;
+    let mut matrix_packed_hi = 0u64;
     let mut matrix_ok = matrix_range_ok;
     if matrix_range_ok {
         for (index, row) in REFUSAL_MATRIX.iter().enumerate() {
             let got = unsafe {
                 core::ptr::read_unaligned((matrix_at + 8 * index as u64) as *const i64)
             };
-            matrix_packed |= ((got as u64) & 0xff) << (8 * index as u64);
+            let packed_byte = ((got as u64) & 0xff) << (8 * (index % 8) as u64);
+            if index < 8 {
+                matrix_packed_lo |= packed_byte;
+            } else {
+                matrix_packed_hi |= packed_byte;
+            }
             if got == row.want {
                 matrix_matched += 1;
             } else {
@@ -2325,10 +2364,11 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         );
     }
     crate::serial_println!(
-        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , packed {:#x}) , REFUSAL-MATRIX {}",
+        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , packed {:#x}/{:#x}) , REFUSAL-MATRIX {}",
         matrix_len as u64,
         matrix_matched,
-        matrix_packed,
+        matrix_packed_lo,
+        matrix_packed_hi,
         claim!(ok, matrix_ok)
     );
 
