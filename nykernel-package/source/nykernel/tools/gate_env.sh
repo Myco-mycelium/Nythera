@@ -66,7 +66,17 @@ need rustc
 need python3 "tools/check_svc84_ledger.py and tools/lint_ratchet.py need it"
 need qemu-system-x86_64 "all three boot gates need it"
 need grub-mkrescue "the gates build a bootable ISO with it"
-opt proot "rootless boot path only (tools/install_boot_tools.sh)"
+# proot is not on PATH by design: tools/install_boot_tools.sh puts it in its
+# own prefix and the /tmp/nybin shims exec it from there. Look in that prefix
+# before warning, so "proot missing" means missing rather than "not on PATH".
+TOOLS_PREFIX="${NYRQIS_BOOT_TOOLS:-$HOME/.cache/nyrqis-boot-tools}"
+if command -v proot >/dev/null 2>&1; then
+    ok "proot: $(command -v proot)"
+elif [[ -x "$TOOLS_PREFIX/proot" ]]; then
+    ok "proot: $TOOLS_PREFIX/proot (rootless boot tools prefix)"
+else
+    warn "proot is not on PATH and $TOOLS_PREFIX/proot is missing: rerun tools/install_boot_tools.sh for the rootless path"
+fi
 opt timeout "gates bound their QEMU wait with it"
 
 if cargo clippy --version >/dev/null 2>&1; then
