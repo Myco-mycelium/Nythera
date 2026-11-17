@@ -258,6 +258,27 @@ echo "==> building nykernel staticlib (${PROFILE})"
 # Harmless/no-op on those older toolchains under RUSTC_BOOTSTRAP=1.
 RUSTC_BOOTSTRAP=1 cargo build -Zjson-target-spec "${CARGO_FLAGS[@]}" "${FEATURES[@]}"
 
+# ---- the shadowing gate ------------------------------------------------
+# Runs on every build, before the link, because the bug it exists for was a
+# REPORTING bug: two locals named `info` (and two named `info_ok`) in the
+# 0x84 verdict made the block-device geometry leg print the PLATFORM_INFO
+# record under the BLOCK-INFO label and made the verdict chain read the
+# platform flag where the block leg's result belonged -- a failing claim
+# that could never fail. Clippy's shadow lints are `restriction` lints, so
+# they are OFF by default and clippy's silence never meant anything; this
+# step turns them on and fails the build on any shadowing the reviewed
+# baseline does not already account for (tools/shadow_baseline.txt).
+#
+# `tools/shadow_check.sh` exits 0 with a SKIPPED message when clippy is not
+# installed, so a rustc-only host still builds; SKIP_SHADOW_CHECK=1 skips it
+# deliberately (a tight edit/run loop, or a machine where clippy is slow).
+if [[ "${SKIP_SHADOW_CHECK:-0}" == "1" ]]; then
+    echo "==> shadowing check skipped (SKIP_SHADOW_CHECK=1)"
+else
+    echo "==> shadowing check (clippy shadow_unrelated/shadow_same vs tools/shadow_baseline.txt)"
+    ./tools/shadow_check.sh
+fi
+
 LIBDIR="target/x86_64-nyrqis-kernel/${PROFILE}"
 
 echo "==> linking kernel.elf"

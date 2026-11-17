@@ -36,9 +36,14 @@
 #
 # Clippy is a separate rustup component (`rustup component add clippy`). If
 # it is not installed this script says so and exits 0 -- the boot gates must
-# keep working on a machine that only has rustc. A CI job that wants the
-# check enforced should install clippy explicitly and treat the skip message
-# as a failure of its own setup, not of the tree.
+# keep working on a machine that only has rustc.
+#
+# WHERE IT RUNS
+#
+# `build.sh` calls it on every build (so all four boot gates inherit it),
+# and SKIP_SHADOW_CHECK=1 there opts out for one build. A CI job that wants
+# the check ENFORCED should install clippy explicitly and treat the skip
+# message as a failure of its own setup, not of the tree.
 
 set -uo pipefail
 

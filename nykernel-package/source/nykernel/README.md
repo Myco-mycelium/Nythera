@@ -60,12 +60,16 @@ and `qemu-system-x86_64`. On Ubuntu the last three are `apt` packages;
 
 Without root, `./tools/install_boot_tools.sh` installs QEMU, GRUB, xorriso
 and mtools into a user-space root (proot + an Ubuntu base rootfs) and puts
-shims on `PATH`, so the boot gates run unchanged. `./tools/shadow_check.sh`
-is the optional style gate: it runs clippy's `shadow_unrelated` /
-`shadow_same` lints (off by default) and fails on any shadowing beyond
+shims on `PATH`, so the boot gates run unchanged.
+
+`build.sh` also runs `./tools/shadow_check.sh` on every build, so all four
+boot gates inherit it: it turns on clippy's `shadow_unrelated` /
+`shadow_same` lints (off by default, so clippy's silence never meant
+anything) and fails the build on any shadowing beyond
 `tools/shadow_baseline.txt` -- the bug class that once let a failing
 block-device claim print another leg's record and still say `matches`.
-It skips cleanly when clippy is not installed.
+It skips cleanly when clippy is not installed, and `SKIP_SHADOW_CHECK=1`
+opts out for one build.
 
 ## What's proven, at a glance
 
