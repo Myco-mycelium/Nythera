@@ -157,9 +157,12 @@ fi
 # increment (ARGS, BLOCK, BLOCK-CACHE, BLOCK-INFO, BLOCK-ROOT, BLOCK-SCRATCH,
 # BLOCK-SPAN, BLOCK-VOLUME, CAP, DATA-PLANE, DEVICE, DISPLAY, ENOSYS, GFX,
 # INPUT, IPC, MAP, NOTIFY, PEER, PLATFORM, PLATFORM-INFO, PLATFORM-MODE,
-# REPLY, SELF, SHM, TWO-PROCESS). Raising it is part of adding a leg; a leg
-# that stops running without this number moving is the failure this catches.
-EXPECTED_LEGS="${SVC84_EXPECTED_LEGS:-26}"
+# REFUSAL-MATRIX, REPLY, SELF, SHM, TWO-PROCESS). Raising it is part of adding
+# a leg; a leg that stops running without this number moving is the failure
+# this catches. REFUSAL-MATRIX arrived with the per-row matrix (2026-11-17) and
+# grows by CELLS, not by legs: its row count is pinned separately below, so a
+# cell that silently stopped being probed is not hidden by a stable leg count.
+EXPECTED_LEGS="${SVC84_EXPECTED_LEGS:-27}"
 
 if grep -q "KERNEL PANIC" "$SERIAL"; then
     bad "the kernel panicked before the proof finished"
@@ -178,7 +181,7 @@ fi
 # them; every pattern below is a substring. The tail bound is generous on
 # purpose: a row that joins the surface must not push an earlier row's line
 # out of the window its assertion reads.
-VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK|PLATFORM|DISPLAY)" "$SERIAL" | tail -40 | tr '\n' ' ')"
+VERDICT="$(grep -E "service-0x84 proof: (a ring-3 program|BADGE/NOTIFY|DEVICE|DATA-PLANE|BLOCK|PLATFORM|DISPLAY|REFUSAL-MATRIX)" "$SERIAL" | tail -40 | tr '\n' ' ')"
 if [[ -z "$VERDICT" ]]; then
     bad "the ring-3 proof never reached its verdict line"
 else
@@ -321,6 +324,17 @@ else
         ok "a 4 KiB block span reached ring 3 in one call, a span crossing the window was refused EACCES, and a write through the block capability was refused by the read-only ATAPI media (EROFS) while a wrong-kind or out-of-window write was EACCES"
     else
         bad "the block-span / block-write leg's bytes or refusals failed their read-back"
+    fi
+    # The REFUSAL MATRIX: the cells the per-row table names, each one a call
+    # ring 3 makes with an argument the row must refuse. The packed word is
+    # the whole matrix at a glance -- one low byte per cell, in cell order --
+    # so this assertion pins EVERY cell's errno, not just the row count. A
+    # cell that starts being served instead of refused changes its byte and
+    # fails here by name.
+    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0x6 , matched 0x6 , packed 0xfef3f7f7f7f2)"* ]]; then
+        ok "the refusal matrix refused every cell it pins from ring 3 with the typed errno the row's own rule names (0x42 misaligned non-user pointer -> EFAULT, 0x5a/0x5b/0x5c forged block handles -> EBADF, 0x66 detach with no slot -> EACCES, 0x6c release with no tile -> ENOENT)"
+    else
+        bad "the refusal matrix did not hold (see the REFUSAL-MATRIX line and any ROW line naming a mismatch)"
     fi
     # The BLOCK-VOLUME leg: ring 3 parsed the ISO9660 primary volume
     # descriptor it read and handed the volume id back, and the kernel's

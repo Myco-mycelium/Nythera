@@ -743,6 +743,87 @@ fn pack_gfx() -> i64 {
 /// five-page task stack that calls another row from inside the gate cannot
 /// afford. Out of line, that cost is paid only by the one proof boot that
 /// asks for the verdict, and every other row's caller keeps the headroom.
+// ---- the REFUSAL MATRIX ---------------------------------------------------
+//
+// The proof's other legs prove rows by making them SUCCEED and reading the
+// answer back. That leaves a blind spot the README named: a row can answer
+// every well-formed call correctly and still mis-handle the malformed one.
+// This table is the other half -- one cell per row, each a call ring 3 makes
+// that the row MUST refuse, and the typed errno it must refuse with.
+//
+// Two rules decide what may go in here, both learned by breaking the proof:
+//
+// 1. A cell may only name rows that validate BEFORE they act. If the row
+//    allocates, maps, writes or queues before it discovers the argument is
+//    bad, the probe mutates live state and the other legs go red -- which is
+//    the row's real order of operations, not a false alarm. The first
+//    attempt included CAP_SHM_MAP (0x4f) with a non-page-aligned length.
+//    That row ALIGNS the length and maps; it does not refuse it. Frames were
+//    consumed and three unrelated legs failed.
+// 2. Answers live in their own page. REFUSAL_MATRIX_SLOT is 12288, the first
+//    byte of the FOURTH results page, which exists only because this table
+//    does (svc84_proof.rs maps four, not three). At 12160 the slots
+//    overlapped the ring-3 stack and the same three legs failed twice over.
+//
+// The errnos are compared as data: serve_proof_done reads each answer out of
+// user memory, compares it against the row's `want`, prints any cell that
+// disagrees BY NAME, and packs the low byte of every answer into one word so
+// a wrong cell is readable out of the serial log without a re-run.
+
+/// One cell of the refusal matrix: the call ring 3 made, the errno the row
+/// must answer with, and what was wrong with the arguments, for the line the
+/// verdict prints when the cell disagrees.
+pub struct RefusalRow {
+    /// The `int 0x84` call number (`CALL_*`).
+    pub call: u64,
+    /// The typed errno that call must be refused with.
+    pub want: i64,
+    /// The bad argument, printed by name when this cell disagrees.
+    pub what: &'static str,
+}
+
+/// First byte of the matrix's answers: the fourth results page. The program
+/// writes cell `i` here at `8 * i`; the kernel leg reads it back from the
+/// same slot, so a shrink of the mapping is a page fault rather than a
+/// silent overwrite of the leg above it.
+pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
+
+/// The cells, in the order `prog_svc84.s` writes them. Every one of these
+/// rows settles its arguments before it touches anything, which is what lets
+/// the probes run inside a live proof.
+pub const REFUSAL_MATRIX: [RefusalRow; 6] = [
+    RefusalRow {
+        call: CALL_GFX_MODE_INTO,
+        want: EFAULT,
+        what: "GFX_MODE_INTO with a misaligned, non-user pointer",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_INFO,
+        want: EBADF,
+        what: "CAP_BLOCK_INFO with a forged block handle",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_CACHE_STATS,
+        want: EBADF,
+        what: "CAP_BLOCK_CACHE_STATS with a forged block handle",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_WRITE,
+        want: EBADF,
+        what: "CAP_BLOCK_WRITE with a forged block handle",
+    },
+    RefusalRow {
+        call: CALL_DISPLAY_DETACH,
+        want: EACCES,
+        what: "DISPLAY_DETACH with no slot to give back",
+    },
+    RefusalRow {
+        call: CALL_DISPLAY_SURFACE_RELEASE,
+        want: ENOENT,
+        what: "DISPLAY_SURFACE_RELEASE with no tile to give back",
+    },
+];
+
 // ---- verdict provenance ---------------------------------------------------
 //
 // `verdict_word!` is the ONLY place the words "matches"/"MISMATCH" are
@@ -2190,6 +2271,57 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         span[5] as u64,
         claim!(ok, span_ok)
     );
+    // ---- the REFUSAL MATRIX ---------------------------------------------
+    // The answers the probes at the end of prog_svc84.s left in the fourth
+    // results page, compared against `REFUSAL_MATRIX` cell by cell. Reading
+    // them through the validator first means a page that was never mapped
+    // fails this leg by name instead of faulting the kernel mid-verdict.
+    let matrix_len = REFUSAL_MATRIX.len();
+    let matrix_at = a0 + REFUSAL_MATRIX_SLOT;
+    let matrix_range_ok =
+        crate::memory::paging::user_range_ok(matrix_at, 8 * matrix_len, false);
+    let mut matrix_matched = 0u64;
+    // The packing is the diagnostic: one word carrying every answer's low
+    // byte, so a single mismatched cell can be read off the serial log
+    // (`0xf2` = -14 EFAULT, `0xf7` = -9 EBADF, `0xf3` = -13 EACCES,
+    // `0xfe` = -2 ENOENT) without another boot.
+    let mut matrix_packed = 0u64;
+    let mut matrix_ok = matrix_range_ok;
+    if matrix_range_ok {
+        for (index, row) in REFUSAL_MATRIX.iter().enumerate() {
+            let got = unsafe {
+                core::ptr::read_unaligned((matrix_at + 8 * index as u64) as *const i64)
+            };
+            matrix_packed |= ((got as u64) & 0xff) << (8 * index as u64);
+            if got == row.want {
+                matrix_matched += 1;
+            } else {
+                // Named, not just counted: the row, the argument that was
+                // wrong, what came back and what the row's own rule says.
+                crate::serial_println!(
+                    "  service-0x84 proof: REFUSAL-MATRIX ROW {:#x} ({}) got {:#x} , want {:#x}",
+                    row.call,
+                    row.what,
+                    got as u64,
+                    row.want as u64
+                );
+            }
+        }
+        matrix_ok &= matrix_matched == matrix_len as u64;
+    } else {
+        crate::serial_println!(
+            "  service-0x84 proof: REFUSAL-MATRIX answers at {:#x} are not mapped",
+            matrix_at
+        );
+    }
+    crate::serial_println!(
+        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , packed {:#x}) , REFUSAL-MATRIX {}",
+        matrix_len as u64,
+        matrix_matched,
+        matrix_packed,
+        claim!(ok, matrix_ok)
+    );
+
     let mut id_end = own_id.len();
     while id_end > 0 && (own_id[id_end - 1] == b' ' || own_id[id_end - 1] == 0) {
         id_end -= 1;

@@ -1874,6 +1874,104 @@ _start:
     mov $0x66, %rax
     int $0x84
 
+    /* ---- THE REFUSAL MATRIX ------------------------------------------
+       One cell per call row, all of them AFTER the detachment above: every
+       probe here is a call the kernel must REFUSE, so the row has to have
+       its answer ready before it touches anything -- a probe that made the
+       row act first would mutate the state the other legs read back (the
+       first attempt at this matrix drove a block write into a live region
+       and took three unrelated legs down with it).
+
+       The answers live at BUF+12288 and up: a FOURTH results page, mapped
+       for exactly this. The first attempt used BUF+12160, still inside the
+       third page, and clobbered the ring-3 stack the probes were called
+       from. `REFUSAL_MATRIX` in src/service84.rs names the same slot and
+       the errno each cell must be; the kernel leg compares them and the
+       proof gate pins the packed word. */
+
+    /* Row 0x42 GFX_MODE_INTO, a0 = 0x1001: MISALIGNED and not user-
+       accessible. The row's validator runs before anything is written, so
+       this is a refusal that cannot disturb the results region. (Note what
+       this cell actually pins: `user_range_ok` walks mappings, not
+       alignment, so a misaligned MAPPED pointer is served -- the refusal
+       here is the unmapped page, and svc84_refusals.md says so.) */
+    mov $0x1001, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x42, %rax
+    int $0x84
+    mov %rax, 12288(%rbx)
+
+    /* Row 0x5a CAP_BLOCK_INFO, handle 31: FORGED. a1 names a real 24-byte
+       record inside the fourth page, so the refusal cannot be the pointer:
+       the handle is checked before the record is written, and the cell pins
+       the kind of that refusal (EBADF, a handle that names nothing). */
+    mov $31, %rdi
+    lea 12416(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5a, %rax
+    int $0x84
+    mov %rax, 12296(%rbx)
+
+    /* Row 0x5c CAP_BLOCK_CACHE_STATS, handle 31: FORGED, with a real
+       16-byte record in the fourth page. Same rule as 0x5a -- the handle
+       resolves before the record is written -- and the same errno. */
+    mov $31, %rdi
+    lea 12448(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5c, %rax
+    int $0x84
+    mov %rax, 12304(%rbx)
+
+    /* Row 0x5b CAP_BLOCK_WRITE, handle 31: FORGED, with a real 512-byte
+       buffer (in the fourth page) and a legal transfer length, so the only
+       thing wrong with this call is the handle. Authority is settled before
+       any sector is staged or written -- which is what makes this cell safe
+       to probe in a live proof. */
+    mov $31, %rdi
+    xor %rsi, %rsi
+    lea 12480(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x5b, %rax
+    int $0x84
+    mov %rax, 12312(%rbx)
+
+    /* Row 0x66 DISPLAY_DETACH, with NOTHING to detach: this runs after the
+       detachment above, so the caller's slot is already back and the row
+       has nothing of its own to free. A detach is the one matrix cell whose
+       "bad input" is the caller's own absent state rather than an argument,
+       so it is only a refusal HERE, after that detach -- run it before, and
+       it would free the slot the display legs are still reading. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x66, %rax
+    int $0x84
+    mov %rax, 12320(%rbx)
+
+    /* Row 0x6c DISPLAY_SURFACE_RELEASE, with no tile: the churn above gave
+       every tile it opened back, so the record the row looks for is gone.
+       The errno here is the record's absence (ENOENT), NOT the same answer
+       as the detach above -- which is exactly what a matrix is for: two
+       "nothing to give back" rows, two different names for it. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x6c, %rax
+    int $0x84
+    mov %rax, 12328(%rbx)
+
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi
     xor %rdx, %rdx

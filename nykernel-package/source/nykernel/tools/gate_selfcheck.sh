@@ -57,6 +57,7 @@ fi
 # name | sed expression applied to a copy | text the refusal must contain
 CASES=(
     "ring-3 caller evidence|s/CPL 3/CPL 0/|does not report CPL 3"
+    "refusal-matrix cell|s/packed 0xfef3f7f7f7f2/packed 0xfef3f7f7f7f9/|refusal matrix did not hold"
     "block-info geometry leg|s/BLOCK-INFO matches/BLOCK-INFO /|block-info leg"
     "supervised display leg|s/DISPLAY matches/DISPLAY /|supervised display"
     "kernel's own verdict|s/-- OK/-- FAILED/|reported the proof as FAILED"
@@ -88,10 +89,13 @@ done
 
 # The leg-count invariant cannot be exercised by editing the transcript (a
 # deleted leg also fails its own check), so move the EXPECTATION instead: if
-# raising it by one does not fail, the assertion is not live.
-echo "==> the leg-count invariant is live"
-if SVC84_EXPECTED_LEGS=27 "$GATE" --replay "$LOG" >"$TMP/legs.log" 2>&1; then
-    bad "expecting 27 legs still passed: the leg-count assertion is not reading anything"
+# raising it by one does not fail, the assertion is not live. The number is
+# READ from the gate rather than copied here -- a hard-coded one goes stale the
+# first time a leg is added, and then this case fails while the gate is right.
+BASE_LEGS="$(sed -n 's/.*SVC84_EXPECTED_LEGS:-\([0-9][0-9]*\).*/\1/p' "$GATE" | head -1)"
+echo "==> the leg-count invariant is live (gate expects ${BASE_LEGS:-?} legs)"
+if SVC84_EXPECTED_LEGS=$(( BASE_LEGS + 1 )) "$GATE" --replay "$LOG" >"$TMP/legs.log" 2>&1; then
+    bad "expecting one more leg than the transcript carries still passed: the leg-count assertion is not reading anything"
 elif grep -q "distinct proved leg" "$TMP/legs.log"; then
     ok "expecting one more leg than the transcript carries is refused"
 else

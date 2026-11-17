@@ -676,14 +676,22 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE
         | PageTableFlags::NO_EXECUTE;
-    // THREE pages: the multi-sector proof buffer (4 KiB at BUF+2944), the
+    // FOUR pages: the multi-sector proof buffer (4 KiB at BUF+2944), the
     // cache/scratch bookkeeping, and the ISO root directory ring 3 walks
-    // all run past a single page.
-    let buf_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_BUF), 3, flags);
+    // all run past a single page -- and the refusal matrix's answer slots
+    // at BUF+12288 need a fourth, because they are the one part of the
+    // results region written by a probe that runs AFTER the program's own
+    // results are in place. The first attempt at the matrix put those
+    // slots at BUF+12160, inside the third page, and four legs that read
+    // that page (GFX/INPUT readback, MAP, SPACES) went red at once: the
+    // top of that page is the ring-3 stack the program's own calls run on,
+    // so the probes were overwriting the frame they were called from. A
+    // page of their own makes the overlap impossible rather than unlikely.
+    let buf_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_BUF), 4, flags);
     let stack_mapped =
         paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_STACK), 1, flags);
     let shm_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_SHM), 1, flags);
-    assert_eq!(buf_mapped, 3, "svc84 proof: results pages not mapped");
+    assert_eq!(buf_mapped, 4, "svc84 proof: results pages not mapped");
     assert_eq!(stack_mapped, 1, "svc84 proof: stack page not mapped");
     assert_eq!(shm_mapped, 1, "svc84 proof: shared region not mapped");
     // The kernel's half of the shared region, written through the SAME
