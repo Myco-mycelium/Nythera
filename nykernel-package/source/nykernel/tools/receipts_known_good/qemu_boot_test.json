@@ -1,0 +1,13 @@
+{
+  "fail_lines": 0,
+  "gate": "qemu_boot_test.sh",
+  "hashes": [
+    "28472648",
+    "41254041"
+  ],
+  "note": "known-good reference for tools/run_gate.sh; refresh with gate_receipt.py promote, never by hand",
+  "ok_lines": 0,
+  "pass_lines": 2,
+  "recorded": "2026-11-17",
+  "verdict": "PASS"
+}

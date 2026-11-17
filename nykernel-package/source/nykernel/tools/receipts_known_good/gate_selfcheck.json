@@ -1,0 +1,8 @@
+{
+  "fail_lines": 0,
+  "gate": "gate_selfcheck.sh",
+  "note": "known-good reference for tools/run_gate.sh; refresh with gate_receipt.py promote, never by hand",
+  "ok_lines": 7,
+  "recorded": "2026-11-17",
+  "verdict": "PASS"
+}

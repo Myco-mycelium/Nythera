@@ -1,0 +1,15 @@
+{
+  "fail_lines": 0,
+  "gate": "device_mode_test.sh",
+  "hashes": [
+    "5200b869",
+    "bb26de9e",
+    "c1375776",
+    "e79fd6e9"
+  ],
+  "note": "known-good reference for tools/run_gate.sh; refresh with gate_receipt.py promote, never by hand",
+  "ok_lines": 15,
+  "pass_lines": 1,
+  "recorded": "2026-11-17",
+  "verdict": "PASS"
+}

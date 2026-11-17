@@ -110,11 +110,17 @@ also COUNTS the distinct legs in the verdict (26) so a leg that stops running
 cannot leave a smaller, quieter green.
 
 `./tools/run_gate.sh <gate>` wraps any gate: it keeps the transcript in
-`target/receipts/`, writes a JSON receipt with the verdict, the OK/FAIL line
-counts, the leg count and the pinned hashes, and compares it with the previous
-run so a verdict that shrank is reported as drift instead of scrolling past.
-CI runs the BIOS and device gates through it, requires the receipt to say
-PASS when the gate does, and uploads `target/receipts/` as an artifact.
+`target/receipts/`, writes a JSON receipt (verdict, OK/PASS/FAIL line counts,
+leg count, pinned hashes) and compares it with a reference, so a verdict that
+shrank is reported as drift instead of scrolling past. The reference is the
+previous run here if there is one, otherwise the committed known-good receipt
+in `tools/receipts_known_good/` -- which is why a fresh clone can diff its
+first run. With neither it prints `drift comparison SKIPPED` and the command
+that fixes that, rather than a reassuring nothing. `--record` promotes a
+passing run's receipt to the committed reference (refreshed deliberately, in a
+reviewable diff; growth in the counts is never drift, only shrinkage is). CI
+runs the BIOS and device gates through it, requires the receipt to say PASS
+when the gate does, and uploads `target/receipts/` as an artifact.
 The proof gate can also replay a saved transcript with no QEMU
 (`./tools/svc84_proof_test.sh --replay <log>`), which is what makes the
 meta-gate possible and what makes a verdict re-checkable in a second.

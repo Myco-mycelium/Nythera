@@ -1,0 +1,10 @@
+{
+  "fail_lines": 0,
+  "gate": "svc84_proof_test.sh",
+  "legs": 26,
+  "note": "known-good reference for tools/run_gate.sh; refresh with gate_receipt.py promote, never by hand",
+  "ok_lines": 35,
+  "pass_lines": 1,
+  "recorded": "2026-11-17",
+  "verdict": "PASS"
+}
