@@ -13,7 +13,7 @@ against what that row's own documented rule says it should be.
 
 ## What is probed
 
-Thirteen cells, in this order, all of them run from ring 3 at the end of
+Seventeen cells, in this order, all of them run from ring 3 at the end of
 `userprog/prog_svc84.s`, after the program has detached its own display slot
 and given back every surface tile it opened:
 
@@ -32,16 +32,19 @@ and given back every surface tile it opened:
 | 10 | `0x4f` | `CAP_SHM_MAP` | `a1 = 0x1001`: misaligned, non-user record pointer, legal length | `-EFAULT` | `0xf2` |
 | 11 | `0x4c` | `CAP_SHM` | `a1 = 0x1001`: misaligned, non-user record pointer, forged handle | `-EFAULT` | `0xf2` |
 | 12 | `0x5a` | `CAP_BLOCK_INFO` | `a1 = 0x1001`: misaligned, non-user record pointer, forged handle | `-EFAULT` | `0xf2` |
+| 13 | `0x59` | `CAP_BLOCK_READ` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
+| 14 | `0x5a` | `CAP_BLOCK_INFO` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
+| 15 | `0x5b` | `CAP_BLOCK_WRITE` | `a0 = 2^32`: handle above `u32::MAX`, rest of the call legal | `-EBADF` | `0xf7` |
+| 16 | `0x5c` | `CAP_BLOCK_CACHE_STATS` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
 
-The kernel packs those bytes, eight per word little-endian, and prints both
-words:
+The kernel packs those bytes, eight per word little-endian, and prints one word
+per eight cells:
 
 ```
-service-0x84 proof: REFUSAL-MATRIX (rows 0xd , matched 0xd , packed 0xeaeafef3f7f7f7f2/0xf2f2f2eaea) , REFUSAL-MATRIX matches
+service-0x84 proof: REFUSAL-MATRIX (rows 0x11 , matched 0x11 , packed 0xeaeafef3f7f7f7f2/0xf7f7f7f2f2f2eaea/0xf7) , REFUSAL-MATRIX matches
 ```
 
-That pair is the whole matrix at a glance: bytes 0–7 in the first word, 8–12 in
-the second. A cell that starts being served instead of refused changes its
+That triple is the whole matrix at a glance: cells 0–7, 8–15, 16–23. A cell that starts being served instead of refused changes its
 byte, the gate's exact-string assertion fails, and the kernel prints a
 `REFUSAL-MATRIX ROW 0x…` line naming the row, the bad argument and both values.
 
@@ -53,6 +56,7 @@ byte, the gate's exact-string assertion fails, and the kernel prints a
 | zero / illegal length | `0x59`, `0x5b`, `0x4f` (×2), `0x4f` (alignment) | the shape check is the first thing each row does; nothing is allocated or read |
 | misaligned, non-user pointer | `0x42`, `0x4f`, `0x4c`, `0x5a` | the range check runs before the mapping source, the handle lookup or the record write |
 | absent state | `0x66`, `0x6c` | no slot, no tile: two "nothing to give back" rows with two different names (`EACCES`, `ENOENT`) |
+| handle above `u32::MAX` | `0x59`, `0x5a`, `0x5b`, `0x5c` | the `EBADF` arm is each block row's FIRST check, before the record, the length or authority — a handle that cannot be named is never truncated into one that can |
 
 Cells 4 and 5 are why a matrix beats a checklist: swapping those two errnos
 would look right row by row and fail here. Cells 1 and 12 are the same row
@@ -76,7 +80,9 @@ first byte of a **fourth** `PROOF_BUF` page that exists only because the matrix
 does (`svc84_proof.rs` maps four pages, not three). The first attempt used
 12160, inside the third page; that is the ring-3 stack the probes are called
 from, and the same four legs failed a second time for a second reason. Probes
-write at `BUF+12288+8i` and keep argument buffers at `BUF+12416` and above.
+write at `BUF+12288+8i` and keep argument records at `BUF+12800` and above —
+the records lived at 12416 until the seventeenth cell's slot needed that byte,
+and they moved in the same change rather than sharing it.
 
 ## What this found
 
@@ -90,11 +96,16 @@ write at `BUF+12288+8i` and keep argument buffers at `BUF+12416` and above.
 - **`0x4f` refuses a non-page-aligned length with `-EINVAL`** (cell 6), and the
   earlier claim that it aligned the length was the matrix's own bug being
   blamed on a row.
-- **The pack word was a limit, not just a diagnostic.** The ninth cell shifted
-  a byte by 64 bits and the kernel panicked mid-verdict (`attempt to shift left
-  with overflow`, `service84.rs:2315`), taking every leg down with it. The pack
-  is now two words and the cell count is unbounded; a matrix that silently caps
-  at eight rows would be the blind spot it replaces wearing a new name.
+- **The pack word was a limit twice, and the second one was quiet.** The ninth
+  cell shifted a byte by 64 bits and panicked the kernel mid-verdict (`attempt
+  to shift left with overflow`, `service84.rs:2315`), taking every leg down;
+  the fix was a second word. Then the SEVENTEENTH cell wrapped `index % 8` back
+  onto the ninth's byte (`0xea | 0xf7` = `0xff`) — every cell still printed
+  `matched 0x11`, and only the gate's exact-string assertion on the packed
+  words caught it. The pack is now one word per eight cells (three at present),
+  named rather than indexed because the abort ratchet refuses `words[i]`, and
+  the lesson is in the gate: two independent projections of the same run, and
+  the one that disagrees is a bug in the projection *or* in the row.
 
 ## Adding a cell
 
@@ -116,7 +127,7 @@ write at `BUF+12288+8i` and keep argument buffers at `BUF+12416` and above.
 
 ## What is still not swept
 
-43 rows; 13 cells. The remaining rows are covered by the legs that exercise
+43 rows; 17 cells. The remaining rows are covered by the legs that exercise
 them, and those legs do assert refusals inline — forged handles (`-EBADF`),
 out-of-window or wrong-kind accesses (`-EACCES`), zero or oversized lengths
 (`-EINVAL`), unmapped releases (`-ENOENT`). What no leg does is sweep each row
@@ -131,7 +142,8 @@ with each class of malformed argument, which is what a full matrix would be:
   shape is settled first, which is why it has three cells.
 - Classes not yet probed anywhere, worth naming so they are not mistaken for
   coverage: a **write** to a read-only or kernel page (every row's `-EFAULT`
-  arm has a write side), a **handle above `u32::MAX`** (the `EBADF` arm each
-  block row starts with), and an **oversized** length past the row's own cap.
+  arm has a write side), an **oversized** length past the row's own cap, and
+  the `EBADF` arm of the non-block rows that start with one (`0x4c`, `0x4d`,
+  `0x50` and the badge rows take a handle too).
 - The rest: safe in principle, simply not written yet. Each one is a
   `RefusalRow` and about ten instructions of assembly.

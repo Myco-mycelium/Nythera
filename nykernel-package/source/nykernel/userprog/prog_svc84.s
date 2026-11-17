@@ -1909,7 +1909,7 @@ _start:
        the handle is checked before the record is written, and the cell pins
        the kind of that refusal (EBADF, a handle that names nothing). */
     mov $31, %rdi
-    lea 12416(%rbx), %rsi
+    lea 12800(%rbx), %rsi
     xor %rdx, %rdx
     movabs $-1, %r10
     xor %r8, %r8
@@ -1921,7 +1921,7 @@ _start:
        16-byte record in the fourth page. Same rule as 0x5a -- the handle
        resolves before the record is written -- and the same errno. */
     mov $31, %rdi
-    lea 12448(%rbx), %rsi
+    lea 12832(%rbx), %rsi
     xor %rdx, %rdx
     movabs $-1, %r10
     xor %r8, %r8
@@ -1936,7 +1936,7 @@ _start:
        to probe in a live proof. */
     mov $31, %rdi
     xor %rsi, %rsi
-    lea 12480(%rbx), %rdx
+    lea 12928(%rbx), %rdx
     mov $512, %r10
     xor %r8, %r8
     mov $0x5b, %rax
@@ -1979,7 +1979,7 @@ _start:
        why it is safe HERE and why the matrix's first attempt was wrong to
        blame this row for what the overlapping slots had done. */
     mov $100, %rdi
-    lea 12416(%rbx), %rsi
+    lea 12800(%rbx), %rsi
     xor %rdx, %rdx
     movabs $-1, %r10
     xor %r8, %r8
@@ -1993,7 +1993,7 @@ _start:
        a zero-length read is -EINVAL and reaches no sector. */
     mov $1, %rdi
     xor %rsi, %rsi
-    lea 12416(%rbx), %rdx
+    lea 12800(%rbx), %rdx
     xor %r10, %r10
     xor %r8, %r8
     mov $0x59, %rax
@@ -2005,7 +2005,7 @@ _start:
        sector is staged -- a zero-length write must never reach the media. */
     mov $1, %rdi
     xor %rsi, %rsi
-    lea 12416(%rbx), %rdx
+    lea 12800(%rbx), %rdx
     xor %r10, %r10
     xor %r8, %r8
     mov $0x5b, %rax
@@ -2016,7 +2016,7 @@ _start:
        check as the alignment gate, so a zero-length request is -EINVAL and
        asks the mapping source for nothing. */
     xor %rdi, %rdi
-    lea 12416(%rbx), %rsi
+    lea 12800(%rbx), %rsi
     xor %rdx, %rdx
     movabs $-1, %r10
     xor %r8, %r8
@@ -2069,6 +2069,59 @@ _start:
     mov $0x5a, %rax
     int $0x84
     mov %rax, 12384(%rbx)
+
+    /* Row 0x59 CAP_BLOCK_READ, handle 2^32: ABOVE the u32 handle space.
+       Every block row's FIRST check is this EBADF arm -- a handle that cannot
+       name a capability is refused before the record pointer, before the
+       transfer length, before authority -- and until now no cell probed it.
+       The rest of the call is well-formed on purpose: only the handle is
+       wrong, so the answer cannot be explained by anything else. */
+    movabs $0x100000000, %rdi
+    xor %rsi, %rsi
+    lea 12928(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 12392(%rbx)
+
+    /* Row 0x5a CAP_BLOCK_INFO, handle 2^32. Same arm, same answer: the row
+       would rather refuse a handle it cannot even name than let it reach the
+       capability table as a wrapped u32. */
+    movabs $0x100000000, %rdi
+    lea 12800(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5a, %rax
+    int $0x84
+    mov %rax, 12400(%rbx)
+
+    /* Row 0x5b CAP_BLOCK_WRITE, handle 2^32, with a legal LBA, a real buffer
+       and a legal length: the handle is the ONLY malformed argument, so an
+       answer other than EBADF would name the wrong arm. */
+    movabs $0x100000000, %rdi
+    xor %rsi, %rsi
+    lea 12928(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x5b, %rax
+    int $0x84
+    mov %rax, 12408(%rbx)
+
+    /* Row 0x5c CAP_BLOCK_CACHE_STATS, handle 2^32 -- the fourth and last
+       block row whose first check is this arm. The answer slot lands on
+       BUF+12416, which used to be where the argument records lived: they
+       moved to BUF+12800 in the same change, so a slot never shares a byte
+       with a probe's own scratch. */
+    movabs $0x100000000, %rdi
+    lea 12832(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5c, %rax
+    int $0x84
+    mov %rax, 12416(%rbx)
 
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi

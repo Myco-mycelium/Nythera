@@ -331,8 +331,8 @@ else
     # so this assertion pins EVERY cell's errno, not just the row count. A
     # cell that starts being served instead of refused changes its byte and
     # fails here by name.
-    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0xd , matched 0xd , packed 0xeaeafef3f7f7f7f2/0xf2f2f2eaea)"* ]]; then
-        ok "the refusal matrix refused every cell it pins from ring 3 with the typed errno the row's own rule names (0x42 misaligned non-user pointer -> EFAULT, 0x5a/0x5b/0x5c forged block handles -> EBADF, 0x66 detach with no slot -> EACCES, 0x6c release with no tile -> ENOENT, 0x4f non-page-aligned length -> EINVAL, 0x59 zero-length read and 0x5b zero-length write -> EINVAL, 0x4f zero length -> EINVAL, 0x4f misaligned non-user record -> EFAULT, 0x4c and 0x5a misaligned non-user records -> EFAULT)"
+    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0x11 , matched 0x11 , packed 0xeaeafef3f7f7f7f2/0xf7f7f7f2f2f2eaea/0xf7)"* ]]; then
+        ok "the refusal matrix refused every cell it pins from ring 3 with the typed errno the row's own rule names (0x42 misaligned non-user pointer -> EFAULT, 0x5a/0x5b/0x5c forged block handles -> EBADF, 0x66 detach with no slot -> EACCES, 0x6c release with no tile -> ENOENT, 0x4f non-page-aligned length -> EINVAL, 0x59 zero-length read and 0x5b zero-length write -> EINVAL, 0x4f zero length -> EINVAL, 0x4f misaligned non-user record -> EFAULT, 0x4c and 0x5a misaligned non-user records -> EFAULT, 0x59, 0x5a, 0x5b and 0x5c handles above u32::MAX -> EBADF)"
     else
         bad "the refusal matrix did not hold (see the REFUSAL-MATRIX line and any ROW line naming a mismatch)"
     fi

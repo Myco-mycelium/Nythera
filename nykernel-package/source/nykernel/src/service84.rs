@@ -796,7 +796,7 @@ pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
 /// The cells, in the order `prog_svc84.s` writes them. Every one of these
 /// rows settles its arguments before it touches anything, which is what lets
 /// the probes run inside a live proof.
-pub const REFUSAL_MATRIX: [RefusalRow; 13] = [
+pub const REFUSAL_MATRIX: [RefusalRow; 17] = [
     RefusalRow {
         call: CALL_GFX_MODE_INTO,
         want: EFAULT,
@@ -861,6 +861,26 @@ pub const REFUSAL_MATRIX: [RefusalRow; 13] = [
         call: CALL_CAP_BLOCK_INFO,
         want: EFAULT,
         what: "CAP_BLOCK_INFO with a misaligned, non-user record pointer",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_READ,
+        want: EBADF,
+        what: "CAP_BLOCK_READ with a handle above u32::MAX",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_INFO,
+        want: EBADF,
+        what: "CAP_BLOCK_INFO with a handle above u32::MAX",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_WRITE,
+        want: EBADF,
+        what: "CAP_BLOCK_WRITE with a handle above u32::MAX",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_CACHE_STATS,
+        want: EBADF,
+        what: "CAP_BLOCK_CACHE_STATS with a handle above u32::MAX",
     },
 ];
 
@@ -2324,12 +2344,18 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // The packing is the diagnostic: each answer's low byte, eight per word,
     // so a single mismatched cell can be read off the serial log (`0xf2` =
     // -14 EFAULT, `0xf7` = -9 EBADF, `0xf3` = -13 EACCES, `0xfe` = -2 ENOENT,
-    // `0xea` = -22 EINVAL) without another boot. TWO words, because eight
-    // cells filled one: the ninth cell shifted a byte by 64 and panicked the
-    // kernel mid-verdict. The fix is the packing, not a cell limit -- a matrix
-    // that silently caps at eight rows is the blind spot this replaces.
-    let mut matrix_packed_lo = 0u64;
-    let mut matrix_packed_hi = 0u64;
+    // `0xea` = -22 EINVAL) without another boot.
+    //
+    // ONE WORD PER EIGHT CELLS, and the words are named rather than indexed
+    // (the abort ratchet refuses `words[i]`). The history is worth keeping:
+    // one word panicked at the ninth cell (a shift by 64); two words silently
+    // ORed the seventeenth cell onto the ninth's byte (`0xea | 0xf7` = 0xff,
+    // which the gate caught as a pack mismatch while every cell still
+    // "matched"). Each new cell therefore has to come with the projection
+    // that holds it, BOTH verified by the gate.
+    let mut matrix_packed_w0 = 0u64;
+    let mut matrix_packed_w1 = 0u64;
+    let mut matrix_packed_w2 = 0u64;
     let mut matrix_ok = matrix_range_ok;
     if matrix_range_ok {
         for (index, row) in REFUSAL_MATRIX.iter().enumerate() {
@@ -2338,9 +2364,11 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
             };
             let packed_byte = ((got as u64) & 0xff) << (8 * (index % 8) as u64);
             if index < 8 {
-                matrix_packed_lo |= packed_byte;
+                matrix_packed_w0 |= packed_byte;
+            } else if index < 16 {
+                matrix_packed_w1 |= packed_byte;
             } else {
-                matrix_packed_hi |= packed_byte;
+                matrix_packed_w2 |= packed_byte;
             }
             if got == row.want {
                 matrix_matched += 1;
@@ -2364,11 +2392,12 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         );
     }
     crate::serial_println!(
-        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , packed {:#x}/{:#x}) , REFUSAL-MATRIX {}",
+        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , packed {:#x}/{:#x}/{:#x}) , REFUSAL-MATRIX {}",
         matrix_len as u64,
         matrix_matched,
-        matrix_packed_lo,
-        matrix_packed_hi,
+        matrix_packed_w0,
+        matrix_packed_w1,
+        matrix_packed_w2,
         claim!(ok, matrix_ok)
     );
 
