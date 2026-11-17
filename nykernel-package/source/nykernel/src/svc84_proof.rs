@@ -928,13 +928,13 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     // a first request that had to create them would look, to the frame
     // count, exactly like a region that never came back.
     unsafe {
-        let flags = PageTableFlags::PRESENT
+        let warm_flags = PageTableFlags::PRESENT
             | PageTableFlags::WRITABLE
             | PageTableFlags::USER_ACCESSIBLE
             | PageTableFlags::NO_EXECUTE;
         let mut warm = crate::experimental::address_space::active_mapper();
         let warm_base = VirtAddr::new(SHM_REQUEST_WINDOW);
-        if paging::map_range(&mut warm, frame_allocator, warm_base, 1, flags) == 1 {
+        if paging::map_range(&mut warm, frame_allocator, warm_base, 1, warm_flags) == 1 {
             let page: Page<Size4KiB> = Page::containing_address(warm_base);
             if let Ok((frame, flush)) = warm.unmap(page) {
                 flush.flush();

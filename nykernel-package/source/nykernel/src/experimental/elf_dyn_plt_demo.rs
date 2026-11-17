@@ -180,14 +180,14 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 /// The rest of the demo, running on THIS space's own kernel stack.
 unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
-    let mut mapper = space.mapper();
-    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
+    let mut stage_mapper = space.mapper();
+    let stage_fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
 
     // ---- provider A: the versioned, sonamed object (own instance) ----
     elf::load(
         CROSS_ALL_LIB_ELF,
-        &mut mapper,
-        fa,
+        &mut stage_mapper,
+        stage_fa,
         LIB_BASE,
         &elf::LoadContext::none(),
     )
@@ -212,8 +212,8 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // ---- provider B (provider3): the MULTI-ENTRY pair's provider ----
     elf::load(
         PLTPROV_ELF,
-        &mut mapper,
-        fa,
+        &mut stage_mapper,
+        stage_fa,
         PROVIDER3_BASE,
         &elf::LoadContext::none(),
     )
@@ -622,7 +622,7 @@ pub unsafe fn on_trap() -> ! {
     // default for objects that never had a PLT.
     let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
-    let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
+    let plt_fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
     let reg_static: &'static elf::SymbolRegistry = unsafe {
         (&*(&raw const LAZY_REGISTRY)).as_ref().expect("demo registry missing")
     };
@@ -634,7 +634,7 @@ pub unsafe fn on_trap() -> ! {
         lazy_plt_page: None,
         own_plt_resolver_page: Some(VirtAddr::new(PLTLESS_REFUSAL_THUNK)),
     };
-    let refused = elf::load(PLTLESS_ELF, &mut mapper, fa, PLTLESS_REFUSAL_BASE, &armed_ctx);
+    let refused = elf::load(PLTLESS_ELF, &mut mapper, plt_fa, PLTLESS_REFUSAL_BASE, &armed_ctx);
     let boundary1_ok = matches!(refused, Err(elf::ElfError::MalformedDynamicTables));
     serial_println!(
         "  experimental plt-demo: GNU OWN-.plt mode requested on the PLT-LESS artifact REFUSED with the typed MalformedDynamicTables (no .got.plt machinery to arm) -- {}",
@@ -650,7 +650,7 @@ pub unsafe fn on_trap() -> ! {
         lazy_plt_page: None,
         own_plt_resolver_page: None,
     };
-    let eager = elf::load(PLTLESS_ELF, &mut mapper, fa, PLTLESS_EAGER_BASE, &eager_ctx)
+    let eager = elf::load(PLTLESS_ELF, &mut mapper, plt_fa, PLTLESS_EAGER_BASE, &eager_ctx)
         .unwrap_or_else(|e| panic!("the PLT-LESS artifact must load eagerly: {:?}", e));
     let relro_ok = matches!(eager.relro, Some(elf::RelroOutcome::MadeReadOnly { .. }));
     let cross_slot =

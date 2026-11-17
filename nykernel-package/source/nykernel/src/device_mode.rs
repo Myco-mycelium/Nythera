@@ -379,8 +379,10 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
             // app bar (the three placeholder cards that used to sit under
             // it are gone: the shell fills that area now)
             let cx = l.rail + l.margin;
-            let cw = w - cx - l.margin;
-            fb.fill_rect(cx, l.status, cw, l.appbar, SURFACE);
+            // `bar_w`, not `cw`: `cw` above is the LAYOUT's content width
+            // (the phone contract's cap), this is the app bar's own span.
+            let bar_w = w - cx - l.margin;
+            fb.fill_rect(cx, l.status, bar_w, l.appbar, SURFACE);
             fb.fill_rect(cx + l.margin, l.status + 20, 160, 16, SURFACE_HI);
             // dock
             let dock_h = 72;

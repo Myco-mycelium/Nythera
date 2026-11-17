@@ -416,10 +416,11 @@ pub fn self_test() -> bool {
     // 2. The packet assembler: the same three bytes through `inject`
     //    must produce the same motion AND a packet count, i.e. the ring
     //    decodes a real stream rather than only the pure function.
-    let packets_before = PACKETS.load(Ordering::Relaxed);
+    let packets_before_motion = PACKETS.load(Ordering::Relaxed);
     inject(&[0x08, 0x05, 0x03]);
     let e = facts().last;
-    let e_ok = PACKETS.load(Ordering::Relaxed) == packets_before + 1 && e.dx == 5 && e.dy == 3;
+    let e_ok =
+        PACKETS.load(Ordering::Relaxed) == packets_before_motion + 1 && e.dx == 5 && e.dy == 3;
 
     // 3. A non-packet byte (bit 3 clear) must NOT be consumed as the
     //    start of a packet: it is an ID/status reply. If it were, the

@@ -752,14 +752,14 @@ unsafe fn finale() -> ! {
             *task_i.address_space.kernel_stack(),
         ];
         let mapper = task_i.address_space.mapper();
-        let names = [b'H', b'I'];
-        let mut all_ok = true;
+        let stack_names = [b'H', b'I'];
+        let mut stacks_ok = true;
         for (i, stack) in descriptors.iter().enumerate() {
             let ok = kernel_stack::verify(&mapper, stack);
-            all_ok &= ok;
+            stacks_ok &= ok;
             serial_println!(
                 "  experimental ring3-scheduler: task {} kernel RSP0 stack {:#x}..{:#x} ({} pages) has guard page {:#x} unmapped -- {}",
-                names[i] as char,
+                stack_names[i] as char,
                 stack.base.as_u64(),
                 stack.top.as_u64(),
                 stack.pages,
@@ -770,7 +770,7 @@ unsafe fn finale() -> ! {
         serial_println!(
             "  experimental ring3-scheduler self-test: all {} preemption-proof task kernel stacks carry a genuinely unmapped guard page directly below them -- {}",
             descriptors.len(),
-            if all_ok { "OK" } else { "FAILED" }
+            if stacks_ok { "OK" } else { "FAILED" }
         );
     }
 

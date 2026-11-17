@@ -4,13 +4,3 @@
 # dead (loop counters, match-arm binders, separate blocks).
 # ADDING A LINE HERE IS A REVIEW DECISION: if the shadow can be
 # read after the rebound name enters scope, fix the code instead.
-src/acpi.rs	i	2
-src/device_mode.rs	cw	1
-src/experimental/caps.rs	m	17
-src/experimental/caps.rs	owner	1
-src/experimental/elf_dyn_plt_demo.rs	fa	2
-src/experimental/elf_dyn_plt_demo.rs	mapper	1
-src/experimental/ring3_scheduler.rs	all_ok	1
-src/experimental/ring3_scheduler.rs	names	1
-src/ps2_aux.rs	packets_before	1
-src/svc84_proof.rs	flags	1

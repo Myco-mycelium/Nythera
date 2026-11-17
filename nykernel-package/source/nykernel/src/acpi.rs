@@ -122,11 +122,14 @@ pub fn validate_and_enumerate(rsdp: &AcpiRsdp) -> Option<AcpiInfo> {
             if !fadt_found && table_signature(table_addr) == *b"FACP" {
                 fadt_found = true;
                 let base = table_addr as *const u8;
-                for i in 0..6 {
-                    oem_id[i] = unsafe { *base.add(10 + i) };
+                // `b` for a byte within the header field: `i` is the table
+                // index of the enclosing loop, and reusing it here read as
+                // if these bytes belonged to that iteration.
+                for b in 0..6 {
+                    oem_id[b] = unsafe { *base.add(10 + b) };
                 }
-                for i in 0..8 {
-                    oem_table_id[i] = unsafe { *base.add(16 + i) };
+                for b in 0..8 {
+                    oem_table_id[b] = unsafe { *base.add(16 + b) };
                 }
             }
         }

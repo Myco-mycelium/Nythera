@@ -1019,8 +1019,9 @@ impl CapSystem {
         };
         // A server whose container forbids Reply cannot be called: the
         // kernel would be delivering a kind its policy excludes.
-        let owner = self.endpoints.get(cap.endpoint as usize).ok_or(CapError::BadHandle)?.owner;
-        if !self.admits(owner, Kind::Reply) {
+        let endpoint_owner =
+            self.endpoints.get(cap.endpoint as usize).ok_or(CapError::BadHandle)?.owner;
+        if !self.admits(endpoint_owner, Kind::Reply) {
             return Err(CapError::Contained);
         }
         let e = self.endpoints.get_mut(cap.endpoint as usize).ok_or(CapError::BadHandle)?;
@@ -2276,8 +2277,15 @@ pub fn run() -> bool {
 
     // owner send + receive round trip
     check!("owner send", sys.send(SERVER, srv_h, b"ping", None).is_ok());
-    let m = sys.receive(SERVER, ep).unwrap().unwrap();
-    check!("owner receive", m.sender == SERVER && m.payload == b"ping" && m.transferred.is_none());
+    // `owner_msg`: these are three different deliveries, and reusing one
+    // name for all of them is what made a wrong leg print plausible data.
+    let owner_msg = sys.receive(SERVER, ep).unwrap().unwrap();
+    check!(
+        "owner receive",
+        owner_msg.sender == SERVER
+            && owner_msg.payload == b"ping"
+            && owner_msg.transferred.is_none()
+    );
 
     // an EMPTY slot in the caller's own table is BadHandle, not silence
     check!(
@@ -2316,14 +2324,17 @@ pub fn run() -> bool {
         .bootstrap_grant(CLIENT, ep, rights::SEND | rights::GRANT)
         .expect("self-test: client grant");
     check!("client send through grant", sys.send(CLIENT, cli_h, b"hello", None).is_ok());
-    let m = sys.receive(SERVER, ep).unwrap().unwrap();
-    check!("client send attributed", m.sender == CLIENT && m.payload == b"hello");
+    let sent_msg = sys.receive(SERVER, ep).unwrap().unwrap();
+    check!(
+        "client send attributed",
+        sent_msg.sender == CLIENT && sent_msg.payload == b"hello"
+    );
     check!(
         "attenuated transfer accepted",
         sys.send(CLIENT, cli_h, b"", Some((cli_h, rights::SEND))).is_ok()
     );
-    let m = sys.receive(SERVER, ep).unwrap().unwrap();
-    let new_in_server = match m.transferred {
+    let transfer_msg = sys.receive(SERVER, ep).unwrap().unwrap();
+    let new_in_server = match transfer_msg.transferred {
         Some(h) => Some(h),
         None => None,
     };
@@ -2386,8 +2397,13 @@ pub fn run() -> bool {
         "input cap transferred attenuated",
         sys.send(CLIENT, cli_h, b"input", Some((input_h, rights::READ))).is_ok()
     );
-    let m = sys.receive(SERVER, ep).expect("self-test: transfer receive").expect("self-test: transfer message");
-    let input_in_server = m.transferred.expect("self-test: input transfer installed");
+    let input_msg = sys
+        .receive(SERVER, ep)
+        .expect("self-test: transfer receive")
+        .expect("self-test: transfer message");
+    let input_in_server = input_msg
+        .transferred
+        .expect("self-test: input transfer installed");
     check!("received input copy polls", sys.input_check(SERVER, input_in_server).is_ok());
     // The attenuation holds in the OTHER direction too: the received
     // copy carries no GRANT, so it cannot be passed on again. (The
