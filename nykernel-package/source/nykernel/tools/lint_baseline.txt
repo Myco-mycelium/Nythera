@@ -1,0 +1,27 @@
+# Known, reviewed sites of the abort/truncation lints:
+# <lint> <path> <occurrences>, maintained by
+# tools/lint_ratchet.py --update. SCOPE: src/ minus
+# src/porting/ (vendored) and src/experimental/ (demos and
+# proofs, where a boot-only `expect` is the intended idiom).
+# GROWTH IS A CODE CHANGE: a new line here, or a raised
+# count, has to be justified in the commit message.
+expect_used	src/idt.rs	1
+expect_used	src/lib.rs	1
+expect_used	src/memory/kernel_stack.rs	7
+expect_used	src/serial.rs	1
+expect_used	src/service84.rs	1
+indexing_slicing	src/acpi.rs	2
+indexing_slicing	src/ata.rs	45
+indexing_slicing	src/cursor.rs	6
+indexing_slicing	src/device_mode.rs	3
+indexing_slicing	src/devices/pci.rs	2
+indexing_slicing	src/display.rs	26
+indexing_slicing	src/gdt.rs	1
+indexing_slicing	src/memory/frame_allocator.rs	5
+indexing_slicing	src/memory/kernel_stack.rs	1
+indexing_slicing	src/multiboot.rs	1
+indexing_slicing	src/platform_mode.rs	7
+indexing_slicing	src/ps2_aux.rs	1
+indexing_slicing	src/service84.rs	23
+indexing_slicing	src/svc84_proof.rs	1
+unwrap_used	src/gdt.rs	3

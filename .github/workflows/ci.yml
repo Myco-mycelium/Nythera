@@ -810,12 +810,28 @@ jobs:
             fi
             cp "/usr/share/OVMF/$f" uefi/tools/
           done
+      - name: clippy for the shadowing gate
+        # build.sh runs tools/shadow_check.sh, and it skips cleanly when
+        # clippy is absent. On the runner that skip would be invisible, so
+        # install the component here and let the gates below run in
+        # SHADOW_CHECK_REQUIRED=1 mode: a skip is then a job failure.
+        run: rustup component add clippy
       - name: BIOS gate (GRUB/Multiboot2 reach BootPhase::Ready, exit 33)
         run: |
           mkdir -p target   # fresh checkout has no target/ (gitignored); a redirect into a missing dir would fail the gate before it ever ran
           set +e
-          ./tools/qemu_boot_test.sh > target/bios-gate.log 2>&1; S=$?
+          # SHADOW_CHECK_REQUIRED: build.sh runs the shadowing gate inside
+          # this one. A skip (clippy missing from the runner) must fail the
+          # job rather than pass with the check never having looked.
+          SHADOW_CHECK_REQUIRED=1 ./tools/qemu_boot_test.sh > target/bios-gate.log 2>&1; S=$?
           set -e
+          # ...and it must have RUN: the transcript owes the verdict line.
+          if ! grep -q "shadow check: OK" target/bios-gate.log; then
+            echo "::error::gate transcript has no 'shadow check: OK' line -- the shadowing gate did not run to a verdict"
+            grep -E "shadow check:" target/bios-gate.log || true
+            rustup component list --installed 2>/dev/null | grep -i clippy || echo "clippy is NOT installed on this runner"
+            exit 1
+          fi
           if [[ $S -ne 0 ]]; then
             . /etc/os-release
             echo "::error::BIOSgate env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1) / $(grub-mkrescue --version 2>&1 | head -1) / rustc $(rustc -vV | sed -n 's/^release: //p')"
@@ -835,8 +851,18 @@ jobs:
         run: |
           mkdir -p target
           set +e
-          ./tools/device_mode_test.sh > target/device-mode.log 2>&1; S=$?
+          # SHADOW_CHECK_REQUIRED: build.sh runs the shadowing gate inside
+          # this one. A skip (clippy missing from the runner) must fail the
+          # job rather than pass with the check never having looked.
+          SHADOW_CHECK_REQUIRED=1 ./tools/device_mode_test.sh > target/device-mode.log 2>&1; S=$?
           set -e
+          # ...and it must have RUN: the transcript owes the verdict line.
+          if ! grep -q "shadow check: OK" target/device-mode.log; then
+            echo "::error::gate transcript has no 'shadow check: OK' line -- the shadowing gate did not run to a verdict"
+            grep -E "shadow check:" target/device-mode.log || true
+            rustup component list --installed 2>/dev/null | grep -i clippy || echo "clippy is NOT installed on this runner"
+            exit 1
+          fi
           if [[ $S -ne 0 ]]; then
             ./tools/ci_emit_annotations.sh target/device-mode.log DeviceMode
           fi

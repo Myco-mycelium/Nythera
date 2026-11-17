@@ -15,4 +15,8 @@
 # dtolnay/rust-toolchain action supplies the same version anyway.
 [toolchain]
 channel = "1.99.1"
-components = ["rust-src"]
+# clippy is a COMPONENT here on purpose: the shadowing gate (build.sh ->
+# tools/shadow_check.sh) is mandatory, and it skips cleanly when clippy is
+# absent. Listing it makes rustup install it with the toolchain, so the
+# skip is a real "not supported here" rather than a fresh clone's default.
+components = ["rust-src", "clippy"]

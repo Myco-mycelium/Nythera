@@ -743,6 +743,40 @@ fn pack_gfx() -> i64 {
 /// five-page task stack that calls another row from inside the gate cannot
 /// afford. Out of line, that cost is paid only by the one proof boot that
 /// asks for the verdict, and every other row's caller keeps the headroom.
+// ---- verdict provenance ---------------------------------------------------
+//
+// `verdict_word!` is the ONLY place the words "matches"/"MISMATCH" are
+// written. `claim!` is the only way a leg reaches the printed verdict: it
+// folds the leg's own value into the running `ok` AND yields the word printed
+// beside that same value.
+//
+// This is not tidiness. The block-info bug was a leg that PRINTED one
+// record and DECIDED on another; the renames fixed that instance, and this
+// fixes the shape: a printed leg that is not counted (or a counted leg that
+// is not printed) is now impossible to write, because both come from one
+// expression. A hand-maintained `a_ok && b_ok && ...` list cannot say that --
+// it is exactly how eight printed legs came to be missing from this
+// function's own verdict.
+macro_rules! verdict_word {
+    ($cond:expr) => {
+        if $cond {
+            "matches"
+        } else {
+            "MISMATCH"
+        }
+    };
+}
+
+// `claim!(ok, leg_ok)` -> the word to print; `ok` accumulates as a side
+// effect, so the leg cannot be printed without being counted.
+macro_rules! claim {
+    ($acc:ident, $leg:expr) => {{
+        let leg_now: bool = $leg;
+        $acc &= leg_now;
+        verdict_word!(leg_now)
+    }};
+}
+
 #[inline(never)]
 fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // Twenty-six qwords: the five older results (gfx, input, enosys,
@@ -1762,11 +1796,16 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
                 && plat[4] == plat[0]
                 && plat[5] == ENODEV
         };
+    // The running verdict. Every leg below folds itself in as it prints
+    // (see `claim!`), so "the line said matches" and "the verdict counted
+    // it" are the same fact.
+    let mut ok = true;
+
     crate::serial_println!(
         "  service-0x84 proof: PLATFORM (get {:#x} , set windows {:#x} , get after {:#x} , bad set {:#x} , after refusal {:#x} , restore {:#x} , get restored {:#x}) , PLATFORM {}",
         plat[0] as u64, plat[1] as u64, plat[2] as u64, plat[3] as u64,
         plat[4] as u64, plat[5] as u64, plat[6] as u64,
-        if platform_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, platform_ok)
     );
 
     // PLATFORM_INFO (0x5f): one record, six facts. The record was taken
@@ -1809,7 +1848,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     crate::serial_println!(
         "  service-0x84 proof: PLATFORM-INFO (ack {:#x} , identity {:#x} , mode {:#x} , width {:#x} , height {:#x} , bar {:#x} , accent {:#x}) , PLATFORM-INFO {}",
         info_ack as u64, info[0], info[1], info[2], info[3], info[4], info[5],
-        if info_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, info_ok)
     );
 
     // PLATFORM_MODE_SET (0x60): phone, read back, then the ORIGINAL form
@@ -1855,7 +1894,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         "  service-0x84 proof: PLATFORM-MODE (set phone {:#x} , info2 ack {:#x} , mode {:#x} , bar {:#x} , restore {:#x} , info3 ack {:#x} , mode {:#x} , bar {:#x}) , PLATFORM-MODE {}",
         mode_ack as u64, info2_ack as u64, info2[1], info2[4],
         restore_ack as u64, info3_ack as u64, info3[1], info3[4],
-        if mode_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, mode_ok)
     );
 
     // ---- the supervised display (0x64..0x68, beside 0x61/0x63) --------
@@ -2072,26 +2111,14 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         tile_pixels.2.unwrap_or(0) as u64,
         dl_info_ack as u64, dl_info[0], dl_info[1], server_now, clients_now, surfaces_now,
         live_identity.id(), live_mode.id(),
-        if display_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, display_ok)
     );
 
-    let ok = platform_ok
-        && info_ok
-        && mode_ok
-        && display_ok
-        && stored_ok
-        && stored_ok
-        && wrote_ok
-        && notify_ok
-        && device_ok
-        && data_ok
-        && block_ok
-        && block_info_ok
-        && span_ok
-        && volume_ok
-        && cache_ok
-        && scratch_ok
-        && names_ok;
+    // `stored_ok` is the one leg whose verdict is folded in here rather
+    // than at its print site (it is asserted by the kernel's own read-back
+    // of the program's results page, which prints field by field).
+    ok &= stored_ok;
+
     crate::serial_println!(
         "  service-0x84 proof: BADGE/NOTIFY (notify {:#x} , take {:#x} , again {:#x} , wrong-kind {:#x} , forged {:#x} , non-owner {:#x} , badge {:#x} , zero {:#x} , kind {:#x} , forged-badge {:#x} , twice {:#x} , send {:#x} , recv {:#x} , tag {:#x} , null-tag {:#x}) , BADGE/NOTIFY {}",
         bn[0] as u64,
@@ -2109,7 +2136,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         bn[12] as u64,
         bn[13] as u64,
         bn[14] as u64,
-        if notify_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, notify_ok)
     );
     crate::serial_println!(
         "  service-0x84 proof: DEVICE (block {:#x} , ioport {:#x} window {:#x} , fb {:#x} rows {:#x} , endpoint {:#x} , shape {:#x}) , DEVICE {}",
@@ -2120,7 +2147,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         dev[4] as u64,
         dev[5] as u64,
         dev[6] as u64,
-        if device_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, device_ok)
     );
     crate::serial_println!(
         "  service-0x84 proof: DATA-PLANE (port-write {:#x} , port-read {:#x} == kernel {:#x} , past-window {:#x} , fb-write {:#x} , fb-read {:#x} , fb-row {:#x} , fb-kind {:#x}) , DATA-PLANE {}",
@@ -2132,7 +2159,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         data[4] as u64,
         data[5] as u64,
         data[6] as u64,
-        if data_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, data_ok)
     );
     crate::serial_println!(
         "  service-0x84 proof: BLOCK (read {:#x} , lba16 {:#x} (want {:#x}) , past-window {:#x} , zero-len {:#x} , wrong-kind {:#x}) , BLOCK {}",
@@ -2142,7 +2169,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         block[2] as u64,
         block[3] as u64,
         block[4] as u64,
-        if block_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, block_ok)
     );
     crate::serial_println!(
         "  service-0x84 proof: BLOCK-INFO (ack {:#x} , sector-size {:#x} , sectors {:#x} , reserved {:#x} , wrong-kind {:#x}) , BLOCK-INFO {}",
@@ -2151,7 +2178,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         block_info[2] as u64,
         block_info[3] as u64,
         block_info[4] as u64,
-        if block_info_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, block_info_ok)
     );
     crate::serial_println!(
         "  service-0x84 proof: BLOCK-SPAN (ack {:#x} , past-window {:#x} , zero-len {:#x} , media {:#x} , write-window {:#x} , write-kind {:#x}) , BLOCK-SPAN {}",
@@ -2161,7 +2188,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         span[3] as u64,
         span[4] as u64,
         span[5] as u64,
-        if span_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, span_ok)
     );
     let mut id_end = own_id.len();
     while id_end > 0 && (own_id[id_end - 1] == b' ' || own_id[id_end - 1] == 0) {
@@ -2173,8 +2200,8 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         id_text,
         ring3_span_descriptor,
         ring3_terminator,
-        if ring3_id == own_id { "matches" } else { "MISMATCH" },
-        if volume_ok { "matches" } else { "MISMATCH" }
+        verdict_word!(ring3_id == own_id),
+        claim!(ok, volume_ok)
     );
     crate::serial_println!(
         "  service-0x84 proof: BLOCK-CACHE (hits {} -> {} , misses {} -> {} , queries 0x{:x}/0x{:x}) , BLOCK-CACHE {}",
@@ -2184,14 +2211,14 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         read_q(7176),
         read_q(7136),
         read_q(7160),
-        if cache_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, cache_ok)
     );
     crate::serial_println!(
         "  service-0x84 proof: BLOCK-SCRATCH (write 0x{:x} , read 0x{:x} , disk and both ring-3 copies agree {}) , BLOCK-SCRATCH {}",
         read_q(7184) as u64,
         read_q(7192) as u64,
         if scratch_ok { "yes" } else { "NO" },
-        if scratch_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, scratch_ok)
     );
     let mut list = [0u8; 128];
     let mut list_len = 0usize;
@@ -2215,7 +2242,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         "  service-0x84 proof: BLOCK-ROOT (entries {} , names \"{}\") , BLOCK-ROOT {}",
         ring3_count,
         core::str::from_utf8(&list[..list_len]).unwrap_or("?"),
-        if names_ok { "matches" } else { "MISMATCH" }
+        claim!(ok, names_ok)
     );
     PROOF_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
     crate::serial_println!(                "  service-0x84 proof: a ring-3 program called int 0x84 from CPL {} -- GFX_MODE {:#x} , INPUT_STATE {:#x} , unported call {:#x} (refused, not answered) , validated write ({},{}) , process SELF {} , wide-args {:#x} {:#x} {:#x} {:#x} , ipc round trip (send-ack {:#x} , recv {:#x} , want {:#x}  , shape {} , empty {} , blocked {:#x} , want-blocked {:#x} , again {} , baddest {} , payload (ack {} , len {} , bytes {:#x} , wide {} , null {} , short {})) , caps (ack {:#x} , recv {:#x} , forged {:#x} , oversized {:#x} , payload {:#x}) , read back through the validator: GFX {} , INPUT {} , ENOSYS {} , geometry {} , SELF {} , ARGS {} , IPC {} , CAP {} , INPUT_POLL (1 {:#x} , 2 {:#x} , 3 {:#x} , forged {:#x} , bytes {:#x}/{:#x}) , INPUT {} , REPLY (call {:#x} , recv {:#x} , handle {:#x} , reply {:#x} , twice {:#x} , kind {:#x} , answer {:#x} , bytes {:#x}) , REPLY {} , SHM (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , sentinel {:#x} , wrote {:#x} , forged {:#x} , kind {:#x}) , SHM {} , TWO-PROCESS (close {:#x} , geometry {:#x} , call {:#x} , request {:#x} , answer {:#x} , offset8 {:#x} , offset16 {:#x} , last {:#x} , twice {:#x} , region live {} holders {:?} , exits {} session {} released {}) , PEER (ack {:#x} , base {:#x} , read {:#x} , recv {:#x} , handle {:#x} , request {:#x} , reply {:#x} , wrote {:#x}) , TWO-PROCESS {} , PEER {} , PEER-XFER (recv {:#x} , handle {:#x} , base {:#x} , read {:#x} , wrote {:#x} , parked {:#x} , tries {}) , SPACES (same va 0x60000010000 , first {:#x} , peer {:#x}) , REVOKE (base {:#x} , addr {:#x} , err {:#x} , task {} , expected {} , hits {} , woke {} , reason {} , session {}) , WINDOW (req {:#x} , base {:#x} , len {:#x} , handle {:#x} , marker {:#x} , unmap {:#x} , again {:#x} , geom {:#x} , geom base {:#x} , peer read {:#x} , no-window release {}) , MAP (ack {:#x} , base {:#x} , len {:#x} , rights {:#x} , handle {:#x} , wrote {:#x} , again {:#x} , base2 {:#x} , len2 {:#x} , handle2 {:#x} , close {:#x} , close2 {:#x} , stale {:#x} , geometry {:#x} , geom base {:#x} , released {} word {:#x}/{:#x} , bases {:#x}/{:#x} , frames {} == {} , unmapped {} / {} / {} / {} , xfer (ack {:#x} , base {:#x} , send {:#x} , close {:#x} , survived {:#x} , first8 {:#x} , last8 {:#x} , wider {:#x})) , MAP {} -- {}
@@ -2251,29 +2278,26 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         stored[15] as u64,
         stored[16] as u64,
         held_first8,
-        if stored[0] == want_gfx { "matches" } else { "MISMATCH" },
-        if stored[1] == want_input { "matches" } else { "MISMATCH" },
-        if stored[2] == want_enosys { "matches" } else { "MISMATCH" },
-        if wrote_ok { "matches" } else { "MISMATCH" },
-        if stored[4] == want_self { "matches" } else { "MISMATCH" },
-        if stored[5] == want_rsi as i64
-            && stored[6] == want_rdx as i64
-            && stored[7] == want_r10 as i64
-            && stored[8] == want_r8 as i64
-        {
-            "matches"
-        } else {
-            "MISMATCH"
-        },
-        if ipc_ok { "matches" } else { "MISMATCH" },
-        if cap_ok { "matches" } else { "MISMATCH" },
+        verdict_word!(stored[0] == want_gfx),
+        verdict_word!(stored[1] == want_input),
+        verdict_word!(stored[2] == want_enosys),
+        claim!(ok, wrote_ok),
+        verdict_word!(stored[4] == want_self),
+        verdict_word!(
+            stored[5] == want_rsi as i64
+                && stored[6] == want_rdx as i64
+                && stored[7] == want_r10 as i64
+                && stored[8] == want_r8 as i64
+        ),
+        claim!(ok, ipc_ok),
+        claim!(ok, cap_ok),
         stored[17] as u64,
         stored[18] as u64,
         stored[19] as u64,
         stored[21] as u64,
         polled_first8,
         polled_second8,
-        if input_poll_ok { "matches" } else { "MISMATCH" },
+        claim!(ok, input_poll_ok),
         reply_block[0] as u64,
         reply_block[1] as u64,
         reply_block[3] as u64,
@@ -2282,7 +2306,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         reply_block[7] as u64,
         reply_block[8] as u64,
         reply_block[9] as u64,
-        if reply_ok { "matches" } else { "MISMATCH" },
+        claim!(ok, reply_ok),
         shm[0] as u64,
         shm[4] as u64,
         shm[5] as u64,
@@ -2291,7 +2315,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         shm[8] as u64,
         shm[9] as u64,
         shm[10] as u64,
-        if shm_ok { "matches" } else { "MISMATCH" },
+        claim!(ok, shm_ok),
         two[0] as u64,
         two[18] as u64,
         two[11] as u64,
@@ -2314,8 +2338,8 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         peer[9] as u64,
         peer[11] as u64,
         peer[12] as u64,
-        if two_ok { "matches" } else { "MISMATCH" },
-        if peer_ok { "matches" } else { "MISMATCH" },
+        claim!(ok, two_ok),
+        claim!(ok, peer_ok),
         peer[17] as u64,
         peer[18] as u64,
         peer[20] as u64,
@@ -2379,7 +2403,7 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         map_first_word8,
         map_last_word8_rep,
         mapx[8] as u64,
-        if map_ok { "matches" } else { "MISMATCH" },
+        claim!(ok, map_ok),
         if ok { "OK" } else { "FAILED" }
     );
     0

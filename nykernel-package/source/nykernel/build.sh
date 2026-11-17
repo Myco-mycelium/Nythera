@@ -278,6 +278,19 @@ else
     echo "==> shadowing check (clippy shadow_unrelated/shadow_same vs tools/shadow_baseline.txt)"
     ./tools/shadow_check.sh
 fi
+# ---- the abort/truncation ratchet ---------------------------------------
+# The same mechanism, for the lints whose failure mode is an abort or a wrong
+# table row rather than a comment: unwrap_used, expect_used, indexing_slicing.
+# A panic in this kernel is an abort, and in a proof gate that reads as a hang
+# rather than as the wrong answer it is. tools/lint_ratchet.py explains why
+# as_conversions and arithmetic_side_effects are deliberately NOT ratcheted
+# yet (they need a conversion pass first, not a 2000-line baseline).
+if [[ "${SKIP_LINT_RATCHET:-}" == "1" ]]; then
+    echo "==> abort/truncation ratchet skipped (SKIP_LINT_RATCHET=1)"
+else
+    echo "==> abort/truncation ratchet (clippy unwrap/expect/indexing vs tools/lint_baseline.txt)"
+    ./tools/lint_ratchet.py
+fi
 
 LIBDIR="target/x86_64-nyrqis-kernel/${PROFILE}"
 

@@ -6,7 +6,21 @@
 #   ./tools/shadow_check.sh                 # check (exit 1 on NEW shadowing)
 #   ./tools/shadow_check.sh --update        # rewrite the baseline from the
 #                                           # current tree (review the diff!)
+#   ./tools/shadow_check.sh --update --allow-grow
+#                                           # ...even if that baselines more
+#                                           # than SHADOW_GROW_MAX new sites
 #   ./tools/shadow_check.sh --list          # print every site, no verdict
+#
+# ENVIRONMENT
+#
+#   SHADOW_CHECK_REQUIRED=1   a skip (no cargo/clippy) is a FAILURE, not a
+#                             pass. CI sets this: a job that silently skipped
+#                             the check is a job that never ran it.
+#   SHADOW_GROW_MAX=N         how many NEW sites one --update may add
+#                             (default 2). --update refuses past it; this is
+#                             what stops "just re-baseline it" from erasing
+#                             the allowance in a single command. --allow-grow
+#                             overrides for a reviewed, one-off shift.
 #
 # WHY THIS EXISTS
 #
@@ -41,30 +55,53 @@
 # WHERE IT RUNS
 #
 # `build.sh` calls it on every build (so all four boot gates inherit it),
-# and SKIP_SHADOW_CHECK=1 there opts out for one build. A CI job that wants
-# the check ENFORCED should install clippy explicitly and treat the skip
-# message as a failure of its own setup, not of the tree.
+# and SKIP_SHADOW_CHECK=1 there opts out for one build. CI sets
+# SHADOW_CHECK_REQUIRED=1 and installs clippy explicitly, so a runner that
+# lost the component fails there instead of quietly passing without the
+# check -- and the workflow also greps the gate transcript for the OK line,
+# so "the gate ran" is asserted rather than inferred.
 
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 BASELINE="tools/shadow_baseline.txt"
-MODE="${1:-}"
-
-if [[ "$MODE" != "--update" && "$MODE" != "--list" && -n "$MODE" ]]; then
-    echo "usage: $0 [--update|--list]"
-    exit 2
-fi
+MODE=""
+ALLOW_GROW=0
+for arg in "$@"; do
+    case "$arg" in
+        --update)     MODE="--update" ;;
+        --list)       MODE="--list" ;;
+        --allow-grow) ALLOW_GROW=1 ;;
+        *)
+            echo "usage: $0 [--update [--allow-grow]|--list]"
+            exit 2
+            ;;
+    esac
+done
+REQUIRE="${SHADOW_CHECK_REQUIRED:-0}"
+GROW_MAX="${SHADOW_GROW_MAX:-2}"
 
 # ---- 1. is clippy here? -------------------------------------------------
-if ! command -v cargo >/dev/null 2>&1; then
-    echo "shadow check: SKIPPED -- cargo is not on PATH (optional check)"
+# A skip is honest locally (a rustc-only machine must still build) and a
+# hole where the check is meant to be a guarantee, so REQUIRE turns it into
+# the failure it would otherwise pretend not to be.
+skip() {
+    if [[ "$REQUIRE" == "1" ]]; then
+        echo "shadow check: FAILED -- $1"
+        echo "              SHADOW_CHECK_REQUIRED=1, so a skip is a failure here."
+        echo "              install it with: rustup component add clippy"
+        exit 1
+    fi
+    echo "shadow check: SKIPPED -- $1"
+    echo "              (optional check; SHADOW_CHECK_REQUIRED=1 makes this fatal)"
     exit 0
+}
+
+if ! command -v cargo >/dev/null 2>&1; then
+    skip "cargo is not on PATH"
 fi
 if ! cargo clippy --version >/dev/null 2>&1; then
-    echo "shadow check: SKIPPED -- clippy is not installed for this toolchain"
-    echo "              (install with: rustup component add clippy --toolchain \"\$RUSTUP_TOOLCHAIN\")"
-    exit 0
+    skip "clippy is not installed for this toolchain"
 fi
 
 # ---- 2. run clippy on the real AST -------------------------------------
@@ -127,6 +164,29 @@ if [[ "$MODE" == "--list" ]]; then
 fi
 
 if [[ "$MODE" == "--update" ]]; then
+    # Growth guard: re-baselining is how a systemic regression becomes
+    # invisible, so widening the allowance is a reviewed act. A shrink (a
+    # rename that paid off) or a same-size reshuffle is always allowed.
+    OLD="$(mktemp)"
+    trap 'rm -f "$LOG" "$SITES" "$OLD"' EXIT
+    if [[ -f "$BASELINE" ]]; then
+        grep -v '^#' "$BASELINE" | grep -v '^$' | sort > "$OLD"
+    else
+        : > "$OLD"
+    fi
+    ADDED="$(comm -23 "$SITES" "$OLD")"
+    ADDED_N=$(printf '%s\n' "$ADDED" | grep -c . || true)
+    OLD_N=$(grep -c . "$OLD" || true)
+    if [[ "$ADDED_N" -gt "$GROW_MAX" && "$ALLOW_GROW" != "1" ]]; then
+        echo "shadow check: REFUSED -- --update would add $ADDED_N new site(s)"
+        echo "              (baseline has $OLD_N; SHADOW_GROW_MAX=$GROW_MAX)."
+        echo "              That is a code change, not a baseline change: rename them,"
+        echo "              or pass --allow-grow if the growth is reviewed."
+        printf '%s\n' "$ADDED" | while IFS="$(printf '\t')" read -r path name n; do
+            [[ -n "$path" ]] && echo "    + $path: \`$name\` ($n place(s))"
+        done
+        exit 1
+    fi
     {
         echo "# Known, reviewed shadowing sites: <path> <name> <occurrences>."
         echo "# Maintained by tools/shadow_check.sh --update. Each entry is a"
@@ -137,6 +197,12 @@ if [[ "$MODE" == "--update" ]]; then
         cat "$SITES"
     } > "$BASELINE"
     echo "shadow check: baseline rewritten with $COUNT site(s) -> $BASELINE"
+    if [[ "$ADDED_N" -gt 0 ]]; then
+        echo "              new allowance (+$ADDED_N, budget $GROW_MAX) -- review these:"
+        printf '%s\n' "$ADDED" | while IFS="$(printf '\t')" read -r path name n; do
+            [[ -n "$path" ]] && echo "    + $path: \`$name\` ($n place(s))"
+        done
+    fi
     exit 0
 fi
 

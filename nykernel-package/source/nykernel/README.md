@@ -62,14 +62,73 @@ Without root, `./tools/install_boot_tools.sh` installs QEMU, GRUB, xorriso
 and mtools into a user-space root (proot + an Ubuntu base rootfs) and puts
 shims on `PATH`, so the boot gates run unchanged.
 
-`build.sh` also runs `./tools/shadow_check.sh` on every build, so all four
-boot gates inherit it: it turns on clippy's `shadow_unrelated` /
-`shadow_same` lints (off by default, so clippy's silence never meant
-anything) and fails the build on any shadowing beyond
-`tools/shadow_baseline.txt` -- the bug class that once let a failing
-block-device claim print another leg's record and still say `matches`.
-It skips cleanly when clippy is not installed, and `SKIP_SHADOW_CHECK=1`
-opts out for one build.
+`./tools/gate_env.sh` checks what the gates assume -- a path short enough for
+a 108-byte unix socket (proot's monitor-socket trap), the QEMU/GRUB pair, the
+`/tmp/nybin` shims, clippy, and whether `/usr/bin/time` exists (on this image
+it does not) -- and names the broken assumption instead of leaving a 127 or a
+hang. It is the first thing to run when a gate behaves differently here than
+elsewhere.
+
+`build.sh` runs two style gates on every build, so all four boot gates inherit
+them. Both skip cleanly when clippy is absent (install it with `rustup
+component add clippy`; `rust-toolchain.toml` lists it), and
+`SHADOW_CHECK_REQUIRED=1` turns that skip into a failure -- which is what CI
+sets, so a runner without clippy fails there rather than passing with the
+check never having run.
+
+* `./tools/shadow_check.sh` turns on clippy's `shadow_unrelated` /
+  `shadow_same` lints (off by default, so clippy's silence never meant
+  anything) and fails the build on any shadowing beyond
+  `tools/shadow_baseline.txt` -- the bug class that once let a failing
+  block-device claim print another leg's record and still say `matches`. The
+  baseline is now EMPTY: all ten recorded sites were renamed rather than
+  excused. `--update` refuses to baseline more than `SHADOW_GROW_MAX` (2) new
+  sites unless `--allow-grow` is passed, so "just re-baseline it" cannot
+  erase the allowance in one command.
+* `./tools/lint_ratchet.py` applies the same ratchet to the lints whose
+  failure mode is an abort or a wrong table row: `unwrap_used`,
+  `expect_used`, `indexing_slicing`, scoped to `src/` minus `src/porting/`
+  and `src/experimental/`, baselined in `tools/lint_baseline.txt`.
+  `as_conversions` and `arithmetic_side_effects` are deliberately NOT
+  ratcheted yet (842 and 404 sites in scope: they need a conversion pass
+  first, not a baseline nobody can review). `SKIP_LINT_RATCHET=1` opts out.
+
+The verdict function writes the words `matches`/`MISMATCH` in exactly one
+place (`verdict_word!` in `src/service84.rs`) and folds every printed leg
+into the running verdict through `claim!`, so a leg cannot be printed without
+being counted. That is not cosmetic: before this, eight printed legs
+(`cap_ok`, `ipc_ok`, `shm_ok`, `reply_ok`, `input_poll_ok`, `two_ok`,
+`map_ok`, `peer_ok`) were missing from the hand-written `ok` chain and
+`stored_ok` was counted twice -- the block-info bug's shape, one layer up.
+
+`./tools/gate_selfcheck.sh` is the meta-gate: it takes a real transcript
+(`target/svc84-proof-last.log`, saved by every passing proof run), deletes one
+piece of evidence at a time -- the CPL 3 claim, a leg's `matches`, the
+kernel's `-- OK` -- and requires the proof gate to reject each mutation for
+the right reason, while the unmutated transcript still passes. The proof gate
+also COUNTS the distinct legs in the verdict (26) so a leg that stops running
+cannot leave a smaller, quieter green.
+
+`./tools/run_gate.sh <gate>` wraps any gate: it keeps the transcript in
+`target/receipts/`, writes a JSON receipt with the verdict, the OK/FAIL line
+counts, the leg count and the pinned hashes, and compares it with the previous
+run so a verdict that shrank is reported as drift instead of scrolling past.
+The proof gate can also replay a saved transcript with no QEMU
+(`./tools/svc84_proof_test.sh --replay <log>`), which is what makes the
+meta-gate possible and what makes a verdict re-checkable in a second.
+
+### What these gates cannot see
+
+A green board is not a proof of everything, and the gaps are worth naming:
+
+| Gate | Blind spot | Why it is not covered yet |
+|---|---|---|
+| shadow check | field/type-name reuse, and `src/porting/` by scope | those are not locals; the lint is about locals |
+| abort ratchet | `as` truncation and arithmetic wrap | 1246 sites in scope: needs a conversion pass before a baseline can mean anything |
+| proof gate | a per-row REFUSAL matrix: each leg asserts its own refusals, and the verdict's distinct errno kinds are pinned (5: EBUSY, EFAULT, EACCES, EBADF, ENOENT), but there is no per-number bad-input sweep | needs new ring-3 legs in `userprog/prog_svc84.s` (a bad handle, a zero length and a misaligned pointer per served row) plus the boot-time budget to run them |
+| proof gate | timing and interrupt interaction during the proof | the gate asserts values, not schedules |
+| boot gates | anything the kernel prints but does not assert | the gate's patterns are the contract |
+| device gate | layout correctness beyond the measured landmarks | screendumps are checked at named coordinates |
 
 ## What's proven, at a glance
 

@@ -44,10 +44,33 @@
 # The proof mode does not return to the kernel (it ends in a ring-3 spin),
 # so this harness waits for the verdict line and then stops QEMU.
 #
-# Usage: ./tools/svc84_proof_test.sh
+# REPLAY AND META-TESTING
+#
+# The verdict checks below are a function of ONE thing: the serial log. So
+# they can be run against a saved transcript with no QEMU at all:
+#
+#   SVC84_REPLAY_LOG=target/svc84-proof-last.log ./tools/svc84_proof_test.sh --replay LOG
+#
+# That is not a convenience. It is what makes the gate testable: a gate is a
+# claim that a wrong kernel fails it, and tools/gate_selfcheck.sh checks that
+# claim by deleting one piece of evidence at a time from a real transcript and
+# requiring this harness to FAIL. A gate that cannot be shown to fail is a
+# comment. The `--selfcheck` of that tool is the meta-gate; this mode is the
+# seam it needs.
+#
+# Usage: ./tools/svc84_proof_test.sh [--replay <serial-log>]
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+REPLAY=""
+if [[ "${1:-}" == "--replay" ]]; then
+    REPLAY="${2:-}"
+    [[ -n "$REPLAY" ]] || { echo "usage: $0 --replay <serial-log>"; exit 2; }
+    [[ -f "$REPLAY" ]] || { echo "FAIL: no such transcript: $REPLAY"; exit 2; }
+elif [[ -n "${1:-}" ]]; then
+    echo "usage: $0 [--replay <serial-log>]"; exit 2
+fi
 
 WORK=target/svc84-proof
 rm -rf "$WORK"
@@ -60,6 +83,9 @@ bad() { echo "  FAIL: $*"; FAILS=$((FAILS + 1)); }
 command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "FAIL: qemu-system-x86_64 missing"; exit 1; }
 command -v grub-mkrescue >/dev/null 2>&1 || { echo "FAIL: grub-mkrescue missing"; exit 1; }
 
+# Everything that needs a machine lives here, so the verdict checks
+# below can also run against a saved transcript (see REPLAY above).
+run_boot() {
 echo "==> building the kernel"
 if ! ./build.sh >"$WORK/build.log" 2>&1; then
     echo "FAIL: ./build.sh failed (see $WORK/build.log)"
@@ -112,6 +138,26 @@ kill -- -"$QPID" 2>/dev/null
 sleep 1
 kill -9 -- -"$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
+}
+
+if [[ -n "$REPLAY" ]]; then
+    # No QEMU, no build: the checks are a pure function of the transcript.
+    SERIAL="$REPLAY"
+    echo "==> replaying a saved transcript: $SERIAL"
+else
+    run_boot
+fi
+
+# The distinct legs the kernel claims to have proved. This is pinned because
+# a leg that stops running must not become a smaller, quieter verdict: every
+# line below can still say "matches" while one whole leg is missing.
+# 26 distinct `<NAME> matches` facts in the verdict as of the display/session
+# increment (ARGS, BLOCK, BLOCK-CACHE, BLOCK-INFO, BLOCK-ROOT, BLOCK-SCRATCH,
+# BLOCK-SPAN, BLOCK-VOLUME, CAP, DATA-PLANE, DEVICE, DISPLAY, ENOSYS, GFX,
+# INPUT, IPC, MAP, NOTIFY, PEER, PLATFORM, PLATFORM-INFO, PLATFORM-MODE,
+# REPLY, SELF, SHM, TWO-PROCESS). Raising it is part of adding a leg; a leg
+# that stops running without this number moving is the failure this catches.
+EXPECTED_LEGS="${SVC84_EXPECTED_LEGS:-26}"
 
 if grep -q "KERNEL PANIC" "$SERIAL"; then
     bad "the kernel panicked before the proof finished"
@@ -492,6 +538,30 @@ else
     else
         bad "the badge/notify leg did not hold (the signal word, its clearing, the badge mint or the by-name refusals)"
     fi
+    # REFUSAL BREADTH. The gate pins individual errnos per leg, but nothing
+    # said how MANY distinct refusal kinds the proof still demonstrates: a
+    # leg that stopped refusing would keep its own pattern if the pattern
+    # were loose, and the board would look unchanged. Five kinds are carried
+    # by the current surface -- EBUSY (-16), EFAULT (-14), EACCES (-13),
+    # EBADF (-9), ENOENT (-2) -- so the count is pinned and may only grow.
+    # This is the checkable half of a per-row refusal matrix; the matrix
+    # itself (every served number, every bad-input shape) still needs new
+    # ring-3 legs -- see the README's "what these gates cannot see".
+    REFUSALS=$(printf '%s' "$VERDICT" | grep -oE '0xfffffffffffffff[0-9a-f]' | sort -u | wc -l | tr -d ' ')
+    WANT_REFUSALS="${SVC84_EXPECTED_REFUSAL_WORDS:-5}"
+    if [[ "$REFUSALS" -lt "$WANT_REFUSALS" ]]; then
+        bad "the verdict shows $REFUSALS distinct refusal errno(s), expected at least $WANT_REFUSALS (a refusal stopped being exercised)"
+    else
+        ok "the verdict shows $REFUSALS distinct refusal errno(s) (at least the $WANT_REFUSALS pinned kinds)"
+    fi
+    # The legs are COUNTED, not just looked for one by one: a deleted leg
+    # would leave every remaining pattern matching and the verdict green.
+    LEGS=$(printf '%s' "$VERDICT" | grep -oE '[A-Z][A-Z0-9-]* matches' | sort -u | wc -l | tr -d ' ')
+    if [[ "$EXPECTED_LEGS" -gt 0 && "$LEGS" -ne "$EXPECTED_LEGS" ]]; then
+        bad "the verdict carries $LEGS distinct proved leg(s), expected $EXPECTED_LEGS (a leg stopped running)"
+    else
+        ok "the verdict carries $LEGS distinct proved leg(s)"
+    fi
     # Trailing wildcard matters: the serial line ends with a carriage
     # return, so a pattern anchored at the very end never matches.
     if [[ "$VERDICT" == *"-- OK"* ]]; then
@@ -502,6 +572,11 @@ else
 fi
 
 echo
+if [[ "$FAILS" -eq 0 && -z "$REPLAY" ]]; then
+    # tools/gate_selfcheck.sh mutates this copy: one piece of evidence
+    # removed at a time, each of which this harness must reject.
+    cp "$SERIAL" target/svc84-proof-last.log 2>/dev/null || true
+fi
 if [[ "$FAILS" -ne 0 ]]; then
     echo "FAIL: $FAILS ring-3 service case(s) failed -- see $WORK/"
     exit 1
