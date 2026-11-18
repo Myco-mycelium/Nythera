@@ -13,7 +13,7 @@ against what that row's own documented rule says it should be.
 
 ## What is probed
 
-Seventeen cells, in this order, all of them run from ring 3 at the end of
+Nineteen cells, in this order, all of them run from ring 3 at the end of
 `userprog/prog_svc84.s`, after the program has detached its own display slot
 and given back every surface tile it opened:
 
@@ -36,17 +36,25 @@ and given back every surface tile it opened:
 | 14 | `0x5a` | `CAP_BLOCK_INFO` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
 | 15 | `0x5b` | `CAP_BLOCK_WRITE` | `a0 = 2^32`: handle above `u32::MAX`, rest of the call legal | `-EBADF` | `0xf7` |
 | 16 | `0x5c` | `CAP_BLOCK_CACHE_STATS` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
+| 17 | `0x59` | `CAP_BLOCK_READ` | `a_xfer = 16385`: one byte past `MAX_BLOCK_SPAN` | `-EINVAL` | `0xea` |
+| 18 | `0x4f` | `CAP_SHM_MAP` | `a0 = 69632`: 17 pages, one past `MAX_REGION_REQUEST_PAGES` | `-EINVAL` | `0xea` |
 
-The kernel packs those bytes, eight per word little-endian, and prints one word
-per eight cells:
+The kernel folds those bytes, in cell order, into ONE word with FNV-1a and
+prints it:
 
 ```
-service-0x84 proof: REFUSAL-MATRIX (rows 0x11 , matched 0x11 , packed 0xeaeafef3f7f7f7f2/0xf7f7f7f2f2f2eaea/0xf7) , REFUSAL-MATRIX matches
+service-0x84 proof: REFUSAL-MATRIX (rows 0x13 , matched 0x13 , fold 0xcb31b975422b2fcd) , REFUSAL-MATRIX matches
 ```
 
-That triple is the whole matrix at a glance: cells 0–7, 8–15, 16–23. A cell that starts being served instead of refused changes its
-byte, the gate's exact-string assertion fails, and the kernel prints a
+The fold replaced a byte-per-cell layout, not because the bytes were wrong but
+because the layout needed to know where a cell lands — a shift, then a word
+index, then an eight-cell stride — and each of those broke once (see below).
+FNV-1a needs none of it: no shift, no word count, no limit, and `wrapping_mul`
+cannot trap. The fold is a diagnostic, not the verdict: a disagreement sets
+`matrix_ok` false, is counted in `matched`, and is printed as a
 `REFUSAL-MATRIX ROW 0x…` line naming the row, the bad argument and both values.
+The gate pins the fold as one exact string, so any byte changing in any cell
+fails the boot.
 
 ## The argument classes, and what each one costs
 
@@ -57,6 +65,7 @@ byte, the gate's exact-string assertion fails, and the kernel prints a
 | misaligned, non-user pointer | `0x42`, `0x4f`, `0x4c`, `0x5a` | the range check runs before the mapping source, the handle lookup or the record write |
 | absent state | `0x66`, `0x6c` | no slot, no tile: two "nothing to give back" rows with two different names (`EACCES`, `ENOENT`) |
 | handle above `u32::MAX` | `0x59`, `0x5a`, `0x5b`, `0x5c` | the `EBADF` arm is each block row's FIRST check, before the record, the length or authority — a handle that cannot be named is never truncated into one that can |
+| oversized length | `0x59`, `0x4f` | each row's own cap (`MAX_BLOCK_SPAN`, `MAX_REGION_REQUEST_PAGES`) is checked with the zero and alignment checks, so too much is refused before a sector is read or a frame allocated |
 
 Cells 4 and 5 are why a matrix beats a checklist: swapping those two errnos
 would look right row by row and fail here. Cells 1 and 12 are the same row
@@ -96,16 +105,17 @@ and they moved in the same change rather than sharing it.
 - **`0x4f` refuses a non-page-aligned length with `-EINVAL`** (cell 6), and the
   earlier claim that it aligned the length was the matrix's own bug being
   blamed on a row.
-- **The pack word was a limit twice, and the second one was quiet.** The ninth
-  cell shifted a byte by 64 bits and panicked the kernel mid-verdict (`attempt
-  to shift left with overflow`, `service84.rs:2315`), taking every leg down;
-  the fix was a second word. Then the SEVENTEENTH cell wrapped `index % 8` back
-  onto the ninth's byte (`0xea | 0xf7` = `0xff`) — every cell still printed
-  `matched 0x11`, and only the gate's exact-string assertion on the packed
-  words caught it. The pack is now one word per eight cells (three at present),
-  named rather than indexed because the abort ratchet refuses `words[i]`, and
-  the lesson is in the gate: two independent projections of the same run, and
-  the one that disagrees is a bug in the projection *or* in the row.
+- **The projection broke twice before it was a fold.** Packed words are
+  positional, and every positional version had to know where a cell lands. One
+  word panicked the kernel mid-verdict at the ninth cell (`attempt to shift
+  left with overflow`, `service84.rs:2315`), taking every leg down; the fix
+  was a second word. Then the SEVENTEENTH cell wrapped `index % 8` onto the
+  ninth's byte (`0xea | 0xf7` = `0xff`) while every cell still printed
+  `matched 0x11` — only the gate's exact-string assertion caught it, because
+  `matched` and the fold are two independent descriptions of the same run.
+  Three hand-named words would have been the third version of the same
+  mistake, so the layout went: FNV-1a over the bytes is one word, needs no
+  position, and cannot overflow at any cell count.
 
 ## Adding a cell
 
@@ -127,7 +137,7 @@ and they moved in the same change rather than sharing it.
 
 ## What is still not swept
 
-43 rows; 17 cells. The remaining rows are covered by the legs that exercise
+43 rows; 19 cells. The remaining rows are covered by the legs that exercise
 them, and those legs do assert refusals inline — forged handles (`-EBADF`),
 out-of-window or wrong-kind accesses (`-EACCES`), zero or oversized lengths
 (`-EINVAL`), unmapped releases (`-ENOENT`). What no leg does is sweep each row
@@ -142,8 +152,7 @@ with each class of malformed argument, which is what a full matrix would be:
   shape is settled first, which is why it has three cells.
 - Classes not yet probed anywhere, worth naming so they are not mistaken for
   coverage: a **write** to a read-only or kernel page (every row's `-EFAULT`
-  arm has a write side), an **oversized** length past the row's own cap, and
-  the `EBADF` arm of the non-block rows that start with one (`0x4c`, `0x4d`,
-  `0x50` and the badge rows take a handle too).
+  arm has a write side), and the `EBADF` arm of the non-block rows that start
+  with one (`0x4c`, `0x4d`, `0x50` and the badge rows take a handle too).
 - The rest: safe in principle, simply not written yet. Each one is a
   `RefusalRow` and about ten instructions of assembly.

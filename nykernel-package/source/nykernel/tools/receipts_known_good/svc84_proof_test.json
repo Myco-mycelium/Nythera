@@ -5,6 +5,6 @@
   "note": "known-good reference for tools/run_gate.sh; refresh with gate_receipt.py promote, never by hand",
   "ok_lines": 36,
   "pass_lines": 1,
-  "recorded": "2026-11-17",
+  "recorded": "2026-11-18",
   "verdict": "PASS"
 }

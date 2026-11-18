@@ -796,7 +796,7 @@ pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
 /// The cells, in the order `prog_svc84.s` writes them. Every one of these
 /// rows settles its arguments before it touches anything, which is what lets
 /// the probes run inside a live proof.
-pub const REFUSAL_MATRIX: [RefusalRow; 17] = [
+pub const REFUSAL_MATRIX: [RefusalRow; 19] = [
     RefusalRow {
         call: CALL_GFX_MODE_INTO,
         want: EFAULT,
@@ -881,6 +881,16 @@ pub const REFUSAL_MATRIX: [RefusalRow; 17] = [
         call: CALL_CAP_BLOCK_CACHE_STATS,
         want: EBADF,
         what: "CAP_BLOCK_CACHE_STATS with a handle above u32::MAX",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_READ,
+        want: EINVAL,
+        what: "CAP_BLOCK_READ with a length past MAX_BLOCK_SPAN",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM_MAP,
+        want: EINVAL,
+        what: "CAP_SHM_MAP with a length past MAX_REGION_REQUEST_PAGES",
     },
 ];
 
@@ -2341,35 +2351,31 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     let matrix_range_ok =
         crate::memory::paging::user_range_ok(matrix_at, 8 * matrix_len, false);
     let mut matrix_matched = 0u64;
-    // The packing is the diagnostic: each answer's low byte, eight per word,
-    // so a single mismatched cell can be read off the serial log (`0xf2` =
-    // -14 EFAULT, `0xf7` = -9 EBADF, `0xf3` = -13 EACCES, `0xfe` = -2 ENOENT,
-    // `0xea` = -22 EINVAL) without another boot.
+    // The projection, and why it is a FOLD rather than packed words:
+    // a byte-per-cell layout needs as many words as the matrix has cells, and
+    // every way of writing that by hand broke. One word panicked the kernel
+    // at the ninth cell (a shift by 64); two words silently ORed the
+    // seventeenth cell onto the ninth's byte (`0xea | 0xf7` = 0xff) while
+    // every cell still "matched". Both failures came from the projection
+    // needing to know where a cell lands.
     //
-    // ONE WORD PER EIGHT CELLS, and the words are named rather than indexed
-    // (the abort ratchet refuses `words[i]`). The history is worth keeping:
-    // one word panicked at the ninth cell (a shift by 64); two words silently
-    // ORed the seventeenth cell onto the ninth's byte (`0xea | 0xf7` = 0xff,
-    // which the gate caught as a pack mismatch while every cell still
-    // "matched"). Each new cell therefore has to come with the projection
-    // that holds it, BOTH verified by the gate.
-    let mut matrix_packed_w0 = 0u64;
-    let mut matrix_packed_w1 = 0u64;
-    let mut matrix_packed_w2 = 0u64;
+    // FNV-1a knows nothing: no shift, no word index, no eight-cell stride, no
+    // limit, and therefore nothing that can wrap or overflow. Each answer's
+    // low byte is folded in cell order into ONE word. It is a diagnostic, not
+    // the verdict -- a disagreement already sets `matrix_ok` false, is counted
+    // in `matched` and is printed by name as a ROW line -- so a hash that
+    // pins the whole sequence is exactly the strength this needs, and the gate
+    // asserts it as one exact string.
+    let mut matrix_fold = 0xcbf2_9ce4_8422_2325u64; // FNV-1a 64 offset basis
     let mut matrix_ok = matrix_range_ok;
     if matrix_range_ok {
         for (index, row) in REFUSAL_MATRIX.iter().enumerate() {
             let got = unsafe {
                 core::ptr::read_unaligned((matrix_at + 8 * index as u64) as *const i64)
             };
-            let packed_byte = ((got as u64) & 0xff) << (8 * (index % 8) as u64);
-            if index < 8 {
-                matrix_packed_w0 |= packed_byte;
-            } else if index < 16 {
-                matrix_packed_w1 |= packed_byte;
-            } else {
-                matrix_packed_w2 |= packed_byte;
-            }
+            // Wrapping arithmetic by construction: `wrapping_mul` cannot
+            // trap in a debug build, whatever the cell count.
+            matrix_fold = (matrix_fold ^ (got as u64 & 0xff)).wrapping_mul(0x0000_0100_0000_01b3);
             if got == row.want {
                 matrix_matched += 1;
             } else {
@@ -2392,12 +2398,10 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         );
     }
     crate::serial_println!(
-        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , packed {:#x}/{:#x}/{:#x}) , REFUSAL-MATRIX {}",
+        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , fold {:#018x}) , REFUSAL-MATRIX {}",
         matrix_len as u64,
         matrix_matched,
-        matrix_packed_w0,
-        matrix_packed_w1,
-        matrix_packed_w2,
+        matrix_fold,
         claim!(ok, matrix_ok)
     );
 

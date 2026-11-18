@@ -2123,6 +2123,32 @@ _start:
     int $0x84
     mov %rax, 12416(%rbx)
 
+    /* Row 0x59 CAP_BLOCK_READ, transfer length 16385: one byte past the
+       row's own MAX_BLOCK_SPAN (8 x 2048). The same shape check that refuses
+       a zero length refuses too much, so an oversized read reaches no sector
+       and allocates nothing. */
+    mov $1, %rdi
+    xor %rsi, %rsi
+    lea 12928(%rbx), %rdx
+    mov $16385, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 12424(%rbx)
+
+    /* Row 0x4f CAP_SHM_MAP, length 17 pages: one page past the row's own
+       MAX_REGION_REQUEST_PAGES. The size cap is checked with the alignment
+       and the zero check, before the record pointer and before the mapping
+       source, so an oversized request allocates nothing. */
+    mov $69632, %rdi
+    lea 12800(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 12432(%rbx)
+
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi
     xor %rdx, %rdx
