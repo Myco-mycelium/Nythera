@@ -17,39 +17,39 @@ Twenty-five cells, in this order, all of them run from ring 3 at the end of
 `userprog/prog_svc84.s`, after the program has detached its own display slot
 and given back every surface tile it opened:
 
-| # | Call | Row | Bad argument | Expected | Byte |
-|---|---|---|---|---|---|
-| 0 | `0x42` | `GFX_MODE_INTO` | `a0 = 0x1001`: misaligned **and** not user-accessible | `-EFAULT` | `0xf2` |
-| 1 | `0x5a` | `CAP_BLOCK_INFO` | `a0 = 31`: forged block handle, record pointer real | `-EBADF` | `0xf7` |
-| 2 | `0x5c` | `CAP_BLOCK_CACHE_STATS` | `a0 = 31`: forged handle, record pointer real | `-EBADF` | `0xf7` |
-| 3 | `0x5b` | `CAP_BLOCK_WRITE` | `a0 = 31`: forged handle, buffer and length legal | `-EBADF` | `0xf7` |
-| 4 | `0x66` | `DISPLAY_DETACH` | nothing to detach: its slot is already back | `-EACCES` | `0xf3` |
-| 5 | `0x6c` | `DISPLAY_SURFACE_RELEASE` | no tile left: the churn gave them all back | `-ENOENT` | `0xfe` |
-| 6 | `0x4f` | `CAP_SHM_MAP` | `a0 = 100`: length in bytes, not a multiple of the page size | `-EINVAL` | `0xea` |
-| 7 | `0x59` | `CAP_BLOCK_READ` | transfer length `0` | `-EINVAL` | `0xea` |
-| 8 | `0x5b` | `CAP_BLOCK_WRITE` | transfer length `0` | `-EINVAL` | `0xea` |
-| 9 | `0x4f` | `CAP_SHM_MAP` | length `0` | `-EINVAL` | `0xea` |
-| 10 | `0x4f` | `CAP_SHM_MAP` | `a1 = 0x1001`: misaligned, non-user record pointer, legal length | `-EFAULT` | `0xf2` |
-| 11 | `0x4c` | `CAP_SHM` | `a1 = 0x1001`: misaligned, non-user record pointer, forged handle | `-EFAULT` | `0xf2` |
-| 12 | `0x5a` | `CAP_BLOCK_INFO` | `a1 = 0x1001`: misaligned, non-user record pointer, forged handle | `-EFAULT` | `0xf2` |
-| 13 | `0x59` | `CAP_BLOCK_READ` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
-| 14 | `0x5a` | `CAP_BLOCK_INFO` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
-| 15 | `0x5b` | `CAP_BLOCK_WRITE` | `a0 = 2^32`: handle above `u32::MAX`, rest of the call legal | `-EBADF` | `0xf7` |
-| 16 | `0x5c` | `CAP_BLOCK_CACHE_STATS` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
-| 17 | `0x59` | `CAP_BLOCK_READ` | `a_xfer = 16385`: one byte past `MAX_BLOCK_SPAN` | `-EINVAL` | `0xea` |
-| 18 | `0x4f` | `CAP_SHM_MAP` | `a0 = 69632`: 17 pages, one past `MAX_REGION_REQUEST_PAGES` | `-EINVAL` | `0xea` |
-| 19 | `0x59` | `CAP_BLOCK_READ` | `a2 = BUF+20480`: the read-only page, real handle, LBA and length | `-EFAULT` | `0xf2` |
-| 20 | `0x4f` | `CAP_SHM_MAP` | `a1 = BUF+20480`: the read-only page, legal one-page length | `-EFAULT` | `0xf2` |
-| 21 | `0x4c` | `CAP_SHM` | `a0 = 2^32`: handle above `u32::MAX`, record real | `-EBADF` | `0xf7` |
-| 22 | `0x4d` | `CAP_SHM_CLOSE` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` |
-| 23 | `0x50` | `CAP_SHM_UNMAP` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` |
-| 24 | `0x52` | `CAP_NOTIFY` | `a0 = 2^32`: handle above `u32::MAX`, zero signal bits | `-EBADF` | `0xf7` |
+| # | Call | Row | Bad argument | Expected | Byte | No-effect witness |
+|---|---|---|---|---|---|---|
+| 0 | `0x42` | `GFX_MODE_INTO` | `a0 = 0x1001`: misaligned **and** not user-accessible | `-EFAULT` | `0xf2` | row still answers a legal `GFX_MODE_INTO` with `0` |
+| 1 | `0x5a` | `CAP_BLOCK_INFO` | `a0 = 31`: forged block handle, record pointer real | `-EBADF` | `0xf7` | `0x5a` record's first word still the canary |
+| 2 | `0x5c` | `CAP_BLOCK_CACHE_STATS` | `a0 = 31`: forged handle, record pointer real | `-EBADF` | `0xf7` | `0x5c` cache record's first word still the canary |
+| 3 | `0x5b` | `CAP_BLOCK_WRITE` | `a0 = 31`: forged handle, buffer and length legal | `-EBADF` | `0xf7` | `0x5b` buffer's first word still the canary |
+| 4 | `0x66` | `DISPLAY_DETACH` | nothing to detach: its slot is already back | `-EACCES` | `0xf3` | a second detach still `-EACCES` (nothing was freed) |
+| 5 | `0x6c` | `DISPLAY_SURFACE_RELEASE` | no tile left: the churn gave them all back | `-ENOENT` | `0xfe` | a second release still `-ENOENT` (nothing was freed) |
+| 6 | `0x4f` | `CAP_SHM_MAP` | `a0 = 100`: length in bytes, not a multiple of the page size | `-EINVAL` | `0xea` | the record still the canary |
+| 7 | `0x59` | `CAP_BLOCK_READ` | transfer length `0` | `-EINVAL` | `0xea` | the destination's first word still the canary |
+| 8 | `0x5b` | `CAP_BLOCK_WRITE` | transfer length `0` | `-EINVAL` | `0xea` | a legal write through handle 6 still `-EROFS` |
+| 9 | `0x4f` | `CAP_SHM_MAP` | length `0` | `-EINVAL` | `0xea` | the record still the canary |
+| 10 | `0x4f` | `CAP_SHM_MAP` | `a1 = 0x1001`: misaligned, non-user record pointer, legal length | `-EFAULT` | `0xf2` | a zero-length request still `-EINVAL` |
+| 11 | `0x4c` | `CAP_SHM` | `a1 = 0x1001`: misaligned, non-user record pointer, forged handle | `-EFAULT` | `0xf2` | the live capability still answers `0x4c` with `0` |
+| 12 | `0x5a` | `CAP_BLOCK_INFO` | `a1 = 0x1001`: misaligned, non-user record pointer, forged handle | `-EFAULT` | `0xf2` | a legal geometry call through handle 6 still `0` |
+| 13 | `0x59` | `CAP_BLOCK_READ` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` | the destination's first word still the canary |
+| 14 | `0x5a` | `CAP_BLOCK_INFO` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` | the record still the canary |
+| 15 | `0x5b` | `CAP_BLOCK_WRITE` | `a0 = 2^32`: handle above `u32::MAX`, rest of the call legal | `-EBADF` | `0xf7` | the buffer's first word still the canary |
+| 16 | `0x5c` | `CAP_BLOCK_CACHE_STATS` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` | the cache record's first word still the canary |
+| 17 | `0x59` | `CAP_BLOCK_READ` | `a_xfer = 16385`: one byte past `MAX_BLOCK_SPAN` | `-EINVAL` | `0xea` | the destination's first word still the canary |
+| 18 | `0x4f` | `CAP_SHM_MAP` | `a0 = 69632`: 17 pages, one past `MAX_REGION_REQUEST_PAGES` | `-EINVAL` | `0xea` | the record still the canary |
+| 19 | `0x59` | `CAP_BLOCK_READ` | `a2 = BUF+20480`: the read-only page, real handle, LBA and length | `-EFAULT` | `0xf2` | LBA 16 re-read is byte-identical to the baseline (`1`) |
+| 20 | `0x4f` | `CAP_SHM_MAP` | `a1 = BUF+20480`: the read-only page, legal one-page length | `-EFAULT` | `0xf2` | a zero-length request still `-EINVAL` |
+| 21 | `0x4c` | `CAP_SHM` | `a0 = 2^32`: handle above `u32::MAX`, record real | `-EBADF` | `0xf7` | the record still the canary |
+| 22 | `0x4d` | `CAP_SHM_CLOSE` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` | the caller's live capability still answers `0x4c` with `0` |
+| 23 | `0x50` | `CAP_SHM_UNMAP` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` | the real handle's `0x50` is still `-ENOENT` (window state unchanged) |
+| 24 | `0x52` | `CAP_NOTIFY` | `a0 = 2^32`: handle above `u32::MAX`, zero signal bits | `-EBADF` | `0xf7` | `0x4c` on handle 1 still `-EACCES` (capability still live) |
 
 The kernel folds those bytes, in cell order, into ONE word with FNV-1a and
 prints it:
 
 ```
-service-0x84 proof: REFUSAL-MATRIX (rows 0x19 , matched 0x19 , fold 0x885f33b79cbeebe9) , REFUSAL-MATRIX matches
+service-0x84 proof: REFUSAL-MATRIX (rows 0x19 , matched 0x19 , no-effect 0x19 , fold 0x90964f5e84f81001) , REFUSAL-MATRIX matches
 ```
 
 The fold replaced a byte-per-cell layout, not because the bytes were wrong but
@@ -61,6 +61,56 @@ cannot trap. The fold is a diagnostic, not the verdict: a disagreement sets
 `REFUSAL-MATRIX ROW 0x…` line naming the row, the bad argument and both values.
 The gate pins the fold as one exact string, so any byte changing in any cell
 fails the boot.
+
+## The no-effect half: an answer proves a refusal, not abstention
+
+A cell's errno says what the row *answered*. It says nothing about what the row
+did on the way out. `0x4d` could truncate `a0 = 2^32` to `0` (the endpoint
+owner's live capability) and still return `EBADF` first; `0x50` could drop a
+window it then reported refusing; `0x59` could answer `EINVAL` after the
+sector was already staged. Every one of those would pass a matrix of errnos.
+
+So each cell has a second observation, made **after** its refusal, at
+`BUF+12544+8i` (`REFUSAL_WITNESS_SLOT`). The kernel compares it against the
+cell's own `witness`, counts it, prints a `REFUSAL-MATRIX NO-EFFECT ROW 0x…`
+line naming the cell when it disagrees, and folds its low byte into the **same**
+FNV-1a word after all 25 answer bytes. The pinned fold therefore covers
+refusal *and* abstention in one string, and the line grew a
+`no-effect 0x19` count beside `matched 0x19`.
+
+The witnesses use only state that already exists at matrix time. That is a
+constraint, not a preference: the proof pins its region release ledger at
+exactly four (`released == 4`, with the fourth release's two words being the
+transfer leg's evidence). A fifth `0x4f` request at matrix time — even one
+opened and closed immediately — makes that five and rewrites the last
+release's words, so a witness region of our own is not available. What is
+available is:
+
+- a **canary** (`REFUSAL_CANARY`, eight bytes) written before any probe into
+  the record, the cache record and the 512-byte transfer buffer the cells
+  name. A row that validated *after* writing leaves a different first word;
+- the **live capability from the WINDOW leg** (step 16g, handle at
+  `BUF+2536`). It is held until `EXIT` and its window was already dropped with
+  `0x50`, so `0x4d`'s witness can re-use the real handle through `0x4c` and
+  `0x50`'s can re-ask the real handle to drop a window it does not have;
+- a **baseline read of LBA 16** taken before the probes. The `0x59` write-side
+  cell re-reads the same sector afterwards and requires all 64 words to be
+  identical (and both reads to return 512 bytes).
+
+A cell whose destination is a foreign page or the read-only page cannot be
+inspected by ring 3, so its witness is the row still serving a legal call (or
+still refusing its shape): `0x42` writes geometry into the results page,
+`0x4f`'s pointer cells are re-asked a zero-length request, `0x5a`'s bad-record
+cell gets a legal geometry call. That is the strongest observation available,
+and the doc says so instead of implying the row's memory was watched.
+
+Why `0x50`'s witness is the *neighbouring* fact: at matrix time the only live
+capability has already dropped its window (that is the WINDOW leg's point), and
+creating one would spend a fifth release. The matrix therefore pins that the
+refused unmap left the holder's window state unchanged — the real handle's own
+`0x50` is still `-ENOENT`, and `0x4c` still answers its geometry. "The window
+is still readable" is asserted where a window exists: the WINDOW leg itself
+reads the peer's marker through the other space after the drop.
 
 ## The argument classes, and what each one costs
 
@@ -146,6 +196,21 @@ ring 3 on its own copy.
   badge-family row that answers `EINVAL` here: its check owns `a0` and `a1`
   together, so it belongs to the shape class, not this one, and moving it
   into this class would be changing the row to match the matrix.
+- **The no-effect pass could not use a region of its own.** The first design
+  opened a `0x4f` request at matrix time and closed it before the verdict.
+  The frames came back, but `REGION_RELEASED` became five and the LAST
+  release's words became the matrix region's, not the transfer leg's — the
+  requested-region leg went red with `released 5` while every matrix cell
+  matched. The independent fact that caught it is the proof's own release
+  ledger; the fix was to witness against state that already exists, not to
+  loosen the pin.
+- **The harness raced its own verdict.** The stop condition broke on the
+  verdict line's *prefix*, and the line is written in pieces: with the matrix
+  line slightly longer, the kill landed mid-line and the transcript lost five
+  leg names, so the gate reported 22 legs and blamed the kernel. It now waits
+  for the line's terminal word (`-- OK` / `-- FAILED`). A gate that truncates
+  the evidence it is about to assert is the same bug class as a print that
+  decides on a different value than it shows.
 - **The projection broke twice before it was a fold.** Packed words are
   positional, and every positional version had to know where a cell lands. One
   word panicked the kernel mid-verdict at the ninth cell (`attempt to shift
@@ -160,13 +225,21 @@ ring 3 on its own copy.
 
 ## Adding a cell
 
-1. Append a `RefusalRow { call, want, what }` to `REFUSAL_MATRIX` in
-   `src/service84.rs` and bump its length.
+1. Append a `RefusalRow { call, want, what, witness, witness_what }` to
+   `REFUSAL_MATRIX` in `src/service84.rs` and bump its length. The `witness` is
+   what the post-refusal observation must read; `witness_what` is the sentence
+   the `NO-EFFECT ROW` line prints when it does not.
 2. Append the probe to the matrix block in `userprog/prog_svc84.s`, writing its
-   answer at `BUF+12288+8*n` (the next free answer slot) and keeping any
-   argument record at `BUF+12800` or higher.
-3. Fold the new answer byte into the expected word — FNV-1a 64 over the low
-   byte of every answer in cell order — and update the row count and fold in
+   answer at `BUF+12288+8*n` and its witness at `BUF+12544+8*n` (the next free
+   slots in each array), and keep any argument record at `BUF+12800` or higher.
+   Prefer a witness that names state the row could have moved: a canary it
+   would have written, the real capability it could have truncated to, the
+   media it could have touched. A witness that cannot observe the row's effect
+   must say so in `witness_what`.
+3. Fold the new answer byte, then the new witness byte, into the expected
+   word — FNV-1a 64 over the low byte of every answer in cell order, followed by
+   every witness in cell order — and update the row and no-effect counts and
+   the fold in
    the `REFUSAL-MATRIX` assertion in `tools/svc84_proof_test.sh`, and the
    mutation string in `tools/gate_selfcheck.sh` (its `refusal-matrix cell` case
    corrupts the fold, so keep the new word in step or the meta-gate fails).
@@ -178,7 +251,9 @@ ring 3 on its own copy.
    the fold.
 4. Run `./tools/svc84_proof_test.sh` for **that cell alone** before adding the
    next one. A batch hides which cell moved; one cell per run makes the `ROW`
-   line attributable.
+   and `NO-EFFECT ROW` lines attributable. The no-effect pass was added this
+   way: 25 consecutive green boots, each one adding a single cell's answer and
+   witness, with the fold recomputed from the table before every run.
 5. If the cell fails, decide which side is wrong — the row or the doc — before
    changing the expectation. A cell corrected to match the code without that
    decision is how a proof starts agreeing with its bugs.

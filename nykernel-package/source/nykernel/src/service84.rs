@@ -796,6 +796,17 @@ pub struct RefusalRow {
     pub want: i64,
     /// The bad argument, printed by name when this cell disagrees.
     pub what: &'static str,
+    /// What the cell's NO-EFFECT witness must read. The proof makes one more
+    /// observation AFTER the refusal and folds it in: a canary still intact,
+    /// the real capability still answering, the holder's window state still
+    /// the one the refusal found, the sector byte-identical. A row that
+    /// answered correctly and still acted --
+    /// closed the truncated handle, wrote through the refused pointer, consumed
+    /// the frame, dropped the window -- leaves a different number here, so
+    /// `want` alone could not catch it.
+    pub witness: i64,
+    /// What the witness checks, printed by name when it disagrees.
+    pub witness_what: &'static str,
 }
 
 /// First byte of the matrix's answers: the fourth results page. The program
@@ -803,6 +814,24 @@ pub struct RefusalRow {
 /// same slot, so a shrink of the mapping is a page fault rather than a
 /// silent overwrite of the leg above it.
 pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
+
+/// First byte of the matrix's NO-EFFECT witnesses: one word per cell, in the
+/// same cell order, in the same fourth results page. An answer proves the row
+/// refused; a witness proves it did not act on the way out -- the canary the
+/// refused call would have written is still there, the real capability it
+/// could have truncated its `a0` into still answers, the holder's window state
+/// is still the one the refusal found, the sector it could have touched is
+/// byte-identical.
+/// The slot is separate from the answers because the two are different
+/// claims about the same call and a wrong one must name which claim failed.
+pub const REFUSAL_WITNESS_SLOT: u64 = 12544;
+
+/// The canary every no-effect witness looks for: eight bytes written into the
+/// record, cache-stats record and transfer buffer a matrix probe names,
+/// BEFORE any probe runs. A refused row must not have written them. The value
+/// is arbitrary; it is spelled out here so the probe, the table and the doc
+/// cannot drift from each other.
+pub const REFUSAL_CANARY: i64 = 0x4e4f_2d45_4646_4543;
 
 /// The cells, in the order `prog_svc84.s` writes them. Every one of these
 /// rows settles its arguments before it touches anything, which is what lets
@@ -812,126 +841,176 @@ pub const REFUSAL_MATRIX: [RefusalRow; 25] = [
         call: CALL_GFX_MODE_INTO,
         want: EFAULT,
         what: "GFX_MODE_INTO with a misaligned, non-user pointer",
+        witness: 0,
+        witness_what: "the row still answers a legal GFX_MODE_INTO with 0",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_INFO,
         want: EBADF,
         what: "CAP_BLOCK_INFO with a forged block handle",
+        witness: REFUSAL_CANARY,
+        witness_what: "the forged 0x5a left its real record untouched",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_CACHE_STATS,
         want: EBADF,
         what: "CAP_BLOCK_CACHE_STATS with a forged block handle",
+        witness: REFUSAL_CANARY,
+        witness_what: "the forged 0x5c left its cache-stats record untouched",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_WRITE,
         want: EBADF,
         what: "CAP_BLOCK_WRITE with a forged block handle",
+        witness: REFUSAL_CANARY,
+        witness_what: "the forged 0x5b left the buffer's first word untouched",
     },
     RefusalRow {
         call: CALL_DISPLAY_DETACH,
         want: EACCES,
         what: "DISPLAY_DETACH with no slot to give back",
+        witness: EACCES,
+        witness_what: "a second detach is refused the same way: the refusal freed nothing",
     },
     RefusalRow {
         call: CALL_DISPLAY_SURFACE_RELEASE,
         want: ENOENT,
         what: "DISPLAY_SURFACE_RELEASE with no tile to give back",
+        witness: ENOENT,
+        witness_what: "a second release is refused the same way: the refusal freed nothing",
     },
     RefusalRow {
         call: CALL_CAP_SHM_MAP,
         want: EINVAL,
         what: "CAP_SHM_MAP with a length that is not a multiple of the page size",
+        witness: REFUSAL_CANARY,
+        witness_what: "the refused misaligned request wrote no record and consumed no frame",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_READ,
         want: EINVAL,
         what: "CAP_BLOCK_READ with a zero transfer length",
+        witness: REFUSAL_CANARY,
+        witness_what: "the refused zero-length read left its destination untouched",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_WRITE,
         want: EINVAL,
         what: "CAP_BLOCK_WRITE with a zero transfer length",
+        witness: EROFS,
+        witness_what: "a legal write through the real handle still reaches the media (EROFS)",
     },
     RefusalRow {
         call: CALL_CAP_SHM_MAP,
         want: EINVAL,
         what: "CAP_SHM_MAP with a zero length",
+        witness: REFUSAL_CANARY,
+        witness_what: "the refused zero-length request wrote no record",
     },
     RefusalRow {
         call: CALL_CAP_SHM_MAP,
         want: EFAULT,
         what: "CAP_SHM_MAP with a misaligned, non-user record pointer",
+        witness: EINVAL,
+        witness_what: "the row still refuses its zero-length shape after the bad pointer",
     },
     RefusalRow {
         call: CALL_CAP_SHM,
         want: EFAULT,
         what: "CAP_SHM with a misaligned, non-user record pointer",
+        witness: 0,
+        witness_what: "the live region's geometry still answers through its real handle",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_INFO,
         want: EFAULT,
         what: "CAP_BLOCK_INFO with a misaligned, non-user record pointer",
+        witness: 0,
+        witness_what: "the row still answers a legal geometry call with 0",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_READ,
         want: EBADF,
         what: "CAP_BLOCK_READ with a handle above u32::MAX",
+        witness: REFUSAL_CANARY,
+        witness_what: "the oversized read left its destination untouched",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_INFO,
         want: EBADF,
         what: "CAP_BLOCK_INFO with a handle above u32::MAX",
+        witness: REFUSAL_CANARY,
+        witness_what: "the oversized 0x5a left its record untouched",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_WRITE,
         want: EBADF,
         what: "CAP_BLOCK_WRITE with a handle above u32::MAX",
+        witness: REFUSAL_CANARY,
+        witness_what: "the oversized write left the buffer's first word untouched",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_CACHE_STATS,
         want: EBADF,
         what: "CAP_BLOCK_CACHE_STATS with a handle above u32::MAX",
+        witness: REFUSAL_CANARY,
+        witness_what: "the oversized 0x5c left its cache-stats record untouched",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_READ,
         want: EINVAL,
         what: "CAP_BLOCK_READ with a length past MAX_BLOCK_SPAN",
+        witness: REFUSAL_CANARY,
+        witness_what: "the oversized read left its destination untouched",
     },
     RefusalRow {
         call: CALL_CAP_SHM_MAP,
         want: EINVAL,
         what: "CAP_SHM_MAP with a length past MAX_REGION_REQUEST_PAGES",
+        witness: REFUSAL_CANARY,
+        witness_what: "the oversized request wrote no record and consumed no frame",
     },
     RefusalRow {
         call: CALL_CAP_BLOCK_READ,
         want: EFAULT,
         what: "CAP_BLOCK_READ writing into a read-only user page",
+        witness: 1,
+        witness_what: "LBA 16 re-read after the refusal is byte-identical to the baseline",
     },
     RefusalRow {
         call: CALL_CAP_SHM_MAP,
         want: EFAULT,
         what: "CAP_SHM_MAP recording into a read-only user page",
+        witness: EINVAL,
+        witness_what: "the row still refuses its zero-length shape after the read-only record",
     },
     RefusalRow {
         call: CALL_CAP_SHM,
         want: EBADF,
         what: "CAP_SHM with a handle above u32::MAX",
+        witness: REFUSAL_CANARY,
+        witness_what: "the oversized geometry call left its record untouched",
     },
     RefusalRow {
         call: CALL_CAP_SHM_CLOSE,
         want: EBADF,
         what: "CAP_SHM_CLOSE with a handle above u32::MAX",
+        witness: 0,
+        witness_what: "the caller's live capability is still usable through 0x4c after the refused close",
     },
     RefusalRow {
         call: CALL_CAP_SHM_UNMAP,
         want: EBADF,
         what: "CAP_SHM_UNMAP with a handle above u32::MAX",
+        witness: ENOENT,
+        witness_what: "the live capability still has no window to drop after the refused unmap",
     },
     RefusalRow {
         call: CALL_CAP_NOTIFY,
         want: EBADF,
         what: "CAP_NOTIFY with a handle above u32::MAX",
+        witness: EACCES,
+        witness_what: "the endpoint capability is still live (wrong kind, not EBADF) after the refused notify",
     },
 ];
 
@@ -2407,8 +2486,12 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
     // in `matched` and is printed by name as a ROW line -- so a hash that
     // pins the whole sequence is exactly the strength this needs, and the gate
     // asserts it as one exact string.
-    let mut matrix_fold = 0xcbf2_9ce4_8422_2325u64; // FNV-1a 64 offset basis
+    let witness_at = a0 + REFUSAL_WITNESS_SLOT;
+    let witness_range_ok =
+        crate::memory::paging::user_range_ok(witness_at, 8 * matrix_len, false);
     let mut matrix_ok = matrix_range_ok;
+    let mut matrix_witnessed = 0u64;
+    let mut matrix_fold = 0xcbf2_9ce4_8422_2325u64; // FNV-1a 64 offset basis
     if matrix_range_ok {
         for (index, row) in REFUSAL_MATRIX.iter().enumerate() {
             let got = unsafe {
@@ -2432,6 +2515,40 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
             }
         }
         matrix_ok &= matrix_matched == matrix_len as u64;
+        // ---- the NO-EFFECT pass --------------------------------------
+        // Same cells, same order, a different question: after the refusal,
+        // what does the row's own witness read? The bytes are folded into the
+        // SAME FNV stream, after every answer byte, so the pinned word pins
+        // the whole claim -- refusal AND abstention -- in one string, and a
+        // witness that changes changes the fold even when every errno still
+        // matches. A witness disagreement is counted and printed by name, and
+        // it fails the leg, so the fold never carries a verdict on its own.
+        if witness_range_ok {
+            for (index, row) in REFUSAL_MATRIX.iter().enumerate() {
+                let got = unsafe {
+                    core::ptr::read_unaligned((witness_at + 8 * index as u64) as *const i64)
+                };
+                matrix_fold = (matrix_fold ^ (got as u64 & 0xff)).wrapping_mul(0x0000_0100_0000_01b3);
+                if got == row.witness {
+                    matrix_witnessed += 1;
+                } else {
+                    crate::serial_println!(
+                        "  service-0x84 proof: REFUSAL-MATRIX NO-EFFECT ROW {:#x} ({}) got {:#x} , want {:#x}",
+                        row.call,
+                        row.witness_what,
+                        got as u64,
+                        row.witness as u64
+                    );
+                }
+            }
+            matrix_ok &= matrix_witnessed == matrix_len as u64;
+        } else {
+            crate::serial_println!(
+                "  service-0x84 proof: REFUSAL-MATRIX no-effect witnesses at {:#x} are not mapped",
+                witness_at
+            );
+            matrix_ok = false;
+        }
     } else {
         crate::serial_println!(
             "  service-0x84 proof: REFUSAL-MATRIX answers at {:#x} are not mapped",
@@ -2439,9 +2556,10 @@ fn serve_proof_done(a0: u64, a1: u64, from_ring3: bool) -> i64 {
         );
     }
     crate::serial_println!(
-        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , fold {:#018x}) , REFUSAL-MATRIX {}",
+        "  service-0x84 proof: REFUSAL-MATRIX (rows {:#x} , matched {:#x} , no-effect {:#x} , fold {:#018x}) , REFUSAL-MATRIX {}",
         matrix_len as u64,
         matrix_matched,
+        matrix_witnessed,
         matrix_fold,
         claim!(ok, matrix_ok)
     );

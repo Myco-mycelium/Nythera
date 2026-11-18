@@ -131,7 +131,14 @@ QPID=$!
 
 waited=0
 while [[ $waited -lt 240 ]]; do
-    grep -q "service-0x84 proof: a ring-3 program" "$SERIAL" 2>/dev/null && break
+    # Wait for the verdict to be FINISHED, not merely started. The old
+    # condition broke on the verdict's own prefix, and a line that long is
+    # written in pieces: the kill below could land in the middle of it and
+    # leave a transcript whose last leg is half a line -- which reads as
+    # "22 legs instead of 27" and blames the kernel for the harness's
+    # impatience. The terminal word is the print's last argument, so its
+    # presence means the line is whole.
+    grep -qE "service-0x84 proof: a ring-3 program.*-- (OK|FAILED)" "$SERIAL" 2>/dev/null && break
     grep -q "KERNEL PANIC" "$SERIAL" 2>/dev/null && break
     sleep 0.5
     waited=$((waited + 1))
@@ -331,9 +338,12 @@ else
     # FNV-1a -- so this assertion pins EVERY cell's errno, not just the row
     # count, and it needs no per-word bookkeeping as the matrix grows. A cell
     # that starts being served instead of refused changes its byte and the fold
-    # with it, and the boot fails here.
-    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0x19 , matched 0x19 , fold 0x885f33b79cbeebe9)"* ]]; then
-        ok "the refusal matrix refused every cell it pins from ring 3 with the typed errno the row's own rule names (0x42 misaligned non-user pointer -> EFAULT, 0x5a/0x5b/0x5c forged block handles -> EBADF, 0x66 detach with no slot -> EACCES, 0x6c release with no tile -> ENOENT, 0x4f non-page-aligned length -> EINVAL, 0x59 zero-length read and 0x5b zero-length write -> EINVAL, 0x4f zero length -> EINVAL, 0x4f misaligned non-user record -> EFAULT, 0x4c and 0x5a misaligned non-user records -> EFAULT, 0x59/0x5a/0x5b/0x5c handles above u32::MAX -> EBADF, 0x59 oversized read and 0x4f oversized request -> EINVAL)"
+    # with it, and the boot fails here. Since the no-effect pass landed the same
+    # word also folds each cell's post-refusal witness, after all 25 answers:
+    # a row that answers correctly and still acts changes the fold even when
+    # every errno in the matrix is unchanged.
+    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0x19 , matched 0x19 , no-effect 0x19 , fold 0x90964f5e84f81001)"* ]]; then
+        ok "the refusal matrix refused every cell it pins from ring 3 with the typed errno the row's own rule names (0x42 misaligned non-user pointer -> EFAULT, 0x5a/0x5b/0x5c forged block handles -> EBADF, 0x66 detach with no slot -> EACCES, 0x6c release with no tile -> ENOENT, 0x4f non-page-aligned length -> EINVAL, 0x59 zero-length read and 0x5b zero-length write -> EINVAL, 0x4f zero length -> EINVAL, 0x4f misaligned non-user record -> EFAULT, 0x4c and 0x5a misaligned non-user records -> EFAULT, 0x59/0x5a/0x5b/0x5c handles above u32::MAX -> EBADF, 0x59 oversized read and 0x4f oversized request -> EINVAL) -- and every cell's NO-EFFECT witness held: the canary the refused call would have written was intact in the record, the cache record, the transfer buffer and each read destination, the caller's own live capability still answered geometry through 0x4c and still had no window to drop, each absent-state row answered its second call the same way, and LBA 16 was byte-identical to the pre-probe baseline"
     else
         bad "the refusal matrix did not hold (see the REFUSAL-MATRIX line and any ROW line naming a mismatch)"
     fi

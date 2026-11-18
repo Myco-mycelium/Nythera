@@ -1889,6 +1889,66 @@ _start:
        the errno each cell must be; the kernel leg compares them and the
        proof gate pins the packed word. */
 
+    /* ---- NO-EFFECT WITNESSES: the state each refusal could still move ----
+       An answer proves a row refused; it does not prove the row ABSTAINED. A
+       0x4d that answered EBADF and still closed the truncated handle, a 0x50
+       that answered EBADF and still dropped the window, a 0x59 that answered
+       EINVAL and still touched the media: every one of those passes a matrix
+       of errnos alone. So every cell gets a second observation, made AFTER
+       its refusal, at BUF+12544+8i.
+
+       The observations have to use state that ALREADY EXISTS here, because
+       the proof pins its region release ledger at exactly four: a fifth
+       request at matrix time -- even one closed immediately -- makes
+       `released` five and rewrites the LAST release's words, which are the
+       transfer leg's evidence. So:
+         - a CANARY (0x4e4f2d4546464543) is written into the record, the
+           cache-stats record and the 512-byte transfer buffer the probes
+           name, so "the row wrote nothing" is a value and not a hope;
+         - the region from the WINDOW leg (step 16g) is still alive and held
+           by THIS process at matrix time (its window was dropped by 0x50 in
+           step 16h, its capability survives to EXIT). Its handle is at
+           BUF+2536, so the 0x4d cell can re-use the caller's own capability
+           through 0x4c and the 0x50 cell can re-ask it to drop a window it
+           no longer has;
+         - a BASELINE read of LBA 16, so the 0x59 write-side cell can re-read
+           the same sector afterwards and compare it byte for byte. */
+    movabs $0x4e4f2d4546464543, %rcx
+    mov %rcx, 12800(%rbx)
+    mov %rcx, 12808(%rbx)
+    mov %rcx, 12816(%rbx)
+    mov %rcx, 12824(%rbx)
+    mov %rcx, 12832(%rbx)
+    mov %rcx, 12840(%rbx)
+    lea 12928(%rbx), %rdi
+    mov $64, %rcx
+1:  movabs $0x4e4f2d4546464543, %rax
+    mov %rax, (%rdi)
+    add $8, %rdi
+    dec %rcx
+    jnz 1b
+    /* Every witness slot starts at zero. A cell whose observation has not
+       been added yet pins its slot at zero, so a sweep can add one cell per
+       boot and each intermediate run still asserts something true. */
+    xor %rax, %rax
+    mov $25, %rcx
+    lea 12544(%rbx), %rdi
+2:  mov %rax, (%rdi)
+    add $8, %rdi
+    dec %rcx
+    jnz 2b
+    /* The baseline sector: LBA 16 (the ISO volume descriptor), the same
+       sector the proof already reads, taken before any probe can disturb
+       anything. Cell 19's witness compares against it. */
+    mov $6, %rdi
+    mov $16, %rsi
+    lea 13440(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 12520(%rbx)
+
     /* Row 0x42 GFX_MODE_INTO, a0 = 0x1001: MISALIGNED and not user-
        accessible. The row's validator runs before anything is written, so
        this is a refusal that cannot disturb the results region. (Note what
@@ -1903,6 +1963,18 @@ _start:
     mov $0x42, %rax
     int $0x84
     mov %rax, 12288(%rbx)
+    /* NO-EFFECT, cell 0: the refused pointer named an unmapped page, so
+       there is no destination of ours to inspect. What can be observed is
+       that the row itself still serves a legal call: a row that half-acted
+       on the bad pointer would not answer this one with 0. */
+    lea 12496(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x42, %rax
+    int $0x84
+    mov %rax, 12544(%rbx)
 
     /* Row 0x5a CAP_BLOCK_INFO, handle 31: FORGED. a1 names a real 24-byte
        record inside the fourth page, so the refusal cannot be the pointer:
@@ -1916,6 +1988,10 @@ _start:
     mov $0x5a, %rax
     int $0x84
     mov %rax, 12296(%rbx)
+    /* NO-EFFECT, cell 1: the forged handle is resolved before the record
+       is written, so the record's first word must still be the canary. */
+    mov 12800(%rbx), %rcx
+    mov %rcx, 12552(%rbx)
 
     /* Row 0x5c CAP_BLOCK_CACHE_STATS, handle 31: FORGED, with a real
        16-byte record in the fourth page. Same rule as 0x5a -- the handle
@@ -1928,6 +2004,9 @@ _start:
     mov $0x5c, %rax
     int $0x84
     mov %rax, 12304(%rbx)
+    /* NO-EFFECT, cell 2: same rule on the cache-stats record. */
+    mov 12832(%rbx), %rcx
+    mov %rcx, 12560(%rbx)
 
     /* Row 0x5b CAP_BLOCK_WRITE, handle 31: FORGED, with a real 512-byte
        buffer (in the fourth page) and a legal transfer length, so the only
@@ -1942,6 +2021,10 @@ _start:
     mov $0x5b, %rax
     int $0x84
     mov %rax, 12312(%rbx)
+    /* NO-EFFECT, cell 3: the forged write never staged the buffer, so the
+       canary in its first word is still there. */
+    mov 12928(%rbx), %rcx
+    mov %rcx, 12568(%rbx)
 
     /* Row 0x66 DISPLAY_DETACH, with NOTHING to detach: this runs after the
        detachment above, so the caller's slot is already back and the row
@@ -1957,6 +2040,16 @@ _start:
     mov $0x66, %rax
     int $0x84
     mov %rax, 12320(%rbx)
+    /* NO-EFFECT, cell 4: the absent state is still absent. A detach that
+       half-acted would not answer the same call the same way twice. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x66, %rax
+    int $0x84
+    mov %rax, 12576(%rbx)
 
     /* Row 0x6c DISPLAY_SURFACE_RELEASE, with no tile: the churn above gave
        every tile it opened back, so the record the row looks for is gone.
@@ -1971,6 +2064,16 @@ _start:
     mov $0x6c, %rax
     int $0x84
     mov %rax, 12328(%rbx)
+    /* NO-EFFECT, cell 5: the tile record is still absent, so the second
+       release is refused for the same reason as the first. */
+    xor %rdi, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x6c, %rax
+    int $0x84
+    mov %rax, 12584(%rbx)
 
     /* Row 0x4f CAP_SHM_MAP, a0 = 100: a length in bytes that is NOT a
        multiple of the page size, with a real 32-byte record pointer. The row
@@ -1986,6 +2089,10 @@ _start:
     mov $0x4f, %rax
     int $0x84
     mov %rax, 12336(%rbx)
+    /* NO-EFFECT, cell 6: the shape check runs before the mapping source,
+       so the record it was handed is untouched and no frame was taken. */
+    mov 12800(%rbx), %rcx
+    mov %rcx, 12592(%rbx)
 
     /* Row 0x59 CAP_BLOCK_READ, transfer length 0. The row's shape check
        (`a_xfer == 0 || a_xfer > MAX_BLOCK_SPAN || a_rights != 0`) runs
@@ -1999,6 +2106,10 @@ _start:
     mov $0x59, %rax
     int $0x84
     mov %rax, 12344(%rbx)
+    /* NO-EFFECT, cell 7: the zero-length read reaches no sector and writes
+       no byte of the destination it was given. */
+    mov 12800(%rbx), %rcx
+    mov %rcx, 12600(%rbx)
 
     /* Row 0x5b CAP_BLOCK_WRITE, transfer length 0. Same shape check, same
        answer, and again before authority is resolved and long before any
@@ -2011,6 +2122,17 @@ _start:
     mov $0x5b, %rax
     int $0x84
     mov %rax, 12352(%rbx)
+    /* NO-EFFECT, cell 8: the zero-length write must not have poisoned the
+       row. A legal write through the real handle still passes authority and
+       lets the MEDIA refuse it (ATAPI is read-only -> EROFS). */
+    mov $6, %rdi
+    mov $16, %rsi
+    lea 12928(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x5b, %rax
+    int $0x84
+    mov %rax, 12608(%rbx)
 
     /* Row 0x4f CAP_SHM_MAP, length 0. `a0 == 0` is part of the same shape
        check as the alignment gate, so a zero-length request is -EINVAL and
@@ -2023,6 +2145,10 @@ _start:
     mov $0x4f, %rax
     int $0x84
     mov %rax, 12360(%rbx)
+    /* NO-EFFECT, cell 9: nothing was asked of the mapping source, so the
+       record is still the canary. */
+    mov 12800(%rbx), %rcx
+    mov %rcx, 12616(%rbx)
 
     /* Row 0x4f CAP_SHM_MAP, record pointer 0x1001: misaligned AND not user-
        accessible, with a legal length, so the refusal is the pointer. The
@@ -2039,6 +2165,18 @@ _start:
     mov $0x4f, %rax
     int $0x84
     mov %rax, 12368(%rbx)
+    /* NO-EFFECT, cell 10: the row was asked with a bad pointer and its
+       shape check is still first. A legal-record, zero-length request is
+       still refused -EINVAL: the refused call left the mapping source
+       alone and the row in the state it was in. */
+    xor %rdi, %rdi
+    lea 12744(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 12624(%rbx)
 
     /* Row 0x4c CAP_SHM (geometry), record pointer 0x1001: misaligned and not
        user-accessible. This row validates the record BEFORE it resolves the
@@ -2054,6 +2192,17 @@ _start:
     mov $0x4c, %rax
     int $0x84
     mov %rax, 12376(%rbx)
+    /* NO-EFFECT, cell 11: the caller's own live capability (the WINDOW
+       leg's, released only by EXIT) was not touched by the refused geometry
+       call, so it still answers geometry with 0. */
+    mov 2536(%rbx), %rdi
+    lea 12744(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 12632(%rbx)
 
     /* Row 0x5a CAP_BLOCK_INFO, record pointer 0x1001: misaligned and not
        user-accessible, handle forged. This block row also validates the
@@ -2069,6 +2218,16 @@ _start:
     mov $0x5a, %rax
     int $0x84
     mov %rax, 12384(%rbx)
+    /* NO-EFFECT, cell 12: the refused record was a foreign page; the row
+       still serves the same call with a real record and the real handle. */
+    mov $6, %rdi
+    lea 12744(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x5a, %rax
+    int $0x84
+    mov %rax, 12640(%rbx)
 
     /* Row 0x59 CAP_BLOCK_READ, handle 2^32: ABOVE the u32 handle space.
        Every block row's FIRST check is this EBADF arm -- a handle that cannot
@@ -2084,6 +2243,10 @@ _start:
     mov $0x59, %rax
     int $0x84
     mov %rax, 12392(%rbx)
+    /* NO-EFFECT, cell 13: the guard is the only thing between 2^32 and
+       `a0 as u32`; the destination the call named is still the canary. */
+    mov 12928(%rbx), %rcx
+    mov %rcx, 12648(%rbx)
 
     /* Row 0x5a CAP_BLOCK_INFO, handle 2^32. Same arm, same answer: the row
        would rather refuse a handle it cannot even name than let it reach the
@@ -2096,6 +2259,10 @@ _start:
     mov $0x5a, %rax
     int $0x84
     mov %rax, 12400(%rbx)
+    /* NO-EFFECT, cell 14: the record handed to the oversized call is still
+       the canary -- the row refused before it wrote. */
+    mov 12800(%rbx), %rcx
+    mov %rcx, 12656(%rbx)
 
     /* Row 0x5b CAP_BLOCK_WRITE, handle 2^32, with a legal LBA, a real buffer
        and a legal length: the handle is the ONLY malformed argument, so an
@@ -2108,6 +2275,10 @@ _start:
     mov $0x5b, %rax
     int $0x84
     mov %rax, 12408(%rbx)
+    /* NO-EFFECT, cell 15: the truncated handle would have named a device;
+       the buffer it named is still the canary, so nothing was staged. */
+    mov 12928(%rbx), %rcx
+    mov %rcx, 12664(%rbx)
 
     /* Row 0x5c CAP_BLOCK_CACHE_STATS, handle 2^32 -- the fourth and last
        block row whose first check is this arm. The answer slot lands on
@@ -2122,6 +2293,10 @@ _start:
     mov $0x5c, %rax
     int $0x84
     mov %rax, 12416(%rbx)
+    /* NO-EFFECT, cell 16: no hit/miss record was written for a handle the
+       row refused. */
+    mov 12832(%rbx), %rcx
+    mov %rcx, 12672(%rbx)
 
     /* Row 0x59 CAP_BLOCK_READ, transfer length 16385: one byte past the
        row's own MAX_BLOCK_SPAN (8 x 2048). The same shape check that refuses
@@ -2135,6 +2310,10 @@ _start:
     mov $0x59, %rax
     int $0x84
     mov %rax, 12424(%rbx)
+    /* NO-EFFECT, cell 17: too much was asked for, so no sector was read
+       and the destination's first word is still the canary. */
+    mov 12928(%rbx), %rcx
+    mov %rcx, 12680(%rbx)
 
     /* Row 0x4f CAP_SHM_MAP, length 17 pages: one page past the row's own
        MAX_REGION_REQUEST_PAGES. The size cap is checked with the alignment
@@ -2148,6 +2327,10 @@ _start:
     mov $0x4f, %rax
     int $0x84
     mov %rax, 12432(%rbx)
+    /* NO-EFFECT, cell 18: the size cap is checked with the shape, so the
+       record is untouched. */
+    mov 12800(%rbx), %rcx
+    mov %rcx, 12688(%rbx)
 
     /* Row 0x59 CAP_BLOCK_READ, destination a2 = BUF+20480: the proof's FIFTH
        page, which the kernel maps USER_ACCESSIBLE and NOT WRITABLE. Nothing
@@ -2166,6 +2349,37 @@ _start:
     mov $0x59, %rax
     int $0x84
     mov %rax, 12440(%rbx)
+    /* NO-EFFECT, cell 19: the refused destination could not have been
+       written (it is not writable), so the observable effect a broken row
+       could still have is on the MEDIA. Re-read LBA 16 and compare it with
+       the baseline taken before any probe ran. The witness is 1 only when
+       both reads returned 512 bytes and all 64 words agree. */
+    mov $6, %rdi
+    mov $16, %rsi
+    lea 13952(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, %rdx
+    cmpq $512, %rdx
+    jne 6f
+    cmpq $512, 12520(%rbx)
+    jne 6f
+    lea 13440(%rbx), %rsi
+    lea 13952(%rbx), %rdi
+    mov $64, %rcx
+5:  mov (%rsi), %r8
+    cmp (%rdi), %r8
+    jne 6f
+    add $8, %rsi
+    add $8, %rdi
+    dec %rcx
+    jnz 5b
+    mov $1, %rcx
+    jmp 7f
+6:  xor %rcx, %rcx
+7:  mov %rcx, 12696(%rbx)
 
     /* Row 0x4f CAP_SHM_MAP, record a1 = BUF+20480: the same read-only page,
        with a legal one-page length and no other claim. The row checks the
@@ -2183,6 +2397,17 @@ _start:
     mov $0x4f, %rax
     int $0x84
     mov %rax, 12448(%rbx)
+    /* NO-EFFECT, cell 20: the read-only record was refused before the
+       mapping source was asked, and the row still refuses a zero-length
+       request -- no frame was consumed, nothing was mapped. */
+    xor %rdi, %rdi
+    lea 12744(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 12704(%rbx)
 
     /* Row 0x4c CAP_SHM, handle 2^32: ABOVE the u32 handle space, with a real
        24-byte record in the fourth page. The geometry row's FIRST check is
@@ -2199,6 +2424,10 @@ _start:
     mov $0x4c, %rax
     int $0x84
     mov %rax, 12456(%rbx)
+    /* NO-EFFECT, cell 21: a0 as u32 would be 0, the endpoint owner's live
+       capability; the record the call named is still the canary. */
+    mov 12800(%rbx), %rcx
+    mov %rcx, 12712(%rbx)
 
     /* Row 0x4d CAP_SHM_CLOSE, handle 2^32: the close row's EBADF arm, ahead
        of the shape check, so this cell answers the handle and not the (also
@@ -2214,6 +2443,18 @@ _start:
     mov $0x4d, %rax
     int $0x84
     mov %rax, 12464(%rbx)
+    /* NO-EFFECT, cell 22: truncating 2^32 to 0 would have answered for the
+       endpoint owner's slot; what matters is that the caller's OWN region is
+       still held. The WINDOW leg's capability (BUF+2536) is released only by
+       EXIT, so geometry through it must still answer 0 here. */
+    mov 2536(%rbx), %rdi
+    lea 12744(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 12720(%rbx)
 
     /* Row 0x50 CAP_SHM_UNMAP, handle 2^32: the window-drop row's EBADF arm.
        Its neighbouring refusal would be ENOENT (a real handle with no window
@@ -2229,6 +2470,19 @@ _start:
     mov $0x50, %rax
     int $0x84
     mov %rax, 12472(%rbx)
+    /* NO-EFFECT, cell 23: the refused unmap must not have dropped a window.
+       This holder's window was already dropped by the WINDOW leg (step 16h)
+       and its capability survives to EXIT, so the same call on the REAL
+       handle is still -ENOENT: the machine's own record that the refused
+       call neither dropped the window nor handed the holder a new one. */
+    mov 2536(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x50, %rax
+    int $0x84
+    mov %rax, 12728(%rbx)
 
     /* Row 0x52 CAP_NOTIFY, handle 2^32: the badge family's EBADF arm, the
        first check before the shape and before the endpoint's own kind/right
@@ -2246,6 +2500,17 @@ _start:
     mov $0x52, %rax
     int $0x84
     mov %rax, 12480(%rbx)
+    /* NO-EFFECT, cell 24: handle 1 is still a live endpoint capability.
+       0x4c on it is the wrong KIND (-EACCES), not a missing handle
+       (-EBADF): the refusal consumed nothing and truncated nothing. */
+    mov $1, %rdi
+    lea 12744(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 12736(%rbx)
 
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi
