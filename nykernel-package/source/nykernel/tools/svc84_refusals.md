@@ -13,7 +13,7 @@ against what that row's own documented rule says it should be.
 
 ## What is probed
 
-Nineteen cells, in this order, all of them run from ring 3 at the end of
+Twenty-one cells, in this order, all of them run from ring 3 at the end of
 `userprog/prog_svc84.s`, after the program has detached its own display slot
 and given back every surface tile it opened:
 
@@ -38,12 +38,14 @@ and given back every surface tile it opened:
 | 16 | `0x5c` | `CAP_BLOCK_CACHE_STATS` | `a0 = 2^32`: handle above `u32::MAX` | `-EBADF` | `0xf7` |
 | 17 | `0x59` | `CAP_BLOCK_READ` | `a_xfer = 16385`: one byte past `MAX_BLOCK_SPAN` | `-EINVAL` | `0xea` |
 | 18 | `0x4f` | `CAP_SHM_MAP` | `a0 = 69632`: 17 pages, one past `MAX_REGION_REQUEST_PAGES` | `-EINVAL` | `0xea` |
+| 19 | `0x59` | `CAP_BLOCK_READ` | `a2 = BUF+20480`: the read-only page, real handle, LBA and length | `-EFAULT` | `0xf2` |
+| 20 | `0x4f` | `CAP_SHM_MAP` | `a1 = BUF+20480`: the read-only page, legal one-page length | `-EFAULT` | `0xf2` |
 
 The kernel folds those bytes, in cell order, into ONE word with FNV-1a and
 prints it:
 
 ```
-service-0x84 proof: REFUSAL-MATRIX (rows 0x13 , matched 0x13 , fold 0xcb31b975422b2fcd) , REFUSAL-MATRIX matches
+service-0x84 proof: REFUSAL-MATRIX (rows 0x15 , matched 0x15 , fold 0xd7e53dca424f094d) , REFUSAL-MATRIX matches
 ```
 
 The fold replaced a byte-per-cell layout, not because the bytes were wrong but
@@ -66,13 +68,16 @@ fails the boot.
 | absent state | `0x66`, `0x6c` | no slot, no tile: two "nothing to give back" rows with two different names (`EACCES`, `ENOENT`) |
 | handle above `u32::MAX` | `0x59`, `0x5a`, `0x5b`, `0x5c` | the `EBADF` arm is each block row's FIRST check, before the record, the length or authority — a handle that cannot be named is never truncated into one that can |
 | oversized length | `0x59`, `0x4f` | each row's own cap (`MAX_BLOCK_SPAN`, `MAX_REGION_REQUEST_PAGES`) is checked with the zero and alignment checks, so too much is refused before a sector is read or a frame allocated |
+| read-only destination | `0x59`, `0x4f` | the out-pointer is validated for **writing**, so a page that is present and user-accessible with its write bit clear is refused before a sector is read or a region allocated |
 
 Cells 4 and 5 are why a matrix beats a checklist: swapping those two errnos
 would look right row by row and fail here. Cells 1 and 12 are the same row
 (`0x5a`) with two different bad arguments, answering `EBADF` when the record is
 real and `EFAULT` when it is not — which is only true because the row validates
 the record *before* it resolves the handle, and the matrix is what holds it to
-that order.
+that order. Cells 19 and 20 are the same idea on the write side: one
+block row and one region row, both handed the one page a process may read but
+may not write, and both answering `-EFAULT` for that reason alone.
 
 ## The two rules a cell has to obey
 
@@ -81,7 +86,7 @@ then refuse mutates the state other legs read back. The first attempt at this
 matrix blamed `CAP_SHM_MAP (0x4f)` for four red legs ("it aligns the length and
 maps"). That was wrong, and reading `serve_region_request` showed it: `a0 % 4096`
 is checked before the mapping source is asked. The red legs were rule 2 below.
-The blame cost a round trip; `0x4f` has three cells today, all of them refused
+The blame cost a round trip; `0x4f` has four cells today, all of them refused
 before a frame is allocated.
 
 **2. The answers live in their own page.** `REFUSAL_MATRIX_SLOT` is 12288, the
@@ -92,6 +97,17 @@ from, and the same four legs failed a second time for a second reason. Probes
 write at `BUF+12288+8i` and keep argument records at `BUF+12800` and above —
 the records lived at 12416 until the seventeenth cell's slot needed that byte,
 and they moved in the same change rather than sharing it.
+
+**3. The write side needs a page that cannot be written.** A non-user pointer
+is refused by the read check and the write check alike, so every earlier
+pointer cell proved neither. The write-side cells need a page that is
+**USER_ACCESSIBLE and not WRITABLE**, and `svc84_proof.rs` maps exactly one:
+`PROOF_RO` at `CODE+0x1_5000`, a fifth page, mapped with its own flag set (not
+the results pages' `flags`) so a later edit to those cannot quietly make it
+writable and turn both cells into successes. Nothing ever writes through it;
+the cells are EFAULT only because the rows asked for a WRITABLE range, and a
+row that passed `false` or skipped the check would serve the call and fault
+ring 3 on its own copy.
 
 ## What this found
 
@@ -105,6 +121,14 @@ and they moved in the same change rather than sharing it.
 - **`0x4f` refuses a non-page-aligned length with `-EINVAL`** (cell 6), and the
   earlier claim that it aligned the length was the matrix's own bug being
   blamed on a row.
+- **Both destination checks ask for a writable range.** `CAP_BLOCK_READ` and
+  `CAP_SHM_MAP` answered `-EFAULT` for the read-only page on their first run
+  (cells 19 and 20), which is the expected result but not a mutation: the cells
+  pin the behaviour, and `gate_selfcheck.sh`'s fold mutation is what proves a
+  changed byte would fail the gate. What the cells would catch is a row that
+  stopped asking for WRITABLE — then the call would be served and ring 3 would
+  fault inside the copy, taking the proof down with it rather than answering a
+  number.
 - **The projection broke twice before it was a fold.** Packed words are
   positional, and every positional version had to know where a cell lands. One
   word panicked the kernel mid-verdict at the ninth cell (`attempt to shift
@@ -122,12 +146,13 @@ and they moved in the same change rather than sharing it.
 1. Append a `RefusalRow { call, want, what }` to `REFUSAL_MATRIX` in
    `src/service84.rs` and bump its length.
 2. Append the probe to the matrix block in `userprog/prog_svc84.s`, writing its
-   answer at `BUF+12288+8*n` and keeping any argument record at `BUF+12416+`
-   or higher.
-3. Update the packed words and row count in the `REFUSAL-MATRIX` assertion in
-   `tools/svc84_proof_test.sh`, and the mutation string in
-   `tools/gate_selfcheck.sh` (its `refusal-matrix cell` case corrupts byte 0, so
-   keep the new word in step or the meta-gate fails).
+   answer at `BUF+12288+8*n` (the next free answer slot) and keeping any
+   argument record at `BUF+12800` or higher.
+3. Fold the new answer byte into the expected word — FNV-1a 64 over the low
+   byte of every answer in cell order — and update the row count and fold in
+   the `REFUSAL-MATRIX` assertion in `tools/svc84_proof_test.sh`, and the
+   mutation string in `tools/gate_selfcheck.sh` (its `refusal-matrix cell` case
+   corrupts the fold, so keep the new word in step or the meta-gate fails).
 4. Run `./tools/svc84_proof_test.sh` for **that cell alone** before adding the
    next one. A batch hides which cell moved; one cell per run makes the `ROW`
    line attributable.
@@ -137,7 +162,7 @@ and they moved in the same change rather than sharing it.
 
 ## What is still not swept
 
-43 rows; 19 cells. The remaining rows are covered by the legs that exercise
+43 rows; 21 cells. The remaining rows are covered by the legs that exercise
 them, and those legs do assert refusals inline — forged handles (`-EBADF`),
 out-of-window or wrong-kind accesses (`-EACCES`), zero or oversized lengths
 (`-EINVAL`), unmapped releases (`-ENOENT`). What no leg does is sweep each row
@@ -149,10 +174,10 @@ with each class of malformed argument, which is what a full matrix would be:
   region rows behind `0x4f`, `0x45`/`0x46` under load): a probe for these needs
   its own process, so that a mutation is contained by that process's exit
   rather than by the proof continuing. `0x4f` itself is not one of them — its
-  shape is settled first, which is why it has three cells.
-- Classes not yet probed anywhere, worth naming so they are not mistaken for
-  coverage: a **write** to a read-only or kernel page (every row's `-EFAULT`
-  arm has a write side), and the `EBADF` arm of the non-block rows that start
-  with one (`0x4c`, `0x4d`, `0x50` and the badge rows take a handle too).
+  shape is settled first, which is why it has four cells.
+- The `EBADF` arm of the non-block rows that start with one (`0x4c`, `0x4d`,
+  `0x50` and the badge rows take a handle too): named here so it is not
+  mistaken for coverage. Every one of them is a handle check before a record
+  write, so each is a `RefusalRow` and about ten instructions of assembly.
 - The rest: safe in principle, simply not written yet. Each one is a
   `RefusalRow` and about ten instructions of assembly.

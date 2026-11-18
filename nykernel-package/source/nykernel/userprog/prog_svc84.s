@@ -2149,6 +2149,41 @@ _start:
     int $0x84
     mov %rax, 12432(%rbx)
 
+    /* Row 0x59 CAP_BLOCK_READ, destination a2 = BUF+20480: the proof's FIFTH
+       page, which the kernel maps USER_ACCESSIBLE and NOT WRITABLE. Nothing
+       else about the call is wrong -- real block handle 6, LBA 0, a legal
+       512-byte transfer -- so EFAULT here is the WRITE flag and nothing
+       else. The row validates a2 for writing BEFORE it resolves the handle
+       or reaches the drive, so the refusal allocates no sector and cannot
+       disturb another leg. (A row that asked for a readable range would
+       serve this call and fault ring 3 on the copy instead: the page is
+       present and user-accessible, only its write bit is clear.) */
+    mov $6, %rdi
+    xor %rsi, %rsi
+    lea 20480(%rbx), %rdx
+    mov $512, %r10
+    xor %r8, %r8
+    mov $0x59, %rax
+    int $0x84
+    mov %rax, 12440(%rbx)
+
+    /* Row 0x4f CAP_SHM_MAP, record a1 = BUF+20480: the same read-only page,
+       with a legal one-page length and no other claim. The row checks the
+       length, then the record for WRITING, then asks the mapping source, so
+       this EFAULT allocates no frame and consumes no window slot -- the
+       frames-in-use accounting the MAP leg pins is untouched by the cell.
+       The block cell above and this one are the two halves of the write-side
+       arm: a device row and a region row, each handed a page it may read but
+       not write. */
+    mov $4096, %rdi
+    lea 20480(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4f, %rax
+    int $0x84
+    mov %rax, 12448(%rbx)
+
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi
     xor %rdx, %rdx

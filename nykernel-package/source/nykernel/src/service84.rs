@@ -770,6 +770,17 @@ fn pack_gfx() -> i64 {
 //    does (svc84_proof.rs maps four, not three). At 12160 the slots
 //    overlapped the ring-3 stack and the same three legs failed twice over.
 //
+// A cell may also probe the WRITE side of a pointer check. `user_range_ok`
+// refuses a page that is PRESENT and USER_ACCESSIBLE but not WRITABLE when
+// the row is about to write into it, and until now every pointer cell was
+// only non-user -- which the read and the write check both refuse, so it
+// proved neither. The proof maps `svc84_proof::PROOF_RO`, a fifth page that
+// is user-accessible and deliberately NOT writable, and the block and region
+// rows whose destination is a caller pointer are handed it: the cell is
+// EFAULT only because the row asked for a WRITABLE range. A row that used
+// `write = false` on an out-pointer, or skipped the check, answers 0 here
+// (or faults ring 3), and the two cells are what hold them to it.
+//
 // The errnos are compared as data: serve_proof_done reads each answer out of
 // user memory, compares it against the row's `want`, prints any cell that
 // disagrees BY NAME, and packs the low byte of every answer into one word so
@@ -796,7 +807,7 @@ pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
 /// The cells, in the order `prog_svc84.s` writes them. Every one of these
 /// rows settles its arguments before it touches anything, which is what lets
 /// the probes run inside a live proof.
-pub const REFUSAL_MATRIX: [RefusalRow; 19] = [
+pub const REFUSAL_MATRIX: [RefusalRow; 21] = [
     RefusalRow {
         call: CALL_GFX_MODE_INTO,
         want: EFAULT,
@@ -891,6 +902,16 @@ pub const REFUSAL_MATRIX: [RefusalRow; 19] = [
         call: CALL_CAP_SHM_MAP,
         want: EINVAL,
         what: "CAP_SHM_MAP with a length past MAX_REGION_REQUEST_PAGES",
+    },
+    RefusalRow {
+        call: CALL_CAP_BLOCK_READ,
+        want: EFAULT,
+        what: "CAP_BLOCK_READ writing into a read-only user page",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM_MAP,
+        want: EFAULT,
+        what: "CAP_SHM_MAP recording into a read-only user page",
     },
 ];
 

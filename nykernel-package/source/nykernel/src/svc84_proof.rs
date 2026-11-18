@@ -49,6 +49,16 @@ pub const CODE: u64 = 0x6u64 << 40;
 pub const PROOF_BUF: u64 = CODE + 0x1_0000;
 /// The program's stack page.
 pub const PROOF_STACK: u64 = CODE + 0x2_0000;
+/// A USER_ACCESSIBLE page that is deliberately **not** WRITABLE, and the only
+/// one in this proof. It exists for the refusal matrix's write-side arm: a
+/// row whose destination is a caller pointer must ask the validator for a
+/// WRITABLE range, and `user_range_ok(..., true)` is the only thing that
+/// distinguishes that from the read-side check the other pointer cells
+/// already cover. Handing this page to `CAP_BLOCK_READ` (0x59) and
+/// `CAP_SHM_MAP` (0x4f) makes the refusal EFAULT for exactly that reason: the
+/// page is present and user-accessible, so a row that forgot the write flag
+/// would serve the call and fault ring 3 on the first store instead.
+pub const PROOF_RO: u64 = CODE + 0x1_5000;
 /// The SHARED REGION the region capability names: one page, mapped
 /// USER_ACCESSIBLE, written by the kernel here and by ring 3 later. Both
 /// sides read the SAME frames, which is what makes the SharedMem kind's
@@ -691,7 +701,17 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     let stack_mapped =
         paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_STACK), 1, flags);
     let shm_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_SHM), 1, flags);
+    // The write-side probe page: PRESENT and USER_ACCESSIBLE without
+    // WRITABLE. Nothing ever writes through it -- that is the point -- and it
+    // is mapped separately from `flags` so a later edit to the results pages
+    // cannot accidentally make it writable and turn the two write-side cells
+    // into successes. The kernel never touches it either.
+    let ro_flags = PageTableFlags::PRESENT
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::NO_EXECUTE;
+    let ro_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_RO), 1, ro_flags);
     assert_eq!(buf_mapped, 4, "svc84 proof: results pages not mapped");
+    assert_eq!(ro_mapped, 1, "svc84 proof: read-only probe page not mapped");
     assert_eq!(stack_mapped, 1, "svc84 proof: stack page not mapped");
     assert_eq!(shm_mapped, 1, "svc84 proof: shared region not mapped");
     // The kernel's half of the shared region, written through the SAME
