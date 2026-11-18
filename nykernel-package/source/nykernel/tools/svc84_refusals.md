@@ -42,14 +42,14 @@ and given back every surface tile it opened:
 | 20 | `0x4f` | `CAP_SHM_MAP` | `a1 = BUF+20480`: the read-only page, legal one-page length | `-EFAULT` | `0xf2` | a zero-length request still `-EINVAL` |
 | 21 | `0x4c` | `CAP_SHM` | `a0 = 2^32`: handle above `u32::MAX`, record real | `-EBADF` | `0xf7` | the record still the canary |
 | 22 | `0x4d` | `CAP_SHM_CLOSE` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` | the caller's live capability still answers `0x4c` with `0` |
-| 23 | `0x50` | `CAP_SHM_UNMAP` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` | the real handle's `0x50` is still `-ENOENT` (window state unchanged) |
+| 23 | `0x50` | `CAP_SHM_UNMAP` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` | the boot-adopted region's live window still reads its marker `WITNESS!` (byte `0x57`) through a fresh `0x4c` |
 | 24 | `0x52` | `CAP_NOTIFY` | `a0 = 2^32`: handle above `u32::MAX`, zero signal bits | `-EBADF` | `0xf7` | `0x4c` on handle 1 still `-EACCES` (capability still live) |
 
 The kernel folds those bytes, in cell order, into ONE word with FNV-1a and
 prints it:
 
 ```
-service-0x84 proof: REFUSAL-MATRIX (rows 0x19 , matched 0x19 , no-effect 0x19 , fold 0x90964f5e84f81001) , REFUSAL-MATRIX matches
+service-0x84 proof: REFUSAL-MATRIX (rows 0x19 , matched 0x19 , no-effect 0x19 , fold 0x929e3f5e86b1c950) , REFUSAL-MATRIX matches
 ```
 
 The fold replaced a byte-per-cell layout, not because the bytes were wrong but
@@ -83,7 +83,7 @@ constraint, not a preference: the proof pins its region release ledger at
 exactly four (`released == 4`, with the fourth release's two words being the
 transfer leg's evidence). A fifth `0x4f` request at matrix time — even one
 opened and closed immediately — makes that five and rewrites the last
-release's words, so a witness region of our own is not available. What is
+release's words, so a witness region *asked for* is not available. What is
 available is:
 
 - a **canary** (`REFUSAL_CANARY`, eight bytes) written before any probe into
@@ -91,8 +91,17 @@ available is:
   name. A row that validated *after* writing leaves a different first word;
 - the **live capability from the WINDOW leg** (step 16g, handle at
   `BUF+2536`). It is held until `EXIT` and its window was already dropped with
-  `0x50`, so `0x4d`'s witness can re-use the real handle through `0x4c` and
-  `0x50`'s can re-ask the real handle to drop a window it does not have;
+  `0x50`, so `0x4d`'s witness can re-use the real handle through `0x4c`;
+- a **boot-adopted region** (`svc84_proof::PROOF_WITNESS`, `CODE+0x4_0000`).
+  The kernel maps one page there before ring 3 begins and writes
+  `REFUSAL_WINDOW_WITNESS` (ASCII `WITNESS!`) into it, then adopts a region
+  capability over it into the proof session. The index is a boot fact — 10
+  when the gate's writable scratch disk has taken slot 9, 9 without it — so
+  the boot writes it to `BUF+16376` and the program reads it rather than
+  naming one. It was never a `0x4f` request, so it spends no entry in the
+  release ledger; because it is `owned: false`, closing it after the matrix
+  frees no frames and still no entry. Its window is **live**, which is what
+  the `0x50` cell needs;
 - a **baseline read of LBA 16** taken before the probes. The `0x59` write-side
   cell re-reads the same sector afterwards and requires all 64 words to be
   identical (and both reads to return 512 bytes).
@@ -104,13 +113,16 @@ still refusing its shape): `0x42` writes geometry into the results page,
 cell gets a legal geometry call. That is the strongest observation available,
 and the doc says so instead of implying the row's memory was watched.
 
-Why `0x50`'s witness is the *neighbouring* fact: at matrix time the only live
-capability has already dropped its window (that is the WINDOW leg's point), and
-creating one would spend a fifth release. The matrix therefore pins that the
-refused unmap left the holder's window state unchanged — the real handle's own
-`0x50` is still `-ENOENT`, and `0x4c` still answers its geometry. "The window
-is still readable" is asserted where a window exists: the WINDOW leg itself
-reads the peer's marker through the other space after the drop.
+`0x50`'s witness is a **read**, not a report: at matrix time the WINDOW leg's
+capability has already dropped its window, so it cannot be the witness, and a
+`0x4f` request would spend a fifth release. The boot-adopted region needs
+neither: it exists before the pump, costs no release, and its window is
+mapped. Cell 23 re-asks the handle the boot wrote with `0x4c` and loads the
+**marker through the base the kernel names**. The fold carries the low byte
+`0x57`; a row that dropped a window on its way to answering `EBADF` cannot
+pass, and if it dropped *this* window the load itself faults ring 3, which no
+answer-word trick can turn into a passing witness. The WINDOW leg's own
+`-ENOENT` remains pinned in its line.
 
 ## The argument classes, and what each one costs
 
@@ -196,14 +208,23 @@ ring 3 on its own copy.
   badge-family row that answers `EINVAL` here: its check owns `a0` and `a1`
   together, so it belongs to the shape class, not this one, and moving it
   into this class would be changing the row to match the matrix.
-- **The no-effect pass could not use a region of its own.** The first design
+- **The no-effect pass could not use a region it ASKED for.** The first design
   opened a `0x4f` request at matrix time and closed it before the verdict.
   The frames came back, but `REGION_RELEASED` became five and the LAST
   release's words became the matrix region's, not the transfer leg's — the
   requested-region leg went red with `released 5` while every matrix cell
   matched. The independent fact that caught it is the proof's own release
   ledger; the fix was to witness against state that already exists, not to
-  loosen the pin.
+  loosen the pin. `0x50`'s live-window witness is therefore a page the
+  KERNEL maps at boot, with a capability ADOPTED over it (`owned: false`, so
+  closing it frees nothing and spends no release), rather than a `0x4f`
+  request. Taking that slot does move the first runtime mints after it up by
+  one: `REPLY`'s and `MAP`'s second handle go from `0xa` to `0xb`, and the gate
+  pins now say so. The alternative — keeping the SHARED region's second
+  capability alive past the matrix — was tried and rejected: it leaves slot 4
+  occupied, so four later indices move and the two-process leg's last-close
+  ordering is no longer where its comment says it is. Two honest pin moves
+  next to the cell beat four unrelated ones.
 - **The harness raced its own verdict.** The stop condition broke on the
   verdict line's *prefix*, and the line is written in pieces: with the matrix
   line slightly longer, the kill landed mid-line and the transcript lost five

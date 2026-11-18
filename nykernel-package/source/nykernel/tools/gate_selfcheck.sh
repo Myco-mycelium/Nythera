@@ -78,7 +78,7 @@ fi
 # name | sed expression applied to a copy | text the refusal must contain
 CASES=(
     "ring-3 caller evidence|s/CPL 3/CPL 0/|does not report CPL 3"
-    "refusal-matrix cell|s#fold 0x90964f5e84f81001#fold 0x90964f5e84f81000#|refusal matrix did not hold"
+    "refusal-matrix cell|s#fold 0x929e3f5e86b1c950#fold 0x929e3f5e86b1c951#|refusal matrix did not hold"
     "refusal-matrix no-effect count|s/no-effect 0x19/no-effect 0x18/|refusal matrix did not hold"
     "block-info geometry leg|s/BLOCK-INFO matches/BLOCK-INFO /|block-info leg"
     "supervised display leg|s/DISPLAY matches/DISPLAY /|supervised display"

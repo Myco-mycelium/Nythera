@@ -1909,8 +1909,16 @@ _start:
            by THIS process at matrix time (its window was dropped by 0x50 in
            step 16h, its capability survives to EXIT). Its handle is at
            BUF+2536, so the 0x4d cell can re-use the caller's own capability
-           through 0x4c and the 0x50 cell can re-ask it to drop a window it
-           no longer has;
+           through 0x4c;
+         - a SECOND region, the one the matrix's 0x50 cell needs: a page the
+           KERNEL mapped at boot (CODE+0x4_0000) with the marker "WITNESS!"
+           in it, ADOPTED into this table before ring 3 began at the handle
+           the kernel writes to BUF+16376 (its index depends on whether the
+           gate's scratch disk took slot 9). It is not a 0x4f request, so it
+           never enters the release ledger, and its window is LIVE -- which is
+           what lets cell 23 read a word through a window after the refused
+           unmap instead of taking the machine's word that the window state
+           did not change;
          - a BASELINE read of LBA 16, so the 0x59 write-side cell can re-read
            the same sector afterwards and compare it byte for byte. */
     movabs $0x4e4f2d4546464543, %rcx
@@ -2470,19 +2478,34 @@ _start:
     mov $0x50, %rax
     int $0x84
     mov %rax, 12472(%rbx)
-    /* NO-EFFECT, cell 23: the refused unmap must not have dropped a window.
-       This holder's window was already dropped by the WINDOW leg (step 16h)
-       and its capability survives to EXIT, so the same call on the REAL
-       handle is still -ENOENT: the machine's own record that the refused
-       call neither dropped the window nor handed the holder a new one. */
-    mov 2536(%rbx), %rdi
-    xor %rsi, %rsi
+    /* NO-EFFECT, cell 23: the refused unmap must not have dropped a window,
+       and the window it could have dropped must still be USABLE -- not just
+       still named. The caller holds the region the KERNEL mapped at boot
+       (svc84_proof::PROOF_WITNESS, CODE+0x4_0000) and ADOPTED into its table
+       at the handle the kernel WROTE at BUF+16376 (10 with the gate's
+       scratch disk attached, 9 without -- the index is a boot fact, so the
+       program never names it), its first word the kernel's marker
+       "WITNESS!". It was never asked for with 0x4f, so it costs no entry in
+       the release ledger, and unlike the WINDOW leg's region it has a live
+       window. Ask the real handle's geometry (0x4c) and read the marker
+       THROUGH the base the kernel names. A 0x50 that dropped a window on its
+       way to answering EBADF would leave this one unmapped: the geometry
+       would still answer, but the read would fault ring 3, so the mutant
+       cannot pass as a value. */
+    mov 16376(%rbx), %rdi
+    lea 12744(%rbx), %rsi
     xor %rdx, %rdx
     movabs $-1, %r10
     xor %r8, %r8
-    mov $0x50, %rax
+    mov $0x4c, %rax
     int $0x84
-    mov %rax, 12728(%rbx)
+    test %rax, %rax
+    jne 8f
+    mov 12744(%rbx), %rcx        /* the base the kernel answered for that handle */
+    mov (%rcx), %rcx             /* the marker, through the live window */
+    jmp 9f
+8:  xor %rcx, %rcx               /* no geometry: the witness fails by name */
+9:  mov %rcx, 12728(%rbx)
 
     /* Row 0x52 CAP_NOTIFY, handle 2^32: the badge family's EBADF arm, the
        first check before the shape and before the endpoint's own kind/right
@@ -2511,6 +2534,21 @@ _start:
     mov $0x4c, %rax
     int $0x84
     mov %rax, 12736(%rbx)
+
+    /* OUT OF THE MATRIX: give the boot-adopted witness capability back
+       (0x4d, the handle at BUF+16376). The region was created by the KERNEL
+       (`owned: false`), so this close frees no frames and spends no entry in
+       the release ledger -- what it protects is the EXIT leg's pin that this
+       process exits holding exactly ONE region capability (the WINDOW
+       leg's). A close that failed would leave two, and that leg would say
+       so (`released 2`) instead of the proof silently leaking a handle. */
+    mov 16376(%rbx), %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
 
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi

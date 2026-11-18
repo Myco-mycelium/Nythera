@@ -798,8 +798,8 @@ pub struct RefusalRow {
     pub what: &'static str,
     /// What the cell's NO-EFFECT witness must read. The proof makes one more
     /// observation AFTER the refusal and folds it in: a canary still intact,
-    /// the real capability still answering, the holder's window state still
-    /// the one the refusal found, the sector byte-identical. A row that
+    /// the real capability still answering, the holder's LIVE window still
+    /// mapped and reading its marker, the sector byte-identical. A row that
     /// answered correctly and still acted --
     /// closed the truncated handle, wrote through the refused pointer, consumed
     /// the frame, dropped the window -- leaves a different number here, so
@@ -819,8 +819,8 @@ pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
 /// same cell order, in the same fourth results page. An answer proves the row
 /// refused; a witness proves it did not act on the way out -- the canary the
 /// refused call would have written is still there, the real capability it
-/// could have truncated its `a0` into still answers, the holder's window state
-/// is still the one the refusal found, the sector it could have touched is
+/// could have truncated its `a0` into still answers, the holder's live window
+/// is still mapped and reads its marker, the sector it could have touched is
 /// byte-identical.
 /// The slot is separate from the answers because the two are different
 /// claims about the same call and a wrong one must name which claim failed.
@@ -832,6 +832,16 @@ pub const REFUSAL_WITNESS_SLOT: u64 = 12544;
 /// is arbitrary; it is spelled out here so the probe, the table and the doc
 /// cannot drift from each other.
 pub const REFUSAL_CANARY: i64 = 0x4e4f_2d45_4646_4543;
+
+/// The eight bytes the KERNEL writes into the LIVE window the `0x50` cell
+/// witnesses against (`svc84_proof::PROOF_WITNESS`; the boot adopts a region
+/// capability over that page into the caller's table and writes its handle to
+/// `svc84_proof::REFUSAL_WITNESS_HANDLE_SLOT`, because the index depends on
+/// whether the gate attached its writable scratch disk). ASCII on purpose: a
+/// dump of the window reads `WITNESS!`, so a witness that is really a stale
+/// read of some other page cannot be mistaken for this one. The cell compares
+/// the WHOLE word, read through the base a real `0x4c` just answered.
+pub const REFUSAL_WINDOW_WITNESS: i64 = 0x2153_5345_4e54_4957;
 
 /// The cells, in the order `prog_svc84.s` writes them. Every one of these
 /// rows settles its arguments before it touches anything, which is what lets
@@ -1002,8 +1012,8 @@ pub const REFUSAL_MATRIX: [RefusalRow; 25] = [
         call: CALL_CAP_SHM_UNMAP,
         want: EBADF,
         what: "CAP_SHM_UNMAP with a handle above u32::MAX",
-        witness: ENOENT,
-        witness_what: "the live capability still has no window to drop after the refused unmap",
+        witness: REFUSAL_WINDOW_WITNESS,
+        witness_what: "the boot-adopted region's live window still reads its marker after the refused unmap",
     },
     RefusalRow {
         call: CALL_CAP_NOTIFY,

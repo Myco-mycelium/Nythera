@@ -59,6 +59,26 @@ pub const PROOF_STACK: u64 = CODE + 0x2_0000;
 /// page is present and user-accessible, so a row that forgot the write flag
 /// would serve the call and fault ring 3 on the first store instead.
 pub const PROOF_RO: u64 = CODE + 0x1_5000;
+/// The LIVE WINDOW the refusal matrix's `0x50` cell witnesses against: one
+/// page the KERNEL maps here at boot, with
+/// [`crate::service84::REFUSAL_WINDOW_WITNESS`] written into its first word,
+/// and a region capability ADOPTED over it into the proof session's table.
+/// By matrix time the ring-3 process therefore holds a region whose window is
+/// mapped and readable, but which it never asked for with `0x4f` -- which is
+/// why this witness costs no entry in the release ledger. The `0x50` cell's
+/// refused unmap must leave this window readable: the cell re-asks the real
+/// handle's geometry and reads the marker THROUGH the base the kernel names,
+/// so a refusal that dropped a window on its way out faults ring 3 instead of
+/// passing as a number.
+pub const PROOF_WITNESS: u64 = CODE + 0x4_0000;
+/// Word in the results page where the boot writes the witness region's
+/// HANDLE, for the same reason the reply row writes its handle into memory:
+/// the index is a BOOT FACT. With the gate's writable scratch disk attached
+/// the device equip has already taken slot 9, so the adopted region lands at
+/// 10; without a disk it lands at 9. The program reads this word instead of
+/// naming an index, so either boot shape works and a moved slot is a value,
+/// not a mystery EBADF.
+pub const REFUSAL_WITNESS_HANDLE_SLOT: u64 = 16376;
 /// The SHARED REGION the region capability names: one page, mapped
 /// USER_ACCESSIBLE, written by the kernel here and by ring 3 later. Both
 /// sides read the SAME frames, which is what makes the SharedMem kind's
@@ -710,7 +730,16 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         | PageTableFlags::USER_ACCESSIBLE
         | PageTableFlags::NO_EXECUTE;
     let ro_mapped = paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_RO), 1, ro_flags);
+    // The live window the matrix's `0x50` cell reads after its refusal. It is
+    // mapped BEFORE the frame baseline below, so the invariant that every
+    // frame is either in the baseline or held by a surface still holds.
+    let witness_mapped =
+        paging::map_range(&mut mapper, frame_allocator, VirtAddr::new(PROOF_WITNESS), 1, flags);
     assert_eq!(buf_mapped, 4, "svc84 proof: results pages not mapped");
+    assert_eq!(
+        witness_mapped, 1,
+        "svc84 proof: the 0x50 witness window was not mapped"
+    );
     assert_eq!(ro_mapped, 1, "svc84 proof: read-only probe page not mapped");
     assert_eq!(stack_mapped, 1, "svc84 proof: stack page not mapped");
     assert_eq!(shm_mapped, 1, "svc84 proof: shared region not mapped");
@@ -719,6 +748,11 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     unsafe {
         core::ptr::write_volatile(PROOF_SHM as *mut u64, SHM_KERNEL_SENTINEL);
         core::ptr::write_volatile((PROOF_SHM + 8) as *mut u64, 0);
+        // The marker the matrix's `0x50` cell reads through its live window.
+        core::ptr::write_volatile(
+            PROOF_WITNESS as *mut u64,
+            crate::service84::REFUSAL_WINDOW_WITNESS as u64,
+        );
     }
 
     // The proof drives the IPC rows through endpoint 0 (the program's
@@ -869,6 +903,21 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
             block_handle, ioport_handle, fb_handle
         );
     }
+    // The matrix's live-window witness: a page the KERNEL mapped (so no `0x4f`
+    // request, and no entry in the release ledger) with a capability ADOPTED
+    // into the session's table here. The index is a boot fact (slot 9 is the
+    // writable scratch disk when the gate attached one), so it is WRITTEN into
+    // the results page for the program to read rather than named on both
+    // sides. Taking this slot does move the first runtime mints after it up by
+    // one, which the gate's REPLY/MAP pins state rather than hide.
+    let (witness_region, witness_handle) =
+        crate::experimental::caps::prepare_region_for_proof(PROOF_SESSION_ID, PROOF_WITNESS, 4096);
+    unsafe {
+        core::ptr::write_volatile(
+            (PROOF_BUF + REFUSAL_WITNESS_HANDLE_SLOT) as *mut u64,
+            witness_handle as u64,
+        );
+    }
     PROOF_REGION.store(region_id, Ordering::SeqCst);
     let region_holders = crate::experimental::caps::region_holders(region_id).unwrap_or(0);
     if region_holders != 3 {
@@ -997,7 +1046,7 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
     );
 
     serial_println!(
-        "  service-0x84 proof: program loaded at {:#x} (peer at {:#x}), results pages {:#x} and {:#x}, stacks {:#x} and {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; sessions {} and {} equip -- endpoint {} granted at handle {} , INPUT cap at handle {} , SHARED region {} ({:#x}..{:#x}) at handles {} and {} (two capabilities), peer endpoint {} at the peer's handle {} with the first process holding SEND at handle {} , {} region holders (task 0's table absent: distinct, verified) ; {} scancodes injected through the controller (IRQ1 -> raw ring) ; tasks {} and {} spawned -- entering ring 3",
+        "  service-0x84 proof: program loaded at {:#x} (peer at {:#x}), results pages {:#x} and {:#x}, stacks {:#x} and {:#x} mapped USER_ACCESSIBLE; TSS.RSP0 {:#x} is {:?}; sessions {} and {} equip -- endpoint {} granted at handle {} , INPUT cap at handle {} , SHARED region {} ({:#x}..{:#x}) at handles {} and {} (two capabilities), peer endpoint {} at the peer's handle {} with the first process holding SEND at handle {} , {} region holders (task 0's table absent: distinct, verified), the 0x50 witness region {} ({:#x}..{:#x}) adopted at handle {} ; {} scancodes injected through the controller (IRQ1 -> raw ring) ; tasks {} and {} spawned -- entering ring 3",
         loaded.entry_point.as_u64(),
         peer_loaded.entry_point.as_u64(),
         PROOF_BUF,
@@ -1020,6 +1069,10 @@ pub unsafe fn run(frame_allocator: &mut BumpFrameAllocator) -> ! {
         peer_owner,
         send_handle,
         region_holders,
+        witness_region,
+        PROOF_WITNESS,
+        PROOF_WITNESS + 4096,
+        witness_handle,
         injected,
         task_a,
         task_b
