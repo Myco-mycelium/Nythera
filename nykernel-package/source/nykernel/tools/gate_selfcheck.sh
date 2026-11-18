@@ -19,11 +19,16 @@
 #
 # The transcript cases prove the CHECKER reads evidence; they cannot prove the
 # matrix detects a kernel that stopped refusing, because an edited log is not
-# a kernel. So the last case is a SOURCE mutation: remove one row's guard from
-# src/service84.rs, rebuild the kernel, boot it, and require the gate to fail
-# naming that row with its own errno. The guard is restored from a backup in
-# the EXIT trap as well as on the normal path, so an interrupted run does not
-# leave a mutant tree behind; the real kernel is rebuilt afterwards.
+# a kernel. So the last two cases are SOURCE mutations, each rebuilt and
+# booted by the gate itself:
+#   - remove 0x4c's handle guard, so the row answers a WRONG errno, and require
+#     the gate to name that row with its own values;
+#   - make 0x50's EBADF arm drop the caller's window on its way out, so the
+#     row still answers correctly and its NO-EFFECT witness is the only thing
+#     that can catch it, and require the gate to name cell 0x50's witness.
+# The source is restored from a backup in the EXIT trap as well as on the
+# normal path, so an interrupted run does not leave a mutant tree behind; the
+# real kernel is rebuilt afterwards.
 #
 # Usage:
 #   ./tools/svc84_proof_test.sh            # once, to produce the transcript
@@ -38,7 +43,7 @@ cd "$(dirname "$0")/.."
 LOG="${1:-target/svc84-proof-last.log}"
 GATE=./tools/svc84_proof_test.sh
 TMP="$(mktemp -d)"
-# The source-level case below edits a tracked file. Restoring it is not left to
+# The source-level cases below edit a tracked file. Restoring it is not left to
 # the happy path: an interrupt or an early exit must not leave a mutant kernel
 # in the tree, so the backup is put back from the trap as well.
 SRC_MUTATED=0
@@ -189,6 +194,79 @@ PY
         tail -5 "$TMP/rebuild.log" | sed 's/^/        /'
     else
         ok "source restored byte-for-byte and the real kernel rebuilt"
+    fi
+fi
+
+# ---- a second KERNEL regression: the witness, not the errno ----------------
+# The case above moves an ANSWER. A row can also answer exactly right and
+# still act, which is what the NO-EFFECT pass exists for: this mutation leaves
+# 0x50's EBADF answer alone and makes that arm drop every window the caller
+# holds before returning it. The errno matrix cannot see that -- cell 23 still
+# reads EBADF -- so if the live-window witness were not doing its job, this
+# kernel would pass. The witness reads the boot-adopted region's marker
+# THROUGH its window; with the mapping gone the load faults ring 3, the slot
+# keeps its zeroed value, and the NO-EFFECT ROW 0x50 line must name the cell.
+echo "==> a kernel regression: 0x50 answers EBADF after dropping the window, expect a red matrix"
+if [[ ! -f "$SRC" ]]; then
+    bad "no $SRC to mutate: the 0x50 witness case cannot run"
+else
+    cp "$SRC" "$SRC_BACKUP" || bad "could not back up $SRC"
+    if python3 - "$SRC" <<'PY'
+import sys
+
+path = sys.argv[1]
+src = open(path, encoding='utf-8').read()
+old = """        CALL_CAP_SHM_UNMAP => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+"""
+new = """        CALL_CAP_SHM_UNMAP => {
+            if a0 > u32::MAX as u64 {
+                // MUTANT: the guard still answers EBADF, but it has already
+                // dropped every window the caller held on its way out.
+                for h in 0..16u32 {
+                    let _ = crate::experimental::caps::unmap_region_for(
+                        crate::experimental::scheduler::session_identity(),
+                        h,
+                    );
+                }
+                return EBADF;
+            }
+"""
+if src.count(old) != 1:
+    sys.exit("the 0x50 EBADF arm is not where this case thinks it is (%d matches at this exact shape)" % src.count(old))
+open(path, 'w', encoding='utf-8').write(src.replace(old, new))
+PY
+    then
+        SRC_MUTATED=1
+        if "$GATE" >"$TMP/src50.log" 2>&1; then
+            bad "a kernel whose 0x50 drops the caller's window and still answers EBADF passed the matrix -- the live-window witness does not catch it"
+        elif ! grep -qF "REFUSAL-MATRIX NO-EFFECT ROW 0x50" "$TMP/src50.log"; then
+            bad "the dropped window was caught, but not by cell 0x50's witness (no 'REFUSAL-MATRIX NO-EFFECT ROW 0x50' line)"
+            grep -E "^  FAIL" "$TMP/src50.log" | head -3 | sed 's/^/        /'
+        elif ! grep -qF "the boot-adopted region's live window still reads its marker" "$TMP/src50.log"; then
+            bad "the gate named cell 0x50, but not this witness: the NO-EFFECT line must carry its own description"
+        elif ! grep -qE "REFUSAL-MATRIX NO-EFFECT ROW 0x50 .* got 0x0 , want 0x215353454e544957" "$TMP/src50.log"; then
+            bad "cell 0x50 was named, but the witness did not read the missing marker (expected 'got 0x0 , want 0x215353454e544957')"
+            grep -m1 "NO-EFFECT ROW 0x50" "$TMP/src50.log" | sed 's/^/        /'
+        elif ! grep -qF "REFUSAL-MATRIX MISMATCH" "$TMP/src50.log"; then
+            bad "cell 0x50's witness disagreed, but the matrix line did not name the verdict MISMATCH"
+        else
+            ok "0x50 drops the window and still answers EBADF -> the gate refused the kernel and named cell 0x50's witness (got 0x0 , want 0x215353454e544957)"
+        fi
+    else
+        bad "could not make 0x50 drop the window (see message above); source left unchanged"
+    fi
+    cp "$SRC_BACKUP" "$SRC"
+    SRC_MUTATED=0
+    if ! cmp -s "$SRC_BACKUP" "$SRC"; then
+        bad "$SRC does not match its backup after the 0x50 mutation: the tree is NOT back to its original state"
+    elif ! ./build.sh >"$TMP/rebuild50.log" 2>&1; then
+        bad "the source is restored but ./build.sh no longer succeeds -- target/kernel.elf may still be the 0x50 mutant"
+        tail -5 "$TMP/rebuild50.log" | sed 's/^/        /'
+    else
+        ok "source restored byte-for-byte after the 0x50 case and the real kernel rebuilt"
     fi
 fi
 

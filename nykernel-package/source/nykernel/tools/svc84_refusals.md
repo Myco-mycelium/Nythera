@@ -264,12 +264,17 @@ ring 3 on its own copy.
    the `REFUSAL-MATRIX` assertion in `tools/svc84_proof_test.sh`, and the
    mutation string in `tools/gate_selfcheck.sh` (its `refusal-matrix cell` case
    corrupts the fold, so keep the new word in step or the meta-gate fails).
-   That case edits the transcript; the meta-gate's last case edits the KERNEL —
-   it strips `0x4c`'s handle guard, boots the rebuilt kernel and requires the
-   run to name `REFUSAL-MATRIX ROW 0x4c` before restoring the source. So the
-   matrix is shown to detect a row that stopped refusing, not only a log that
-   was edited, and a cell edited into agreeing with its row is still caught by
-   the fold.
+   That case edits the transcript; the meta-gate's last two cases edit the
+   KERNEL. One strips `0x4c`'s handle guard, boots the rebuilt kernel and
+   requires the run to name `REFUSAL-MATRIX ROW 0x4c`; the other leaves
+   `0x50`'s EBADF answer alone but makes that arm drop every window the caller
+   holds, and requires the run to name `REFUSAL-MATRIX NO-EFFECT ROW 0x50`
+   with `got 0x0` against the marker. The source is restored byte-for-byte and
+   the real kernel rebuilt after each. So the matrix is shown to detect a row
+   that stopped refusing AND a row that answers correctly and still acts --
+   the two failure kinds the answers and the witnesses exist for -- not only a
+   log that was edited; a cell edited into agreeing with its row is still
+   caught by the fold.
 4. Run `./tools/svc84_proof_test.sh` for **that cell alone** before adding the
    next one. A batch hides which cell moved; one cell per run makes the `ROW`
    and `NO-EFFECT ROW` lines attributable. The no-effect pass was added this
