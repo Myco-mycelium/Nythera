@@ -807,7 +807,7 @@ pub const REFUSAL_MATRIX_SLOT: u64 = 12288;
 /// The cells, in the order `prog_svc84.s` writes them. Every one of these
 /// rows settles its arguments before it touches anything, which is what lets
 /// the probes run inside a live proof.
-pub const REFUSAL_MATRIX: [RefusalRow; 21] = [
+pub const REFUSAL_MATRIX: [RefusalRow; 25] = [
     RefusalRow {
         call: CALL_GFX_MODE_INTO,
         want: EFAULT,
@@ -912,6 +912,26 @@ pub const REFUSAL_MATRIX: [RefusalRow; 21] = [
         call: CALL_CAP_SHM_MAP,
         want: EFAULT,
         what: "CAP_SHM_MAP recording into a read-only user page",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM,
+        want: EBADF,
+        what: "CAP_SHM with a handle above u32::MAX",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM_CLOSE,
+        want: EBADF,
+        what: "CAP_SHM_CLOSE with a handle above u32::MAX",
+    },
+    RefusalRow {
+        call: CALL_CAP_SHM_UNMAP,
+        want: EBADF,
+        what: "CAP_SHM_UNMAP with a handle above u32::MAX",
+    },
+    RefusalRow {
+        call: CALL_CAP_NOTIFY,
+        want: EBADF,
+        what: "CAP_NOTIFY with a handle above u32::MAX",
     },
 ];
 

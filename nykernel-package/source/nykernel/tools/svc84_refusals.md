@@ -13,7 +13,7 @@ against what that row's own documented rule says it should be.
 
 ## What is probed
 
-Twenty-one cells, in this order, all of them run from ring 3 at the end of
+Twenty-five cells, in this order, all of them run from ring 3 at the end of
 `userprog/prog_svc84.s`, after the program has detached its own display slot
 and given back every surface tile it opened:
 
@@ -40,12 +40,16 @@ and given back every surface tile it opened:
 | 18 | `0x4f` | `CAP_SHM_MAP` | `a0 = 69632`: 17 pages, one past `MAX_REGION_REQUEST_PAGES` | `-EINVAL` | `0xea` |
 | 19 | `0x59` | `CAP_BLOCK_READ` | `a2 = BUF+20480`: the read-only page, real handle, LBA and length | `-EFAULT` | `0xf2` |
 | 20 | `0x4f` | `CAP_SHM_MAP` | `a1 = BUF+20480`: the read-only page, legal one-page length | `-EFAULT` | `0xf2` |
+| 21 | `0x4c` | `CAP_SHM` | `a0 = 2^32`: handle above `u32::MAX`, record real | `-EBADF` | `0xf7` |
+| 22 | `0x4d` | `CAP_SHM_CLOSE` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` |
+| 23 | `0x50` | `CAP_SHM_UNMAP` | `a0 = 2^32`: handle above `u32::MAX`, nothing else claimed | `-EBADF` | `0xf7` |
+| 24 | `0x52` | `CAP_NOTIFY` | `a0 = 2^32`: handle above `u32::MAX`, zero signal bits | `-EBADF` | `0xf7` |
 
 The kernel folds those bytes, in cell order, into ONE word with FNV-1a and
 prints it:
 
 ```
-service-0x84 proof: REFUSAL-MATRIX (rows 0x15 , matched 0x15 , fold 0xd7e53dca424f094d) , REFUSAL-MATRIX matches
+service-0x84 proof: REFUSAL-MATRIX (rows 0x19 , matched 0x19 , fold 0x885f33b79cbeebe9) , REFUSAL-MATRIX matches
 ```
 
 The fold replaced a byte-per-cell layout, not because the bytes were wrong but
@@ -66,7 +70,7 @@ fails the boot.
 | zero / illegal length | `0x59`, `0x5b`, `0x4f` (×2), `0x4f` (alignment) | the shape check is the first thing each row does; nothing is allocated or read |
 | misaligned, non-user pointer | `0x42`, `0x4f`, `0x4c`, `0x5a` | the range check runs before the mapping source, the handle lookup or the record write |
 | absent state | `0x66`, `0x6c` | no slot, no tile: two "nothing to give back" rows with two different names (`EACCES`, `ENOENT`) |
-| handle above `u32::MAX` | `0x59`, `0x5a`, `0x5b`, `0x5c` | the `EBADF` arm is each block row's FIRST check, before the record, the length or authority — a handle that cannot be named is never truncated into one that can |
+| handle above `u32::MAX` | `0x59`, `0x5a`, `0x5b`, `0x5c`, `0x4c`, `0x4d`, `0x50`, `0x52` | the `EBADF` arm is each handle row's FIRST check, before the record, the length or authority — a handle that cannot be named is never truncated into one that can. `0x51 CAP_BADGE` looks similar but answers `EINVAL` for an oversized `a0` (its shape check owns `a0` and `a1` together), so it is deliberately NOT in this class |
 | oversized length | `0x59`, `0x4f` | each row's own cap (`MAX_BLOCK_SPAN`, `MAX_REGION_REQUEST_PAGES`) is checked with the zero and alignment checks, so too much is refused before a sector is read or a frame allocated |
 | read-only destination | `0x59`, `0x4f` | the out-pointer is validated for **writing**, so a page that is present and user-accessible with its write bit clear is refused before a sector is read or a region allocated |
 
@@ -77,7 +81,12 @@ real and `EFAULT` when it is not — which is only true because the row validate
 the record *before* it resolves the handle, and the matrix is what holds it to
 that order. Cells 19 and 20 are the same idea on the write side: one
 block row and one region row, both handed the one page a process may read but
-may not write, and both answering `-EFAULT` for that reason alone.
+may not write, and both answering `-EFAULT` for that reason alone. Cells 21–24 extend the handle
+class beyond the four block rows: `0x4c` (geometry), `0x4d` (close), `0x50`
+(window drop) and `0x52` (notify) each open with the same guard, and each
+cell pins it against a distinct answer the row could otherwise give — the
+table's `EACCES`/`ENOENT`, or a truncation to handle 0, which is a real
+capability (the endpoint owner's).
 
 ## The two rules a cell has to obey
 
@@ -129,6 +138,14 @@ ring 3 on its own copy.
   stopped asking for WRITABLE — then the call would be served and ring 3 would
   fault inside the copy, taking the proof down with it rather than answering a
   number.
+- **The non-block rows guard the handle space themselves.** `0x4c`, `0x4d`,
+  `0x50` and `0x52` each answered `-EBADF` for `a0 = 2^32` on their first run.
+  Without that guard `a0 as u32` is `0`, a live capability in the proof's own
+  table, so the cells are what separate "refused before the table" from
+  "answered for some other handle entirely". `0x51 CAP_BADGE` is the one
+  badge-family row that answers `EINVAL` here: its check owns `a0` and `a1`
+  together, so it belongs to the shape class, not this one, and moving it
+  into this class would be changing the row to match the matrix.
 - **The projection broke twice before it was a fold.** Packed words are
   positional, and every positional version had to know where a cell lands. One
   word panicked the kernel mid-verdict at the ninth cell (`attempt to shift
@@ -162,7 +179,7 @@ ring 3 on its own copy.
 
 ## What is still not swept
 
-43 rows; 21 cells. The remaining rows are covered by the legs that exercise
+43 rows; 25 cells. The remaining rows are covered by the legs that exercise
 them, and those legs do assert refusals inline — forged handles (`-EBADF`),
 out-of-window or wrong-kind accesses (`-EACCES`), zero or oversized lengths
 (`-EINVAL`), unmapped releases (`-ENOENT`). What no leg does is sweep each row
@@ -175,9 +192,15 @@ with each class of malformed argument, which is what a full matrix would be:
   its own process, so that a mutation is contained by that process's exit
   rather than by the proof continuing. `0x4f` itself is not one of them — its
   shape is settled first, which is why it has four cells.
-- The `EBADF` arm of the non-block rows that start with one (`0x4c`, `0x4d`,
-  `0x50` and the badge rows take a handle too): named here so it is not
-  mistaken for coverage. Every one of them is a handle check before a record
-  write, so each is a `RefusalRow` and about ten instructions of assembly.
+- The **forged**-handle arm of the non-block rows (`0x4c`, `0x4d`, `0x50`,
+  `0x52`): a handle *inside* the u32 space that names nothing (`a0 = 31`)
+  answers from the capability table, not from the row's guard, so it is a
+  different cell from the four above even though the errno is the same. It is
+  safe to probe (the table lookup precedes any write) and simply not written
+  yet.
+- The remaining badge rows (`0x51` badge, `0x53` take): `0x51` has no `EBADF`
+  arm at all — its oversized handle is `EINVAL` — and `0x53`'s handle check
+  has not been read closely enough to claim a cell, which is why neither is
+  in the table.
 - The rest: safe in principle, simply not written yet. Each one is a
   `RefusalRow` and about ten instructions of assembly.

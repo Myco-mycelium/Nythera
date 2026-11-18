@@ -332,7 +332,7 @@ else
     # count, and it needs no per-word bookkeeping as the matrix grows. A cell
     # that starts being served instead of refused changes its byte and the fold
     # with it, and the boot fails here.
-    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0x15 , matched 0x15 , fold 0xd7e53dca424f094d)"* ]]; then
+    if [[ "$VERDICT" == *"REFUSAL-MATRIX matches"* ]] && [[ "$VERDICT" == *"REFUSAL-MATRIX (rows 0x19 , matched 0x19 , fold 0x885f33b79cbeebe9)"* ]]; then
         ok "the refusal matrix refused every cell it pins from ring 3 with the typed errno the row's own rule names (0x42 misaligned non-user pointer -> EFAULT, 0x5a/0x5b/0x5c forged block handles -> EBADF, 0x66 detach with no slot -> EACCES, 0x6c release with no tile -> ENOENT, 0x4f non-page-aligned length -> EINVAL, 0x59 zero-length read and 0x5b zero-length write -> EINVAL, 0x4f zero length -> EINVAL, 0x4f misaligned non-user record -> EFAULT, 0x4c and 0x5a misaligned non-user records -> EFAULT, 0x59/0x5a/0x5b/0x5c handles above u32::MAX -> EBADF, 0x59 oversized read and 0x4f oversized request -> EINVAL)"
     else
         bad "the refusal matrix did not hold (see the REFUSAL-MATRIX line and any ROW line naming a mismatch)"

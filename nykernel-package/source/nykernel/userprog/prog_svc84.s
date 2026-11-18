@@ -2184,6 +2184,69 @@ _start:
     int $0x84
     mov %rax, 12448(%rbx)
 
+    /* Row 0x4c CAP_SHM, handle 2^32: ABOVE the u32 handle space, with a real
+       24-byte record in the fourth page. The geometry row's FIRST check is
+       this EBADF arm, ahead of the record pointer and ahead of the table
+       lookup, so a handle that cannot be named is refused rather than
+       truncated to the u32 the table would happily resolve (0, the endpoint
+       owner's slot -- which would have answered EACCES and made the cell
+       look like a different arm). */
+    movabs $0x100000000, %rdi
+    lea 12800(%rbx), %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4c, %rax
+    int $0x84
+    mov %rax, 12456(%rbx)
+
+    /* Row 0x4d CAP_SHM_CLOSE, handle 2^32: the close row's EBADF arm, ahead
+       of the shape check, so this cell answers the handle and not the (also
+       wrong) argument claims it deliberately leaves empty. A forged handle
+       here would have been answered by the capability table; 2^32 is refused
+       by the ROW, which is the arm this cell names. Nothing is given back:
+       a refused close never consumes a handle. */
+    movabs $0x100000000, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x4d, %rax
+    int $0x84
+    mov %rax, 12464(%rbx)
+
+    /* Row 0x50 CAP_SHM_UNMAP, handle 2^32: the window-drop row's EBADF arm.
+       Its neighbouring refusal would be ENOENT (a real handle with no window
+       left), so this cell is what separates "the handle names nothing" from
+       "the handle names a region this caller has already dropped" -- the two
+       answers the doc promises for this row, one from the row and one from
+       the machine. */
+    movabs $0x100000000, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x50, %rax
+    int $0x84
+    mov %rax, 12472(%rbx)
+
+    /* Row 0x52 CAP_NOTIFY, handle 2^32: the badge family's EBADF arm, the
+       first check before the shape and before the endpoint's own kind/right
+       checks. It is the badge row whose oversized handle this class owns --
+       0x51 CAP_BADGE answers EINVAL for its oversized a0 (a shape refusal,
+       deliberately not this arm), so a cell there would pin a different
+       class and the doc says which is which. a1 = 0 leaves the signal bits
+       empty: the handle is the only malformed argument, so the answer cannot
+       be explained by anything else. */
+    movabs $0x100000000, %rdi
+    xor %rsi, %rsi
+    xor %rdx, %rdx
+    movabs $-1, %r10
+    xor %r8, %r8
+    mov $0x52, %rax
+    int $0x84
+    mov %rax, 12480(%rbx)
+
     lea 11688(%rbx), %rdi
     xor %rsi, %rsi
     xor %rdx, %rdx
