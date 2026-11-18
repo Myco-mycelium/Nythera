@@ -19,13 +19,23 @@
 #
 # The transcript cases prove the CHECKER reads evidence; they cannot prove the
 # matrix detects a kernel that stopped refusing, because an edited log is not
-# a kernel. So the last two cases are SOURCE mutations, each rebuilt and
+# a kernel. So the last three cases are SOURCE mutations, each rebuilt and
 # booted by the gate itself:
 #   - remove 0x4c's handle guard, so the row answers a WRONG errno, and require
 #     the gate to name that row with its own values;
 #   - make 0x50's EBADF arm drop the caller's window on its way out, so the
 #     row still answers correctly and its NO-EFFECT witness is the only thing
-#     that can catch it, and require the gate to name cell 0x50's witness.
+#     that can catch it, and require the gate to name cell 0x50's witness;
+#   - make 0x4d's EBADF arm give back every region capability the caller holds
+#     while still answering EBADF, so a DIFFERENT row's witness carries the
+#     same burden, and require the gate to name cell 0x4d's no-effect line.
+# The 0x50 case takes its expected marker from the kernel's own table
+# (`REFUSAL_WINDOW_WITNESS`), never from a copy here: a marker changed in the
+# kernel must move this expectation with it instead of turning a correct
+# kernel into a false failure. It is checked before the mutation runs, so an
+# unreadable constant fails the self-check rather than proving nothing. The
+# 0x4d case needs no extraction: its row's witness is 0, the value a live
+# capability's geometry call must answer.
 # The source is restored from a backup in the EXIT trap as well as on the
 # normal path, so an interrupted run does not leave a mutant tree behind; the
 # real kernel is rebuilt afterwards.
@@ -71,6 +81,18 @@ if [[ ! -x "$GATE" ]]; then
     echo "FAIL: $GATE is not executable"
     exit 1
 fi
+
+# The file the kernel-regression cases mutate, named once so the cases below
+# agree on it. The 0x50 case needs one value from the kernel's own table: the
+# marker its witness reads. It is EXTRACTED, not copied -- a copy here would go
+# stale the first time the marker changed and then report a correct kernel as
+# "did not read the missing marker". A hedged extraction (empty on failure) is
+# checked before the mutation runs, so an unreadable constant is a self-check
+# failure in its own right rather than a mutation that proves nothing.
+SRC=src/service84.rs
+MARKER_HEX="$(sed -n 's/.*pub const REFUSAL_WINDOW_WITNESS: i64 = 0x\([0-9a-fA-F_]*\);.*/\1/p' "$SRC" 2>/dev/null | head -1 | tr -d '_' | tr 'A-F' 'a-f')"
+WITNESS_WANT=""
+[[ -n "$MARKER_HEX" ]] && WITNESS_WANT="0x$MARKER_HEX"
 
 echo "==> baseline: the saved transcript must PASS unmutated"
 if "$GATE" --replay "$LOG" >"$TMP/base.log" 2>&1; then
@@ -142,7 +164,6 @@ fi
 # slot). Strip the guard and the row answers EACCES instead of EBADF, so the
 # cell's own errno changes -- a wrong refusal, not a crashed kernel, which is
 # the interesting kind of failure for a matrix to catch.
-SRC=src/service84.rs
 echo "==> a kernel regression: strip 0x4c's handle guard, rebuild, expect a red matrix"
 if [[ ! -f "$SRC" ]]; then
     bad "no $SRC to mutate: the source-level case cannot run"
@@ -207,7 +228,9 @@ fi
 # THROUGH its window; with the mapping gone the load faults ring 3, the slot
 # keeps its zeroed value, and the NO-EFFECT ROW 0x50 line must name the cell.
 echo "==> a kernel regression: 0x50 answers EBADF after dropping the window, expect a red matrix"
-if [[ ! -f "$SRC" ]]; then
+if [[ -z "$WITNESS_WANT" ]]; then
+    bad "REFUSAL_WINDOW_WITNESS is not readable from $SRC: the 0x50 case cannot know what its witness must read"
+elif [[ ! -f "$SRC" ]]; then
     bad "no $SRC to mutate: the 0x50 witness case cannot run"
 else
     cp "$SRC" "$SRC_BACKUP" || bad "could not back up $SRC"
@@ -247,13 +270,13 @@ PY
             grep -E "^  FAIL" "$TMP/src50.log" | head -3 | sed 's/^/        /'
         elif ! grep -qF "the boot-adopted region's live window still reads its marker" "$TMP/src50.log"; then
             bad "the gate named cell 0x50, but not this witness: the NO-EFFECT line must carry its own description"
-        elif ! grep -qE "REFUSAL-MATRIX NO-EFFECT ROW 0x50 .* got 0x0 , want 0x215353454e544957" "$TMP/src50.log"; then
-            bad "cell 0x50 was named, but the witness did not read the missing marker (expected 'got 0x0 , want 0x215353454e544957')"
+        elif ! grep -qE "REFUSAL-MATRIX NO-EFFECT ROW 0x50 .* got 0x0 , want $WITNESS_WANT" "$TMP/src50.log"; then
+            bad "cell 0x50 was named, but the witness did not read the missing marker (expected 'got 0x0 , want $WITNESS_WANT')"
             grep -m1 "NO-EFFECT ROW 0x50" "$TMP/src50.log" | sed 's/^/        /'
         elif ! grep -qF "REFUSAL-MATRIX MISMATCH" "$TMP/src50.log"; then
             bad "cell 0x50's witness disagreed, but the matrix line did not name the verdict MISMATCH"
         else
-            ok "0x50 drops the window and still answers EBADF -> the gate refused the kernel and named cell 0x50's witness (got 0x0 , want 0x215353454e544957)"
+            ok "0x50 drops the window and still answers EBADF -> the gate refused the kernel and named cell 0x50's witness (got 0x0 , want $WITNESS_WANT)"
         fi
     else
         bad "could not make 0x50 drop the window (see message above); source left unchanged"
@@ -267,6 +290,89 @@ PY
         tail -5 "$TMP/rebuild50.log" | sed 's/^/        /'
     else
         ok "source restored byte-for-byte after the 0x50 case and the real kernel rebuilt"
+    fi
+fi
+
+# ---- a third KERNEL regression: a different row, a different witness ------
+# The two cases above prove one row's errno and then one row's window. This
+# case asks the no-effect pass to carry that burden for a DIFFERENT row, so
+# the property is not a single cell's special case. 0x4d CAP_SHM_CLOSE's
+# EBADF arm is the subject because the matrix already probes it (cell 22) and
+# its witness is real state it could destroy: the caller's own live region
+# capability from the WINDOW leg, re-asked through 0x4c after the refusal.
+#
+# The mutation gives back EVERY region capability the caller holds before
+# returning EBADF. The answer is unchanged, so this is not a wrong-refusal
+# bug: `matched 0x19` must still be printed for the mutant. What changes is
+# that the capability the witness reads is no longer held, so 0x4c answers
+# EBADF where it must answer 0, and the NO-EFFECT ROW 0x4d line must name it.
+# The other two matrix cells that use later capabilities (0x50's boot-adopted
+# handle, 0x52's endpoint) may report their own witnesses too; the gate's
+# requirement here is that 0x4d's line is present and attributable.
+echo "==> a kernel regression: 0x4d gives back the caller's capabilities but answers EBADF, expect a red matrix"
+if [[ ! -f "$SRC" ]]; then
+    bad "no $SRC to mutate: the 0x4d witness case cannot run"
+else
+    cp "$SRC" "$SRC_BACKUP" || bad "could not back up $SRC"
+    if python3 - "$SRC" <<'PY'
+import sys
+
+path = sys.argv[1]
+src = open(path, encoding='utf-8').read()
+old = """        CALL_CAP_SHM_CLOSE => {
+            if a0 > u32::MAX as u64 {
+                return EBADF;
+            }
+"""
+new = """        CALL_CAP_SHM_CLOSE => {
+            if a0 > u32::MAX as u64 {
+                // MUTANT: the guard still answers EBADF, but it has already
+                // given back every region capability the caller held.
+                for h in 0..16u32 {
+                    let _ = crate::experimental::caps::close_region_for(
+                        crate::experimental::scheduler::session_identity(),
+                        h,
+                    );
+                }
+                return EBADF;
+            }
+"""
+if src.count(old) != 1:
+    sys.exit("the 0x4d EBADF arm is not where this case thinks it is (%d matches at this exact shape)" % src.count(old))
+open(path, 'w', encoding='utf-8').write(src.replace(old, new))
+PY
+    then
+        SRC_MUTATED=1
+        if "$GATE" >"$TMP/src4d.log" 2>&1; then
+            bad "a kernel whose 0x4d gives back the caller's capabilities and still answers EBADF passed the matrix -- the no-effect witness does not catch it"
+        elif ! grep -qF "REFUSAL-MATRIX NO-EFFECT ROW 0x4d" "$TMP/src4d.log"; then
+            bad "the freed capability was caught, but not by cell 0x4d's witness (no 'REFUSAL-MATRIX NO-EFFECT ROW 0x4d' line)"
+            grep -E "^  FAIL" "$TMP/src4d.log" | head -3 | sed 's/^/        /'
+        elif ! grep -qF "the caller's live capability is still usable through 0x4c after the refused close" "$TMP/src4d.log"; then
+            bad "the gate named cell 0x4d, but not this witness: the NO-EFFECT line must carry its own description"
+        elif ! grep -qE "REFUSAL-MATRIX \(rows 0x19 , matched 0x19" "$TMP/src4d.log"; then
+            bad "the mutant did not keep every errno right (expected 'matched 0x19'): this case is about acting, not answering"
+            grep -m1 "REFUSAL-MATRIX (" "$TMP/src4d.log" | sed 's/^/        /'
+        elif ! grep -qE "REFUSAL-MATRIX NO-EFFECT ROW 0x4d .* got 0xfffffffffffffff7 , want 0x0" "$TMP/src4d.log"; then
+            bad "cell 0x4d was named, but its witness did not read the closed capability (expected 'got 0xfffffffffffffff7 , want 0x0')"
+            grep -m1 "NO-EFFECT ROW 0x4d" "$TMP/src4d.log" | sed 's/^/        /'
+        elif ! grep -qF "REFUSAL-MATRIX MISMATCH" "$TMP/src4d.log"; then
+            bad "cell 0x4d's witness disagreed, but the matrix line did not name the verdict MISMATCH"
+        else
+            ok "0x4d gives back the caller's capabilities and still answers EBADF -> the gate refused the kernel and named cell 0x4d's no-effect line (got 0xfffffffffffffff7 , want 0x0) with every errno still matched"
+        fi
+    else
+        bad "could not make 0x4d give back the caller's capabilities (see message above); source left unchanged"
+    fi
+    cp "$SRC_BACKUP" "$SRC"
+    SRC_MUTATED=0
+    if ! cmp -s "$SRC_BACKUP" "$SRC"; then
+        bad "$SRC does not match its backup after the 0x4d mutation: the tree is NOT back to its original state"
+    elif ! ./build.sh >"$TMP/rebuild4d.log" 2>&1; then
+        bad "the source is restored but ./build.sh no longer succeeds -- target/kernel.elf may still be the 0x4d mutant"
+        tail -5 "$TMP/rebuild4d.log" | sed 's/^/        /'
+    else
+        ok "source restored byte-for-byte after the 0x4d case and the real kernel rebuilt"
     fi
 fi
 
