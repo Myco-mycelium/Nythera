@@ -46,7 +46,11 @@ PREFIX="${BOOT_TOOLS_PREFIX:-$HOME/.cache/nyrqis-boot-tools}"
 PROOT_URL="https://proot.gitlab.io/proot/bin/proot"
 ROOTFS_URL="https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-amd64.tar.gz"
 PACKAGES="qemu-system-x86 grub-pc-bin grub-common xorriso mtools"
-TOOLS="qemu-system-x86_64 grub-mkrescue grub-mkimage xorriso mformat mcopy"
+# mmd is here because make_live_iso.sh makes the ESP's ::EFI/BOOT
+# directory explicitly before mcopy'ing the stub into it; a shim list that
+# stopped at mformat/mcopy installed a tool set the ISO build could not
+# finish with.
+TOOLS="qemu-system-x86_64 grub-mkrescue grub-mkimage xorriso mformat mcopy mmd"
 
 ok()   { echo "  OK: $*"; }
 bad()  { echo "  FAIL: $*" >&2; }
