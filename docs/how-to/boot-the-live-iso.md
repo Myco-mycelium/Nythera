@@ -67,6 +67,22 @@ digest. Its attribution is the build (both discs come from one run against
 one `target/kernel.elf`), and the script says so instead of substituting a
 weaker check.
 
+To check the third fact the other way round -- that a disc which cannot boot
+drives the gate red and mints a FAIL receipt instead of inheriting the PASS
+already on record -- run the mutation:
+
+```bash
+./tools/live_iso_selfcheck.sh   # ~15 min: two real boot runs
+```
+
+It repacks `dist/nyrqis-live-uefi.iso` with an unloadable `BOOTX64.EFI` (same
+El Torito layout, its own digest re-recorded, so only the boot can fail),
+requires the gate to exit non-zero with `uefi: FAIL` and no booted kernel in
+the receipt, then restores both discs from a backup and re-earns the PASS,
+leaving `dist/` unmodified. It refuses to run without a PASS receipt covering
+the discs on disk, because a red gate proves nothing if there was no claim for
+a failed boot to inherit.
+
 ## Run it
 
 Write the image to a USB stick or attach it as a CD-ROM:

@@ -109,6 +109,17 @@ the right reason, while the unmutated transcript still passes. The proof gate
 also COUNTS the distinct legs in the verdict (26) so a leg that stops running
 cannot leave a smaller, quieter green.
 
+`./tools/live_iso_selfcheck.sh` is the same idea for the live discs, on the
+real artefacts instead of a transcript: it gives the UEFI disc an unloadable
+`BOOTX64.EFI` (same El Torito layout, its own digest re-recorded, so the
+integrity check has nothing to complain about), requires `check_live_iso.sh
+--boot --uefi-boot` to exit non-zero and mint a receipt that reads
+`verdict: FAIL` with no booted kernel for that leg -- not the PASS already on
+disk -- then restores both discs from a backup and re-earns the PASS, leaving
+`dist/` unmodified. It refuses to start without a PASS receipt covering the
+discs, since a red gate proves nothing when there was no claim a failed boot
+could have inherited.
+
 `./tools/run_gate.sh <gate>` wraps any gate: it keeps the transcript in
 `target/receipts/`, writes a JSON receipt (verdict, OK/PASS/FAIL line counts,
 leg count, pinned hashes) and compares it with a reference, so a verdict that

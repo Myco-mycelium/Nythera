@@ -40,6 +40,12 @@
 #               has to earn a new one by booting again. A receipt records the
 #               legs THAT run measured, so the full claim is the both-flag run.
 #
+# The OTHER half of that contract -- that a disc which cannot boot drives this
+# gate red and mints FAIL instead of inheriting the PASS already on disk -- is
+# proved on the real artefacts by tools/live_iso_selfcheck.sh, which gives the
+# UEFI disc an unloadable BOOTX64.EFI, requires the red verdict and the FAIL
+# receipt, then restores the discs and re-earns the PASS.
+#
 # Usage: ./tools/check_live_iso.sh [--boot] [--uefi-boot] [--iso path]
 #
 # Exit status is 0 only when every requested check holds; each part names
