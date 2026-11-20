@@ -1,6 +1,6 @@
 {
   "gate": "check_live_iso.sh",
-  "generated": "2026-11-19T12:11:27Z",
+  "generated": "2026-11-20T08:40:36Z",
   "kernel_sha256": "e8e5f73d11e257ef9a3af97367210f40c618b59f592c059a053a1396c5a639fc",
   "kernel_sha256_source": "dist/nyrqis-live.kernel.sha256, the build both discs come from",
   "legs": {
@@ -8,7 +8,7 @@
       "booted_kernel_sha256": "e8e5f73d11e257ef9a3af97367210f40c618b59f592c059a053a1396c5a639fc",
       "booted_kernel_source": "/boot/kernel.elf inside the disc -- the file GRUB loaded",
       "iso": "dist/nyrqis-live.iso",
-      "iso_sha256": "b059ca1e28f6022b56ac498c206b2f16054bc645d68aabff1f45f131296a2f67",
+      "iso_sha256": "afcac2316ca3bd015321de72b20cf5f2f20e74a9fe94fea7f98aefd456915993",
       "matches_build_digest": true,
       "verdict": "PASS"
     },
@@ -16,7 +16,7 @@
       "booted_kernel_sha256": "e8e5f73d11e257ef9a3af97367210f40c618b59f592c059a053a1396c5a639fc",
       "booted_kernel_source": "the stub's sha256 of the kernel bytes it loaded (its 'kernel image sha256 computed' line)",
       "iso": "dist/nyrqis-live-uefi.iso",
-      "iso_sha256": "c24ee5f22071acbde3c78c7c2b007495bfb6601374d5a1f26887cbee77a41aa9",
+      "iso_sha256": "1e7cadf9dd42df35416f48637c043d33d0b8cdb6d4e231de37b6bbf375d89381",
       "matches_build_digest": true,
       "verdict": "PASS"
     }

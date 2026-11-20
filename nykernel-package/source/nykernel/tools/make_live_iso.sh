@@ -84,6 +84,19 @@ cat > "$WORK/boot/grub/grub.cfg" <<'EOF'
 set timeout=10
 set default=0
 
+# Resolve the disc's own root instead of trusting $root. A boot manager that
+# maps this ISO as a virtual CD or a loopback -- Ventoy does exactly this --
+# loads this same grub.cfg but hands it ITS root, where /boot/kernel.elf does
+# not exist. Every entry then dies with "file `/boot/kernel.elf' not found"
+# and "you need to load the kernel first", which is indistinguishable from a
+# corrupted image and sends the reader looking in the wrong place. `search`
+# names the device that really holds the kernel and points root at it. From a
+# plain CD or a dd'd stick $root is already correct, so this is a no-op there.
+# ($cmdpath is not a portable substitute: grub-mkrescue leaves it empty.)
+if ! [ -e /boot/kernel.elf ]; then
+    search --no-floppy --file --set=root /boot/kernel.elf
+fi
+
 menuentry "Nyrqis (desktop)" {
     multiboot2 /boot/kernel.elf nyrqis.mode=desktop
     boot

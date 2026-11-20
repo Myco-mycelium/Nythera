@@ -95,6 +95,29 @@ qemu-system-x86_64 -cdrom dist/nyrqis-live.iso -m 512 -serial stdio
 sudo dd if=dist/nyrqis-live.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
+### Boot managers that map the ISO (Ventoy and friends)
+
+Ventoy does not boot the stick's bytes the way a dd'd image does: it emulates
+the ISO as a CD-ROM and hands this disc's own `grub.cfg` **its** `$root`. An
+absolute `/boot/kernel.elf` then misses, and every menu entry dies with
+`file `/boot/kernel.elf' not found` followed by `you need to load the kernel
+first` — an error that looks like a corrupt image but is only a wrong root.
+
+The BIOS disc therefore resolves the kernel rather than trusting `$root`:
+
+```
+if ! [ -e /boot/kernel.elf ]; then
+    search --no-floppy --file --set=root /boot/kernel.elf
+fi
+```
+
+From a plain CD or a dd'd stick `$root` is already the disc and the line is a
+no-op. Under a manager that mapped the ISO as a virtual CD it points GRUB at
+the device that really holds the kernel, which is what makes the same image
+boot from all three. If a particular Ventoy build still refuses the disc,
+`Ctrl+R` (Ventoy's GRUB2 mode) has Ventoy load the ISO's own config from its
+loopback instead of chainloading the El Torito image.
+
 The GRUB menu has five entries: `desktop`, `tablet`, `phone`, `console`
 (serial-friendly) and automatic, which lets the display class decide.
 
