@@ -84,14 +84,20 @@ cat > "$WORK/boot/grub/grub.cfg" <<'EOF'
 set timeout=10
 set default=0
 
-# Resolve the disc's own root instead of trusting $root. A boot manager that
-# maps this ISO as a virtual CD or a loopback -- Ventoy does exactly this --
-# loads this same grub.cfg but hands it ITS root, where /boot/kernel.elf does
-# not exist. Every entry then dies with "file `/boot/kernel.elf' not found"
-# and "you need to load the kernel first", which is indistinguishable from a
+# Resolve the disc's own root instead of trusting $root. A loader that reads
+# this grub.cfg from somewhere other than the disc -- chainloading it, mapping
+# the ISO through a loopback, or starting it with root on the medium the ISO
+# file lives on -- leaves $root on a device where /boot/kernel.elf does not
+# exist. Every entry then dies with "file `/boot/kernel.elf' not found" and
+# "you need to load the kernel first", which is indistinguishable from a
 # corrupted image and sends the reader looking in the wrong place. `search`
 # names the device that really holds the kernel and points root at it. From a
 # plain CD or a dd'd stick $root is already correct, so this is a no-op there.
+#
+# This is a guard, not a workaround for one manager's bug: Ventoy 1.1.07, BIOS,
+# "Boot in normal mode" (measured from an IDE disk and from USB mass storage)
+# passes the correct root by itself, and a disc without this block boots there
+# too. The block is what keeps the image independent of that behaviour.
 # ($cmdpath is not a portable substitute: grub-mkrescue leaves it empty.)
 if ! [ -e /boot/kernel.elf ]; then
     search --no-floppy --file --set=root /boot/kernel.elf
