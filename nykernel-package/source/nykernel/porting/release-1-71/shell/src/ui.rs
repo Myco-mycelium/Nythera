@@ -1,13 +1,18 @@
-//! ui.rs -- the Nyrqis shell's renderer (NUI-001): Android 17's HOME SCREEN and Windows' TASKBAR in one shell, drawn by the design rules of Apple's HIG
-//! and carrying none of Apple's assets. The functions are the union of the two platforms' (a launcher, widgets, quick settings and a search field from Android;
-//! a bottom taskbar, running-app buttons, a system tray and window controls from Windows), because a shell that made the user choose would be a worse shell: the
-//! two models answer different questions ("what can this machine do" vs "what is running") and both are asked on every device. The LOOK is HIG: the 8 dp grid,
-//! 44 dp minimum hit targets, one type ramp, generous corner radii and a single accent, so the union does not read as two shells stapled together.
+//! ui.rs -- the Nyrqis shell's renderer (NUI-001): Android 17's HOME SCREEN and Windows' DESKTOP in one shell, drawn by the design rules of Apple's HIG
+//! and carrying none of Apple's assets. The functions are the union of the two platforms', because a shell that made the user choose would be a worse shell:
+//! the two models answer different questions ("what can this machine do" vs "what is running") and both are asked on every device.
 //!
-//! No Apple icon or widget is used: every symbol here is either a glyph of the 5x7 font this tree ships or rectangles this file draws (the Start mark is the
-//! letter N, minimise/maximise/close are a line, a square and an X). Apple's traffic-light dots are deliberately NOT reproduced -- they are Apple's widget, and a
-//! red/yellow/green circle triplet also encodes close/minimise/zoom by COLOUR alone, which fails the HIG's own accessibility rule; a line/square/X reads at any
-//! colour vision and is the Windows convention for the same three functions.
+//! The elements, and where each comes from:
+//!   Android 17 -- status bar (clock, notification dot, signal, battery), the clock/at-a-glance widget, quick-settings tiles, a notification stack
+//!                 (card per app, app initial, detail line, timestamp), app grid with size-class columns, and the single search field.
+//!   Windows    -- the bottom taskbar (Start, search, running-app buttons, Task View, system tray with clock and battery), the Start menu panel
+//!                 (search, pinned apps, recommended rows, account/power footer) and the app window with its title bar and minimise/maximise/close.
+//!
+//! The LOOK is HIG: the 8 dp grid, 44 dp minimum hit targets, generous corner radii and a single accent, so the union does not read as two shells stapled
+//! together. No Apple icon or widget is used: every symbol is a glyph of the 5x7 font this tree ships or rectangles this file draws (the Start mark is the
+//! letter N, minimise/maximise/close are a line, a square and an X, Task View is two offset squares). Apple's traffic-light dots are deliberately NOT
+//! reproduced -- they are Apple's widget, and a red/yellow/green circle triplet encodes three functions by COLOUR alone, which fails the HIG's own
+//! accessibility rule; a line/square/X reads at any colour vision and is the Windows convention for the same three functions.
 //!
 //! The style is MINIMAL: structure is carried by 1 dp hairlines and whitespace, not by filled blocks, so the surface is one colour with one accent. `outline()`
 //! is where that rule lives -- a rounded hairline is a filled rounded rect with its inside painted back in the surface colour, which is why that helper takes the
@@ -104,6 +109,7 @@ fn text_c(fb: &mut Fb, cx: i32, y: i32, s: &[u8], scale: i32, c: u32) { let w = 
 /// whitespace says the same thing at a tenth of the ink, which is the whole
 /// minimalist premise. `bg` is the colour behind the shape, painted back inside.
 fn outline(fb: &mut Fb, x: i32, y: i32, w: i32, h: i32, r: i32, c: u32, bg: u32) {
+    if w < 3 || h < 3 { return; }
     fb.round(x, y, w, h, r, c);
     fb.round(x + 1, y + 1, w - 2, h - 2, if r > 1 { r - 1 } else { 0 }, bg);
 }
@@ -122,6 +128,82 @@ pub const BODY_SCALE: i32 = 2;
 pub fn bar_height(w: i32) -> i32 { if size_class(w) == SizeClass::Compact { 40 } else { 44 } }
 
 pub const APPS: [&[u8]; 8] = [b"PHONE", b"FILES", b"CLOCK", b"NOTES", b"MAPS", b"MAIL", b"CAMERA", b"PC"];
+
+/// The notification stack the shell shows. Static content is the honest state of
+/// a renderer with no session behind it: these are the rows Android's shade
+/// would draw, at the sizes it would draw them, so the layout can be judged
+/// before anything can post a notification.
+const NOTES: [(&[u8], &[u8], &[u8]); 3] = [
+    (b"MAIL", b"2 NEW", b"NOW"),
+    (b"FILES", b"COPIED", b"5M"),
+    (b"CLOCK", b"ALARM 07:00", b"1H"),
+];
+
+/// The Start menu's remaining content: pinned apps and recommended rows. Letters
+/// only, because the font carries A-Z, 0-9 and colon -- a shell that invented a
+/// second alphabet for its menus would be a second font by the back door.
+const PINNED: [&[u8]; 6] = [b"P", b"F", b"C", b"N", b"M", b"X"];
+const RECOMMENDED: [(&[u8], &[u8]); 2] = [(b"REPORT PDF", b"NOW"), (b"PHOTOS", b"YDAY")];
+
+/// A notification card: app initial, app name, one detail line, a timestamp.
+/// The timestamp is right-aligned and the detail clipped by width, which is how
+/// Android's shade keeps a stack scannable.
+fn note_card(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32, app: &[u8], detail: &[u8], when: &[u8]) {
+    outline(fb, x, y, w, h, 16, k.outline_variant, k.surface);
+    outline(fb, x + 14, y + 14, 28, 28, 8, k.outline_variant, k.surface);
+    text_c(fb, x + 28, y + 14 + 7, &app[..1], BODY_SCALE, k.on_surface);
+    text(fb, x + 54, y + 14, app, BODY_SCALE, k.on_surface);
+    let room = w - 54 - 14;
+    if text_w(detail, BODY_SCALE) <= room {
+        text(fb, x + 54, y + 40, detail, BODY_SCALE, k.on_surface_variant);
+    }
+    text(fb, x + w - 14 - text_w(when, BODY_SCALE), y + 14, when, BODY_SCALE, k.on_surface_variant);
+}
+
+/// The Start menu panel (Windows): a search field, pinned apps, recommended rows
+/// and the account/power footer. Shown open rather than as a label, because a
+/// taskbar with a Start button that opens nothing is the one thing this shell
+/// must not pretend to have -- the panel is the element, drawn where it opens.
+fn start_panel(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32) {
+    outline(fb, x, y, w, h, 16, k.outline_variant, k.surface);
+    // search field (the taskbar's field, repeated where Windows repeats it)
+    outline(fb, x + 16, y + 16, w - 32, 32, 16, k.outline_variant, k.surface);
+    text(fb, x + 32, y + 16 + 9, b"SEARCH", BODY_SCALE, k.on_surface_variant);
+    // pinned apps
+    text(fb, x + 16, y + 64, b"PINNED", BODY_SCALE, k.on_surface_variant);
+    let mut i = 0;
+    while i < PINNED.len() {
+        let px = x + 16 + i as i32 * 60;
+        if px + 44 <= x + w - 16 {
+            outline(fb, px, y + 84, 44, 44, 12, k.outline_variant, k.surface);
+            text_c(fb, px + 22, y + 84 + 11, PINNED[i], BODY_SCALE, k.on_surface);
+        }
+        i += 1;
+    }
+    // recommended rows
+    text(fb, x + 16, y + 148, b"RECOMMENDED", BODY_SCALE, k.on_surface_variant);
+    let mut r = 0;
+    while r < RECOMMENDED.len() {
+        let ry = y + 168 + r as i32 * 40;
+        if ry + 32 <= y + h - 52 {
+            outline(fb, x + 16, ry, 24, 24, 6, k.outline_variant, k.surface);
+            text_c(fb, x + 28, ry + 5, &RECOMMENDED[r].0[..1], BODY_SCALE, k.on_surface);
+            text(fb, x + 52, ry + 5, RECOMMENDED[r].0, BODY_SCALE, k.on_surface);
+            text(fb, x + w - 16 - text_w(RECOMMENDED[r].1, BODY_SCALE), ry + 5, RECOMMENDED[r].1, BODY_SCALE, k.on_surface_variant);
+        }
+        r += 1;
+    }
+    // footer: account, name, power
+    let fy = y + h - 40;
+    fb.rect(x + 1, fy - 8, w - 2, 1, k.outline_variant);
+    outline(fb, x + 16, fy, 24, 24, 12, k.outline_variant, k.surface);
+    text_c(fb, x + 28, fy + 5, b"N", BODY_SCALE, k.on_surface);
+    text(fb, x + 52, fy + 5, b"NYRQIS", BODY_SCALE, k.on_surface);
+    // power: a hairline circle with a break, our own glyph, at a 44 dp target
+    let pw = x + w - 16 - 24;
+    outline(fb, pw, fy, 24, 24, 12, k.outline_variant, k.surface);
+    fb.rect(pw + 11, fy + 5, 2, 7, k.on_surface_variant);
+}
 
 /// Everything the layout decided (also returned so the host check can assert the HIG/Material invariants on the real numbers).
 pub struct Info { pub class: SizeClass, pub margin: i32, pub cols: i32, pub rows: i32, pub tiles: i32 }
@@ -145,6 +227,8 @@ pub fn render(fb: &mut Fb, theme: Theme) -> Info {
 
     // ---- the Android half: a 24 dp status bar, edge to edge ----------------
     text(fb, margin, 5, b"12:30", BODY_SCALE, k.on_surface_variant);
+    // Android 17: a pending notification is a DOT beside the clock, not a count
+    fb.round(margin + text_w(b"12:30", BODY_SCALE) + 8, 9, 6, 6, 3, k.primary);
     let bx = w - margin - 24;
     outline(fb, bx, 6, 22, 11, 3, k.outline_variant, k.surface);
     fb.round(bx + 3, 8, 10, 7, 1, k.on_surface_variant);
@@ -152,7 +236,8 @@ pub fn render(fb: &mut Fb, theme: Theme) -> Info {
     let mut i = 0;
     while i < 4 { let bh = 4 + 2 * i; fb.round(sx + i * 5, 17 - bh, 3, bh, 1, k.on_surface_variant); i += 1; }
 
-    // ---- taskbar contents: start, ONE search field, running apps, tray ------
+    // ---- taskbar contents: start, ONE search field, running apps, Task View,
+    // tray -------------------------------------------------------------------
     fb.rect(0, bar_y, w, bar_h, k.surface);
     fb.rect(0, bar_y, w, 1, k.outline_variant);
     let ctrl = if bar_h >= 44 { 32 } else { 28 };
@@ -175,16 +260,25 @@ pub fn render(fb: &mut Fb, theme: Theme) -> Info {
         outline(fb, sx0, cy, search_w, ctrl, ctrl / 2, k.outline_variant, k.surface);
         text(fb, sx0 + 12, cy + (ctrl - 7 * BODY_SCALE) / 2, b"SEARCH", BODY_SCALE, k.on_surface_variant);
     }
+    // Task View (Windows): every window, drawn as two offset hairline squares --
+    // deliberately NOT an app initial, because it is not an app.
+    let tv = 28;
+    let tvx = w - tray_w - tv - 12;
+    let chips_end = sx0 + search_w + 16;
+    if tvx - tv >= chips_end {
+        let tvy = cy + (ctrl - tv) / 2;
+        outline(fb, tvx - tv - 12 + 4, tvy + 4, 16, 12, 4, k.outline_variant, k.surface);
+        outline(fb, tvx - tv - 12 + 10, tvy + 9, 16, 12, 4, k.on_surface_variant, k.surface);
+    }
     // Running apps (Windows' task buttons). Each is a 44 x ctrl target carrying
     // its app's initial, which is the whole label a 320 dp bar can afford; they
     // appear only on Expanded, where they do not crowd the search field.
     if class == SizeClass::Expanded {
         let chips: [&[u8]; 3] = [b"P", b"F", b"N"];   // the three most recent
-        let chip_x = sx0 + search_w + 16;
         let mut c = 0;
         while c < 3 {
-            let x = chip_x + c * (44 + 8);
-            if x + 44 <= w - tray_w {
+            let x = chips_end + c * (44 + 8);
+            if x + 44 <= tvx - tv - 24 {
                 outline(fb, x, cy, 44, ctrl, 8, if c == 0 { k.on_surface_variant } else { k.outline_variant }, k.surface);
                 text_c(fb, x + 22, cy + (ctrl - 7 * BODY_SCALE) / 2, chips[c as usize], BODY_SCALE, if c == 0 { k.on_surface } else { k.on_surface_variant });
             }
@@ -206,38 +300,42 @@ pub fn render(fb: &mut Fb, theme: Theme) -> Info {
         let lw = if class == SizeClass::Expanded { 360 } else { (w - 3 * margin) * 2 / 5 };
         (margin, lw, margin + lw + margin, w - (margin + lw + margin) - margin)
     };
-    // ---- clock widget: the one filled panel left. It is the shell's anchor,
-    // and `device_mode` reads a pixel of this fill back as proof the shell ran
-    // (its `Container` colour appears nowhere else on the surface).
+    // ---- clock / at-a-glance widget: the one filled panel left. It is the
+    // shell's anchor, and `device_mode` reads a pixel of this fill back as proof
+    // the shell ran (its `Container` colour appears nowhere else on the surface),
+    // which is also why it stays pinned at dp 40 on every size class.
     let cyy0 = 40;
     fb.round(left_x, cyy0, left_w, 112, 16, k.container);
     text(fb, left_x + 16, cyy0 + 28, b"12:30", DISPLAY_SCALE, k.on_surface);
     text(fb, left_x + 16, cyy0 + 76, b"THU 22 OCT", BODY_SCALE, k.on_surface_variant);
-    // ---- quick-settings tiles (medium/expanded only): hairline pills, 8 dp
-    // apart; the active one is marked by an accent DOT and accent ink, not by a
-    // filled slab, so the accent stays one element's worth of ink.
+    // ---- quick-settings tiles: hairline pills 8 dp apart; the active ones are
+    // marked by an accent DOT and accent ink, not by a filled slab, so the
+    // accent stays one element's worth of ink.
     let mut tiles = 0;
+    let mut cursor = cyy0 + 112 + 16;
     if class != SizeClass::Compact {
-        let names: [&[u8]; 3] = [b"INTERNET", b"BLUETOOTH", b"TORCH"];
+        let names: [&[u8]; 4] = [b"INTERNET", b"BLUETOOTH", b"TORCH", b"DO NOT DISTURB"];
         let mut t = 0;
-        while t < 3 {
-            let ty = cyy0 + 112 + 16 + t * 64;
+        while t < 4 {
+            let ty = cursor;
             if ty + 56 <= body_bottom {
                 let on = t < 2;
                 outline(fb, left_x, ty, left_w, 56, 28, if on { k.primary } else { k.outline_variant }, k.surface);
                 fb.round(left_x + 14, ty + 22, 12, 12, 6, if on { k.primary } else { k.on_surface_variant });
                 text(fb, left_x + 38, ty + 21, names[t as usize], BODY_SCALE, if on { k.on_surface } else { k.on_surface_variant });
                 tiles += 1;
+                cursor += 64;
             }
             t += 1;
         }
     }
-    // ---- app grid: cells of (pane width / cols) x 96 dp; a 48 dp hairline
-    // icon (12 dp corners) + a 14-px label. Monochrome on purpose: eight apps
-    // are not eight colours, and the old tri-colour icon set read as decoration.
+    // ---- app grid: cells of (pane width / cols) x 96 dp; a 48 dp hairline icon
+    // (12 dp corners) + a 14-px label. Monochrome on purpose: eight apps are not
+    // eight colours, and the old tri-colour icon set read as decoration.
     let cols = if class == SizeClass::Expanded { 6 } else { 4 };
     let mut rows;
     let grid_y;
+    let mut right_below = 0;
     if class == SizeClass::Compact {
         grid_y = cyy0 + 112 + 16;
         rows = (body_bottom - grid_y) / 96;
@@ -257,17 +355,18 @@ pub fn render(fb: &mut Fb, theme: Theme) -> Info {
         let b = 28;
         let by = 40 + (title_h - b) / 2;
         let mut ctl_x = right_x + right_w - 16 - 3 * b - 2 * 6;
-        fb.rect(ctl_x + b / 2 - 6, by + b / 2, 12, 2, k.on_surface_variant);              // minimise
+        fb.rect(ctl_x + b / 2 - 6, by + b / 2, 12, 2, k.on_surface_variant);                 // minimise
         ctl_x += b + 6;
-        outline(fb, ctl_x + 4, by + b / 2 - 5, 12, 10, 2, k.on_surface_variant, k.surface); // maximise: an outlined square
+        outline(fb, ctl_x + 4, by + b / 2 - 5, 12, 10, 2, k.on_surface_variant, k.surface);   // maximise: an outlined square
         ctl_x += b + 6;
         let mut d = 0;
-        while d < 10 {                                                                   // close: an X, two diagonals
+        while d < 10 {                                                                       // close: an X, two diagonals
             fb.rect(ctl_x + 4 + d, by + b / 2 - 5 + d, 2, 2, k.on_surface_variant);
             fb.rect(ctl_x + 13 - d, by + b / 2 - 5 + d, 2, 2, k.on_surface_variant);
             d += 1;
         }
         grid_y = 40 + title_h + 16;
+        right_below = 40 + body_h + 16;
     }
     if rows > 2 { rows = 2; } if rows < 0 { rows = 0; }
     let cell_w = right_w / cols;
@@ -282,6 +381,27 @@ pub fn render(fb: &mut Fb, theme: Theme) -> Info {
             text_c(fb, cx + cell_w / 2, cyy + 12 + 48 + 10, APPS[n as usize], BODY_SCALE, k.on_surface_variant);
         }
         n += 1;
+    }
+    // ---- the notification stack (Android's shade, drawn open as the stack of
+    // cards it is). On Compact it follows the grid in the single column; on the
+    // two-column layouts it fills the space under the tiles, which is otherwise
+    // empty surface in a screenshot.
+    let mut card_y = if class == SizeClass::Compact { grid_y + rows * 96 + 16 } else { cursor };
+    let mut ci = 0;
+    while ci < NOTES.len() && card_y + 72 <= body_bottom {
+        note_card(fb, &k, left_x, card_y, left_w, 72, NOTES[ci].0, NOTES[ci].1, NOTES[ci].2);
+        card_y += 80;
+        ci += 1;
+    }
+    // ---- the Start menu panel (Windows), open above the taskbar under the
+    // window. Drawn only where it has room to show its own elements: a panel
+    // with its footer clipped would be a worse claim than no panel.
+    if class != SizeClass::Compact && right_below + 240 <= body_bottom {
+        // Capped at 300 dp: a panel stretched to fill a tall window would be
+        // half empty surface below its last row, which reads as a bug rather
+        // than as breathing room.
+        let ph = if body_bottom - right_below > 300 { 300 } else { body_bottom - right_below };
+        start_panel(fb, &k, right_x, right_below, right_w, ph);
     }
     Info { class, margin, cols, rows, tiles }
 }
