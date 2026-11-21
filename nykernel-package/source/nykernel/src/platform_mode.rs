@@ -133,13 +133,17 @@ impl Platform {
     /// truth, the same rule `device_mode`'s layout tokens follow.
     pub fn palette(self) -> Palette {
         match self {
-            // Bio-luminescent mint on deep ink -- the kernel's own look.
+            // Bio-luminescent mint on deep ink -- the kernel's own look. The
+            // accent is the shell's own `--accent` (#3cc8c0): the identity is
+            // what Nyrqis IS, so it must not repaint the mock's accent with a
+            // near-miss teal. That near-miss is what every accent pixel in the
+            // boot frame showed before this value was aligned.
             Platform::Nyrqis => Palette {
                 bg: 0x000b_0f14,
                 surface: 0x0012_1c24,
                 surface_hi: 0x001b_2a36,
-                accent: 0x002e_eea6,
-                on_accent: 0x0004_2419,
+                accent: 0x003c_c8c0,
+                on_accent: 0x0005_2321,
                 text: 0x00d7_f5ff,
                 muted: 0x0076_8f9f,
             },

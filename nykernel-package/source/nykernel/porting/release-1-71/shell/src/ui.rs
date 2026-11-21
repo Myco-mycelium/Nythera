@@ -28,8 +28,6 @@
 //! terminal and monitor open on the desktop; the launcher open on tablet, phone
 //! and console. Nothing is faked that the mock draws.
 
-pub const BODY_SCALE: i32 = 2;
-pub const DISPLAY_SCALE: i32 = 3;
 /// `#shell{--top:34px}` / `[data-mode=phone]{--top:30px}`.
 pub const TOP: i32 = 34;
 const TOP_PHONE: i32 = 30;
@@ -147,6 +145,58 @@ impl Fb {
     fn frame(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, c: u32, a: u32, fill: u32) {
         self.round_a(x, y, w, h, r, c, a);
         self.round(x + 1, y + 1, w - 2, h - 2, (r - 1).max(0), fill);
+    }
+
+    /// Whether a pixel is inside the rounded box `round_a` would paint. Used by
+    /// `edge` to find the perimeter; it mirrors `round_a`'s own geometry (middle
+    /// bands plus four corner circles) so the two never disagree.
+    #[inline]
+    fn inside(x: i32, y: i32, w: i32, h: i32, r: i32, px: i32, py: i32) -> bool {
+        if px < x || py < y || px >= x + w || py >= y + h {
+            return false;
+        }
+        if px >= x + r && px < x + w - r {
+            return true;
+        }
+        if py >= y + r && py < y + h - r {
+            return true;
+        }
+        let cx = if px < x + r { x + r } else { x + w - r - 1 };
+        let cy = if py < y + r { y + r } else { y + h - r - 1 };
+        let (dx, dy) = (px - cx, py - cy);
+        dx * dx + dy * dy <= r * r
+    }
+
+    /// `border:1px solid` on a TRANSLUCENT surface: only the 1px perimeter is
+    /// composited. `frame` cannot be used for glass, because it repaints the
+    /// interior with an opaque fill -- that put the panel over black instead of
+    /// over the wallpaper and double-composited the border ring (alpha 0.94
+    /// instead of the stylesheet's 0.76).
+    fn edge(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, c: u32, a: u32) {
+        let r = r.min(w / 2).min(h / 2).max(0);
+        let mut py = y;
+        while py < y + h {
+            let mut px = x;
+            while px < x + w {
+                if Fb::inside(x, y, w, h, r, px, py)
+                    && (!Fb::inside(x, y, w, h, r, px + 1, py)
+                        || !Fb::inside(x, y, w, h, r, px - 1, py)
+                        || !Fb::inside(x, y, w, h, r, px, py + 1)
+                        || !Fb::inside(x, y, w, h, r, px, py - 1))
+                {
+                    self.blend(px, py, c, a);
+                }
+                px += 1;
+            }
+            py += 1;
+        }
+    }
+
+    /// A glass panel with its 1px border: the surface a dock, a launcher panel
+    /// or a popover is, in the stylesheet's own painting order.
+    fn panel(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, fill: u32, fa: u32, line: u32, la: u32) {
+        self.round_a(x, y, w, h, r, fill, fa);
+        self.edge(x, y, w, h, r, line, la);
     }
 
     fn circle_a(&mut self, cx: i32, cy: i32, r: i32, c: u32, a: u32) {
@@ -274,7 +324,10 @@ fn face(font: Font, px: i32) -> Option<Face> {
 }
 
 /// Glyph metrics + alpha slice. The atlas records a 16ths-of-a-pixel advance and
-/// a baseline-relative box, exactly as FreeType reported it.
+/// a baseline-relative box, exactly as FreeType reported it. The advance stays
+/// in 16ths: a browser accumulates fractional pen positions across a run, so
+/// truncating each glyph to whole pixels drifts a long line by up to a pixel per
+/// character -- which moved every right-aligned and centred run in the shell.
 fn glyph(f: &Face, ch: u8) -> Option<(i32, i32, i32, i32, i32, &'static [u8])> {
     if ch < 32 || ch > 126 {
         return None;
@@ -297,9 +350,9 @@ fn glyph(f: &Face, ch: u8) -> Option<(i32, i32, i32, i32, i32, &'static [u8])> {
     let oy = ATLAS[o + 6] as i8 as i32;
     let dl = rd32(ATLAS, o + 7);
     if present == 0 {
-        return Some((adv / 16, 0, 0, 0, 0, &[]));
+        return Some((adv, 0, 0, 0, 0, &[]));
     }
-    Some((adv / 16, w, h, ox, oy, &ATLAS[o + 11..o + 11 + dl]))
+    Some((adv, w, h, ox, oy, &ATLAS[o + 11..o + 11 + dl]))
 }
 
 /// Draws a run with its TOP at `y` (the box top, as CSS positions it) and its
@@ -307,9 +360,11 @@ fn glyph(f: &Face, ch: u8) -> Option<(i32, i32, i32, i32, i32, &'static [u8])> {
 fn atype(fb: &mut Fb, x: i32, y: i32, s: &[u8], font: Font, px: i32, color: u32) {
     let Some(f) = face(font, px) else { return };
     let base = y + f.ascent;
-    let mut cx = x;
+    // Sub-pixel pen in 16ths, as the browser's text layout carries it.
+    let mut pen = 0i32;
     for &ch in s {
         let Some((adv, w, h, ox, oy, data)) = glyph(&f, ch) else { continue };
+        let cx = x + pen / 16;
         if w > 0 && h > 0 {
             for row in 0..h {
                 for col in 0..w {
@@ -320,19 +375,19 @@ fn atype(fb: &mut Fb, x: i32, y: i32, s: &[u8], font: Font, px: i32, color: u32)
                 }
             }
         }
-        cx += adv;
+        pen += adv;
     }
 }
 
 fn atype_w(s: &[u8], font: Font, px: i32) -> i32 {
     let Some(f) = face(font, px) else { return 0 };
-    let mut w = 0;
+    let mut pen = 0i32;
     for &ch in s {
         if let Some((adv, ..)) = glyph(&f, ch) {
-            w += adv;
+            pen += adv;
         }
     }
-    w
+    (pen + 8) / 16
 }
 
 fn atype_c(fb: &mut Fb, cx: i32, y: i32, s: &[u8], font: Font, px: i32, color: u32) {
@@ -511,8 +566,6 @@ fn wallpaper(fb: &mut Fb, k: &Colors) {
     while x < w {
         // gradient stop 0 -> stop 1 down the column, then the four bands layered
         // over it; later bands paint over earlier ones, as in the mock.
-        let mut col = [0u32; 0];
-        let _ = &mut col;
         let mut y = 0;
         while y < h {
             let t = ((y as f32 / h as f32) * 255.0) as u32;
@@ -751,7 +804,6 @@ fn top_bar(fb: &mut Fb, k: &Colors, posture: Posture, app: Option<&[u8]>) {
 /// The mock's `#statusBtn`: load wave, mode chip, battery, clock, right-aligned.
 fn status_group(fb: &mut Fb, k: &Colors, posture: Posture, _left: i32, right_edge: i32) {
     let h = top_h(posture);
-    let pad = if posture == Posture::Phone { 14 } else { 8 };
     let clock = b"12:30";
     let bat = b"86%";
     let chip = mode_name(posture);
@@ -790,7 +842,6 @@ fn status_group(fb: &mut Fb, k: &Colors, posture: Posture, _left: i32, right_edg
     let by = (h - 24) / 2;
     atype(fb, bat_x, by + 5, bat, Font::Body500, 13, k.fg);
     atype(fb, clock_x, by + 5, clock, Font::Body500, 13, k.fg);
-    let _ = pad;
 }
 
 /// `#keel` -- the glass dock: launcher, hairline separator, six app tiles.
@@ -804,13 +855,15 @@ fn keel(fb: &mut Fb, k: &Colors, posture: Posture, active: Option<usize>) {
     };
     let sep = 1;
     let n = APPS.len() as i32;
-    let pw = padx * 2 + tile + gap + sep + gap + (gap + tile) * n;
+    // Launcher tile, separator, then n tiles with gaps only BETWEEN them. The old
+    // form added a gap after the last tile too, so the dock's right padding was
+    // `padx + gap` (13px) against the stylesheet's 7px on the left -- the tiles
+    // sat 6px off-centre inside a panel that looked right-edged.
+    let pw = padx * 2 + tile + gap + sep + gap + tile * n + gap * (n - 1);
     let ph = pady * 2 + tile;
     let px = (w - pw) / 2;
     let py = h - bottom - ph;
-    fb.round_a(px, py, pw, ph, radius, k.glass, GLASS_A);
-    fb.frame(px, py, pw, ph, radius, k.line, LINE_A, 0);
-    fb.round_a(px, py, pw, ph, radius, k.glass, GLASS_A);
+    fb.panel(px, py, pw, ph, radius, k.glass, GLASS_A, k.line, LINE_A);
 
     let mut x = px + padx;
     // launcher tile: accent, apps glyph in accent-fg
@@ -827,9 +880,10 @@ fn keel(fb: &mut Fb, k: &Colors, posture: Posture, active: Option<usize>) {
         // the tile's own top highlight: inset 0 1px 0 rgba(255,255,255,.28)
         fb.round_a(x + 2, ty + 1, tile - 4, 2, 1, 0xffffff, 40);
         icon(fb, a.icon, x + tile / 2 - 9, ty + tile / 2 - 9, 18, 0xffffff);
-        // running / active dot under the tile
+        // running / active dot under the tile, inside the panel's bottom padding
+        // (4px below the tile + 4px tall = the 7px padding, not 2px past it)
         if active == Some(i) {
-            fb.round(x + tile / 2 - 8, ty + tile + 4, 16, 5, 3, k.accent);
+            fb.round(x + tile / 2 - 8, ty + tile + 2, 16, 4, 2, k.accent);
         } else if i == 3 {
             // Notes is open at boot (it is one of the three start windows)
             fb.circle(x + tile / 2, ty + tile + 6, 2, k.fg2);
@@ -848,31 +902,32 @@ fn win_frame(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32, app: usize
         fb.round_a(x - g / 2, y + 6 + i * 4, w + g, h + g, 12 + g / 2, 0x000000, 14);
     }
     fb.round(x, y, w, h, 12, k.win);
-    fb.frame(x, y, w, h, 12, k.line, LINE_A, k.win);
-    // .wbar: 36px, win-bar, icon 18 radius 5, title 12/700 display, controls
-    fb.round(x, y, w, 36, 12, k.win_bar);
-    fb.rect(x, y + 18, w, 18, k.win_bar);
-    fb.rect_a(x, y + 35, w, 1, k.line, LINE_A);
+    // .wbar: 36px, win-bar, icon 18 radius 5, title 12/700 display, controls.
+    // The bar is inset by the border's 1px: painting it over the full box erased
+    // the window's border along the whole top edge (the left, right and bottom
+    // edges kept theirs), so the outline stopped at the title bar.
+    fb.round(x + 1, y + 1, w - 2, 35, 11, k.win_bar);
+    fb.rect(x + 1, y + 19, w - 2, 17, k.win_bar);
+    fb.rect_a(x + 1, y + 35, w - 2, 1, k.line, LINE_A);
+    fb.edge(x, y, w, h, 12, k.line, LINE_A);
     fb.round(x + 12, y + 9, 18, 18, 5, a.col);
     icon(fb, a.icon, x + 12 + 4, y + 9 + 4, 10, 0xffffff);
     atype(fb, x + 12 + 18 + 8, y + 11, a.name, Font::Display700, 12, k.fg);
 
-    // .wctl: 30x26 buttons with 6px radius, right aligned, 2px gap
+    // .wctl: 30x26 buttons at y+5 with 6px radius, right aligned, 2px gap. A
+    // 12px glyph centres in 26px at y+12, not at the button's top edge.
     let mut cx = x + w - 6 - 30;
-    icon(fb, Icon::Close, cx + 9, y + 6, 12, k.fg);
-    fb.round_a(cx, y + 5, 30, 26, 6, k.accent, 0);
+    icon(fb, Icon::Close, cx + 9, y + 12, 12, k.fg);
     cx -= 2 + 30;
-    icon(fb, Icon::Max, cx + 9, y + 6, 12, k.fg);
+    icon(fb, Icon::Max, cx + 9, y + 12, 12, k.fg);
     cx -= 2 + 30;
-    icon(fb, Icon::Min, cx + 9, y + 6, 12, k.fg);
+    icon(fb, Icon::Min, cx + 9, y + 12, 12, k.fg);
 
     // .snap popover under the maximise button when open
     if snap_open {
         let sy = y + 26;
         let sx = x + w - 6 - 30 - 2 - 30 - 120;
-        fb.round_a(sx, sy, 132, 38, 10, k.glass, GLASS_A);
-        fb.frame(sx, sy, 132, 38, 10, k.line, LINE_A, 0);
-        fb.round_a(sx, sy, 132, 38, 10, k.glass, GLASS_A);
+        fb.panel(sx, sy, 132, 38, 10, k.glass, GLASS_A, k.line, LINE_A);
         for i in 0..3 {
             let bx = sx + 6 + i * 42;
             fb.round(bx, sy + 6, 38, 26, 5, k.field);
@@ -1006,7 +1061,13 @@ fn window(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32, app: usize, s
 fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32, full: bool) {
     let (w, h) = (fb.w, fb.h);
     let console = posture == Posture::Console;
-    let panel_w = if console { w } else if full { (w - 44).min(880) } else { (w * 94 / 100).min(700) };
+    // A phone and the console lattice are full-bleed (no panel background is
+    // painted at all when `full`); only the tablet gets the floating 880px
+    // panel. Letting the phone take the 880px panel width while `inner` was
+    // `w - 28` sized four columns against 996px and pushed the recents' right-
+    // aligned column past the screen edge.
+    let panel_w =
+        if console || posture == Posture::Phone { w } else if full { (w - 44).min(880) } else { (w * 94 / 100).min(700) };
     let px = if console { 0 } else { (w - panel_w) / 2 };
     let gutter = if console { 44 } else { 22 };
     let mut py = if console { t } else { t + 22 };
@@ -1014,9 +1075,7 @@ fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32, full: bool) {
         // desktop: a floating glass panel, vertically centred
         let ph = (h - t) * 88 / 100;
         py = t + ((h - t) - ph) / 2;
-        fb.round_a(px, py, panel_w, ph, 24, k.glass, GLASS_A);
-        fb.frame(px, py, panel_w, ph, 24, k.line, LINE_A, 0);
-        fb.round_a(px, py, panel_w, ph, 24, k.glass, GLASS_A);
+        fb.panel(px, py, panel_w, ph, 24, k.glass, GLASS_A, k.line, LINE_A);
     }
     let inner = if full && posture == Posture::Phone { w - 28 } else { panel_w - 44 };
 
@@ -1081,11 +1140,15 @@ fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32, full: bool) {
         Posture::Tablet => 68,
         _ => 58,
     };
+    // The panel's inner gutter. A phone's lattice is inset 14px, which is what
+    // `inner = w - 28` already assumes; using 22px there left the first column
+    // 8px right of the search field and the last one only 6px from the edge.
+    let gx = if posture == Posture::Phone { px + 14 } else { px + 22 };
     let cell_w = inner / cols;
     for (i, a) in APPS.iter().enumerate() {
         let col = i as i32 % cols;
         let row = i as i32 / cols;
-        let cx = px + 22 + col * cell_w;
+        let cx = gx + col * cell_w;
         let cy = gy + row * (tile + 46);
         let tile_x = cx + (cell_w - tile) / 2;
         fb.round(tile_x, cy, tile, tile, if posture == Posture::Tablet { 20 } else { 17 }, a.col);
@@ -1098,7 +1161,7 @@ fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32, full: bool) {
     // .hrec: "Recent files" with three entries
     if posture != Posture::Console {
         let rec_y = gy + 2 * (tile + 46) + 10;
-        atype(fb, px + 22, rec_y, b"RECENT FILES", Font::Mono500, 11, k.fg2);
+        atype(fb, gx, rec_y, b"RECENT FILES", Font::Mono500, 11, k.fg2);
         let files: [(&[u8], &[u8]); 3] = [
             (b"welcome.txt", b"/home/nyrqis"),
             (b"ideas.md", b"/home/nyrqis"),
@@ -1106,9 +1169,8 @@ fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32, full: bool) {
         ];
         for (i, (name, dir)) in files.iter().enumerate() {
             let ry = rec_y + 24 + i as i32 * 34;
-            let _ = ry;
-            atype(fb, px + 32, ry + 7, name, Font::Body400, 14, k.fg);
-            atype_r(fb, px + 22 + inner - 10, ry + 9, dir, Font::Mono400, 11, k.fg2);
+            atype(fb, gx + 10, ry + 7, name, Font::Body400, 14, k.fg);
+            atype_r(fb, gx + inner - 10, ry + 9, dir, Font::Mono400, 11, k.fg2);
         }
     }
 }
@@ -1120,11 +1182,13 @@ fn hints(fb: &mut Fb, k: &Colors) {
     fb.rect_a(0, y, w, 52, k.glass, GLASS_A);
     fb.rect_a(0, y, w, 1, k.line, LINE_A);
     let items: [(&[u8], &[u8]); 4] = [(b"A", b"Open"), (b"B", b"Back"), (b"Y", b"Controls"), (b"", b"Home")];
+    // Four items, gaps only BETWEEN them: the bar used to be 28px wider than it
+    // painted, so it sat 14px left of centre on every console boot.
     let mut total = 0;
     for (_, l) in items {
-        total += 24 + 8 + atype_w(l, Font::Mono500, 12);
+        total += 24 + 8 + atype_w(l, Font::Mono500, 12) + 28;
     }
-    total += 28 * 3;
+    total -= 28;
     let mut x = (w - total) / 2;
     for (b, l) in items {
         fb.circle(x + 12, y + 26, 12, k.accent);
