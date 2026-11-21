@@ -314,15 +314,15 @@ fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32), lock: bool, mo
     // the corner would have passed on an empty pane. `container` is a
     // different colour, so this pixel is evidence the shell ran.
     //
-    // Tide's top bar starts with the brand tile, the only accent fill in the
-    // bar and a pixel nothing else on the screen paints -- so it is evidence
-    // the shell ran, not merely that the pane has a background colour. The lock
-    // screen draws no top bar: its probe is the accent edge of the lock glyph's
-    // body, which passes only if the body (not the hairline shackle) landed.
+    // The port's facts: the top bar is glass over the wallpaper (an exact
+    // composited colour), the wallpaper's lowest tide band paints the bottom
+    // edge, and the brand wave is the one accent stroke in the bar. The lock
+    // screen is the mock's boot console, which is its own dark surface.
     let verified = if lock {
-        fb.get(x + w / 2, y + 66) == Some(shell::DARK.primary)
+        fb.get(x, y) == Some(0x0007_1319) && accent_pixels(fb, x, y, w, 120) > 20
     } else {
-        fb.get(x + 11, y + 17) == Some(shell::DARK.primary)
+        let glass_top = shell::overlay(shell::DARK.w0, shell::DARK.glass, shell::GLASS_A);
+        fb.get(x, y) == Some(glass_top) && accent_pixels(fb, x, y, w, shell::TOP as u32) > 20
     };
     Some(Shell {
         pane,
@@ -368,7 +368,38 @@ pub fn render_identity(mode: DeviceMode, fb: &mut Framebuffer, name: &[u8], acce
         Some((name, accent)),
     );
     fb.convert_scanout_region(0, 0, w, h);
-    fb.get(11, 17) == Some(accent)
+    let mut n = 0;
+    let mut y = 0;
+    while y < shell::TOP as u32 {
+        let mut x = 0;
+        while x < w {
+            if fb.get(x, y) == Some(accent) {
+                n += 1;
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+    n > 20
+}
+
+/// Counts pixels of the shell's accent in a band: a cheap way to assert that a
+/// stroke of the brand (or the boot console's warm text) really landed, without
+/// pinning a single antialiased pixel.
+fn accent_pixels(fb: &Framebuffer, x: u32, y: u32, w: u32, h: u32) -> u32 {
+    let mut n = 0;
+    let mut yy = 0;
+    while yy < h {
+        let mut xx = 0;
+        while xx < w {
+            if fb.get(x + xx, y + yy) == Some(shell::DARK.accent) || fb.get(x + xx, y + yy) == Some(0x00f0_b84a) {
+                n += 1;
+            }
+            xx += 1;
+        }
+        yy += 1;
+    }
+    n
 }
 
 /// What the renderer wrote, for the boot transcript and the test.
@@ -431,20 +462,20 @@ fn render_with(mode: DeviceMode, fb: &mut Framebuffer, lock: bool) -> Rendered {
     if let Some(s) = shell_render.as_ref() {
         probes_ok &= s.verified;
     }
-    // Tide's own landmarks, one per posture: the top bar's glass at the very
-    // corner, the brand tile's accent, and the element that belongs to that
-    // posture alone -- keel pill, gesture pill, or the console's hint bar. The
-    // lock screen draws none of the chrome, so it is judged by its glyph alone.
+    // The wallpaper is the shell's ground: every posture ends on its lowest tide
+    // band, except console, whose glass hint bar covers the last 52 px. The top
+    // bar's glass at the corner is shared by every posture (the lock screen has
+    // none, and is judged by its own surface).
+    let band = shell::DARK.w4;
     let posture_ok = match mode {
-        // the keel's own padding row, clear of the tiles and their running dots
-        DeviceMode::Desktop | DeviceMode::Tablet => fb.get(w / 2, h - 13) == Some(SURFACE_HI),
-        DeviceMode::Phone => fb.get(w / 2, h - 12) == Some(OUTLINE),
-        // the hint bar's own padding: the glyphs sit above it, so h-6 is glass
-        DeviceMode::Console => fb.get(w / 2, h - 6) == Some(SURFACE),
+        DeviceMode::Console => {
+            fb.get(w / 2, h - 6) == Some(shell::overlay(band, shell::DARK.glass, shell::GLASS_A))
+        }
+        _ => fb.get(w / 2, h - 6) == Some(band),
     };
     if !lock {
-        probes_ok &= fb.get(0, 0) == Some(SURFACE);
-        probes_ok &= fb.get(11, 17) == Some(PRIMARY);
+        probes_ok &= fb.get(0, 0)
+            == Some(shell::overlay(shell::DARK.w0, shell::DARK.glass, shell::GLASS_A));
         probes_ok &= posture_ok;
     }
 

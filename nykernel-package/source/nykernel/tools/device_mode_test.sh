@@ -198,35 +198,65 @@ def get(x, y):
     o = (y * w + x) * 3
     return (px[o], px[o+1], px[o+2])
 
-# Tide's palette (dark), as the screendump shows it: paper, glass, win-bar, accent, fg2.
-GLASS = (0x10, 0x1f, 0x27)
-# The lock screen carries no session identity, so it keeps Tide's own accent.
-ACCENT = (0x3c, 0xc8, 0xc0) if lock else tuple(int(accent_hex[i:i+2], 16) for i in (0, 2, 4))
-WINBAR = (0x1a, 0x32, 0x3d)
-FG2 = (0x8f, 0xa8, 0xb5)
+# The port's own tokens, as the stylesheet defines them. Where a surface is
+# glass over the wallpaper, the expected pixel is the SOURCE-OVER composite --
+# the same arithmetic the renderer runs -- so this checker names what the mock's
+# CSS would put on screen, not a hoped-for colour.
+GLASS = 0x0e1e26
+GLASS_A = 194
+W0 = 0x09161d
+W4 = 0x187d73
+BOOT = 0x071319
+WARM = 0xf0b84a
+# the lock screen has no session identity, so it keeps the shell's own accent
+ACCENT = 0x3cc8c0 if lock else int(accent_hex, 16)
 
-if not lock:
-    # The top bar is Tide's, drawn inside the pane the shell now owns end to end.
-    assert get(0, 0) == GLASS, ("the top bar's glass", get(0, 0))
-    assert get(11, 17) == ACCENT, ("the brand tile's accent", get(11, 17))
-# One element per Tide posture, read out of the screendump: the keel pill
-# (desktop / tablet), the gesture pill (phone) or the console hint bar. Each sits
-# on the bottom edge, so a posture that drew the wrong chrome -- or none -- fails
-# here rather than passing on the shared top bar alone.
+def overlay(base, c, a=GLASS_A):
+    def mix(s, d): return (s * a + d * (255 - a) + 127) // 255
+    return ((mix((c >> 16) & 0xff, (base >> 16) & 0xff)) << 16
+            | (mix((c >> 8) & 0xff, (base >> 8) & 0xff)) << 8
+            | mix(c & 0xff, base & 0xff))
+
+def rgb(v): return ((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff)
+
+def accent_in(box):
+    x0, y0, x1, y1 = box
+    want = rgb(ACCENT)
+    n = 0
+    for yy in range(y0, min(y1, h)):
+        for xx in range(x0, min(x1, w)):
+            if get(xx, yy) == want:
+                n += 1
+    return n
+
 if lock:
-    # The lock screen draws its glyph and none of the home chrome: the accent
-    # edge of the lock body is the pixel the kernel reads back too, and the keel
-    # must be ABSENT, or the lock screen sat beside the home screen instead of
-    # replacing it.
-    glyc = get(w // 2, 66)
-    assert glyc == ACCENT, ("lock glyph accent edge", glyc)
-    assert get(w // 2, h - 13) != WINBAR, ("no keel on the lock screen", get(w // 2, h - 13))
-elif mode in ("desktop", "tablet"):
-    assert get(w // 2, h - 13) == WINBAR, ("keel pill", get(w // 2, h - 13))
-elif mode == "phone":
-    assert get(w // 2, h - 12) == FG2, ("gesture pill", get(w // 2, h - 12))
-elif mode == "console":
-    assert get(w // 2, h - 6) == GLASS, ("hint bar", get(w // 2, h - 6))
+    # the locked screen is the mock's own boot console: its dark surface, and
+    # its warm first line (it has no top bar and no wallpaper)
+    assert get(0, 0) == rgb(BOOT), ("boot console surface", get(0, 0))
+    n = 0
+    for yy in range(0, min(140, h)):
+        for xx in range(0, w):
+            if get(xx, yy) == rgb(WARM):
+                n += 1
+    assert n > 20, ("boot console's warm line", n)
+else:
+    # the top bar is glass over the wallpaper's lightest band, composited
+    assert get(0, 0) == rgb(overlay(W0, GLASS)), ("top bar glass", get(0, 0))
+    # every posture ends on the wallpaper's lowest band; console's glass hint
+    # bar covers the last 52 px, so there the band shows through the glass
+    want = overlay(W4, GLASS) if mode == "console" else W4
+    assert get(w // 2, h - 6) == rgb(want), ("wallpaper band", get(w // 2, h - 6), want)
+    # the brand wave is the one accent stroke in the bar (the session identity
+    # chose the accent, so the colour comes from the boot log)
+    assert accent_in((0, 0, w, 34)) > 20, ("brand wave accent", accent_in((0, 0, w, 34)))
+    if mode == "desktop":
+        # a window title bar (.wbar) is the one solid win-bar fill on the screen
+        assert any(get(xx, yy) == rgb(0x1a323d)
+                   for yy in range(34, h, 2) for xx in range(0, w, 2)), ("window title bar",)
+    else:
+        # the launcher/keel app tile: each app's own colour (.tile{background:var(--c)})
+        assert any(get(xx, yy) == rgb(0x27414f)
+                   for yy in range(0, h, 3) for xx in range(0, w, 3)), ("app tile", mode)
 
 # One number for "did this mode draw a different picture": FNV-1a over
 # the whole screenshot, printed for the cross-mode uniqueness check.
