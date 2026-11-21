@@ -25,6 +25,11 @@
 //! own window-size-class logic picks a different real layout in each
 //! one: that is the adaptation, not a per-mode copy of the shell.
 //!
+//! The pane can hold one of the shell's two screens: its home screen, or
+//! (with `nyrqis.lock=1`) its lock screen. The lock is a boot entry rather
+//! than a key because nothing routes input into the shell yet -- the screen
+//! renders and verifies, and unlocking is what a session will bring.
+//!
 //! What is still not here: the shell is a renderer, not a session. There
 //! is no input routing into it and no user-space process owning it
 //! (`userprog/desk` needs the `0x84` IPC/capability/shm surface, which is
@@ -298,7 +303,7 @@ pub fn content_pane(mode: DeviceMode, l: &Layout, w: u32, h: u32) -> (u32, u32, 
 /// back. The shell writes 0x00RRGGBB directly (that is its contract), so
 /// the loader's scan-out order is applied to the pane afterwards -- one
 /// conversion, in one place.
-fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32)) -> Option<Shell> {
+fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32), lock: bool) -> Option<Shell> {
     let (x, y, w, h) = pane;
     if w < 64 || h < 64 {
         return None;
@@ -310,7 +315,11 @@ fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32)) -> Option<Shel
         w: w as i32,
         h: h as i32,
     };
-    let info = shell::render(&mut surface, shell::Theme::Dark);
+    let info = if lock {
+        shell::render_lockscreen(&mut surface, shell::Theme::Dark)
+    } else {
+        shell::render(&mut surface, shell::Theme::Dark)
+    };
     let hash = shell::hash(&surface);
     fb.convert_scanout_region(x, y, w, h);
     // Probe a pixel only a real render paints: the clock widget's
@@ -319,8 +328,16 @@ fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32)) -> Option<Shel
     // dark theme's `surface` happens to be the same value -- so probing
     // the corner would have passed on an empty pane. `container` is a
     // different colour, so this pixel is evidence the shell ran.
+    //
+    // The lock screen has no clock widget: its probe is the accent edge of the
+    // lock glyph's body, the one accent fill that screen draws, which passes
+    // only if the lock body (and not the hairline shackle above it) landed.
     let m = if info.class == shell::SizeClass::Compact { 16 } else { 24 };
-    let verified = fb.get(x + m + 4, y + 70) == Some(shell::DARK.container);
+    let verified = if lock {
+        fb.get(x + w / 2, y + 66) == Some(shell::DARK.primary)
+    } else {
+        fb.get(x + m + 4, y + 70) == Some(shell::DARK.container)
+    };
     Some(Shell {
         pane,
         class: info.class,
@@ -355,6 +372,20 @@ fn fnv1a(mut h: u32, v: u32) -> u32 {
 /// and whether the pixels read back. Drawing is idempotent: the same
 /// mode on the same display always produces the same checksum.
 pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
+    render_with(mode, fb, false)
+}
+
+/// The same render with the shell's LOCK SCREEN in the content pane
+/// instead of its home screen: the boot entry `nyrqis.lock=1` asks for
+/// it, which is how a locked session is reachable before any input path
+/// exists (nothing can unlock it yet -- that is the honest state). The
+/// chrome, the layout and the read-back contract are identical, so a
+/// lock-screen boot is still a device-mode boot.
+pub fn render_locked(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
+    render_with(mode, fb, true)
+}
+
+fn render_with(mode: DeviceMode, fb: &mut Framebuffer, lock: bool) -> Rendered {
     let l = layout(mode, fb.width, fb.height);
     let w = fb.width;
     let h = fb.height;
@@ -418,8 +449,8 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
     // The shell goes in AFTER the chrome that frames it and BEFORE the
     // controls that float over content -- the FAB is drawn below, so the
     // shell cannot swallow it.
-    let shell_render = render_shell(fb, pane);
-    if mode == DeviceMode::Phone {
+    let shell_render = render_shell(fb, pane, lock);
+    if mode == DeviceMode::Phone && !lock {
         let fab_r = 28;
         // Clear of the shell's taskbar: the FAB floats over content, and the
         // content pane now runs to the display's last row.
@@ -447,27 +478,33 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
     }
     probes_ok &= fb.get(0, 0) == Some(SURFACE);
     probes_ok &= fb.get(l.margin + 2, l.status / 2) == Some(PRIMARY);
+    // The bottom-bar probe is inverted on the lock screen: a locked session has
+    // no taskbar, so the Start mark must be ABSENT there. Asserting presence in
+    // both states would either pass a lock screen that never drew or fail the
+    // one that did.
+    let bar_ok = {
+        let mark = fb.get(pane.0 + l.margin + 4, h - 22) == Some(PRIMARY);
+        if lock { !mark } else { mark }
+    };
     probes_ok &= match mode {
         DeviceMode::Desktop => {
             // rail surface at its right edge, and the shell's one bottom bar
             // reaching the display's last rows (its Start mark is the accent).
             // The bar probe is PANE-relative: this mode's content starts at the
             // rail, so the screen's own margin is not where the bar begins.
-            fb.get(l.rail - 4, l.status + 4) == Some(SURFACE)
-                && fb.get(pane.0 + l.margin + 4, h - 22) == Some(PRIMARY)
+            fb.get(l.rail - 4, l.status + 4) == Some(SURFACE) && bar_ok
         }
         DeviceMode::Tablet => {
             // app bar spans the screen; the shell's bottom bar reaches the edge
-            fb.get(w - 1, l.status + 4) == Some(SURFACE)
-                && fb.get(pane.0 + l.margin + 4, h - 22) == Some(PRIMARY)
+            fb.get(w - 1, l.status + 4) == Some(SURFACE) && bar_ok
         }
         DeviceMode::Phone => {
             // the FAB centre is accent, and it floats above the bottom bar the
             // shell draws (there is no separate bottom navigation to sit on)
             let fab_r = 28;
-            fb.get(x0 + cw - l.margin - fab_r,
-                  h - shell::bar_height(cw as i32) as u32 - l.margin - fab_r - 16) == Some(PRIMARY)
-                && fb.get(pane.0 + l.margin + 4, h - 22) == Some(PRIMARY)
+            (lock || fb.get(x0 + cw - l.margin - fab_r,
+                  h - shell::bar_height(cw as i32) as u32 - l.margin - fab_r - 16) == Some(PRIMARY))
+                && bar_ok
         }
         DeviceMode::Console => {
             fb.get(l.margin + 12, l.status + l.margin + 12) == Some(CONSOLE_FG)

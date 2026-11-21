@@ -399,7 +399,17 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
     }
     match devices.framebuffer.as_mut() {
         Some(fb) => {
-            let rendered = device_mode::render(mode, fb);
+            // `nyrqis.lock=1` boots to the shell's lock screen instead of its
+            // home screen. It is a boot entry rather than a key because no
+            // input reaches the shell yet: the screen can be shown and verified,
+            // and the gesture hint on it is the part still waiting on a session.
+            let lock_screen = cmdline.windows(b"nyrqis.lock=1".len())
+                .any(|w| w == b"nyrqis.lock=1");
+            let rendered = if lock_screen {
+                device_mode::render_locked(mode, fb)
+            } else {
+                device_mode::render(mode, fb)
+            };
             devices.display_verified = Some(rendered.probes_ok);
             let l = rendered.layout;
             serial_println!(

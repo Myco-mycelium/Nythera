@@ -75,7 +75,7 @@ fi
 # --- one boot + screenshot ------------------------------------------------
 # boot_mode <label> <cmdline-or-empty> <expect-mode> <expect-source>
 boot_mode() {
-    local label="$1" cmdline="$2" want_mode="$3" want_source="$4"
+    local label="$1" cmdline="$2" want_mode="$3" want_source="$4" lock="${5:-0}"
     local dir="$WORK/$label"
     mkdir -p "$dir/boot/grub"
     cp target/kernel.elf "$dir/boot/kernel.elf"
@@ -157,10 +157,11 @@ PY
 
     # Layout landmarks, read out of the screenshot by a checker that does
     # not share the kernel's code path.
-    if python3 - "$ppm" "$want_mode" <<'PY'
+    if python3 - "$ppm" "$want_mode" "$lock" <<'PY'
 import struct, sys
 
-path, mode = sys.argv[1], sys.argv[2]
+path, mode, lock_arg = sys.argv[1], sys.argv[2], sys.argv[3]
+lock = lock_arg.strip() == "1"
 data = open(path, "rb").read()
 # P6 PPM: magic, width height, maxval, then binary RGB.
 assert data[:2] == b"P6", data[:8]
@@ -199,7 +200,17 @@ assert get(margin + 2, status // 2) == PRIMARY, ("accent block", get(margin + 2,
 # console has no content pane (no shell, no bottom bar), so it has no bar probe
 PANE_X = {"desktop": 80, "tablet": 0, "phone": (w - min(w, 480)) // 2}.get(mode, 0)
 bar_probe = get(PANE_X + margin + 4, h - 22)
-if mode == "desktop":
+if lock:
+    # The lock screen: the accent edge of its lock glyph is the pixel the kernel
+    # itself reads back, and the home screen's Start mark must be ABSENT where
+    # the taskbar would put it -- otherwise the lock screen did not replace the
+    # home screen, it was drawn beside it.
+    appbar_l = {"desktop": 56, "tablet": 64, "phone": 56}[mode]
+    pane_w = {"desktop": w - 80 - margin, "tablet": w, "phone": min(w, 480)}[mode]
+    glyc = get(PANE_X + pane_w // 2, status + appbar_l + 66)
+    assert glyc == PRIMARY, ("lock glyph accent edge", glyc)
+    assert bar_probe != PRIMARY, ("no home taskbar on the lock screen", bar_probe)
+elif mode == "desktop":
     assert get(80 - 4, status + 4) == SURFACE, ("rail", get(76, status + 4))
     assert bar_probe == PRIMARY, ("one bottom bar", bar_probe)
 elif mode == "tablet":
@@ -218,7 +229,7 @@ elif mode == "console":
 # a colour nothing else on the screen uses, so finding it in the
 # screenshot proves the shell's own pixels reached the display -- the
 # chrome landmarks above would pass even if it had never run.
-if mode != "console":
+if mode != "console" and not lock:
     SHELL_CONTAINER = (0x21, 0x1f, 0x26)
     appbar = {"desktop": 56, "tablet": 64, "phone": 56}[mode]
     px_ = {"desktop": 80, "tablet": 0, "phone": (w - min(w, 480)) // 2}[mode]
@@ -271,6 +282,12 @@ boot_mode desktop " nyrqis.mode=desktop" desktop "kernel cmdline"
 boot_mode tablet  " nyrqis.mode=tablet"  tablet  "kernel cmdline"
 boot_mode phone   " nyrqis.mode=phone"   phone   "kernel cmdline"
 boot_mode console " nyrqis.mode=console" console "kernel cmdline"
+
+# The lock screen is a screen, not a mode: it boots through the same device-mode
+# contract (same chrome, same read-back) and must replace the home screen's
+# taskbar rather than sit beside it.
+echo "==> the lock screen (nyrqis.lock=1) replaces the home screen"
+boot_mode lock " nyrqis.mode=tablet nyrqis.lock=1" tablet "kernel cmdline" 1
 
 echo "==> automatic selection and a rejected token"
 boot_mode auto "" tablet "display class"

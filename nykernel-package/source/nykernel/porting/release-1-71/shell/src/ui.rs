@@ -160,41 +160,100 @@ fn note_card(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32, app: &[u8]
     text(fb, x + w - 14 - text_w(when, BODY_SCALE), y + 14, when, BODY_SCALE, k.on_surface_variant);
 }
 
+/// The two quick-settings sliders Android puts at the top of its shade. Static
+/// values, like every other state in this renderer: the element and its geometry
+/// are what can be judged before anything can drag one.
+pub const VOLUME_PCT: i32 = 45;
+pub const BRIGHT_PCT: i32 = 70;
+
+/// A quick-settings slider: hairline track, accent fill to the value, a solid
+/// accent thumb at the fill's end. `kind` picks the icon -- 0 = brightness (a
+/// hairline circle), 1 = volume (a speaker body and two bars) -- both drawn from
+/// rectangles, so the slider adds no assets.
+fn slider(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, kind: u8, pct: i32) {
+    if kind == 0 {
+        outline(fb, x + 2, y + 14, 16, 16, 8, k.on_surface_variant, k.surface);
+        fb.rect(x + 23, y + 20, 2, 2, k.on_surface_variant);
+    } else {
+        outline(fb, x + 2, y + 14, 10, 12, 2, k.on_surface_variant, k.surface);
+        fb.rect(x + 16, y + 18, 2, 4, k.on_surface_variant);
+        fb.rect(x + 20, y + 16, 2, 8, k.on_surface_variant);
+    }
+    let tx = x + 32;
+    let tw = w - 32;
+    outline(fb, tx, y + 20, tw, 6, 3, k.outline_variant, k.surface);
+    let mut filled = tw * pct / 100;
+    if filled < 8 { filled = 8; } if filled > tw - 8 { filled = tw - 8; }
+    fb.round(tx + 1, y + 21, filled - 2, 4, 2, k.primary);
+    fb.round(tx + filled - 6, y + 15, 12, 12, 6, k.primary);
+}
+
+/// The system-tray overflow flyout (Windows' "show hidden icons"): the icons the
+/// taskbar keeps out of sight, plus the row that names the tray. It is drawn
+/// above the tray, right-aligned, and the Start panel yields it the space -- two
+/// open surfaces stacked on one edge would read as a layering bug.
+fn tray_flyout(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32) {
+    outline(fb, x, y, w, h, 12, k.outline_variant, k.surface);
+    text(fb, x + 12, y + 10, b"HIDDEN", BODY_SCALE, k.on_surface_variant);
+    let icons: [&[u8]; 4] = [b"S", b"V", b"M", b"X"];
+    let mut i = 0;
+    while i < icons.len() {
+        let ix = x + 12 + i as i32 * 32;
+        if ix + 24 <= x + w - 12 {
+            outline(fb, ix, y + 32, 24, 24, 6, k.outline_variant, k.surface);
+            text_c(fb, ix + 12, y + 37, icons[i], BODY_SCALE, k.on_surface);
+        }
+        i += 1;
+    }
+    fb.rect(x + 1, y + h - 26, w - 2, 1, k.outline_variant);
+    text(fb, x + 12, y + h - 18, b"TRAY", BODY_SCALE, k.on_surface_variant);
+}
+
 /// The Start menu panel (Windows): a search field, pinned apps, recommended rows
 /// and the account/power footer. Shown open rather than as a label, because a
 /// taskbar with a Start button that opens nothing is the one thing this shell
 /// must not pretend to have -- the panel is the element, drawn where it opens.
+/// Every block is measured from the panel's own height, so the same function
+/// draws the full panel and the shortened one the overflow flyout leaves room
+/// for; a block that does not fit is dropped, never clipped.
 fn start_panel(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32) {
     outline(fb, x, y, w, h, 16, k.outline_variant, k.surface);
     // search field (the taskbar's field, repeated where Windows repeats it)
     outline(fb, x + 16, y + 16, w - 32, 32, 16, k.outline_variant, k.surface);
     text(fb, x + 32, y + 16 + 9, b"SEARCH", BODY_SCALE, k.on_surface_variant);
     // pinned apps
-    text(fb, x + 16, y + 64, b"PINNED", BODY_SCALE, k.on_surface_variant);
-    let mut i = 0;
-    while i < PINNED.len() {
-        let px = x + 16 + i as i32 * 60;
-        if px + 44 <= x + w - 16 {
-            outline(fb, px, y + 84, 44, 44, 12, k.outline_variant, k.surface);
-            text_c(fb, px + 22, y + 84 + 11, PINNED[i], BODY_SCALE, k.on_surface);
+    if y + 122 <= y + h - 48 {
+        text(fb, x + 16, y + 60, b"PINNED", BODY_SCALE, k.on_surface_variant);
+        let mut i = 0;
+        while i < PINNED.len() {
+            let px = x + 16 + i as i32 * 60;
+            if px + 44 <= x + w - 16 {
+                outline(fb, px, y + 78, 44, 44, 12, k.outline_variant, k.surface);
+                text_c(fb, px + 22, y + 78 + 11, PINNED[i], BODY_SCALE, k.on_surface);
+            }
+            i += 1;
         }
-        i += 1;
     }
-    // recommended rows
-    text(fb, x + 16, y + 148, b"RECOMMENDED", BODY_SCALE, k.on_surface_variant);
+    // recommended rows -- as many as the panel's height allows. The label sits
+    // 20 dp above the first row: at 12 dp it collided with its own row's text,
+    // which the screendump showed before the boot did.
     let mut r = 0;
-    while r < RECOMMENDED.len() {
-        let ry = y + 168 + r as i32 * 40;
-        if ry + 32 <= y + h - 52 {
-            outline(fb, x + 16, ry, 24, 24, 6, k.outline_variant, k.surface);
-            text_c(fb, x + 28, ry + 5, &RECOMMENDED[r].0[..1], BODY_SCALE, k.on_surface);
-            text(fb, x + 52, ry + 5, RECOMMENDED[r].0, BODY_SCALE, k.on_surface);
-            text(fb, x + w - 16 - text_w(RECOMMENDED[r].1, BODY_SCALE), ry + 5, RECOMMENDED[r].1, BODY_SCALE, k.on_surface_variant);
+    let rec_top = y + 150;
+    if rec_top + 24 <= y + h - 48 {
+        text(fb, x + 16, rec_top - 20, b"RECOMMENDED", BODY_SCALE, k.on_surface_variant);
+        while r < RECOMMENDED.len() {
+            let ry = rec_top + r as i32 * 36;
+            if ry + 28 <= y + h - 48 {
+                outline(fb, x + 16, ry, 24, 24, 6, k.outline_variant, k.surface);
+                text_c(fb, x + 28, ry + 5, &RECOMMENDED[r].0[..1], BODY_SCALE, k.on_surface);
+                text(fb, x + 52, ry + 5, RECOMMENDED[r].0, BODY_SCALE, k.on_surface);
+                text(fb, x + w - 16 - text_w(RECOMMENDED[r].1, BODY_SCALE), ry + 5, RECOMMENDED[r].1, BODY_SCALE, k.on_surface_variant);
+            }
+            r += 1;
         }
-        r += 1;
     }
     // footer: account, name, power
-    let fy = y + h - 40;
+    let fy = y + h - 36;
     fb.rect(x + 1, fy - 8, w - 2, 1, k.outline_variant);
     outline(fb, x + 16, fy, 24, 24, 12, k.outline_variant, k.surface);
     text_c(fb, x + 28, fy + 5, b"N", BODY_SCALE, k.on_surface);
@@ -203,6 +262,55 @@ fn start_panel(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32) {
     let pw = x + w - 16 - 24;
     outline(fb, pw, fy, 24, 24, 12, k.outline_variant, k.surface);
     fb.rect(pw + 11, fy + 5, 2, 7, k.on_surface_variant);
+}
+
+/// The lock screen's one larger type step. The shell otherwise keeps to two
+/// steps (`DISPLAY_SCALE`/`BODY_SCALE`); a lock screen has exactly one piece of
+/// content, so it gets one bigger step rather than a third scale in the ramp.
+pub const LOCK_SCALE: i32 = 5;
+
+/// The lock screen (Android 17's, with Windows' taskbar absent by the same
+/// logic: nothing is running yet that a bar could switch to). It is a real
+/// screen, not a panel: the accent lock glyph, the time and date, the
+/// notification stack it hides, and the gesture hint. `device_mode` reads the
+/// lock glyph's accent edge back as its proof that this screen drew.
+pub fn render_lockscreen(fb: &mut Fb, theme: Theme) -> Info {
+    let k = match theme { Theme::Light => LIGHT, Theme::Dark => DARK };
+    let (w, h) = (fb.w, fb.h);
+    let class = size_class(w);
+    let margin = if class == SizeClass::Compact { 16 } else { 24 };
+    fb.rect(0, 0, w, h, k.surface);
+    // status bar: the same clock and battery, no notification dot (the
+    // notifications themselves are the content below)
+    text(fb, margin, 5, b"12:30", BODY_SCALE, k.on_surface_variant);
+    let bx = w - margin - 24;
+    outline(fb, bx, 6, 22, 11, 3, k.outline_variant, k.surface);
+    fb.round(bx + 3, 8, 10, 7, 1, k.on_surface_variant);
+    // lock glyph: a hairline shackle above an accent body with an accent
+    // keyhole, centred. The body's top edge is the pixel `device_mode` reads
+    // back, so its geometry (top at gy + 10) is part of the contract.
+    let cx = w / 2;
+    let gy = 56;
+    outline(fb, cx - 10, gy, 20, 16, 8, k.on_surface_variant, k.surface);
+    outline(fb, cx - 15, gy + 10, 30, 24, 6, k.primary, k.surface);
+    fb.round(cx - 2, gy + 18, 4, 4, 2, k.primary);
+    fb.rect(cx - 1, gy + 22, 2, 4, k.primary);
+    // time and date
+    text_c(fb, cx, gy + 48, b"12:30", LOCK_SCALE, k.on_surface);
+    text_c(fb, cx, gy + 48 + 7 * LOCK_SCALE + 12, b"THU 22 OCT", BODY_SCALE, k.on_surface_variant);
+    // the notification stack this screen is hiding, centred
+    let col_w = if w > 520 { 480 } else { w - 2 * margin };
+    let nx = (w - col_w) / 2;
+    let mut ny = gy + 48 + 7 * LOCK_SCALE + 12 + 34;
+    let mut ci = 0;
+    while ci < 2 && ci < NOTES.len() && ny + 72 <= h - 64 {
+        note_card(fb, &k, nx, ny, col_w, 72, NOTES[ci].0, NOTES[ci].1, NOTES[ci].2);
+        ny += 80;
+        ci += 1;
+    }
+    // the gesture hint, where the bottom bar would be
+    text_c(fb, cx, h - 34, b"SWIPE UP TO UNLOCK", BODY_SCALE, k.on_surface_variant);
+    Info { class, margin, cols: 0, rows: 0, tiles: 0 }
 }
 
 /// Everything the layout decided (also returned so the host check can assert the HIG/Material invariants on the real numbers).
@@ -382,26 +490,48 @@ pub fn render(fb: &mut Fb, theme: Theme) -> Info {
         }
         n += 1;
     }
-    // ---- the notification stack (Android's shade, drawn open as the stack of
-    // cards it is). On Compact it follows the grid in the single column; on the
-    // two-column layouts it fills the space under the tiles, which is otherwise
-    // empty surface in a screenshot.
-    let mut card_y = if class == SizeClass::Compact { grid_y + rows * 96 + 16 } else { cursor };
+    // ---- Android's two sliders, then the notification stack. The sliders are
+    // the first rows of the shade in Android 17, so they come before the cards
+    // on every layout; each is dropped whole if the height does not fit, and a
+    // dropped slider does not hide the cards below it.
+    let mut stack_y = if class == SizeClass::Compact { grid_y + rows * 96 + 16 } else { cursor };
+    let mut s = 0;
+    while s < 2 {
+        if stack_y + 44 <= body_bottom {
+            let (kind, pct) = if s == 0 { (1u8, VOLUME_PCT) } else { (0u8, BRIGHT_PCT) };
+            slider(fb, &k, left_x, stack_y, left_w, kind, pct);
+            stack_y += 52;
+        }
+        s += 1;
+    }
     let mut ci = 0;
-    while ci < NOTES.len() && card_y + 72 <= body_bottom {
-        note_card(fb, &k, left_x, card_y, left_w, 72, NOTES[ci].0, NOTES[ci].1, NOTES[ci].2);
-        card_y += 80;
+    while ci < NOTES.len() && stack_y + 72 <= body_bottom {
+        note_card(fb, &k, left_x, stack_y, left_w, 72, NOTES[ci].0, NOTES[ci].1, NOTES[ci].2);
+        stack_y += 80;
         ci += 1;
     }
-    // ---- the Start menu panel (Windows), open above the taskbar under the
-    // window. Drawn only where it has room to show its own elements: a panel
-    // with its footer clipped would be a worse claim than no panel.
-    if class != SizeClass::Compact && right_below + 240 <= body_bottom {
-        // Capped at 300 dp: a panel stretched to fill a tall window would be
-        // half empty surface below its last row, which reads as a bug rather
-        // than as breathing room.
-        let ph = if body_bottom - right_below > 300 { 300 } else { body_bottom - right_below };
-        start_panel(fb, &k, right_x, right_below, right_w, ph);
+    // ---- the Windows right column below the window: the tray overflow flyout
+    // pinned to the bottom-right (it opens upward from the tray), and the Start
+    // panel above it, shortened to the room the flyout leaves. Both are drawn
+    // only where their own elements fit.
+    if class != SizeClass::Compact {
+        let fw = 200.min(right_w);
+        let fh = 88;
+        let fx = w - margin - fw;
+        let fy = body_bottom - fh;
+        if fy >= right_below + 240 {
+            tray_flyout(fb, &k, fx, fy, fw, fh);
+            // Capped at 300 dp like the no-flyout case: the panel is the same
+            // panel, and stretching it leaves a void under its last row.
+            let mut ph = fy - 16 - right_below;
+            if ph > 300 { ph = 300; }
+            if ph >= 200 { start_panel(fb, &k, right_x, right_below, right_w, ph); }
+        } else if right_below + 240 <= body_bottom {
+            // No room for both: the Start panel wins, because it is the surface
+            // a user opened deliberately and the flyout is a peek.
+            let ph = if body_bottom - right_below > 300 { 300 } else { body_bottom - right_below };
+            start_panel(fb, &k, right_x, right_below, right_w, ph);
+        }
     }
     Info { class, margin, cols, rows, tiles }
 }
