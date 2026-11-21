@@ -130,14 +130,20 @@ impl Fb {
             self.rect_a(x, y, w, h, c, a);
             return;
         }
-        // middle band, then the four corners as circles
-        self.rect_a(x + r, y, w - 2 * r, h, c, a);
-        self.rect_a(x, y + r, r, h - 2 * r, c, a);
-        self.rect_a(x + w - r, y + r, r, h - 2 * r, c, a);
-        self.circle_a(x + r, y + r, r, c, a);
-        self.circle_a(x + w - r - 1, y + r, r, c, a);
-        self.circle_a(x + r, y + h - r - 1, r, c, a);
-        self.circle_a(x + w - r - 1, y + h - r - 1, r, c, a);
+        // One span per row, inset to the radius. Painting bands plus four corner
+        // DISCS is the obvious form, but a disc at a corner lies inside the box as
+        // well as in the corner square, so a translucent fill composited those
+        // corners twice -- the tablet's new 24px panel showed it as a dark disc in
+        // every corner. A scanline touches each pixel once.
+        let mut py = y;
+        while py < y + h {
+            let mut inset = 0;
+            while inset < r && !Fb::inside(x, y, w, h, r, x + inset, py) {
+                inset += 1;
+            }
+            self.rect_a(x + inset, py, w - 2 * inset, 1, c, a);
+            py += 1;
+        }
     }
 
     /// `border:1px solid` on a rounded box: the border ring is composited first,
@@ -147,23 +153,30 @@ impl Fb {
         self.round(x + 1, y + 1, w - 2, h - 2, (r - 1).max(0), fill);
     }
 
-    /// Whether a pixel is inside the rounded box `round_a` would paint. Used by
-    /// `edge` to find the perimeter; it mirrors `round_a`'s own geometry (middle
-    /// bands plus four corner circles) so the two never disagree.
+    /// Whether a pixel is inside the rounded box `round_a` paints. `dx`/`dy` are
+    /// how far the pixel sits into a corner square, 0 along the straight edges,
+    /// so one rule covers both: a pixel is in the shape within `r` of the arc's
+    /// centre. `round_a` and `edge` both measure with this, which is why the fill
+    /// and its border cannot disagree by a pixel.
     #[inline]
     fn inside(x: i32, y: i32, w: i32, h: i32, r: i32, px: i32, py: i32) -> bool {
         if px < x || py < y || px >= x + w || py >= y + h {
             return false;
         }
-        if px >= x + r && px < x + w - r {
-            return true;
-        }
-        if py >= y + r && py < y + h - r {
-            return true;
-        }
-        let cx = if px < x + r { x + r } else { x + w - r - 1 };
-        let cy = if py < y + r { y + r } else { y + h - r - 1 };
-        let (dx, dy) = (px - cx, py - cy);
+        let dx = if px < x + r {
+            x + r - px
+        } else if px > x + w - r - 1 {
+            px - (x + w - r - 1)
+        } else {
+            0
+        };
+        let dy = if py < y + r {
+            y + r - py
+        } else if py > y + h - r - 1 {
+            py - (y + h - r - 1)
+        } else {
+            0
+        };
         dx * dx + dy * dy <= r * r
     }
 
@@ -197,6 +210,27 @@ impl Fb {
     fn panel(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, fill: u32, fa: u32, line: u32, la: u32) {
         self.round_a(x, y, w, h, r, fill, fa);
         self.edge(x, y, w, h, r, line, la);
+    }
+
+    /// `inset 0 1px 0`: the highlight is the box's own first painted row in each
+    /// column, so it follows the corner radius. A 2px bar at the tile's top edge
+    /// is not clipped by the radius -- at a 20px corner its ends hung 1-3px
+    /// outside the fill, on a row of background, and read as a dashed hanger
+    /// above every icon.
+    fn top_edge(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, c: u32, a: u32) {
+        let r = r.min(w / 2).min(h / 2).max(0);
+        let mut px = x;
+        while px < x + w {
+            let mut py = y;
+            while py < y + h {
+                if Fb::inside(x, y, w, h, r, px, py) {
+                    self.blend(px, py, c, a);
+                    break;
+                }
+                py += 1;
+            }
+            px += 1;
+        }
     }
 
     fn circle_a(&mut self, cx: i32, cy: i32, r: i32, c: u32, a: u32) {
@@ -844,15 +878,29 @@ fn status_group(fb: &mut Fb, k: &Colors, posture: Posture, _left: i32, right_edg
     atype(fb, clock_x, by + 5, clock, Font::Body500, 13, k.fg);
 }
 
+/// The dock's metrics -- (tile, gap, padx, pady, bottom, radius) -- shared with
+/// `home`, so the tablet's launcher panel can stop above the dock instead of
+/// repeating the numbers and drifting from them.
+fn dock_metrics(posture: Posture) -> (i32, i32, i32, i32, i32, i32) {
+    if posture == Posture::Tablet {
+        (50, 10, 12, 9, 14, 26)
+    } else {
+        (42, 6, 7, 7, 12, 20)
+    }
+}
+
+/// The dock's top edge, from the same metrics `keel` paints with.
+fn dock_top(h: i32, posture: Posture) -> i32 {
+    let (tile, _, _, pady, bottom, _) = dock_metrics(posture);
+    h - bottom - (pady * 2 + tile)
+}
+
 /// `#keel` -- the glass dock: launcher, hairline separator, six app tiles.
 fn keel(fb: &mut Fb, k: &Colors, posture: Posture, active: Option<usize>) {
     let (w, h) = (fb.w, fb.h);
     let tablet = posture == Posture::Tablet;
-    let (tile, gap, padx, pady, bottom, radius) = if tablet {
-        (50, 10, 12, 9, 14, 26)
-    } else {
-        (42, 6, 7, 7, 12, 20)
-    };
+    let (tile, gap, padx, pady, bottom, radius) = dock_metrics(posture);
+    let tr = if tablet { 15 } else { 12 };
     let sep = 1;
     let n = APPS.len() as i32;
     // Launcher tile, separator, then n tiles with gaps only BETWEEN them. The old
@@ -867,7 +915,7 @@ fn keel(fb: &mut Fb, k: &Colors, posture: Posture, active: Option<usize>) {
 
     let mut x = px + padx;
     // launcher tile: accent, apps glyph in accent-fg
-    fb.round(x, py + pady, tile, tile, if tablet { 15 } else { 12 }, k.accent);
+    fb.round(x, py + pady, tile, tile, tr, k.accent);
     icon(fb, Icon::Apps, x + tile / 2 - 9, py + pady + tile / 2 - 9, 18, k.accent_fg);
     x += tile + gap;
     // separator
@@ -876,9 +924,9 @@ fn keel(fb: &mut Fb, k: &Colors, posture: Posture, active: Option<usize>) {
 
     for (i, a) in APPS.iter().enumerate() {
         let ty = py + pady;
-        fb.round(x, ty, tile, tile, if tablet { 15 } else { 12 }, a.col);
+        fb.round(x, ty, tile, tile, tr, a.col);
         // the tile's own top highlight: inset 0 1px 0 rgba(255,255,255,.28)
-        fb.round_a(x + 2, ty + 1, tile - 4, 2, 1, 0xffffff, 40);
+        fb.top_edge(x, ty, tile, tile, tr, 0xffffff, 40);
         icon(fb, a.icon, x + tile / 2 - 9, ty + tile / 2 - 9, 18, 0xffffff);
         // running / active dot under the tile, inside the panel's bottom padding
         // (4px below the tile + 4px tall = the 7px padding, not 2px past it)
@@ -1058,26 +1106,31 @@ fn window(fb: &mut Fb, k: &Colors, x: i32, y: i32, w: i32, h: i32, app: usize, s
 }
 
 /// `#home .hpanel` -- the launcher lattice.
-fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32, full: bool) {
+///
+/// Returns the lattice it composed -- (columns, rows, tiles) -- so the caller
+/// reports what was drawn instead of re-deriving it from the width (the old
+/// report claimed nine columns on the tablet while the layout drew eight).
+fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32) -> (i32, i32, i32) {
     let (w, h) = (fb.w, fb.h);
     let console = posture == Posture::Console;
-    // A phone and the console lattice are full-bleed (no panel background is
-    // painted at all when `full`); only the tablet gets the floating 880px
-    // panel. Letting the phone take the 880px panel width while `inner` was
-    // `w - 28` sized four columns against 996px and pushed the recents' right-
-    // aligned column past the screen edge.
-    let panel_w =
-        if console || posture == Posture::Phone { w } else if full { (w - 44).min(880) } else { (w * 94 / 100).min(700) };
+    let phone = posture == Posture::Phone;
+    // Only the tablet floats its launcher on a panel; the phone and the console
+    // card row are full-bleed. (The phone once took the 880px panel width while
+    // `inner` was `w - 28`, which sized four columns against 996px and pushed
+    // the recents' right-aligned column past the screen edge.)
+    let panel = posture == Posture::Tablet;
+    let panel_w = if console || phone { w } else { (w - 44).min(880) };
     let px = if console { 0 } else { (w - panel_w) / 2 };
     let gutter = if console { 44 } else { 22 };
-    let mut py = if console { t } else { t + 22 };
-    if !full {
-        // desktop: a floating glass panel, vertically centred
-        let ph = (h - t) * 88 / 100;
-        py = t + ((h - t) - ph) / 2;
+    let py = if console { t } else { t + 22 };
+    if panel {
+        // The panel wraps the lattice and stops one content gutter above the
+        // dock; a vertically centred 88% box would run ~37px under it, and two
+        // glass surfaces are never drawn into each other.
+        let ph = dock_top(h, posture) - 22 - py;
         fb.panel(px, py, panel_w, ph, 24, k.glass, GLASS_A, k.line, LINE_A);
     }
-    let inner = if full && posture == Posture::Phone { w - 28 } else { panel_w - 44 };
+    let inner = if phone { w - 28 } else { panel_w - 44 };
 
     // .hhead: 40px display clock, date under it, search field to the right
     let clock_px = if posture == Posture::Console { 64 } else { 40 };
@@ -1111,10 +1164,10 @@ fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32, full: bool) {
         Posture::Phone => clock_px + 92,
         _ => clock_px + 46,
     };
-    if posture == Posture::Console {
-        let card_w = 210;
-        let card_h = 270;
-        let gap = 22;
+    if console {
+        // A horizontal row of 210x270 cards, as many as fit; the rest are cut.
+        let (card_w, card_h, gap) = (210, 270, 22);
+        let mut drawn = 0;
         for (i, a) in APPS.iter().enumerate() {
             let cx = gutter + i as i32 * (card_w + gap);
             if cx + card_w > w {
@@ -1126,53 +1179,62 @@ fn home(fb: &mut Fb, k: &Colors, posture: Posture, t: i32, full: bool) {
             icon(fb, a.icon, cx + 16 + 30, gy + 22 + 30, 36, 0xffffff);
             atype(fb, cx + 16, gy + card_h - 52, a.name, Font::Display700, 22, k.fg);
             atype(fb, cx + 16, gy + card_h - 24, b"READY", Font::Mono500, 11, k.fg2);
+            drawn += 1;
         }
-        return;
+        return (drawn, 1, drawn);
     }
 
-    let cols = match posture {
-        Posture::Phone => 4,
-        Posture::Tablet => (inner / 104).max(1),
-        _ => (inner / 88).max(1),
+    // A phone is four fixed columns; a tablet is as many 104px columns as its
+    // panel holds, with the wider posture's 68px tiles and 20px corners. (The
+    // console has returned above and the desktop arranges windows instead.) The
+    // phone's lattice is inset 14px, which is what `inner = w - 28` assumes;
+    // 22px there left the first column 8px right of the search field.
+    let (cols, tile, tr, isz, gx) = if phone {
+        (4, 54, 17, 26, px + 14)
+    } else {
+        ((inner / 104).max(1), 68, 20, 30, px + 22)
     };
-    let tile = match posture {
-        Posture::Phone => 54,
-        Posture::Tablet => 68,
-        _ => 58,
-    };
-    // The panel's inner gutter. A phone's lattice is inset 14px, which is what
-    // `inner = w - 28` already assumes; using 22px there left the first column
-    // 8px right of the search field and the last one only 6px from the edge.
-    let gx = if posture == Posture::Phone { px + 14 } else { px + 22 };
     let cell_w = inner / cols;
+    let rows = (APPS.len() as i32 + cols - 1) / cols;
     for (i, a) in APPS.iter().enumerate() {
         let col = i as i32 % cols;
         let row = i as i32 / cols;
-        let cx = gx + col * cell_w;
+        // Tablet: the lattice is a centred block. The 104px column minimum
+        // yields eight columns, so six tiles would hug the panel's left gutter
+        // with two empty columns of dead space on the right. A phone keeps CSS
+        // grid's left-aligned partial row (its last row is two of four).
+        let start = if panel {
+            let row_items = (APPS.len() as i32 - row * cols).min(cols);
+            gx + (inner - row_items * cell_w) / 2
+        } else {
+            gx
+        };
+        let cx = start + col * cell_w;
         let cy = gy + row * (tile + 46);
         let tile_x = cx + (cell_w - tile) / 2;
-        fb.round(tile_x, cy, tile, tile, if posture == Posture::Tablet { 20 } else { 17 }, a.col);
-        fb.round_a(tile_x + 2, cy + 1, tile - 4, 2, 1, 0xffffff, 40);
-        let isz = if posture == Posture::Tablet { 30 } else { 26 };
+        fb.round(tile_x, cy, tile, tile, tr, a.col);
+        fb.top_edge(tile_x, cy, tile, tile, tr, 0xffffff, 40);
         icon(fb, a.icon, tile_x + tile / 2 - isz / 2, cy + tile / 2 - isz / 2, isz, 0xffffff);
         atype_c(fb, cx + cell_w / 2, cy + tile + 7, a.name, Font::Body500, 12, k.fg);
     }
 
     // .hrec: "Recent files" with three entries
-    if posture != Posture::Console {
-        let rec_y = gy + 2 * (tile + 46) + 10;
-        atype(fb, gx, rec_y, b"RECENT FILES", Font::Mono500, 11, k.fg2);
-        let files: [(&[u8], &[u8]); 3] = [
-            (b"welcome.txt", b"/home/nyrqis"),
-            (b"ideas.md", b"/home/nyrqis"),
-            (b"plan.txt", b"/home/nyrqis/Documents"),
-        ];
-        for (i, (name, dir)) in files.iter().enumerate() {
-            let ry = rec_y + 24 + i as i32 * 34;
-            atype(fb, gx + 10, ry + 7, name, Font::Body400, 14, k.fg);
-            atype_r(fb, gx + inner - 10, ry + 9, dir, Font::Mono400, 11, k.fg2);
-        }
+    // One row pitch per row the grid actually drew. The old form reserved two
+    // rows always, so on the tablet -- one row of six -- RECENT FILES floated a
+    // phantom row (151px) below the labels.
+    let rec_y = gy + rows * (tile + 46) + 10;
+    atype(fb, gx, rec_y, b"RECENT FILES", Font::Mono500, 11, k.fg2);
+    let files: [(&[u8], &[u8]); 3] = [
+        (b"welcome.txt", b"/home/nyrqis"),
+        (b"ideas.md", b"/home/nyrqis"),
+        (b"plan.txt", b"/home/nyrqis/Documents"),
+    ];
+    for (i, (name, dir)) in files.iter().enumerate() {
+        let ry = rec_y + 24 + i as i32 * 34;
+        atype(fb, gx + 10, ry + 7, name, Font::Body400, 14, k.fg);
+        atype_r(fb, gx + inner - 10, ry + 9, dir, Font::Mono400, 11, k.fg2);
     }
+    (cols, rows, APPS.len() as i32)
 }
 
 /// `#hints` -- console hint bar.
@@ -1216,28 +1278,43 @@ fn gesture(fb: &mut Fb, k: &Colors) {
 fn boot_screen(fb: &mut Fb) {
     let (w, h) = (fb.w, fb.h);
     fb.rect(0, 0, w, h, 0x071319);
-    let lines: [&[u8]; 12] = [
-        b"keel 0.9.2  (tty0)",
-        b"",
-        b"init     4 MB    ok",
-        b"compositor 46 MB ok",
-        b"inputd   6 MB    ok",
-        b"netd     14 MB   ok",
-        b"audiod   9 MB    ok",
-        b"storaged 11 MB   ok",
-        b"",
-        b"mount /home  ok",
-        b"shell: nyrqis 4 postures",
-        b"ready.",
+    // The boot log is a terminal grid, so it is composed from its parts instead
+    // of hand-padded literals: the label owns columns 0-9, the figure is
+    // right-aligned in 11-12 (so `4` and `46` share an edge), then `MB` at 14 and
+    // `ok` at 20. A literal cannot hold that grid -- `compositor` is two
+    // characters wider than `init` and its `ok` sat 23px left of the rest, while
+    // the widest labels ran into the figure.
+    let rows: [(&[u8], &[u8]); 6] = [
+        (b"init", b"4"),
+        (b"compositor", b"46"),
+        (b"inputd", b"6"),
+        (b"netd", b"14"),
+        (b"audiod", b"9"),
+        (b"storaged", b"11"),
     ];
-    let mut y = 24;
-    for (i, l) in lines.iter().enumerate() {
-        let c = if i == 0 || i == 11 { 0xf0b84a } else { 0x9fd9d4 };
-        atype(fb, 24, y, l, Font::Mono400, 13, c);
+    atype(fb, 24, 24, b"keel 0.9.2  (tty0)", Font::Mono400, 13, 0xf0b84a);
+    let mut y = 24 + 19 * 2;
+    for (label, mb) in rows {
+        let mut line = [b' '; 22];
+        line[..label.len()].copy_from_slice(label);
+        line[13 - mb.len()..13].copy_from_slice(mb);
+        line[14..16].copy_from_slice(b"MB");
+        line[20..22].copy_from_slice(b"ok");
+        atype(fb, 24, y, &line, Font::Mono400, 13, 0x9fd9d4);
         y += 19;
     }
+    y += 19;
+    atype(fb, 24, y, b"mount /home  ok", Font::Mono400, 13, 0x9fd9d4);
+    y += 19;
+    atype(fb, 24, y, b"shell: nyrqis 4 postures", Font::Mono400, 13, 0x9fd9d4);
+    y += 19;
+    atype(fb, 24, y, b"ready.", Font::Mono400, 13, 0xf0b84a);
 }
 
+/// What the render actually composed: the size class it chose, and its lattice --
+/// the columns and rows it used and the tiles or cards it placed. `home` returns
+/// these while drawing, so the report cannot drift from the layout the way a
+/// second derivation from the width did.
 pub struct Info {
     pub class: SizeClass,
     pub cols: i32,
@@ -1284,7 +1361,7 @@ pub fn render_named(
     top_bar(fb, &k, posture, Some(b"Monitor"));
     let t = top_h(posture);
 
-    match posture {
+    let (cols, rows, tiles) = match posture {
         Posture::Desktop => {
             // start(): notes at 5% W / y 30, terminal at 12% W / 36% H,
             // monitor at max(20, W-620) / 46. Sizes are the apps' own.
@@ -1300,31 +1377,29 @@ pub fn render_named(
             let mh = 430.min(h - t - 46 - 90);
             window(fb, &k, mx, t + 46, mw, mh, 2, false);
             keel(fb, &k, posture, Some(3));
+            // A window arrangement, not a lattice: nothing to report as one.
+            (0, 0, 0)
         }
         Posture::Tablet => {
-            home(fb, &k, posture, t, true);
+            // home paints the tablet's floating panel itself, and reports the
+            // lattice it drew.
+            let lattice = home(fb, &k, posture, t);
             keel(fb, &k, posture, Some(3));
+            lattice
         }
         Posture::Phone => {
-            home(fb, &k, posture, t, true);
+            let lattice = home(fb, &k, posture, t);
             gesture(fb, &k);
+            lattice
         }
         Posture::Console => {
-            home(fb, &k, posture, t, true);
+            let lattice = home(fb, &k, posture, t);
             hints(fb, &k);
+            lattice
         }
-    }
+    };
 
-    Info {
-        class,
-        cols: match posture {
-            Posture::Phone => 4,
-            Posture::Tablet => (w / 104).max(1),
-            _ => 6,
-        },
-        rows: 2,
-        tiles: 6,
-    }
+    Info { class, cols, rows, tiles }
 }
 
 pub fn render_lockscreen(fb: &mut Fb, _theme: Theme) -> Info {
