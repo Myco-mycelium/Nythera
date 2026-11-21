@@ -1,0 +1,109 @@
+name: live-iso-selfcheck
+
+# Proves the LIVE-ISO gate's FAILING-BOOT half on the real discs, not on a
+# transcript. tools/live_iso_selfcheck.sh gives dist/nyrqis-live-uefi.iso an
+# unloadable ::EFI/BOOT/BOOTX64.EFI (same El Torito layout, its own digest
+# re-recorded, so the integrity check has nothing to complain about), requires
+# `check_live_iso.sh --boot --uefi-boot` to go RED and to MINT a receipt
+# reading verdict FAIL with NO booted kernel for that leg -- rather than
+# inheriting the PASS already committed -- then restores both discs
+# byte-for-byte and re-earns the PASS.
+#
+# WHY THIS IS NOT IN ci.yml: the self-check needs TWO complete boot runs, and
+# a live disc never exits on its own, so each run spends the gate's whole bound
+# (BIOS leg 120 s + UEFI leg 300 s). That is ~14 min of runner time to answer
+# one question, plus ~2 min of checkout and apt -- a weekly cost, not a PR's.
+# ci.yml keeps the cheap direction (check_live_iso.sh --boot, one boot) and
+# this workflow carries the mutation on a schedule and on demand.
+#
+# Measured locally before wiring (2026-11-20, this repository's own discs):
+# 14 min 30 s of boot time across the two runs; dist/ left byte-identical and
+# `git status -- dist` clean, which is what makes it safe to schedule.
+#
+# Deliberately NOT registered in scripts/check_scheduled_runs.sh yet: that
+# watcher parses each workflow's cron and fails when a fire has no run, so a
+# freshly enabled schedule would read as "missed" until its first fire. Add
+# live-iso-selfcheck.yml to WORKFLOWS once one scheduled run exists.
+
+on:
+  schedule:
+    # Weekly, Saturday 04:17 UTC: off the top-of-hour queue that schedule
+    # delays feed on (the arm64 cron's first fire ran 5 h 45 m late), and
+    # clear of the Monday/Sunday ISO refresh crons this sits beside.
+    - cron: "17 4 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time: the check mutates dist/ on the runner and restores it.
+# Overlapping runs would each mutate from a different starting point.
+concurrency:
+  group: live-iso-selfcheck
+  cancel-in-progress: false
+
+jobs:
+  failing-boot:
+    name: A disc that cannot boot drives the gate red
+    runs-on: ubuntu-latest
+    # Measured ~16 min end to end (two bound-limited boot runs + apt). The
+    # budget is headroom for a slow runner, not an expectation.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the boot toolchain
+        # The gate needs a machine and an ISO repacker; the OVMF blobs and the
+        # discs themselves are committed, so nothing is downloaded per run.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 xorriso mtools
+
+      - name: The committed discs are what this check mutates
+        # The self-check refuses to start without a PASS receipt covering the
+        # discs and kernel on disk, and it promises to leave dist/ byte-
+        # identical. A checkout whose dist/ is already modified could not end
+        # clean, so that is a finding here instead of a skipped run.
+        run: |
+          cd nykernel-package/source/nykernel
+          for tool in qemu-system-x86_64 xorriso mformat mmd mcopy python3 git; do
+            command -v "$tool" >/dev/null 2>&1 \
+              || { echo "::error::$tool is missing from the runner image"; exit 1; }
+          done
+          ls -l dist/
+          if [[ -n "$(git status --porcelain -- dist)" ]]; then
+            git status --porcelain -- dist
+            echo "::error::dist/ is already modified in the checkout -- the mutation could not be said to restore it"
+            exit 1
+          fi
+
+      - name: Mutation self-check (two real boots)
+        working-directory: nykernel-package/source/nykernel
+        run: |
+          mkdir -p target
+          set +e
+          ./tools/live_iso_selfcheck.sh > target/live-iso-selfcheck.log 2>&1; S=$?
+          set -e
+          cat target/live-iso-selfcheck.log
+          if [[ $S -ne 0 ]]; then
+            . /etc/os-release
+            echo "::error::IsoSelfcheck env: $PRETTY_NAME / $(qemu-system-x86_64 --version 2>&1 | head -1) / xorriso $(xorriso -version 2>&1 | head -1)"
+            ./tools/ci_emit_annotations.sh target/live-iso-selfcheck.log IsoSelfcheck || true
+            echo "::error::the live-ISO self-check did not hold -- the gate can pass an unbootable disc, or a failed boot can inherit the old PASS"
+          fi
+          exit $S
+
+      - name: The log, both gate transcripts and the minted FAIL receipt
+        # The FAIL receipt the mutation produced is the artifact worth keeping
+        # when this goes red: it is the evidence that a failed boot replaced
+        # the claim instead of inheriting it.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-iso-selfcheck
+          path: |
+            nykernel-package/source/nykernel/target/live-iso-selfcheck.log
+            nykernel-package/source/nykernel/target/live-selfcheck/
+          if-no-files-found: warn
+          retention-days: 30

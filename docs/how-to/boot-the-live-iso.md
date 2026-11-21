@@ -83,6 +83,12 @@ leaving `dist/` unmodified. It refuses to run without a PASS receipt covering
 the discs on disk, because a red gate proves nothing if there was no claim for
 a failed boot to inherit.
 
+It is deliberately not in `ci.yml`'s push path: a live disc never exits on its
+own, so each of its two runs spends the gate's whole bound (120 s BIOS + 300 s
+UEFI) and the check costs ~15 min of runner time. `.github/workflows/live-iso-selfcheck.yml`
+runs it weekly (Saturday 04:17 UTC) and on `workflow_dispatch`, with the logs
+and the minted FAIL receipt uploaded even when it goes red.
+
 ## Run it
 
 Write the image to a USB stick or attach it as a CD-ROM:
