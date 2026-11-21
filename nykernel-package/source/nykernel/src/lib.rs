@@ -38,7 +38,9 @@ pub mod ps2_aux;
 pub mod service84;
 pub mod svc84_proof;
 
-/// The Material 3 home screen from release 1-71's `shell/src/ui.rs`,
+/// The shell from release 1-71's `shell/src/ui.rs` -- Android's home
+/// screen and Windows' taskbar in one layout, styled by the HIG with no
+/// Apple assets (every symbol is a font glyph or a rectangle drawn here),
 /// compiled straight out of the staged port tree rather than copied, so
 /// there is exactly ONE copy of the design contract in this repository
 /// and the host checker (`porting/release-1-71/shell/host/hostrender.rs`)

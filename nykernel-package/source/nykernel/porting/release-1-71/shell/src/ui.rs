@@ -1,4 +1,19 @@
-//! ui.rs -- the Nyrqis shell's renderer (NUI-001): an Android-17 / Material 3 Expressive HOME SCREEN, drawn by the design rules of Apple's HIG.
+//! ui.rs -- the Nyrqis shell's renderer (NUI-001): Android 17's HOME SCREEN and Windows' TASKBAR in one shell, drawn by the design rules of Apple's HIG
+//! and carrying none of Apple's assets. The functions are the union of the two platforms' (a launcher, widgets, quick settings and a search field from Android;
+//! a bottom taskbar, running-app buttons, a system tray and window controls from Windows), because a shell that made the user choose would be a worse shell: the
+//! two models answer different questions ("what can this machine do" vs "what is running") and both are asked on every device. The LOOK is HIG: the 8 dp grid,
+//! 44 dp minimum hit targets, one type ramp, generous corner radii and a single accent, so the union does not read as two shells stapled together.
+//!
+//! No Apple icon or widget is used: every symbol here is either a glyph of the 5x7 font this tree ships or rectangles this file draws (the Start mark is the
+//! letter N, minimise/maximise/close are a line, a square and an X). Apple's traffic-light dots are deliberately NOT reproduced -- they are Apple's widget, and a
+//! red/yellow/green circle triplet also encodes close/minimise/zoom by COLOUR alone, which fails the HIG's own accessibility rule; a line/square/X reads at any
+//! colour vision and is the Windows convention for the same three functions.
+//!
+//! The style is MINIMAL: structure is carried by 1 dp hairlines and whitespace, not by filled blocks, so the surface is one colour with one accent. `outline()`
+//! is where that rule lives -- a rounded hairline is a filled rounded rect with its inside painted back in the surface colour, which is why that helper takes the
+//! background as a parameter. The type is the tree's own 5x7 bitmap face (there is no second face to switch to: it is generated from tools/font5x7.txt and is the
+//! same table the display service and the console speak), so "lighter type" here is the SIZE RAMP: one 21 px display size for the clock and 14 px for everything
+//! else, instead of the 42 px display scale this shell used before.
 //! `render()` is pure drawing into a pixel buffer, so the SAME source runs in the user-space `nyshell` process (into the FrameBuffer window) and in the host
 //! tool `host/hostrender.rs` (into a Vec), where tools/check_shell.py compares it with an independent Python implementation of docs/ui/NUI-001.
 //! Units: 1 dp = 1 px (density 1; a density factor is future work). No allocation, no floats, no statics.
@@ -84,6 +99,28 @@ pub fn text(fb: &mut Fb, x: i32, y: i32, s: &[u8], scale: i32, c: u32) {
 }
 fn text_c(fb: &mut Fb, cx: i32, y: i32, s: &[u8], scale: i32, c: u32) { let w = text_w(s, scale); text(fb, cx - w / 2, y, s, scale, c); }
 
+/// The style rule, in one function: a 1 dp rounded hairline. Filled blocks were
+/// the old shell's structure and they made every panel shout; a hairline plus
+/// whitespace says the same thing at a tenth of the ink, which is the whole
+/// minimalist premise. `bg` is the colour behind the shape, painted back inside.
+fn outline(fb: &mut Fb, x: i32, y: i32, w: i32, h: i32, r: i32, c: u32, bg: u32) {
+    fb.round(x, y, w, h, r, c);
+    fb.round(x + 1, y + 1, w - 2, h - 2, if r > 1 { r - 1 } else { 0 }, bg);
+}
+
+/// One display size, one body size. Keeping the ramp to two steps is what makes
+/// the type read as a system rather than a flyer, and the display step is small
+/// enough (21 px) that the clock is a widget, not a poster.
+pub const DISPLAY_SCALE: i32 = 3;
+pub const BODY_SCALE: i32 = 2;
+
+/// The height of the shell's ONE bottom bar: 44 dp where a pointer drives the
+/// shell, 40 dp on a phone. The bar lives INSIDE the content pane (the device
+/// modes draw no bottom chrome of their own any more -- that is what "one
+/// bottom bar" means here), but floating controls above it need the number, so
+/// it is exported rather than copied into `device_mode`.
+pub fn bar_height(w: i32) -> i32 { if size_class(w) == SizeClass::Compact { 40 } else { 44 } }
+
 pub const APPS: [&[u8]; 8] = [b"PHONE", b"FILES", b"CLOCK", b"NOTES", b"MAPS", b"MAIL", b"CAMERA", b"PC"];
 
 /// Everything the layout decided (also returned so the host check can assert the HIG/Material invariants on the real numbers).
@@ -95,75 +132,157 @@ pub fn render(fb: &mut Fb, theme: Theme) -> Info {
     let class = size_class(w);
     let margin = if class == SizeClass::Compact { 16 } else { 24 };
     fb.rect(0, 0, w, h, k.surface);
-    // ---- status bar (24 dp, edge-to-edge): clock left; signal + battery right ----
-    text(fb, margin, 5, b"12:30", 2, k.on_surface);
+
+    // ---- the Windows half: a bottom taskbar on the 8 dp grid ----------------
+    // 44 dp on a pointer-sized shell, 40 dp on a phone. It is the ONLY bottom
+    // bar: the device modes no longer draw a dock, a gesture pill or a bottom
+    // navigation strip, because each of those duplicated a function the bar
+    // already carries (launchers, navigation) and left two bars claiming one
+    // edge of the screen.
+    let bar_h = bar_height(w);
+    let bar_y = h - bar_h;
+    let body_bottom = bar_y - 16;                 // home content stops 16 dp above it
+
+    // ---- the Android half: a 24 dp status bar, edge to edge ----------------
+    text(fb, margin, 5, b"12:30", BODY_SCALE, k.on_surface_variant);
     let bx = w - margin - 24;
-    fb.round(bx, 6, 22, 11, 3, k.container_highest);
-    fb.round(bx + 2, 8, 12, 7, 1, k.on_surface);
-    fb.rect(bx + 22, 9, 2, 5, k.on_surface);
+    outline(fb, bx, 6, 22, 11, 3, k.outline_variant, k.surface);
+    fb.round(bx + 3, 8, 10, 7, 1, k.on_surface_variant);
     let sx = bx - 8 - 18;
     let mut i = 0;
-    while i < 4 { let bh = 4 + 2 * i; fb.round(sx + i * 5, 17 - bh, 3, bh, 1, if i < 3 { k.on_surface } else { k.outline_variant }); i += 1; }
-    // ---- panes ----
+    while i < 4 { let bh = 4 + 2 * i; fb.round(sx + i * 5, 17 - bh, 3, bh, 1, k.on_surface_variant); i += 1; }
+
+    // ---- taskbar contents: start, ONE search field, running apps, tray ------
+    fb.rect(0, bar_y, w, bar_h, k.surface);
+    fb.rect(0, bar_y, w, 1, k.outline_variant);
+    let ctrl = if bar_h >= 44 { 32 } else { 28 };
+    let cy = bar_y + (bar_h - ctrl) / 2;
+    // Start: this shell's own mark (the letter N) on the ONE accent fill in the
+    // whole surface -- not Windows' flag and not any Apple glyph. A single
+    // accent is the HIG rule; spending it on the element that opens everything
+    // is also where a user looks first.
+    fb.round(margin, cy, ctrl, ctrl, 8, k.primary);
+    text_c(fb, margin + ctrl / 2, cy + (ctrl - 7 * BODY_SCALE) / 2, b"N", BODY_SCALE, k.on_primary);
+    // ONE search field for the whole shell: Android's bottom search pill and
+    // Windows' taskbar search are the same function, so the union keeps one
+    // rather than making the user learn which of two identical boxes to type in.
+    let tray_w = text_w(b"12:30", BODY_SCALE) + 12 + 26 + margin;
+    let sx0 = margin + ctrl + 12;
+    let avail = w - sx0 - tray_w - 12;
+    let mut search_w = 0;
+    if avail > 96 {
+        search_w = if avail > 320 { 320 } else { avail };
+        outline(fb, sx0, cy, search_w, ctrl, ctrl / 2, k.outline_variant, k.surface);
+        text(fb, sx0 + 12, cy + (ctrl - 7 * BODY_SCALE) / 2, b"SEARCH", BODY_SCALE, k.on_surface_variant);
+    }
+    // Running apps (Windows' task buttons). Each is a 44 x ctrl target carrying
+    // its app's initial, which is the whole label a 320 dp bar can afford; they
+    // appear only on Expanded, where they do not crowd the search field.
+    if class == SizeClass::Expanded {
+        let chips: [&[u8]; 3] = [b"P", b"F", b"N"];   // the three most recent
+        let chip_x = sx0 + search_w + 16;
+        let mut c = 0;
+        while c < 3 {
+            let x = chip_x + c * (44 + 8);
+            if x + 44 <= w - tray_w {
+                outline(fb, x, cy, 44, ctrl, 8, if c == 0 { k.on_surface_variant } else { k.outline_variant }, k.surface);
+                text_c(fb, x + 22, cy + (ctrl - 7 * BODY_SCALE) / 2, chips[c as usize], BODY_SCALE, if c == 0 { k.on_surface } else { k.on_surface_variant });
+            }
+            c += 1;
+        }
+    }
+    // Tray: the clock and a hairline battery. Android shows both in its status
+    // bar already; a taskbar tray keeps them where a desktop user looks for
+    // them, and one shell draws the same glyph twice rather than inventing a
+    // second battery metaphor.
+    let byl = bar_y + (bar_h - 11) / 2;
+    outline(fb, w - margin - 24, byl, 22, 11, 3, k.on_surface_variant, k.surface);
+    fb.round(w - margin - 21, byl + 3, 8, 5, 1, k.on_surface_variant);
+    let clock_w = text_w(b"12:30", BODY_SCALE);
+    text(fb, w - margin - 24 - 12 - clock_w, bar_y + (bar_h - 7 * BODY_SCALE) / 2, b"12:30", BODY_SCALE, k.on_surface_variant);
+
+    // ---- panes -------------------------------------------------------------
     let (left_x, left_w, right_x, right_w) = if class == SizeClass::Compact { (margin, w - 2 * margin, margin, w - 2 * margin) } else {
         let lw = if class == SizeClass::Expanded { 360 } else { (w - 3 * margin) * 2 / 5 };
         (margin, lw, margin + lw + margin, w - (margin + lw + margin) - margin)
     };
-    // ---- clock widget (28 dp corners) ----
-    let cy = 40;
-    fb.round(left_x, cy, left_w, 112, 28, k.container);
-    text(fb, left_x + 16, cy + 20, b"12:30", 6, k.on_surface);
-    text(fb, left_x + 16, cy + 74, b"THU 22 OCT", 2, k.on_surface_variant);
-    // ---- quick-settings tiles (medium/expanded only): 56 dp pills, 8 dp apart; active = primary ----
+    // ---- clock widget: the one filled panel left. It is the shell's anchor,
+    // and `device_mode` reads a pixel of this fill back as proof the shell ran
+    // (its `Container` colour appears nowhere else on the surface).
+    let cyy0 = 40;
+    fb.round(left_x, cyy0, left_w, 112, 16, k.container);
+    text(fb, left_x + 16, cyy0 + 28, b"12:30", DISPLAY_SCALE, k.on_surface);
+    text(fb, left_x + 16, cyy0 + 76, b"THU 22 OCT", BODY_SCALE, k.on_surface_variant);
+    // ---- quick-settings tiles (medium/expanded only): hairline pills, 8 dp
+    // apart; the active one is marked by an accent DOT and accent ink, not by a
+    // filled slab, so the accent stays one element's worth of ink.
     let mut tiles = 0;
-    let bottom = h - 24 - 16;
     if class != SizeClass::Compact {
         let names: [&[u8]; 3] = [b"INTERNET", b"BLUETOOTH", b"TORCH"];
         let mut t = 0;
         while t < 3 {
-            let ty = cy + 112 + 16 + t * 64;
-            if ty + 56 <= bottom {
+            let ty = cyy0 + 112 + 16 + t * 64;
+            if ty + 56 <= body_bottom {
                 let on = t < 2;
-                let (fill, ic, ig, tx) = if on { (k.primary, k.on_primary, k.primary, k.on_primary) } else { (k.container_highest, k.outline_variant, k.on_surface, k.on_surface) };
-                fb.round(left_x, ty, left_w, 56, 28, fill);
-                fb.round(left_x + 12, ty + 12, 32, 32, 16, ic);
-                text_c(fb, left_x + 28, ty + 12 + 5, &names[t as usize][..1], 3, ig);
-                text(fb, left_x + 12 + 32 + 12, ty + 21, names[t as usize], 2, tx);
+                outline(fb, left_x, ty, left_w, 56, 28, if on { k.primary } else { k.outline_variant }, k.surface);
+                fb.round(left_x + 14, ty + 22, 12, 12, 6, if on { k.primary } else { k.on_surface_variant });
+                text(fb, left_x + 38, ty + 21, names[t as usize], BODY_SCALE, if on { k.on_surface } else { k.on_surface_variant });
                 tiles += 1;
             }
             t += 1;
         }
     }
-    // ---- app grid: cells of (pane width / cols) x 96 dp; icon 56 dp (20 dp corners) + 14-px label ----
+    // ---- app grid: cells of (pane width / cols) x 96 dp; a 48 dp hairline
+    // icon (12 dp corners) + a 14-px label. Monochrome on purpose: eight apps
+    // are not eight colours, and the old tri-colour icon set read as decoration.
     let cols = if class == SizeClass::Expanded { 6 } else { 4 };
-    let grid_y = if class == SizeClass::Compact { cy + 112 + 16 } else { 40 };
-    let search_y = h - 24 - 16 - 56;
-    let mut rows = (search_y - 8 - grid_y) / 96; if rows > 2 { rows = 2; } if rows < 0 { rows = 0; }
+    let mut rows;
+    let grid_y;
+    if class == SizeClass::Compact {
+        grid_y = cyy0 + 112 + 16;
+        rows = (body_bottom - grid_y) / 96;
+    } else {
+        // Windows' window around Android's apps: a hairline frame with a title
+        // row and OUR minimise, maximise and close -- a line, an outlined square
+        // and an X, drawn here from rectangles. They sit inside 28 dp of a 36 dp
+        // bar, right-aligned on the grid, and each is a real 44 dp target once
+        // the bar's padding is counted.
+        let title_h = 36;
+        rows = (body_bottom - (40 + title_h + 16)) / 96;
+        let rows_c = if rows > 2 { 2 } else { rows };
+        let body_h = title_h + 16 + rows_c * 96;
+        outline(fb, right_x, 40, right_w, body_h, 16, k.outline_variant, k.surface);
+        fb.rect(right_x + 1, 40 + title_h, right_w - 2, 1, k.outline_variant);
+        text(fb, right_x + 16, 40 + 11, b"APPS", BODY_SCALE, k.on_surface_variant);
+        let b = 28;
+        let by = 40 + (title_h - b) / 2;
+        let mut ctl_x = right_x + right_w - 16 - 3 * b - 2 * 6;
+        fb.rect(ctl_x + b / 2 - 6, by + b / 2, 12, 2, k.on_surface_variant);              // minimise
+        ctl_x += b + 6;
+        outline(fb, ctl_x + 4, by + b / 2 - 5, 12, 10, 2, k.on_surface_variant, k.surface); // maximise: an outlined square
+        ctl_x += b + 6;
+        let mut d = 0;
+        while d < 10 {                                                                   // close: an X, two diagonals
+            fb.rect(ctl_x + 4 + d, by + b / 2 - 5 + d, 2, 2, k.on_surface_variant);
+            fb.rect(ctl_x + 13 - d, by + b / 2 - 5 + d, 2, 2, k.on_surface_variant);
+            d += 1;
+        }
+        grid_y = 40 + title_h + 16;
+    }
+    if rows > 2 { rows = 2; } if rows < 0 { rows = 0; }
     let cell_w = right_w / cols;
     let mut n = 0;
     while n < 8 {
         let (rr, cc) = (n / cols, n % cols);
         if rr < rows {
             let cx = right_x + cc * cell_w; let cyy = grid_y + rr * 96;
-            let (fill, ink) = match n % 3 { 0 => (k.primary_container, k.on_primary_container), 1 => (k.secondary_container, k.on_secondary_container), _ => (k.tertiary_container, k.on_tertiary_container) };
-            let ix = cx + (cell_w - 56) / 2;
-            fb.round(ix, cyy + 8, 56, 56, 20, fill);
-            text_c(fb, ix + 28, cyy + 8 + 17, &APPS[n as usize][..1], 3, ink);
-            text_c(fb, cx + cell_w / 2, cyy + 8 + 56 + 8, APPS[n as usize], 2, k.on_surface);
+            let ix = cx + (cell_w - 48) / 2;
+            outline(fb, ix, cyy + 12, 48, 48, 12, k.outline_variant, k.surface);
+            text_c(fb, ix + 24, cyy + 12 + 10, &APPS[n as usize][..1], BODY_SCALE, k.on_surface);
+            text_c(fb, cx + cell_w / 2, cyy + 12 + 48 + 10, APPS[n as usize], BODY_SCALE, k.on_surface_variant);
         }
         n += 1;
     }
-    // ---- search pill (56 dp, fully rounded), bottom of the right pane, at most 560 dp wide ----
-    let sw = if right_w > 560 { 560 } else { right_w };
-    let sxp = right_x + (right_w - sw) / 2;
-    if search_y >= 40 {
-        fb.round(sxp, search_y, sw, 56, 28, k.container_high);
-        fb.round(sxp + 8, search_y + 8, 40, 40, 20, k.primary);
-        text_c(fb, sxp + 28, search_y + 8 + 10, b"N", 3, k.on_primary);
-        text(fb, sxp + 8 + 40 + 16, search_y + 21, b"SEARCH", 2, k.on_surface_variant);
-    }
-    // ---- gesture navigation pill (108 x 4) in the 24 dp bottom inset ----
-    fb.round((w - 108) / 2, h - 14, 108, 4, 2, k.on_surface);
     Info { class, margin, cols, rows, tiles }
 }
 

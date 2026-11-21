@@ -17,9 +17,12 @@
 #                         same picture and still be four layouts)
 #   layout landmarks      each mode's own invariant is read out of the
 #                         screenshot: the accent block every mode shares,
-#                         plus desktop's dock destination, tablet's gesture
-#                         pill, phone's FAB and bottom navigation, and
-#                         console's prompt caret
+#                         plus the shell's ONE bottom bar in every
+#                         framebuffer mode (its Start mark is the accent
+#                         fill, and it must be in the display's last rows --
+#                         a mode that drew its own dock, pill or navigation
+#                         strip instead would move those rows and fail here),
+#                         phone's FAB above that bar, and console's caret
 #   automatic selection   1024x768 with no token selects tablet, and says
 #                         so as "display class" -- the same rule the
 #                         kernel prints, checked against the screen
@@ -186,16 +189,27 @@ status = {"desktop": 28, "tablet": 28, "phone": 24, "console": 16}[mode]
 
 assert get(0, 0) == SURFACE, ("status strip", get(0, 0))
 assert get(margin + 2, status // 2) == PRIMARY, ("accent block", get(margin + 2, status // 2))
+# The shell's single bottom bar: its Start mark is the one accent fill on the
+# bar, 22 dp above the display's last row in every framebuffer mode. Reading it
+# at that height is also the proof that no mode still draws chrome of its own
+# below the shell -- a dock, a gesture pill or a navigation strip would push the
+# bar up and this probe off the accent. The probe is PANE-relative: desktop's
+# content starts at the rail and phone's is centred, so the screen's own margin
+# is not where the bar begins.
+# console has no content pane (no shell, no bottom bar), so it has no bar probe
+PANE_X = {"desktop": 80, "tablet": 0, "phone": (w - min(w, 480)) // 2}.get(mode, 0)
+bar_probe = get(PANE_X + margin + 4, h - 22)
 if mode == "desktop":
     assert get(80 - 4, status + 4) == SURFACE, ("rail", get(76, status + 4))
-    assert get(80 + 48, h - 36) == PRIMARY, ("dock destination", get(128, h - 36))
+    assert bar_probe == PRIMARY, ("one bottom bar", bar_probe)
 elif mode == "tablet":
     assert get(w - 1, status + 4) == SURFACE, ("app bar", get(w - 1, status + 4))
-    assert get(w // 2, h - 20) == OUTLINE, ("gesture pill", get(w // 2, h - 20))
+    assert bar_probe == PRIMARY, ("one bottom bar", bar_probe)
 elif mode == "phone":
-    assert get(0, h - 1) == SURFACE, ("bottom navigation", get(0, h - 1))
     cw, x0 = min(w, 480), (w - min(w, 480)) // 2
-    assert get(x0 + cw - margin - 28, h - 56 - margin - 28 - 16) == PRIMARY, ("FAB",)
+    bar_h = 40 if cw < 600 else 44
+    assert get(x0 + cw - margin - 28, h - bar_h - margin - 28 - 16) == PRIMARY, ("FAB",)
+    assert bar_probe == PRIMARY, ("one bottom bar", bar_probe)
 elif mode == "console":
     assert get(margin + 12, status + margin + 12) == CONSOLE_FG, ("prompt caret",)
 

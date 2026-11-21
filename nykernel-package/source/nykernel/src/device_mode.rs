@@ -16,8 +16,10 @@
 //!
 //! What is real here: the geometry, the chrome, the shell, and the
 //! read-back check. Each mode reserves a *content pane* by its own
-//! contract and release 1-71's Material 3 home screen (`shell::render`,
-//! compiled from `porting/release-1-71/shell/src/ui.rs`) is drawn into
+//! contract and release 1-71's shell (`shell::render`, compiled from
+//! `porting/release-1-71/shell/src/ui.rs`) -- Android's home screen plus
+//! Windows' taskbar and window controls, in the HIG's visual language --
+//! is drawn into
 //! it -- the same source the release's user-space `nyshell` and the host
 //! checker run. Because the pane's width differs per mode, the shell's
 //! own window-size-class logic picks a different real layout in each
@@ -27,7 +29,7 @@
 //! is no input routing into it and no user-space process owning it
 //! (`userprog/desk` needs the `0x84` IPC/capability/shm surface, which is
 //! staged, not ported). Saying "the phone mode renders the shell" means
-//! the Material home screen's pixels are on the display and verified;
+//! the shell's pixels are on the display and verified;
 //! it does not mean a touch on it does anything yet.
 
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -265,24 +267,28 @@ pub struct Shell {
 }
 
 /// The content pane each mode leaves for the shell, by that mode's own
-/// contract: desktop reserves the rail, status strip, app bar and dock;
-/// tablet the status strip, app bar and the 24px gesture inset; phone the
-/// status strip, app bar, bottom navigation and the centred content cap.
+/// contract: desktop reserves the rail, status strip and app bar; tablet the
+/// status strip and app bar; phone the status strip, app bar and the centred
+/// content cap. NO mode reserves a bottom strip: the shell draws its own
+/// taskbar inside the pane, and that bar is the one bottom bar on the screen.
+/// The pane therefore runs to the display's last row -- a mode that reserved
+/// the bottom too would draw a second bar under the shell's, which is exactly
+/// the duplication this contract removes.
 /// Returned as (x, y, w, h).
 pub fn content_pane(mode: DeviceMode, l: &Layout, w: u32, h: u32) -> (u32, u32, u32, u32) {
     match mode {
         DeviceMode::Desktop => {
             let y = l.status + l.appbar;
-            (l.rail, y, w.saturating_sub(l.rail + l.margin), h.saturating_sub(y + 72 + l.margin))
+            (l.rail, y, w.saturating_sub(l.rail + l.margin), h.saturating_sub(y))
         }
         DeviceMode::Tablet => {
             let y = l.status + l.appbar;
-            (0, y, w, h.saturating_sub(y + 24))
+            (0, y, w, h.saturating_sub(y))
         }
         DeviceMode::Phone => {
             let cw = l.content_w.min(w);
             let y = l.status + l.appbar;
-            ((w - cw) / 2, y, cw, h.saturating_sub(y + l.bottom_nav))
+            ((w - cw) / 2, y, cw, h.saturating_sub(y))
         }
         DeviceMode::Console => (0, 0, 0, 0),
     }
@@ -384,15 +390,9 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
             let bar_w = w - cx - l.margin;
             fb.fill_rect(cx, l.status, bar_w, l.appbar, SURFACE);
             fb.fill_rect(cx + l.margin, l.status + 20, 160, 16, SURFACE_HI);
-            // dock
-            let dock_h = 72;
-            fb.fill_rect(l.rail, h - dock_h, w - l.rail, dock_h, SURFACE);
-            let r = 18;
-            let y = h - dock_h / 2;
-            for i in 0..5u32 {
-                let x = l.rail + 48 + i * 56;
-                fb.fill_circle(x, y, r, if i == 0 { PRIMARY } else { SURFACE_HI });
-            }
+            // No dock here: the shell's taskbar is this mode's bottom bar, and
+            // it lives at the pane's last row. A dock under it was a second
+            // launcher for the same machine.
         }
         DeviceMode::Tablet => {
             fb.fill_rect(0, 0, w, h, BG);
@@ -400,8 +400,8 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
             fb.fill_rect(l.margin, l.status / 2 - 4, 8, 8, PRIMARY);
             fb.fill_rect(0, l.status, w, l.appbar, SURFACE);
             fb.fill_rect(l.margin, l.status + 24, 200, 16, SURFACE_HI);
-            // gesture pill
-            fb.fill_rect(w / 2 - 60, h - 24, 120, 8, OUTLINE);
+            // No gesture pill: the shell's taskbar owns the bottom edge now,
+            // and a gesture inset under it would be a second navigation model.
         }
         DeviceMode::Phone => {
             fb.fill_rect(0, 0, w, h, BG);
@@ -409,12 +409,9 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
             fb.fill_rect(l.margin, l.status / 2 - 4, 8, 8, PRIMARY);
             fb.fill_rect(x0, l.status, cw, l.appbar, SURFACE);
             fb.fill_rect(x0 + l.margin, l.status + 20, 120, 16, SURFACE_HI);
-            // bottom navigation with three destinations
-            fb.fill_rect(0, h - l.bottom_nav, w, l.bottom_nav, SURFACE);
-            for i in 0..3u32 {
-                let x = (w / 4) * (i + 1);
-                fb.fill_circle(x, h - l.bottom_nav / 2, 6, if i == 0 { PRIMARY } else { OUTLINE });
-            }
+            // No bottom navigation: the shell's taskbar is the phone's bottom
+            // bar as well, which is the point of the union -- one bar, one set
+            // of functions, on every form factor.
         }
     }
 
@@ -424,7 +421,9 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
     let shell_render = render_shell(fb, pane);
     if mode == DeviceMode::Phone {
         let fab_r = 28;
-        let card_bottom = h - l.bottom_nav - l.margin;
+        // Clear of the shell's taskbar: the FAB floats over content, and the
+        // content pane now runs to the display's last row.
+        let card_bottom = h - shell::bar_height(cw as i32) as u32 - l.margin;
         fb.fill_circle(
             x0 + cw - l.margin - fab_r,
             card_bottom - fab_r - 16,
@@ -450,21 +449,25 @@ pub fn render(mode: DeviceMode, fb: &mut Framebuffer) -> Rendered {
     probes_ok &= fb.get(l.margin + 2, l.status / 2) == Some(PRIMARY);
     probes_ok &= match mode {
         DeviceMode::Desktop => {
-            // rail surface at its right edge, first dock destination is accent
+            // rail surface at its right edge, and the shell's one bottom bar
+            // reaching the display's last rows (its Start mark is the accent).
+            // The bar probe is PANE-relative: this mode's content starts at the
+            // rail, so the screen's own margin is not where the bar begins.
             fb.get(l.rail - 4, l.status + 4) == Some(SURFACE)
-                && fb.get(l.rail + 48, h - 36) == Some(PRIMARY)
+                && fb.get(pane.0 + l.margin + 4, h - 22) == Some(PRIMARY)
         }
         DeviceMode::Tablet => {
-            // app bar spans the screen; the gesture pill is the outline colour
+            // app bar spans the screen; the shell's bottom bar reaches the edge
             fb.get(w - 1, l.status + 4) == Some(SURFACE)
-                && fb.get(w / 2, h - 20) == Some(OUTLINE)
+                && fb.get(pane.0 + l.margin + 4, h - 22) == Some(PRIMARY)
         }
         DeviceMode::Phone => {
-            // bottom navigation spans the screen; the FAB centre is accent
+            // the FAB centre is accent, and it floats above the bottom bar the
+            // shell draws (there is no separate bottom navigation to sit on)
             let fab_r = 28;
-            fb.get(0, h - 1) == Some(SURFACE)
-                && fb.get(x0 + cw - l.margin - fab_r,
-                          h - l.bottom_nav - l.margin - fab_r - 16) == Some(PRIMARY)
+            fb.get(x0 + cw - l.margin - fab_r,
+                  h - shell::bar_height(cw as i32) as u32 - l.margin - fab_r - 16) == Some(PRIMARY)
+                && fb.get(pane.0 + l.margin + 4, h - 22) == Some(PRIMARY)
         }
         DeviceMode::Console => {
             fb.get(l.margin + 12, l.status + l.margin + 12) == Some(CONSOLE_FG)
