@@ -300,7 +300,7 @@ pub fn select(
 /// What one apply wrote, for the transcript and the boot proof.
 pub struct Skin {
     pub platform: Platform,
-    /// The status-strip height the identity drew its bar into.
+    /// The top bar's height -- the strip the identity's badge is drawn in.
     pub bar: u32,
     /// FNV-1a over every 13th pixel: two identities that draw different
     /// chrome produce different values, and the cycle proof asserts it.
@@ -326,246 +326,37 @@ fn surface_hash(fb: &Framebuffer) -> u32 {
     h
 }
 
-fn text_right(fb: &mut Framebuffer, right: u32, y: u32, s: &[u8], scale: i32, color: u32) {
-    let tw = crate::shell::text_w(s, scale).max(0) as u32;
-    let x = right.saturating_sub(tw);
-    device_mode::draw_text(fb, x, y, s, scale, color);
-}
-
-/// The native identity's signature: a spore cluster (the mycelium mark)
-/// with its satellite spores, the wordmark to its left, and a two-pixel
-/// accent rule under the status strip. Drawn into the right-hand end of
-/// the strip so the layout landmarks every device mode provides -- the
-/// accent block at the strip's left, the dock, the FAB, the shell's own
-/// pane -- are left exactly as the device renderer drew them.
-fn paint_nyrqis(fb: &mut Framebuffer, l: &device_mode::Layout) {
-    let p = Platform::Nyrqis.palette();
-    let cx = fb.width.saturating_sub(26);
-    let cy = (l.status / 2).max(5);
-    fb.fill_circle(cx, cy, 5, p.accent);
-    fb.fill_rect(cx.saturating_sub(cx.min(2)), cy.saturating_sub(1), 4, 2, p.accent);
-    fb.fill_circle(cx.saturating_sub(14), cy.saturating_sub(1), 2, p.muted);
-    fb.fill_circle(cx.saturating_add(12), cy.saturating_add(1), 2, p.muted);
-    text_right(
-        fb,
-        cx.saturating_sub(10),
-        cy.saturating_sub(3),
-        b"NYRQIS",
-        1,
-        p.text,
-    );
-    fb.fill_rect(
-        l.margin,
-        l.status.saturating_sub(2),
-        fb.width.saturating_sub(l.margin * 2),
-        2,
-        p.muted,
-    );
-}
-
-/// Android: a status strip with an accent chip, and the gesture pill at
-/// the bottom of the panel. Material's shape language, nothing else.
-fn paint_android(fb: &mut Framebuffer, l: &device_mode::Layout) {
-    let p = Platform::Android.palette();
-    let w = fb.width;
-    let h = fb.height;
-    fb.fill_rect(0, 0, w, l.status, p.surface);
-    let chip_x = w.saturating_sub(16);
-    let chip_y = (l.status / 2).saturating_sub(1);
-    fb.fill_rect(chip_x.saturating_sub(4), chip_y, 8, 3, p.accent);
-    text_right(
-        fb,
-        chip_x.saturating_sub(12),
-        (l.status / 2).saturating_sub(3),
-        b"ANDROID",
-        1,
-        p.text,
-    );
-    if h > 96 {
-        let (px, py) = (w / 2, h.saturating_sub(12));
-        fb.fill_rect(px.saturating_sub(40), py, 80, 5, p.muted);
-        fb.fill_circle(px.saturating_sub(40), py + 2, 2, p.muted);
-        fb.fill_circle(px.saturating_add(40), py + 2, 2, p.muted);
-    }
-}
-
-/// Windows: a bottom taskbar with the four-square start mark, and a
-/// window title bar over the content pane with minimise / maximise /
-/// close controls. Windows' identity is the taskbar, so the panel's
-/// top strip keeps the device renderer's own chrome.
-fn paint_windows(fb: &mut Framebuffer, mode: DeviceMode, l: &device_mode::Layout) {
-    let p = Platform::Windows.palette();
-    let w = fb.width;
-    let h = fb.height;
-    let bar = (h / 8).clamp(28, 48);
-    let ty = h.saturating_sub(bar);
-    fb.fill_rect(0, ty, w, bar, p.surface);
-    let lx = w / 2 - 9;
-    let ly = ty + bar / 2 - 9;
-    for &(dx, dy) in &[(0u32, 0u32), (10, 0), (0, 10), (10, 10)] {
-        fb.fill_rect(lx + dx, ly + dy, 8, 8, p.accent);
-    }
-    device_mode::draw_text(fb, 16, ty + bar / 2 - 3, b"NYRQIS", 1, p.text);
-    let pane = device_mode::content_pane(mode, l, w, h);
-    if pane.2 > 200 && pane.3 > 96 {
-        let (px, py, pw) = (pane.0, pane.1, pane.2);
-        fb.fill_rect(px, py, pw, 26, p.surface_hi);
-        device_mode::draw_text(fb, px + 10, py + 9, b"NYRQIS", 1, p.muted);
-        fb.fill_rect(px + pw - 58, py + 12, 8, 2, p.text);
-        fb.stroke_rect(px + pw - 40, py + 9, 8, 8, p.text);
-        fb.stroke_rect(px + pw - 18, py + 9, 8, 8, p.accent);
-    }
-}
-
-/// macOS: a top menu bar (mark, menus, clock), a bottom dock, and the
-/// traffic lights on the content window.
-fn paint_macos(fb: &mut Framebuffer, mode: DeviceMode, l: &device_mode::Layout) {
-    let p = Platform::MacOs.palette();
-    let w = fb.width;
-    let h = fb.height;
-    fb.fill_rect(0, 0, w, l.status, p.surface);
-    let mark_x = l.margin.saturating_add(6);
-    let mark_y = (l.status / 2).max(5);
-    fb.fill_circle(mark_x, mark_y, 5, p.accent);
-    device_mode::draw_text(
-        fb,
-        mark_x.saturating_add(11),
-        mark_y.saturating_sub(3),
-        b"FILE EDIT VIEW",
-        1,
-        p.text,
-    );
-    text_right(
-        fb,
-        w.saturating_sub(l.margin),
-        mark_y.saturating_sub(3),
-        b"12:30",
-        1,
-        p.muted,
-    );
-    let dock_h = (h / 9).clamp(36, 56);
-    let dock_w = 340.min(w.saturating_sub(l.margin * 2));
-    let dx = (w - dock_w) / 2;
-    let dy = h.saturating_sub(dock_h);
-    fb.fill_rect(dx, dy, dock_w, dock_h, p.surface_hi);
-    let tile = 30u32;
-    let gap = (dock_w.saturating_sub(5 * tile)) / 6;
-    for i in 0..5u32 {
-        let x = dx + gap + i * (tile + gap);
-        fb.fill_rect(
-            x,
-            dy + (dock_h - tile) / 2,
-            tile,
-            tile,
-            if i == 0 { p.accent } else { p.muted },
-        );
-    }
-    let pane = device_mode::content_pane(mode, l, w, h);
-    if pane.2 > 160 && pane.3 > 80 {
-        let lights = [0x00ff_5f57u32, 0x00fe_bc2e, 0x0028_c840];
-        for (i, color) in lights.iter().enumerate() {
-            fb.fill_circle(pane.0 + 14 + i as u32 * 16, pane.1 + 13, 5, *color);
+impl Platform {
+    /// The word this identity wears in Tide's top-bar badge: uppercase, the
+    /// shell's own voice, one token per persona.
+    pub fn wordmark(self) -> &'static [u8] {
+        match self {
+            Platform::Nyrqis => b"NYRQIS",
+            Platform::Android => b"ANDROID",
+            Platform::Windows => b"WINDOWS",
+            Platform::MacOs => b"MACOS",
+            Platform::Console => b"CONSOLE",
         }
     }
 }
 
-/// Console: no desktop chrome at all -- a terminal frame with the
-/// identity's mark in the status strip and the wordmark beside it.
-fn paint_console(fb: &mut Framebuffer, l: &device_mode::Layout) {
-    let p = Platform::Console.palette();
-    let w = fb.width;
-    let size = 10.min(l.status.saturating_sub(4)).max(6);
-    let x = w.saturating_sub(l.margin + size);
-    let y = (l.status / 2).saturating_sub(size / 2);
-    fb.fill_rect(x, y, size, size, p.accent);
-    text_right(
-        fb,
-        x.saturating_sub(7),
-        (l.status / 2).saturating_sub(3),
-        b"NYRQIS CONSOLE",
-        1,
-        p.accent,
-    );
-}
-
-/// Draws one identity over the chrome `device_mode::render` already
-/// drew, reads its own landmarks back, and publishes the result.
+/// Draws one identity as Tide wears it: the shell's whole screen, with this
+/// identity's accent as the shell's one accent and its wordmark as the top bar's
+/// badge. The kernel used to paint a persona bar over the device chrome; Tide is
+/// the chrome now, so an identity that drew its own strip would be a second shell
+/// fighting the first for the same 34 pixels. The read-back is the shell's brand
+/// tile: it takes the identity's accent, so a screen that still shows the old
+/// accent fails here instead of passing on a name alone.
 pub fn apply(platform: Platform, mode: DeviceMode, fb: &mut Framebuffer) -> Skin {
-    let l = device_mode::layout(mode, fb.width, fb.height);
     let p = platform.palette();
-    match platform {
-        Platform::Nyrqis => paint_nyrqis(fb, &l),
-        Platform::Android => paint_android(fb, &l),
-        Platform::Windows => paint_windows(fb, mode, &l),
-        Platform::MacOs => paint_macos(fb, mode, &l),
-        Platform::Console => paint_console(fb, &l),
-    }
+    let verified = device_mode::render_identity(mode, fb, platform.wordmark(), p.accent);
     let hash = surface_hash(fb);
-    let verified = probe(platform, mode, &l, &p, fb);
     CURRENT.store(platform.code(), Ordering::Relaxed);
     Skin {
         platform,
-        bar: l.status,
+        bar: crate::shell::TOP as u32,
         hash,
         verified,
-    }
-}
-
-/// Each identity's own invariant, read back through the same mapping:
-/// the pixel that only that skin paints. The native identity also pins
-/// the device renderer's shared accent block and status strip, because
-/// its mark is drawn AROUND them, not over them -- if that ever changes,
-/// the boot fails here instead of corrupting the layout contract.
-fn probe(
-    platform: Platform,
-    mode: DeviceMode,
-    l: &device_mode::Layout,
-    p: &Palette,
-    fb: &Framebuffer,
-) -> bool {
-    let w = fb.width;
-    let h = fb.height;
-    match platform {
-        Platform::Nyrqis => {
-            fb.get(w.saturating_sub(26), (l.status / 2).max(5)) == Some(p.accent)
-                && fb.get(0, 0) == Some(device_mode::SURFACE)
-                && fb.get(l.margin + 2, l.status / 2) == Some(device_mode::PRIMARY)
-        }
-        Platform::Android => {
-            fb.get(0, 0) == Some(p.surface)
-                && fb.get(w.saturating_sub(20), (l.status / 2).saturating_sub(1)) == Some(p.accent)
-        }
-        Platform::Windows => {
-            let bar = (h / 8).clamp(28, 48);
-            let ty = h.saturating_sub(bar);
-            let lx = w / 2 - 9;
-            let ly = ty + bar / 2 - 9;
-            let pane = device_mode::content_pane(mode, l, w, h);
-            fb.get(lx + 2, ly + 2) == Some(p.accent)
-                && fb.get(2, h.saturating_sub(2)) == Some(p.surface)
-                && (pane.2 <= 200
-                    || fb.get(pane.0 + pane.2 - 18, pane.1 + 9) == Some(p.accent))
-        }
-        Platform::MacOs => {
-            let mark_x = l.margin.saturating_add(6);
-            let mark_y = (l.status / 2).max(5);
-            let dock_h = (h / 9).clamp(36, 56);
-            let dock_w = 340.min(w.saturating_sub(l.margin * 2));
-            let dx = (w - dock_w) / 2;
-            let dy = h.saturating_sub(dock_h);
-            let tile = 30u32;
-            let gap = dock_w.saturating_sub(5 * tile) / 6;
-            let pane = device_mode::content_pane(mode, l, w, h);
-            fb.get(mark_x, mark_y) == Some(p.accent)
-                && fb.get(0, 0) == Some(p.surface)
-                && fb.get(dx + gap + 2, dy + (dock_h - tile) / 2 + 2) == Some(p.accent)
-                && (pane.2 <= 160 || fb.get(pane.0 + 14, pane.1 + 13) == Some(0x00ff_5f57))
-        }
-        Platform::Console => {
-            let size = 10.min(l.status.saturating_sub(4)).max(6);
-            let x = w.saturating_sub(l.margin + size);
-            fb.get(x, l.status / 2) == Some(p.accent)
-        }
     }
 }
 

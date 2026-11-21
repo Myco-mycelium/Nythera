@@ -460,7 +460,20 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
             platform_source
         );
     }
+    // A locked screen shows no session, so there is no identity to badge on it:
+    // the lock screen is Tide's, not a persona's, and painting one over it would
+    // replace the very pixels the lock gate reads back.
+    let lock_screen = cmdline.windows(b"nyrqis.lock=1".len())
+        .any(|w| w == b"nyrqis.lock=1");
     let persona_ok = match devices.framebuffer.as_mut() {
+        Some(_) if lock_screen => {
+            serial_println!(
+                "  platform: {} (source: {}) -- locked screen: identity not painted, the lock screen is the session's face",
+                platform.as_str(),
+                platform_source
+            );
+            true
+        }
         Some(fb) => {
             let skin = platform_mode::apply(platform, mode, fb);
             serial_println!(
@@ -484,6 +497,15 @@ pub extern "C" fn kernel_main(_multiboot_magic: u64, multiboot_info_addr: u64) -
             } else {
                 true
             };
+            // The gate screenshots as soon as the device-mode line appears, and the
+            // identity repaints the screen after it -- so the FINAL frame is
+            // announced here, by name. The earlier "chrome drawn" line still
+            // reports that render's own checksum and read-back.
+            serial_println!(
+                "  screen: settled -- {} with identity {}, final frame on the display",
+                mode.as_str(),
+                platform.as_str()
+            );
             skin.verified && cycle_ok
         }
         None => {

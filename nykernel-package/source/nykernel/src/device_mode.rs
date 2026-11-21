@@ -248,14 +248,13 @@ pub fn layout(mode: DeviceMode, width: u32, height: u32) -> Layout {
     }
 }
 
-pub const BG: u32 = 0x0014_1218;
-pub const SURFACE: u32 = 0x001c_1b1f;
-pub const SURFACE_HI: u32 = 0x0024_2329;
-pub const PRIMARY: u32 = 0x00d0_bcff;
-pub const ON_PRIMARY: u32 = 0x0038_1e72;
-pub const OUTLINE: u32 = 0x0049_454f;
-pub const CONSOLE_BG: u32 = 0x000b_0b0e;
-pub const CONSOLE_FG: u32 = 0x00b6_f2c8;
+// Tide's palette, in the tokens these probes read: paper, glass, win-bar, accent, accent-fg, fg2.
+pub const BG: u32 = 0x000b_171e;
+pub const SURFACE: u32 = 0x0010_1f27;
+pub const SURFACE_HI: u32 = 0x001a_323d;
+pub const PRIMARY: u32 = 0x003c_c8c0;
+pub const ON_PRIMARY: u32 = 0x0005_2321;
+pub const OUTLINE: u32 = 0x008f_a8b5;
 
 /// The shell render, as facts: where it went, which of its own window
 /// size classes it chose, and its surface hash (computed over the pane
@@ -271,39 +270,24 @@ pub struct Shell {
     pub verified: bool,
 }
 
-/// The content pane each mode leaves for the shell, by that mode's own
-/// contract: desktop reserves the rail, status strip and app bar; tablet the
-/// status strip and app bar; phone the status strip, app bar and the centred
-/// content cap. NO mode reserves a bottom strip: the shell draws its own
-/// taskbar inside the pane, and that bar is the one bottom bar on the screen.
-/// The pane therefore runs to the display's last row -- a mode that reserved
-/// the bottom too would draw a second bar under the shell's, which is exactly
-/// the duplication this contract removes.
+/// The content pane the shell gets: THE WHOLE SCREEN, in every mode.
+///
+/// Tide draws its own top bar, keel and posture layout; the kernel no longer
+/// reserves a rail, an app bar, a status strip or a bottom strip for any mode.
+/// Reserving any of them would mean the kernel drawing chrome beside Tide's,
+/// which is the duplication this design removes -- a device mode now differs by
+/// the POSTURE the shell draws (desktop windows, tablet lattice, phone grid,
+/// console tile row), not by a frame around it.
 /// Returned as (x, y, w, h).
-pub fn content_pane(mode: DeviceMode, l: &Layout, w: u32, h: u32) -> (u32, u32, u32, u32) {
-    match mode {
-        DeviceMode::Desktop => {
-            let y = l.status + l.appbar;
-            (l.rail, y, w.saturating_sub(l.rail + l.margin), h.saturating_sub(y))
-        }
-        DeviceMode::Tablet => {
-            let y = l.status + l.appbar;
-            (0, y, w, h.saturating_sub(y))
-        }
-        DeviceMode::Phone => {
-            let cw = l.content_w.min(w);
-            let y = l.status + l.appbar;
-            ((w - cw) / 2, y, cw, h.saturating_sub(y))
-        }
-        DeviceMode::Console => (0, 0, 0, 0),
-    }
+pub fn content_pane(_mode: DeviceMode, _l: &Layout, w: u32, h: u32) -> (u32, u32, u32, u32) {
+    (0, 0, w, h)
 }
 
 /// Draws the release's Material shell into the pane and verifies it read
 /// back. The shell writes 0x00RRGGBB directly (that is its contract), so
 /// the loader's scan-out order is applied to the pane afterwards -- one
 /// conversion, in one place.
-fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32), lock: bool) -> Option<Shell> {
+fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32), lock: bool, mode: DeviceMode) -> Option<Shell> {
     let (x, y, w, h) = pane;
     if w < 64 || h < 64 {
         return None;
@@ -315,10 +299,11 @@ fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32), lock: bool) ->
         w: w as i32,
         h: h as i32,
     };
+    let posture = posture_of(mode);
     let info = if lock {
         shell::render_lockscreen(&mut surface, shell::Theme::Dark)
     } else {
-        shell::render(&mut surface, shell::Theme::Dark)
+        shell::render_posture(&mut surface, shell::Theme::Dark, posture)
     };
     let hash = shell::hash(&surface);
     fb.convert_scanout_region(x, y, w, h);
@@ -329,14 +314,15 @@ fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32), lock: bool) ->
     // the corner would have passed on an empty pane. `container` is a
     // different colour, so this pixel is evidence the shell ran.
     //
-    // The lock screen has no clock widget: its probe is the accent edge of the
-    // lock glyph's body, the one accent fill that screen draws, which passes
-    // only if the lock body (and not the hairline shackle above it) landed.
-    let m = if info.class == shell::SizeClass::Compact { 16 } else { 24 };
+    // Tide's top bar starts with the brand tile, the only accent fill in the
+    // bar and a pixel nothing else on the screen paints -- so it is evidence
+    // the shell ran, not merely that the pane has a background colour. The lock
+    // screen draws no top bar: its probe is the accent edge of the lock glyph's
+    // body, which passes only if the body (not the hairline shackle) landed.
     let verified = if lock {
         fb.get(x + w / 2, y + 66) == Some(shell::DARK.primary)
     } else {
-        fb.get(x + m + 4, y + 70) == Some(shell::DARK.container)
+        fb.get(x + 11, y + 17) == Some(shell::DARK.primary)
     };
     Some(Shell {
         pane,
@@ -347,6 +333,42 @@ fn render_shell(fb: &mut Framebuffer, pane: (u32, u32, u32, u32), lock: bool) ->
         hash,
         verified,
     })
+}
+
+/// The device mode IS the posture: one shell, four arrangements, which is Tide's
+/// own model (its mock switches `data-mode` between the same four).
+fn posture_of(mode: DeviceMode) -> shell::Posture {
+    match mode {
+        DeviceMode::Desktop => shell::Posture::Desktop,
+        DeviceMode::Tablet => shell::Posture::Tablet,
+        DeviceMode::Phone => shell::Posture::Phone,
+        DeviceMode::Console => shell::Posture::Console,
+    }
+}
+
+/// Renders the shell as a SESSION IDENTITY wears it: the same Tide layout, with
+/// the identity's name in the top bar's badge and its accent as the shell's one
+/// accent. `crate::platform_mode` calls this instead of painting a second chrome
+/// over the screen -- the persona is a name and a colour now, not another shell.
+/// Returns whether the accent landed where it is read back (the brand tile).
+pub fn render_identity(mode: DeviceMode, fb: &mut Framebuffer, name: &[u8], accent: u32) -> bool {
+    let (w, h) = (fb.width, fb.height);
+    fb.fill_rect(0, 0, w, h, BG);
+    let (base, pitch) = fb.surface();
+    let mut surface = shell::Fb {
+        base,
+        pitch,
+        w: w as i32,
+        h: h as i32,
+    };
+    shell::render_named(
+        &mut surface,
+        shell::Theme::Dark,
+        posture_of(mode),
+        Some((name, accent)),
+    );
+    fb.convert_scanout_region(0, 0, w, h);
+    fb.get(11, 17) == Some(accent)
 }
 
 /// What the renderer wrote, for the boot transcript and the test.
@@ -389,79 +411,12 @@ fn render_with(mode: DeviceMode, fb: &mut Framebuffer, lock: bool) -> Rendered {
     let l = layout(mode, fb.width, fb.height);
     let w = fb.width;
     let h = fb.height;
-    // Phone content width and its left edge: the layout contract caps the
-    // content width on a wide screen, and centring is part of the
-    // contract, not a renderer detail -- the probes below read it back.
-    let cw = l.content_w.min(w);
-    let x0 = (w - cw) / 2;
 
+    // Tide owns the screen. The kernel draws the paper and hands the shell the
+    // whole display: its top bar, keel and posture layout ARE the chrome now.
+    fb.fill_rect(0, 0, w, h, BG);
     let pane = content_pane(mode, &l, w, h);
-    match mode {
-        DeviceMode::Console => render_console(fb, &l),
-        DeviceMode::Desktop => {
-            fb.fill_rect(0, 0, w, h, BG);
-            // status strip + the accent block every mode carries
-            fb.fill_rect(0, 0, w, l.status, SURFACE);
-            fb.fill_rect(l.margin, l.status / 2 - 4, 8, 8, PRIMARY);
-            // navigation rail with four destination tiles
-            fb.fill_rect(0, l.status, l.rail, h - l.status, SURFACE);
-            let tile = 48;
-            for i in 0..4u32 {
-                let y = l.status + 24 + i * (tile + 16);
-                fb.fill_rect(16, y, tile, tile, if i == 0 { PRIMARY } else { SURFACE_HI });
-                if i == 0 {
-                    fb.fill_rect(32, y + 20, tile - 32, 8, ON_PRIMARY);
-                }
-            }
-            // app bar (the three placeholder cards that used to sit under
-            // it are gone: the shell fills that area now)
-            let cx = l.rail + l.margin;
-            // `bar_w`, not `cw`: `cw` above is the LAYOUT's content width
-            // (the phone contract's cap), this is the app bar's own span.
-            let bar_w = w - cx - l.margin;
-            fb.fill_rect(cx, l.status, bar_w, l.appbar, SURFACE);
-            fb.fill_rect(cx + l.margin, l.status + 20, 160, 16, SURFACE_HI);
-            // No dock here: the shell's taskbar is this mode's bottom bar, and
-            // it lives at the pane's last row. A dock under it was a second
-            // launcher for the same machine.
-        }
-        DeviceMode::Tablet => {
-            fb.fill_rect(0, 0, w, h, BG);
-            fb.fill_rect(0, 0, w, l.status, SURFACE);
-            fb.fill_rect(l.margin, l.status / 2 - 4, 8, 8, PRIMARY);
-            fb.fill_rect(0, l.status, w, l.appbar, SURFACE);
-            fb.fill_rect(l.margin, l.status + 24, 200, 16, SURFACE_HI);
-            // No gesture pill: the shell's taskbar owns the bottom edge now,
-            // and a gesture inset under it would be a second navigation model.
-        }
-        DeviceMode::Phone => {
-            fb.fill_rect(0, 0, w, h, BG);
-            fb.fill_rect(0, 0, w, l.status, SURFACE);
-            fb.fill_rect(l.margin, l.status / 2 - 4, 8, 8, PRIMARY);
-            fb.fill_rect(x0, l.status, cw, l.appbar, SURFACE);
-            fb.fill_rect(x0 + l.margin, l.status + 20, 120, 16, SURFACE_HI);
-            // No bottom navigation: the shell's taskbar is the phone's bottom
-            // bar as well, which is the point of the union -- one bar, one set
-            // of functions, on every form factor.
-        }
-    }
-
-    // The shell goes in AFTER the chrome that frames it and BEFORE the
-    // controls that float over content -- the FAB is drawn below, so the
-    // shell cannot swallow it.
-    let shell_render = render_shell(fb, pane, lock);
-    if mode == DeviceMode::Phone && !lock {
-        let fab_r = 28;
-        // Clear of the shell's taskbar: the FAB floats over content, and the
-        // content pane now runs to the display's last row.
-        let card_bottom = h - shell::bar_height(cw as i32) as u32 - l.margin;
-        fb.fill_circle(
-            x0 + cw - l.margin - fab_r,
-            card_bottom - fab_r - 16,
-            fab_r,
-            PRIMARY,
-        );
-    }
+    let shell_render = render_shell(fb, pane, lock, mode);
 
     // Read the pixels back through the same mapping and verify each
     // mode's OWN invariants -- the strip, the accent block every mode
@@ -476,40 +431,22 @@ fn render_with(mode: DeviceMode, fb: &mut Framebuffer, lock: bool) -> Rendered {
     if let Some(s) = shell_render.as_ref() {
         probes_ok &= s.verified;
     }
-    probes_ok &= fb.get(0, 0) == Some(SURFACE);
-    probes_ok &= fb.get(l.margin + 2, l.status / 2) == Some(PRIMARY);
-    // The bottom-bar probe is inverted on the lock screen: a locked session has
-    // no taskbar, so the Start mark must be ABSENT there. Asserting presence in
-    // both states would either pass a lock screen that never drew or fail the
-    // one that did.
-    let bar_ok = {
-        let mark = fb.get(pane.0 + l.margin + 4, h - 22) == Some(PRIMARY);
-        if lock { !mark } else { mark }
+    // Tide's own landmarks, one per posture: the top bar's glass at the very
+    // corner, the brand tile's accent, and the element that belongs to that
+    // posture alone -- keel pill, gesture pill, or the console's hint bar. The
+    // lock screen draws none of the chrome, so it is judged by its glyph alone.
+    let posture_ok = match mode {
+        // the keel's own padding row, clear of the tiles and their running dots
+        DeviceMode::Desktop | DeviceMode::Tablet => fb.get(w / 2, h - 13) == Some(SURFACE_HI),
+        DeviceMode::Phone => fb.get(w / 2, h - 12) == Some(OUTLINE),
+        // the hint bar's own padding: the glyphs sit above it, so h-6 is glass
+        DeviceMode::Console => fb.get(w / 2, h - 6) == Some(SURFACE),
     };
-    probes_ok &= match mode {
-        DeviceMode::Desktop => {
-            // rail surface at its right edge, and the shell's one bottom bar
-            // reaching the display's last rows (its Start mark is the accent).
-            // The bar probe is PANE-relative: this mode's content starts at the
-            // rail, so the screen's own margin is not where the bar begins.
-            fb.get(l.rail - 4, l.status + 4) == Some(SURFACE) && bar_ok
-        }
-        DeviceMode::Tablet => {
-            // app bar spans the screen; the shell's bottom bar reaches the edge
-            fb.get(w - 1, l.status + 4) == Some(SURFACE) && bar_ok
-        }
-        DeviceMode::Phone => {
-            // the FAB centre is accent, and it floats above the bottom bar the
-            // shell draws (there is no separate bottom navigation to sit on)
-            let fab_r = 28;
-            (lock || fb.get(x0 + cw - l.margin - fab_r,
-                  h - shell::bar_height(cw as i32) as u32 - l.margin - fab_r - 16) == Some(PRIMARY))
-                && bar_ok
-        }
-        DeviceMode::Console => {
-            fb.get(l.margin + 12, l.status + l.margin + 12) == Some(CONSOLE_FG)
-        }
-    };
+    if !lock {
+        probes_ok &= fb.get(0, 0) == Some(SURFACE);
+        probes_ok &= fb.get(11, 17) == Some(PRIMARY);
+        probes_ok &= posture_ok;
+    }
 
     let mut checksum = 0x811c_9dc5u32;
     let mut idx = 0usize;
@@ -549,34 +486,4 @@ pub fn draw_text(fb: &mut Framebuffer, x: u32, y: u32, s: &[u8], scale: i32, col
     shell::text(&mut surface, x as i32, y as i32, s, scale, color);
     let tw = shell::text_w(s, scale).max(0) as u32 + scale as u32;
     fb.convert_scanout_region(x, y, tw.min(fb.width - x), (7 * scale) as u32);
-}
-
-/// Console mode: no window chrome, because there is no window manager
-/// in it -- a full-screen terminal surface with a frame, a prompt caret
-/// and a scroll strip. Drawn with the same framebuffer, so the four
-/// modes are one renderer, not four code paths with different rules.
-fn render_console(fb: &mut Framebuffer, l: &Layout) {
-    let w = fb.width;
-    let h = fb.height;
-    fb.fill_rect(0, 0, w, h, CONSOLE_BG);
-    fb.fill_rect(0, 0, w, l.status, SURFACE);
-    // The accent block every mode carries, in the same accent colour: a
-    // layout difference must be geometry, never a different palette, or
-    // the four modes would stop being one shell.
-    fb.fill_rect(l.margin, l.status / 2 - 4, 8, 8, PRIMARY);
-    fb.stroke_rect(l.margin, l.status + l.margin, w - l.margin * 2, h - l.status - l.margin * 2, OUTLINE);
-    // prompt caret
-    fb.fill_rect(l.margin + 12, l.status + l.margin + 12, 3, 18, CONSOLE_FG);
-    // Real glyphs, not rule-block stand-ins: the release's 5x7 font (the
-    // same table the shell draws its labels with) puts the session's
-    // facts on the console surface. The font carries A-Z, 0-9, space and
-    // colon, so the console speaks in that alphabet rather than growing
-    // a second, half-complete font of its own.
-    let line = l.status + l.margin + 12;
-    draw_text(fb, l.margin + 24, line, b"NYRQIS>", 1, CONSOLE_FG);
-    draw_text(fb, l.margin + 24, line + 20, b"MODE CONSOLE", 1, SURFACE_HI);
-    draw_text(fb, l.margin + 24, line + 38, b"BOOT OK", 1, CONSOLE_FG);
-    draw_text(fb, l.margin + 24, line + 56, b"12:30", 1, SURFACE_HI);
-    // scroll strip
-    fb.fill_rect(w - l.margin - 10, l.status + l.margin + 8, 4, h / 3, OUTLINE);
 }

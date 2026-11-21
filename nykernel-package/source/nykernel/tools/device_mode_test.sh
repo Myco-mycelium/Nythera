@@ -16,13 +16,18 @@
 #                         differ from each other (no two modes can be the
 #                         same picture and still be four layouts)
 #   layout landmarks      each mode's own invariant is read out of the
-#                         screenshot: the accent block every mode shares,
-#                         plus the shell's ONE bottom bar in every
-#                         framebuffer mode (its Start mark is the accent
-#                         fill, and it must be in the display's last rows --
-#                         a mode that drew its own dock, pill or navigation
-#                         strip instead would move those rows and fail here),
-#                         phone's FAB above that bar, and console's caret
+#                         screenshot: the Tide top bar's glass and its brand
+#                         tile in the accent the session identity announced,
+#                         plus one element per posture -- the keel pill
+#                         (desktop / tablet), the gesture pill (phone) or the
+#                         console hint bar. The shell owns the whole screen now,
+#                         so a mode that drew device chrome under it would move
+#                         or cover one of those and fail here.
+#   final frame           the dump is taken only after the kernel announces
+#                         "screen: settled": the session identity repaints the
+#                         screen after the device-mode verdict, and a dump taken
+#                         between the two would photograph a half-painted
+#                         framebuffer
 #   automatic selection   1024x768 with no token selects tablet, and says
 #                         so as "display class" -- the same rule the
 #                         kernel prints, checked against the screen
@@ -53,7 +58,7 @@ FAILS=0
 ok()  { echo "  OK: $*"; }
 bad() { echo "  FAIL: $*"; FAILS=$((FAILS + 1)); }
 
-QUIET_TIMEOUT=90   # seconds to wait for the kernel's device-mode line
+QUIET_TIMEOUT=180  # seconds to wait for the kernel's FINAL frame ("screen: settled")
 
 command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "FAIL: qemu-system-x86_64 missing"; exit 1; }
 command -v grub-mkrescue >/dev/null 2>&1 || { echo "FAIL: grub-mkrescue missing"; exit 1; }
@@ -109,12 +114,19 @@ EOF
     # Wait for the kernel's own device-mode verdict (or a panic/timeout).
     local waited=0
     while [[ $waited -lt $QUIET_TIMEOUT ]]; do
-        if grep -q "device-mode: chrome drawn" "$serial" 2>/dev/null; then break; fi
+        # The FINAL frame: the session identity repaints the screen after the
+        # device-mode verdict, so the dump waits for the line printed once the
+        # display has stopped changing.
+        if grep -q "screen: settled" "$serial" 2>/dev/null; then break; fi
+        if grep -q "device-mode: chrome drawn" "$serial" 2>/dev/null \
+           && grep -q "platform:" "$serial" 2>/dev/null \
+           && grep -q "locked screen: identity not painted" "$serial" 2>/dev/null; then break; fi
         if grep -q "KERNEL PANIC" "$serial" 2>/dev/null; then break; fi
         sleep 0.5
         waited=$((waited + 1))
     done
-    if ! grep -q "device-mode: chrome drawn" "$serial" 2>/dev/null; then
+    if ! grep -q "screen: settled" "$serial" 2>/dev/null \
+       && ! grep -q "locked screen: identity not painted" "$serial" 2>/dev/null; then
         bad "$label: the kernel never reached the device-mode render"
         sed 's/^/        /' "$serial" 2>/dev/null | tail -8
         kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
@@ -157,10 +169,15 @@ PY
 
     # Layout landmarks, read out of the screenshot by a checker that does
     # not share the kernel's code path.
-    if python3 - "$ppm" "$want_mode" "$lock" <<'PY'
+    # The accent the session identity actually announced: the shell's brand tile takes
+    # that colour, so the checker reads the boot log rather than assuming a palette.
+    local accent
+    accent=$(grep -o "accent #[0-9a-f]\{6\}" "$serial" | head -1 | cut -d'#' -f2)
+    if python3 - "$ppm" "$want_mode" "$lock" "${accent:-3cc8c0}" <<'PY'
 import struct, sys
 
 path, mode, lock_arg = sys.argv[1], sys.argv[2], sys.argv[3]
+accent_hex = sys.argv[4]
 lock = lock_arg.strip() == "1"
 data = open(path, "rb").read()
 # P6 PPM: magic, width height, maxval, then binary RGB.
@@ -181,63 +198,35 @@ def get(x, y):
     o = (y * w + x) * 3
     return (px[o], px[o+1], px[o+2])
 
-SURFACE = (0x1c, 0x1b, 0x1f)
-PRIMARY = (0xd0, 0xbc, 0xff)
-OUTLINE = (0x49, 0x45, 0x4f)
-CONSOLE_FG = (0xb6, 0xf2, 0xc8)
-margin = {"desktop": 24, "tablet": 24, "phone": 16, "console": 12}[mode]
-status = {"desktop": 28, "tablet": 28, "phone": 24, "console": 16}[mode]
+# Tide's palette (dark), as the screendump shows it: paper, glass, win-bar, accent, fg2.
+GLASS = (0x10, 0x1f, 0x27)
+# The lock screen carries no session identity, so it keeps Tide's own accent.
+ACCENT = (0x3c, 0xc8, 0xc0) if lock else tuple(int(accent_hex[i:i+2], 16) for i in (0, 2, 4))
+WINBAR = (0x1a, 0x32, 0x3d)
+FG2 = (0x8f, 0xa8, 0xb5)
 
-assert get(0, 0) == SURFACE, ("status strip", get(0, 0))
-assert get(margin + 2, status // 2) == PRIMARY, ("accent block", get(margin + 2, status // 2))
-# The shell's single bottom bar: its Start mark is the one accent fill on the
-# bar, 22 dp above the display's last row in every framebuffer mode. Reading it
-# at that height is also the proof that no mode still draws chrome of its own
-# below the shell -- a dock, a gesture pill or a navigation strip would push the
-# bar up and this probe off the accent. The probe is PANE-relative: desktop's
-# content starts at the rail and phone's is centred, so the screen's own margin
-# is not where the bar begins.
-# console has no content pane (no shell, no bottom bar), so it has no bar probe
-PANE_X = {"desktop": 80, "tablet": 0, "phone": (w - min(w, 480)) // 2}.get(mode, 0)
-bar_probe = get(PANE_X + margin + 4, h - 22)
+if not lock:
+    # The top bar is Tide's, drawn inside the pane the shell now owns end to end.
+    assert get(0, 0) == GLASS, ("the top bar's glass", get(0, 0))
+    assert get(11, 17) == ACCENT, ("the brand tile's accent", get(11, 17))
+# One element per Tide posture, read out of the screendump: the keel pill
+# (desktop / tablet), the gesture pill (phone) or the console hint bar. Each sits
+# on the bottom edge, so a posture that drew the wrong chrome -- or none -- fails
+# here rather than passing on the shared top bar alone.
 if lock:
-    # The lock screen: the accent edge of its lock glyph is the pixel the kernel
-    # itself reads back, and the home screen's Start mark must be ABSENT where
-    # the taskbar would put it -- otherwise the lock screen did not replace the
-    # home screen, it was drawn beside it.
-    appbar_l = {"desktop": 56, "tablet": 64, "phone": 56}[mode]
-    pane_w = {"desktop": w - 80 - margin, "tablet": w, "phone": min(w, 480)}[mode]
-    glyc = get(PANE_X + pane_w // 2, status + appbar_l + 66)
-    assert glyc == PRIMARY, ("lock glyph accent edge", glyc)
-    assert bar_probe != PRIMARY, ("no home taskbar on the lock screen", bar_probe)
-elif mode == "desktop":
-    assert get(80 - 4, status + 4) == SURFACE, ("rail", get(76, status + 4))
-    assert bar_probe == PRIMARY, ("one bottom bar", bar_probe)
-elif mode == "tablet":
-    assert get(w - 1, status + 4) == SURFACE, ("app bar", get(w - 1, status + 4))
-    assert bar_probe == PRIMARY, ("one bottom bar", bar_probe)
+    # The lock screen draws its glyph and none of the home chrome: the accent
+    # edge of the lock body is the pixel the kernel reads back too, and the keel
+    # must be ABSENT, or the lock screen sat beside the home screen instead of
+    # replacing it.
+    glyc = get(w // 2, 66)
+    assert glyc == ACCENT, ("lock glyph accent edge", glyc)
+    assert get(w // 2, h - 13) != WINBAR, ("no keel on the lock screen", get(w // 2, h - 13))
+elif mode in ("desktop", "tablet"):
+    assert get(w // 2, h - 13) == WINBAR, ("keel pill", get(w // 2, h - 13))
 elif mode == "phone":
-    cw, x0 = min(w, 480), (w - min(w, 480)) // 2
-    bar_h = 40 if cw < 600 else 44
-    assert get(x0 + cw - margin - 28, h - bar_h - margin - 28 - 16) == PRIMARY, ("FAB",)
-    assert bar_probe == PRIMARY, ("one bottom bar", bar_probe)
+    assert get(w // 2, h - 12) == FG2, ("gesture pill", get(w // 2, h - 12))
 elif mode == "console":
-    assert get(margin + 12, status + margin + 12) == CONSOLE_FG, ("prompt caret",)
-
-# The Material shell (release 1-71 shell/src/ui.rs) occupies the content
-# pane in every mode but console. Its clock widget's `container` fill is
-# a colour nothing else on the screen uses, so finding it in the
-# screenshot proves the shell's own pixels reached the display -- the
-# chrome landmarks above would pass even if it had never run.
-if mode != "console" and not lock:
-    SHELL_CONTAINER = (0x21, 0x1f, 0x26)
-    appbar = {"desktop": 56, "tablet": 64, "phone": 56}[mode]
-    px_ = {"desktop": 80, "tablet": 0, "phone": (w - min(w, 480)) // 2}[mode]
-    py_ = status + appbar
-    panew = {"desktop": w - 80 - margin, "tablet": w, "phone": min(w, 480)}[mode]
-    m = 16 if panew < 600 else 24
-    assert get(px_ + m + 4, py_ + 70) == SHELL_CONTAINER, (
-        "shell clock widget", mode, get(px_ + m + 4, py_ + 70))
+    assert get(w // 2, h - 6) == GLASS, ("hint bar", get(w // 2, h - 6))
 
 # One number for "did this mode draw a different picture": FNV-1a over
 # the whole screenshot, printed for the cross-mode uniqueness check.
