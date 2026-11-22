@@ -58,7 +58,17 @@ set +e
 # beside the device's direct exit(), and the exit code contract
 # ((value << 1) | 1) is unchanged, so the removal is safe on both
 # sides. -no-reboot stays: it is the reboot-loop guard.
-timeout 120 qemu-system-x86_64 \
+#
+# The cap was 120 s until 2026-11-21, when it was raised to 600 s: the
+# boot under pure TCG on a shared cloud VM (no KVM, measured on the
+# increment below) needs ~4 minutes to reach the last ring-3 demo, and
+# at 120 s the guest was still rendering the platform-mode cycle --
+# the transcript for the SAME ISO stopped there with and without that
+# increment, so the cap was failing the gate on host speed alone, which
+# is exactly what the paragraph above says a required gate must not do.
+# 600 s keeps a hang bounded while leaving the slowest runner seen
+# ~2.5x headroom.
+timeout 600 qemu-system-x86_64 \
     -cdrom target/nyrqis-test.iso \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -serial stdio \
@@ -92,6 +102,9 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "service-0x84 gate park self-test: the 0x46 blocking dial PARKED a session-backed task" \
         "service-0x84 call proof self-test: the caller parked (state BLOCKED)" \
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
+        "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
+        "experimental win32-demo: resolved 4 import(s) from the client's REAL .idata" \
+        "experimental win32-demo self-test: WriteFile returned 1 and wrote 44 byte(s)" \
     ; do
         if ! grep -aqF -- "$needle" target/qemu-test-stdout.log; then
             echo "FAIL: blocking-receive demo line missing or out of contract: $needle"

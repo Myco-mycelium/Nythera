@@ -25,7 +25,13 @@ prerequisites, it also now loads and executes a real, genuine Windows
 PE32+ executable's own code in ring 3 -- the first actual Phase 5
 capability, not just another prerequisite -- and parses and validates
 a real, checksum-correct Android DEX file's container format, the
-first actual Phase 6 capability. Every claim below is backed by an
+first actual Phase 6 capability. It also now runs a real Windows
+console program against a real `kernel32.dll` whose four exports --
+`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess` -- the
+kernel performs itself in ring 0: four functions out of the tens of
+thousands kernel32 exposes, and not Windows compatibility (no NT
+system-call layer under them, and `ExitProcess` records its code and
+returns), but the first actual Win32 API surface. Every claim below is backed by an
 actual QEMU boot transcript, not a design document.
 
 ## Try it
@@ -180,6 +186,7 @@ A green board is not a proof of everything, and the gaps are worth naming:
 | PE32+ import resolution: GetProcAddress-complete (named/ordinal/forwarded exports) + bound imports (stamp-verified honor / visible stale discard, forwarder refs incl. two-ref chains) + delay-load imports (eager resolve through the same registry, typed refusals of old-BIND descriptors and of structural corruption: unknown grAttrs, broken INT==IAT, pre-VC7 VA form, and a real VA-form descriptor in a relocated image; the descriptor-array 16 / thunk-array 64 caps proven EXCLUSIVE from both sides -- 17 descriptors and 65 thunks refused, exactly 16 with exactly 64 accepted) | `src/experimental/pe_import_demo.rs` | 🔷 Phase 5 increment |
 | PE32+ exception-table (`.pdata`) walk: startup `IMAGE_DIRECTORY_ENTRY_EXCEPTION` composed from the client's own section-table facts by a checked patcher, runtime-function entries bounds-checked against the section table, UNWIND_INFO version nibble walked; typed `MalformedExceptionTable` refusals every boot (genuinely overlapping second entry, undefined ABI version 3) | `src/experimental/pe_exception_demo.rs`, `tools/patch_pe_pdata.py` | 🔷 Phase 5 increment |
 | PE32+ resource-directory walk: startup `IMAGE_DIRECTORY_ENTRY_RESOURCE` composed the same way, two-level resource tree walked to a ring-3 leaf string; typed `MalformedResourceDirectory` refusals every boot (leaf size past the image footprint, empty length-0 name string, array slot past the named/ID cap) | `src/experimental/pe_resource_demo.rs`, `tools/patch_pe_res.py` | 🔷 Phase 5 increment |
+| Win32 API surface v0: a real PE32+ `kernel32.dll` whose four exports (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`) are ring-3 trap stubs into the kernel call block, and a real PE32+ console program that calls them through its kernel-resolved IAT -- `WriteFile` reaches the console, `GetTickCount` returns PIT-granular milliseconds, `ExitProcess` records its code, and five typed refusals (unknown index, trap outside kernel32's own `.text`, unissued handle, out-of-image buffer/out-parameter, length past the cap) are exercised every boot | `src/experimental/win32.rs`, `win32_demo.rs`, `userprog/prog_win32_kernel32.s`, `userprog/prog_win32_app.s` | 🔷 Phase 5 increment |
 | Minimal DEX (Android) parser + checksum/SHA-1 verify | `src/experimental/dex.rs`, `crypto.rs`, `dex_demo.rs` | 🔷 first real Phase 6 capability |
 | Platform identities: native Nyrqis (the mycelium mark), Android, Windows, macOS and console postures -- palette + chrome contract each, auto-detected per machine from the ACPI FADT OEM ID, PCI vendor IDs and the panel's own width, selected explicitly with `nyrqis.persona=`, and switchable at runtime with keys 1..5 (every switch repaints and re-verifies) | `src/platform_mode.rs`, `src/acpi.rs`, `src/devices/pci.rs`, `src/lib.rs` | ✅ implemented, self-tested on boot |
 | Console mode's prompt and session lines rendered with the release's real 5x7 font instead of rule-block stand-ins | `src/device_mode.rs` | ✅ placeholder removed |
@@ -435,9 +442,11 @@ mis-resolved), and -- the
 largest
 gap by far --
 everything an actual Windows or Android compatibility layer needs on
-top of these kernel-level prerequisites: import handling for real
-Windows binaries, a DEX/ART-equivalent runtime that
-actually executes bytecode, the actual API surfaces. See `PHASES.md`
+top of these kernel-level prerequisites: the other ~99.9% of the Win32
+API surface (the first four functions are in -- see above -- with no
+NT system-call layer beneath them), a DEX/ART-equivalent runtime that
+actually executes bytecode, and Android's own framework/Binder
+surfaces. See `PHASES.md`
 (repo root) Phase 5/6 for that scope, stated precisely.
 
 ## Governance

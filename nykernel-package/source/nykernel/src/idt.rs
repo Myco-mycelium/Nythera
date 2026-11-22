@@ -274,6 +274,20 @@ pub fn init() {
         idt[crate::experimental::pe_resource_demo::TRAP_VECTOR as u8]
             .set_handler_fn(pe_resource_trap_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
+        // A sixteenth ring-3-callable vector, dedicated to
+        // experimental::win32 -- the kernel32.dll SERVICE gate. The fixture
+        // DLL's export bodies trap here, and the handler RETURNS to the
+        // stub's next instruction (it never chains, like the lazy-bind
+        // service): a refused call still returns to its caller with 0.
+        idt[crate::experimental::win32::TRAP_VECTOR as u8]
+            .set_handler_fn(win32_service_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
+        // A seventeenth, dedicated to experimental::win32_demo's completion
+        // trap (0x90 is the service gate itself; the standing rule -- never
+        // register over another link's vector -- applies).
+        idt[crate::experimental::win32_demo::TRAP_VECTOR as u8]
+            .set_handler_fn(win32_demo_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
         idt
     });
     idt.load();
@@ -513,6 +527,24 @@ extern "x86-interrupt" fn pe_exception_trap_handler(_stack_frame: InterruptStack
 extern "x86-interrupt" fn pe_resource_trap_handler(_stack_frame: InterruptStackFrame) {
     unsafe {
         crate::experimental::pe_resource_demo::on_trap();
+    }
+}
+
+/// The kernel32.dll service gate: a stub inside `userprog/kernel32.dll` issued
+/// `int $0x90` from ring 3. Performs the export the stub names and RETURNS to
+/// the stub (see `experimental::win32::service`).
+extern "x86-interrupt" fn win32_service_handler(stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::win32::service(&stack_frame);
+    }
+}
+
+/// The one trap `experimental::win32_demo`'s console client issues after
+/// `ExitProcess` (`int $0x91` from ring 3): reports the Win32 results and
+/// chains into `experimental::isolation_demo`.
+extern "x86-interrupt" fn win32_demo_trap_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        crate::experimental::win32_demo::on_trap();
     }
 }
 

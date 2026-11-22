@@ -212,5 +212,8 @@ pub unsafe fn on_trap() -> ! {
     );
 
     let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
-    isolation_demo::start(fa)
+    // The chain now continues with the Win32 API surface proof (a real
+    // Windows-format console client calling four kernel32 exports), which
+    // chains into `isolation_demo` itself.
+    crate::experimental::win32_demo::start(fa)
 }

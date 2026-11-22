@@ -52,6 +52,8 @@ pub mod input;
 pub mod pe;
 pub mod pe_demo;
 pub mod user_fault;
+pub mod win32;
+pub mod win32_demo;
 pub mod pe_exception_demo;
 pub mod pe_resource_demo;
 pub mod pe_import_demo;

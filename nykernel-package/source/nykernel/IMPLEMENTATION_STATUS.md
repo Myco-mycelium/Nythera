@@ -2975,7 +2975,13 @@ The pre-existing list continues unchanged:
   startup `IMAGE_DIRECTORY_ENTRY_EXCEPTION` and
   `IMAGE_DIRECTORY_ENTRY_RESOURCE` walks, each with its composed
   carrier family and typed per-rule refusals, every boot, both
-  toolchains). What still does not exist: Win32 API surface
+  toolchains). What still does not exist: Win32 API surface -- **Update
+  2026-11-21: the FIRST four Win32 functions now do exist** (see the
+  Win32 API surface v0 section below: `GetStdHandle`, `WriteFile`,
+  `GetTickCount`, `ExitProcess`, performed by the kernel for a real
+  Windows console program through a real PE32+ `kernel32.dll`); what
+  remains is the other ~99.9% of the API and the NT system-call layer
+  beneath it
 - Real Android application compatibility -- `experimental::dex` parses
   a DEX file's container format and validates its structure (including,
   now, its Adler-32 checksum and SHA-1 signature via
@@ -7127,3 +7133,96 @@ from one `target/kernel.elf`.
 - **The report cannot drift from the layout.** `Info` re-derived its columns from the width (`w / 104` gave the tablet nine while the lattice drew eight) and hardcoded two rows and six tiles for every posture. `home` now returns the lattice it composed -- tablet 8 columns / 1 row / 6 tiles, phone 4 / 2 / 6, console 4 / 1 / 4 (the two cards that do not fit are not counted) -- and the desktop, which arranges windows, reports none. `full` is gone as a parameter as well: it only ever restated the posture, and passing it wrong is what cost the tablet its panel.
 - **The rounded-rect primitive is one rule, not two bands plus discs.** `inside` was a middle-band test plus a corner-circle test; it is now the distance into each corner square against the radius, with the same pixel convention, so `round_a`'s scanline, `edge`'s ring and `top_edge`'s highlight all measure the shape one way. The simplification renders **byte-identical** frames in all five captures (same surface hashes before and after: `0xdb9f1474 0x2aa407cd 0xb3c7c1e7 0x3d65f7ce 0x98054fec`).
 - **Still guesses until the mock is back in the tree:** the panel's stop (one 22px gutter above the dock) and its top `t + 22`; the centred tablet row (the stylesheet may centre the grid, or use fewer, wider columns); the 1px highlight height; and the boot log's exact column widths.
+
+## The Win32 API surface, v0: four kernel32 exports, performed by the kernel (2026-11-21)
+
+The repo's own scope notes call real Windows application compatibility
+its largest gap, and this increment does **not** close it. What it
+closes is the specific mechanical gap named in every one of those
+notes: "no Win32 API surface". Four Win32 functions now exist, done
+the way a real one has to be done -- a Windows-format DLL whose export
+bodies are ring-3 trap stubs, a Windows-format console program that
+imports them the ordinary way, and a kernel that performs each
+operation and hands back a Windows-typed result.
+
+- **The provider is a real DLL, not a shim in the kernel's own image.**
+  `userprog/prog_win32_kernel32.s` links to
+  `userprog/kernel32.dll` (`ld -m i386pep --shared --enable-auto-import
+  --image-base=0x190000000000`), declaring the DLL name `kernel32.dll`
+  and exporting exactly `GetStdHandle`, `WriteFile`, `GetTickCount`,
+  `ExitProcess` (RVA `0x1000`, `0x101c`, `0x104d`, `0x1062`). The
+  client's import descriptor is synthesized by GNU `ld` itself from
+  that DLL -- nothing in this repo hand-writes an import directory for
+  this link.
+- **The arguments travel in a fixed call block**, because an `int` gate
+  saves no general-purpose registers (the CPU pushes only RFLAGS, CS,
+  RIP, RSP and SS on a privilege change). Each stub parks RCX/RDX/R8/R9
+  in `.data` (RVA `0x2000`, magic `0x4e59525733325f31`), writes its own
+  function index at `+48`, traps `int $0x90`, reads the kernel's result
+  back from `+40` into RAX and returns. The kernel pins those addresses
+  (`experimental::win32::{TEXT_RVA, BLOCK_RVA, BLOCK_MAGIC}`) and the
+  build refuses a fixture whose `.text`/`.data` moved -- checked with
+  `objdump -h` inside `build.sh`, so layout drift fails at link time
+  rather than becoming a kernel reading whatever now lives at the old
+  RVA.
+- **Nothing ring 3 says is trusted, and the evidence is typed.** The
+  block is ring-3-writable, so `win32::dispatch` checks: the index is
+  one of the four; the trapping RIP lies inside kernel32's own `.text`
+  window (`+0x1000..+0x1098`) -- the index is a claim, the address is
+  evidence, so a client cannot fake a kernel32 call by trapping
+  directly; `WriteFile`'s handle is the one `GetStdHandle` issued
+  (`0xb`); its buffer and out-parameter lie inside the client image or
+  the client's private report page; its length is under the surface's
+  cap (96 bytes); and its bytes are text. `GetStdHandle` reads its
+  argument as the `DWORD` Windows declares it to be -- the first boot
+  of this link refused its own valid `GetStdHandle(STD_OUTPUT_HANDLE)`
+  because the stub parks the full RCX and a C caller only ever sets
+  the low half, which is exactly the kind of mistake a boot transcript
+  catches and a design document does not.
+- **`GetTickCount` is honest about its clock.** It is
+  `idt::timer_ticks() * 55`: this kernel's PIT runs at its default
+  ~18.2 Hz, so the value advances in 55 ms steps. Two calls inside one
+  tick return the same number, and the proof asserts monotonicity
+  rather than pretending to millisecond resolution.
+- **Five refusals are exercised every boot, kernel-side, before ring 3
+  runs** (index 9, a trap at `kernel32+0x8`, an unissued handle, a
+  buffer at `0x10`, a 97-byte length, an out-parameter at `0x10`), and
+  the client's own run must raise none -- the self-test prints the
+  count.
+- **Proved on a real boot, transcript kept:** `kernel32.dll` loaded at
+  its own ImageBase with its export table declaring `kernel32.dll` and
+  four names all inside `.text`; the call block's magic found at
+  `+0x2000`; two typed negative refusals of the import walk (empty
+  registry -> `MissingDllImport`, kernel32's name bound to the client's
+  own empty export table -> `MissingImport`); four imports resolved
+  against the client's REAL `.idata` with every slot reading back its
+  export address; then, in ring 3,
+  `WriteFile returned 1 and wrote 44 byte(s)`, the console received
+  `nyrqis: hello from a Win32 console program\r\n`, `GetTickCount`
+  read `205975` then `205975` (monotonic), `ExitProcess recorded
+  Some(7)`, `refusals 0`, and the existing chain continued through
+  `isolation_demo` to a clean guest exit (`isa-debug-exit` code 33).
+
+**Stated limits, not hidden ones.** Four functions out of the tens of
+thousands kernel32 exports; no NT system-call layer beneath them (no
+`NtWriteFile`, no object manager, no handles table -- `0xb` is a
+constant this surface issues and accepts); no user32/gdi32/kernelbase;
+no Microsoft code; `ExitProcess` records its code and returns, because
+v0 has no task teardown to switch to -- the client's next instruction
+is this link's own completion trap, which asserts the recorded code;
+and the client's console output goes to the serial line, which is this
+headless kernel's console, not a windowed terminal.
+
+**Gate note.** `tools/qemu_boot_test.sh` pins three of these lines. Its
+120 s wall-clock cap turned out to be too short for a shared cloud VM
+under pure TCG: the same ISO timed out mid-boot with and without this
+increment (verified by stashing the change and re-running), so the cap
+-- not this increment -- was what failed the gate. The cap is now
+600 s (`timeout 600`), with the measurement and the reasoning recorded
+in the script next to it, and the gate is green end to end on this
+increment: `PASS: kernel reached BootPhase::Ready and exited cleanly`,
+`GATE_EXIT=0`, with all three new win32 lines matched in that same run
+(`resolved 4 import(s) ... -- OK`, `-Werror`-clean build, and the
+`WriteFile returned 1 and wrote 44 byte(s) ... refusals 0` self-test).
+A hang still fails the gate; it just now takes longer than this host
+needs (measured ~3.5 minutes for the whole boot leg).
