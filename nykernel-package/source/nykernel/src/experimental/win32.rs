@@ -127,13 +127,28 @@
 //!   re-checking it: a malformed provider is a refused LOAD, not a pointer into
 //!   whatever happens to be mapped next.
 //!
+//! # Why the table carries TWO providers, and not just the one it imports from
+//!
+//! A table with a single provider cannot be distinguished from a special case:
+//! asking it for a name answers out of that provider's EAT whether the code
+//! walks rows or calls one module directly. The second provider
+//! (`userprog/nyrqis.dll`, two ordinary ring-3 functions) makes the walk
+//! observable, because a name that exists in one row and not the other must
+//! resolve in exactly one of them: the boot asks `kernel32.dll` for
+//! `NyrqisBuild` and `nyrqis.dll` for `GetTickCount`, and requires
+//! `ERROR_PROC_NOT_FOUND` from BOTH -- from ring 3 as well as from the
+//! kernel-side controls. The second provider is also the cleaner proof of what
+//! a runtime binding is worth: the client never imports from it, so there is no
+//! IAT slot and no link-time address, and the only way its exports can be
+//! called is the pointer `GetProcAddress` returned.
+//!
 //! What the table deliberately does not do: it holds no ordinal map
 //! (`GetProcAddress` in its low-word-ordinal form is refused with
 //! `ERROR_NOT_SUPPORTED` rather than answered from an EAT index this surface
 //! never read); it does not chase forwarded exports (a forwarder yields nothing
 //! here, which is the `ERROR_PROC_NOT_FOUND` a name that cannot be resolved
-//! gets); and it has room for exactly two rows -- this process's own image and
-//! the one provider it imports from. A third registration is a typed refusal
+//! gets); and it has room for exactly three rows -- this process's own image
+//! and two providers. A fourth registration is a typed refusal
 //! ([`Win32Error::ModuleTableFull`]), not a silent overflow: a bigger table would
 //! be a claim about a loader this kernel does not have yet.
 //!
@@ -166,6 +181,22 @@ pub const TRAP_VECTOR: u8 = 0x90;
 /// Where the fixture DLL loads (its own `ImageBase`; it carries no base
 /// relocations, so the loader maps it here or refuses it).
 pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
+
+/// Where the SECOND provider DLL (`userprog/nyrqis.dll`) loads. Its own
+/// `ImageBase`, one gigabyte past `kernel32.dll`'s so the two images cannot
+/// overlap even if either grows; it too carries no base relocations.
+///
+/// # Why a second provider has an address the surface knows
+///
+/// The module table keys rows on the base (`GetProcAddress`'s `HMODULE` is a
+/// base, and `install_module` refuses a duplicate NAME, not a duplicate base),
+/// so the boot's kernel-side controls need a value to ask about that is not
+/// `IMAGE_BASE` -- otherwise "the row for the handle" and "the one provider"
+/// would be the same address and a per-module mistake would be invisible. This
+/// constant is a pin of the fixture's link address, exactly like
+/// [`IMAGE_BASE`]: `build.sh` checks the linked DLL's `.text` VMA, and the boot
+/// parses the EAT at this base.
+pub const SECOND_IMAGE_BASE: u64 = 0x1901_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
 /// `0x190000001000`, size `0x1b0` (twelve stubs, the startup pair and
@@ -274,13 +305,24 @@ pub const GENERIC_READ: u32 = 0x8000_0000;
 /// question a client asks.
 pub const MAX_MODULE_NAME: usize = 63;
 
-/// How many modules the table holds: this process's own image, and the one
-/// provider whose exports it binds. Stated as a cap rather than "as many as
+/// How many modules the table holds: this process's own image and the TWO
+/// providers whose exports it serves. Stated as a cap rather than "as many as
 /// asked" because a fixed static table has to be sized, and a FULL table is a
 /// typed refusal ([`Win32Error::ModuleTableFull`]) rather than an overflow --
 /// growing past this is a claim about a loader (search paths, dependency
 /// walking, refcounts) that this kernel does not have yet.
-pub const MAX_MODULES: usize = 2;
+///
+/// # Why the cap is three and not two
+///
+/// A second provider is what makes the per-module claim testable (see the
+/// module-table section above): with one provider, a lookup that ignored the
+/// handle would answer every question correctly. The extra row is the smallest
+/// table that can express "this name is in THAT module and not in this one",
+/// and the client image still occupies a row of its own so `GetProcAddress`
+/// against it answers `ERROR_PROC_NOT_FOUND` rather than `ERROR_MOD_NOT_FOUND`.
+/// It is a static array, so the cap is fixed at compile time and a fourth
+/// registration is refused rather than truncating a row.
+pub const MAX_MODULES: usize = 3;
 
 /// `GetProcAddress`'s documented ordinal form is `(LPCSTR)(ULONG_PTR)ordinal`,
 /// so any argument below this could be a number rather than a pointer. It is

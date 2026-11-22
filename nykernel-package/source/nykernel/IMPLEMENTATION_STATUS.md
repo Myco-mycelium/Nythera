@@ -7695,3 +7695,82 @@ arguments and no environment block (`GetEnvironmentStrings`,
 `GetCommandLineW`, `GetStartupInfo`, `__getmainargs` are absent), there
 is still no TEB, so the last error remains one cell per kernel rather
 than per thread. Every v0/v0.1/v0.2/v0.3/v0.4 limit stands unchanged.
+
+## The Win32 API surface v0.6: a second provider, and rows that are per-module (2026-11-22)
+
+**The question this tranche answers.** v0.5 gave the loader a module table, but
+every row it could hold was either this process's own image or `kernel32.dll` --
+the one provider the client imports from. A table with a single provider cannot
+be distinguished from a special case: a lookup that ignored the handle entirely
+would still answer every question correctly, because every answer would come out
+of the same export directory. So this tranche adds a SECOND provider and makes
+the walk observable: `userprog/nyrqis.dll` exports two ordinary ring-3 functions
+(`NyrqisBuild`, returning 6, and `NyrqisMode`, returning 1) that `kernel32.dll`
+does not export, and the boot asks each provider for the other's name. A name
+must resolve in exactly one row and answer `ERROR_PROC_NOT_FOUND` in the other,
+from ring 3 as well as from the kernel-side controls.
+
+**Why the second provider's exports are not trap stubs.** A `kernel32.dll` stub
+exists to enter this kernel (`int $0x90`), and the service gate accepts a trap
+only from `kernel32.dll`'s `.text`. An export served by the module table has no
+such restriction -- it is just code in a mapped image -- so the second provider
+is built as real function bodies that run entirely in ring 3. That also makes
+the runtime binding a cleaner proof than the first provider could give: the
+client has NO import descriptor for `nyrqis.dll`, so there is no IAT slot and no
+link-time address, and the only route to those functions is the pointer
+`GetProcAddress` returned. The client calls through it and reads 6 and 1.
+
+**What changed.** `MAX_MODULES` is now 3 (this image + two providers), and a
+fourth registration is still a typed refusal (`ModuleTableFull`, 14) rather than
+a truncation. `win32::SECOND_IMAGE_BASE` pins the new image at
+`0x190100000000`; the client's `GetModuleHandleA("nyrqis.dll")` must answer that
+base and must NOT answer kernel32's. The client gained a tranche 6 and nine
+report fields above `0x700` (past the `0x300` area the kernel controls write
+their test paths into and past the export-name strings at `0x500`), and
+`EXPECTED_REFUSALS` rose from 5 to 7: the absent export probe plus the two
+cross-module probes, each of which is a question a Windows client is entitled to
+an answer for.
+
+**Pins moved, deliberately, and the build refuses the drift first.** The new
+fixture is pinned in `build.sh` (`nyrqis.dll` `.text` `0000190100001000
+00000030`) and in the demo (`EXPECTED_NYRQIS_EXPORTS`: `0x1000` and `0x1006`,
+both inside that window). `kernel32.dll` is untouched: its `.text` stays
+`0x1b0`, its call block `.data 0x40`, and the client's `SizeOfImage 0x4000` and
+`.idata 0x1fc` (twelve imports) are unchanged -- the second provider is loaded
+and registered by the loader, not linked into the client. The client's `.text`
+grew from `0x5c8` to `0x6a8`, which no pin covers.
+
+**Proved from both sides in the same boot.** Kernel-side, control 10 now
+registers kernel32, nyrqis and the client as three rows, resolves all twelve
+kernel32 exports and both nyrqis exports BY NAME out of their OWN export
+directories, asks each provider for the other's name (`ProcNotFound` both ways),
+and still refuses a duplicate, a fourth row, the wrong-case export name, an
+unregistered base, the ordinal form and a NULL name. From ring 3 the client does
+the same with its own strings and its own handles, calls through both runtime
+pointers, and leaves the two refusals the proof is about visible on the serial
+line.
+
+```
+experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase 0x190100000000; export table declares "nyrqis.dll" with 2 name(s) (NyrqisBuild, NyrqisMode), all inside .text (+0x1000..+0x1030) -- OK, a second image with its own export directory for the module table to serve
+experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing and a named GetModuleHandleA as ModuleNotFound; five unusable rows (empty name, non-text name, zero base, zero image, an image too small for the exports it names) were refused as ModuleInstallInvalid and published nothing; kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows, both spellings of kernel32.dll's name answered 0x190000000000 and nyrqis.dll answered its own 0x190100000000, a duplicate and a fourth row were refused (ModuleInstallInvalid, ModuleTableFull at 3 rows), all 12 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (12+2), a lowercase export name and the client's exportless image answered ProcNotFound, kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module), an unregistered base ModuleNotLoaded, an ordinal request OrdinalNotSupported and a NULL name NameInvalid -- OK, GetProcAddress answers PER MODULE from a module table the loader built and then certified
+experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true; handles f1=0x100 ... 
+experimental win32-demo self-test: ... a second provider, nyrqis.dll, answered its own row's base 0x190100000000 (different from kernel32's), and its NyrqisBuild and NyrqisMode exports resolved there at 0x190100001000 and 0x190100001006, which the client CALLED through, reading 6 and 1; kernel32.dll asked for NyrqisBuild answered 0x0 with ERROR_PROC_NOT_FOUND (127) and nyrqis.dll asked for GetTickCount answered 0x0 the same (127); ... refusals 7 (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, and its two cross-module probes) -- OK, a real Windows-format console program started the way a CRT does ...
+```
+
+The gate pins the new provider's load line, the three-row registration, the
+per-module clause of control 10, `modules=true`, the two runtime-bound nyrqis
+addresses with the values 6 and 1 they returned, and both cross-module
+`ERROR_PROC_NOT_FOUND (127)` answers. The client's own run raises exactly seven
+refusals, and the transcript shows them: two `File(ClosedHandle)`, one
+`UnsupportedAccess`, one `ModuleNotFound`, and three `ProcNotFound` -- the
+absent-export probe plus the two directions of the per-module proof.
+
+**Limits.** The table now holds three rows (this image and two providers) and a
+fourth registration is a typed refusal; there is still no
+`LoadLibrary`/`FreeLibrary`, so a module is never unloaded and a row's base and
+table can never go stale. `GetProcAddress` still serves the name form only, does
+not chase forwarded exports, and matches a BARE module name. The second
+provider is a fixture, not a second API surface: its two functions exist to make
+the module table's per-module claim testable, and no kernel operation is
+dispatched on their behalf. The startup pair, the error table, the TEB limit and
+every v0/v0.1/v0.2/v0.3/v0.4/v0.5 limit stand unchanged.

@@ -56,6 +56,21 @@
  *     GetModuleHandleA("nope.dll")               // 0, ERROR_MOD_NOT_FOUND
  *     GetProcAddress(hmod32, "NoSuchExport")     // 0, ERROR_PROC_NOT_FOUND
  *
+ *   tranche 6 -- a SECOND provider, and rows that are per-module:
+ *     hnyr = GetModuleHandleA("nyrqis.dll")       // a base this program never
+ *                                                // linked against, and not
+ *                                                // kernel32's
+ *     pfn = GetProcAddress(hnyr, "NyrqisBuild")   // no IAT slot exists for
+ *     pfn()                                       // this name: 6, from code
+ *                                                // reached only through the
+ *                                                // answer
+ *     GetProcAddress(hnyr, "NyrqisMode")();        // 1, the row's 2nd export
+ *     GetProcAddress(hmod32, "NyrqisBuild")       // 0, ERROR_PROC_NOT_FOUND:
+ *                                                // that name is in the OTHER
+ *                                                // row
+ *     GetProcAddress(hnyr, "GetTickCount")        // 0, ERROR_PROC_NOT_FOUND:
+ *                                                // the other direction
+ *
  *   tranche 3 -- why it failed:
  *     err = GetLastError()                          // ERROR_FILE_NOT_FOUND (2)
  *                                                   // -- after the miss above
@@ -435,6 +450,67 @@ _start:
     movabs $SLOT_PROC_NONE_ERR, %rdi
     mov %rax, (%rdi)
 
+    /* ---- tranche 6: a SECOND provider, and per-module rows ---- */
+
+    /* hnyr = GetModuleHandleA("nyrqis.dll"). This program has NO import
+       descriptor for that DLL, so the base can only come out of the
+       loader's module table -- and it must not be kernel32's base. */
+    lea name_nyrqis(%rip), %rcx
+    call *__imp_GetModuleHandleA(%rip)
+    mov %rax, %rbp
+    movabs $SLOT_NAMED_SECOND, %rdi
+    mov %rax, (%rdi)
+
+    /* pfn = GetProcAddress(hnyr, "NyrqisBuild"), then CALL it. There is no
+       IAT slot for this name anywhere in this image, so the pointer the
+       surface answers is the ONLY route to the function -- and it runs in
+       ring 3, returning 6. (RBX still holds hmod32 throughout: the stubs and
+       the second provider's bodies leave it alone.) */
+    mov %rbp, %rcx
+    lea proc_build(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_SECOND_BUILD, %rdi
+    mov %rax, (%rdi)
+    mov (%rdi), %rax
+    call *%rax
+    movabs $SLOT_SECOND_BUILD_VALUE, %rdi
+    mov %rax, (%rdi)
+
+    /* The SAME row's second export: another EAT entry, and a second name
+       the client has never imported. */
+    mov %rbp, %rcx
+    lea proc_mode(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_SECOND_MODE, %rdi
+    mov %rax, (%rdi)
+    mov (%rdi), %rax
+    call *%rax
+    movabs $SLOT_SECOND_MODE_VALUE, %rdi
+    mov %rax, (%rdi)
+
+    /* The rows are per-module, in the direction a single-provider table
+       cannot prove: ask kernel32.dll for a name the SECOND provider
+       exports. NULL and ERROR_PROC_NOT_FOUND -- not an address borrowed
+       from another row. */
+    mov %rbx, %rcx
+    lea proc_build(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_CROSS_K32_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_CROSS_K32_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* ... and the same question the other way round. */
+    mov %rbp, %rcx
+    lea proc_tick(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_CROSS_SEC_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_CROSS_SEC_ERR, %rdi
+    mov %rax, (%rdi)
+
     /* ---- tranche 1 again: the clock, then exit ---- */
 
     call *__imp_GetTickCount(%rip)
@@ -481,6 +557,14 @@ proc_tick:
     .asciz "GetTickCount"
 proc_absent:
     .asciz "NoSuchExport"
+/* tranche 6's second provider and the two export names asked of both rows.
+   The module is not in this program's import directory at all. */
+name_nyrqis:
+    .asciz "nyrqis.dll"
+proc_build:
+    .asciz "NyrqisBuild"
+proc_mode:
+    .asciz "NyrqisMode"
 /* The SizeOfImage the link gives this executable (build.sh pins the same
    0x4000 from objdump -p), used by the module-handle test above. */
     .set IMAGE_SIZE, 0x4000
@@ -554,6 +638,19 @@ proc_absent:
     .set SLOT_NAMED_NONE_ERR,   SLOT_BASE + 0x2c8 /* ... ERROR_MOD_NOT_FOUND */
     .set SLOT_PROC_NONE,        SLOT_BASE + 0x2d0 /* absent export -> NULL */
     .set SLOT_PROC_NONE_ERR,    SLOT_BASE + 0x2d8 /* ... ERROR_PROC_NOT_FOUND */
+/* tranche 6: the second provider's answers, ABOVE the 0x300 area the kernel's
+   own controls write their test paths and names into (and above the export
+   names they write at 0x500+), so a field here cannot land on a string the
+   kernel is still using. */
+    .set SLOT_NAMED_SECOND,     SLOT_BASE + 0x700 /* "nyrqis.dll" base */
+    .set SLOT_SECOND_BUILD,     SLOT_BASE + 0x708 /* NyrqisBuild address */
+    .set SLOT_SECOND_MODE,      SLOT_BASE + 0x710 /* NyrqisMode address */
+    .set SLOT_SECOND_BUILD_VALUE, SLOT_BASE + 0x718 /* called through: 6 */
+    .set SLOT_SECOND_MODE_VALUE,  SLOT_BASE + 0x720 /* called through: 1 */
+    .set SLOT_CROSS_K32_NONE,   SLOT_BASE + 0x728 /* kernel32 asked for it */
+    .set SLOT_CROSS_K32_ERR,    SLOT_BASE + 0x730 /* ... ERROR_PROC_NOT_FOUND */
+    .set SLOT_CROSS_SEC_NONE,   SLOT_BASE + 0x738 /* nyrqis asked for tick */
+    .set SLOT_CROSS_SEC_ERR,    SLOT_BASE + 0x740 /* ... ERROR_PROC_NOT_FOUND */
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180
