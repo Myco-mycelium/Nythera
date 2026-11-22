@@ -7399,3 +7399,63 @@ conditions this surface can detect -- there is no `FormatMessage`, no
 system-call layer, no directories or writes, four handles, synchronous
 I/O only, `ExitProcess` records and returns, and the console is the
 serial line.
+
+## The Win32 API surface v0.3: a refused call returns what Windows returns (2026-11-22)
+
+v0.2 made every refusal explainable through `GetLastError`. It left the
+other half of the pair wrong: the RESULT. A refused call answered 0 for
+every export, so a client that opens a file and tests the answer the way
+Windows' prototype tells it to --
+
+```c
+HANDLE h = CreateFileA(...);
+if (h == INVALID_HANDLE_VALUE) { DWORD why = GetLastError(); ... }
+```
+
+-- would have compared 0 against all-ones, concluded the open had
+succeeded, and gone on to `ReadFile` a handle that was never issued.
+This increment returns the failure value of the export's own return
+type instead: `INVALID_HANDLE_VALUE` from a refused `CreateFileA` and
+`GetStdHandle` (both `HANDLE`), 0 from `WriteFile`, `ReadFile` and
+`CloseHandle` (`BOOL`), 0 from `GetTickCount` and `GetLastError`
+(`DWORD`) and from `ExitProcess` / `SetLastError` (`void`, or never
+returning). An index that names no export has no prototype to borrow
+from and answers 0.
+
+**Two tables, because they answer two questions.** `Win32Error::code()`
+answers *why* and depends on the condition that refused; the new
+`win32::failure_value(index)` answers *what did the call return* and
+depends only on the function. Merging them would force a code-shaped
+result, and keying the value on the error would mean a `CreateFileA`
+refused for a relative path returned 0 while one refused for write
+access returned all-ones -- neither of which any Windows client can
+reason about. The value is applied in exactly one place, `service`, the
+`int $0x90` handler, where a refused dispatch's typed error has already
+been recorded; `dispatch` keeps returning `Err` so the kernel-side
+controls still assert the reason.
+
+**Proved in the same boot gate, with the pins updated.** The client asks
+for `GENERIC_WRITE` on the read-only volume as before; the refusal now
+returns `INVALID_HANDLE_VALUE`, and the client performs Windows' own
+test on it (`cmpq $-1`) and stores the verdict, so the transcript shows
+the client -- not the kernel -- reading the value. A new kernel-side
+control pins the value for all nine exports plus an index outside the
+table, so an export added with the wrong row fails the boot.
+
+```
+experimental win32-demo: negative control 8 -- a refused call answers with its export's own Windows failure value: INVALID_HANDLE_VALUE from GetStdHandle and CreateFileA (HANDLE), 0 from WriteFile, ReadFile and CloseHandle (BOOL), 0 from GetTickCount and GetLastError (DWORD), 0 from ExitProcess and SetLastError (void), and 0 from an index that names no export -- OK, so the client's handle test reads a refusal exactly as Windows writes it
+experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1; handles f1=0x100 f2=0x100 f3=0x100 f4=0x100 f5=0xffffffffffffffff f6=0xffffffffffffffff; closes 1 1 1 1; reads 1/1/1/1/1/0
+experimental win32-demo self-test: ... GENERIC_WRITE was refused with ERROR_ACCESS_DENIED (5), returned 0xffffffffffffffff rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test (1), SetLastError(0x1234) read back as 0x1234 ... -- OK, a real Windows-format console program called nine kernel32 exports ...
+```
+
+The gate pins control 8, the handle-test verdict and the self-test's
+`handle_test=1` field, alongside the existing `resolved 9 import(s)`,
+control 7, code and `-- OK` needles. `f6` in the checks line moved from
+`0x0` to `0xffffffffffffffff`, which is the change stated in one number.
+
+**Limits.** The mapping is a claim about the declared return type, not
+about Windows' internals: it does not model `GetLastError`'s
+"no error is not success" subtlety beyond leaving the cell alone, it
+does not translate NT `STATUS_*` codes, and it does not make an
+unissued handle safe to use -- the refusal is still counted and still
+reported. Every v0/v0.1/v0.2 limit stands.

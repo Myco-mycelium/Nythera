@@ -63,6 +63,18 @@
 //! cleared it on success would hide a client's own bug (checking the code after
 //! a call that worked).
 //!
+//! # Why a refusal also returns something Windows-shaped
+//!
+//! A code alone is not enough to make a refusal read like Windows, because the
+//! client looks at the RESULT before it looks at the code. So a refused call
+//! returns that export's own Windows failure value ([`failure_value`]) rather
+//! than a blanket 0: `INVALID_HANDLE_VALUE` from a refused `CreateFileA` or
+//! `GetStdHandle`, 0 from the BOOL functions. That is what makes the two halves
+//! line up the way they do on Windows -- `h == INVALID_HANDLE_VALUE`, then
+//! `GetLastError() == ERROR_ACCESS_DENIED` -- and the boot proof checks it from
+//! both sides: a kernel-side pin per export, and the client's own handle test
+//! on a `CreateFileA` the surface refused.
+//!
 //! The cell is one per kernel, not one per thread: v0 has a single ring-3
 //! client, and Windows' per-thread last error lives in a TEB this kernel does
 //! not have yet. That is a stated scope limit, not a design choice to keep.
@@ -119,6 +131,47 @@ pub const STDOUT_HANDLE: u64 = 0x0b;
 /// records [`ERROR_FILE_NOT_FOUND`]: that is the case `GetLastError` exists
 /// for, and the one the client in the boot proof actually asks about.
 pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
+
+/// The value a REFUSED call returns for export `index`: the failure value of
+/// that export's own Windows return type, not of the condition that refused it.
+///
+/// # Why the value is keyed on the export, and not on the error
+///
+/// A Win32 client decides what happened by looking at the RESULT first. It
+/// writes `if (h == INVALID_HANDLE_VALUE)`, not `if (!h)`, because a
+/// HANDLE-returning function signals failure with all-ones; and it writes
+/// `if (!WriteFile(..))`, because a BOOL-returning one signals failure with 0.
+/// Those tests were written against Windows' prototypes, long before this
+/// kernel existed, so the value a refusal returns has to be the one the
+/// prototype names -- otherwise the client's own test reads a refusal as
+/// success and only a later `GetLastError` (if it checks at all) says
+/// otherwise. A blanket 0 would therefore be wrong for exactly the two exports
+/// a client is most likely to test: `CreateFileA` and `GetStdHandle`.
+///
+/// So the mapping follows the declared return type, and the boot proof checks
+/// it per export rather than only for the case the client happens to hit:
+/// `GetStdHandle` and `CreateFileA` are `HANDLE` and answer
+/// [`INVALID_HANDLE_VALUE`]; `WriteFile`, `ReadFile` and `CloseHandle` are
+/// `BOOL` and answer 0; `GetTickCount` and `GetLastError` are `DWORD` and
+/// answer 0; `SetLastError` is `void` and answers 0; `ExitProcess` is in the
+/// same row for completeness only -- on Windows it never returns, and here its
+/// stub returns after the kernel recorded the code. An index that names no
+/// export has no prototype to borrow from, so it answers 0 as well: the
+/// refusal is already `UnknownFunction`, and what the client gets is the same
+/// nothing a missing import would give it.
+///
+/// This is a second table beside [`Win32Error::code`], and deliberately a
+/// different one: the code answers "why" and depends on the condition, the
+/// value answers "what did the call return" and depends on the function. A
+/// surface that merged them would have to invent a code-shaped result.
+pub const fn failure_value(index: u64) -> u64 {
+    match index {
+        // HANDLE: GetStdHandle, CreateFileA.
+        0 | 4 => INVALID_HANDLE_VALUE,
+        // BOOL, DWORD, void, and "no such export".
+        _ => 0,
+    }
+}
 
 /// `GENERIC_READ`: the only access right this volume can grant, since it has
 /// no way to write anything.
@@ -567,9 +620,10 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
 
 /// The `int $0x90` handler: reads the call block, dispatches, writes the result
 /// back, and returns to ring 3 at the stub's next instruction. Never chains --
-/// a refused call still returns to its caller,
-/// with 0 as the result, so a misbehaving client fails the demo's assertions
-/// instead of hanging the machine.
+/// a refused call still returns to its caller, with that export's Windows
+/// failure value as the result ([`failure_value`]), so a misbehaving client's
+/// own `== INVALID_HANDLE_VALUE` / `!BOOL` test sees a Windows-shaped failure
+/// and the demo's assertions fail instead of the machine hanging.
 ///
 /// # Safety
 /// Called from the installed IDT entry.
@@ -594,7 +648,10 @@ pub unsafe fn service(frame: &InterruptStackFrame) {
             // is a bug in the client or in this surface, never a silent zero.
             REFUSALS.fetch_add(1, Ordering::Relaxed);
             serial_println!("  experimental win32-demo: service refusal {:?}", e);
-            0
+            // The RESULT is the export's Windows failure value, not 0, so the
+            // client's own prototype-shaped test reads the refusal the way it
+            // reads a Windows failure before it asks GetLastError.
+            failure_value(index)
         }
     };
     core::ptr::write_volatile((block + OFF_RESULT) as *mut u64, result);

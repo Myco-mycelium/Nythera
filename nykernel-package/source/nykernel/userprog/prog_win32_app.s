@@ -42,7 +42,11 @@
  *                                                   // ReadFile: 6, and 6 again
  *                                                   // after the second close
  *     SetLastError(0x1234); GetLastError()          // 0x1234: the writer works
- *     CreateFileA(hello, GENERIC_WRITE, ...)        // refused (0)
+ *     CreateFileA(hello, GENERIC_WRITE, ...)        // refused:
+ *                                                   // INVALID_HANDLE_VALUE, as
+ *                                                   // Windows' prototype says
+ *     (result == INVALID_HANDLE_VALUE)              // 1: the client's own
+ *                                                   // handle test passes
  *       -> GetLastError()                           // ERROR_ACCESS_DENIED (5)
  *     GetTickCount(); GetLastError()                // 5 still: success does
  *                                                   // NOT clear the code
@@ -261,6 +265,17 @@ _start:
     call *__imp_CreateFileA(%rip)
     movabs $SLOT_FILE6, %rdi
     mov %rax, (%rdi)
+
+    /* A HANDLE-returning call fails with INVALID_HANDLE_VALUE (all ones),
+       never 0 -- so the test a Windows client actually writes is a compare
+       against the sentinel, and this refusal must pass it. The result is
+       still live in RAX here. */
+    xor %edx, %edx
+    cmpq $-1, %rax
+    sete %dl
+    movabs $SLOT_HANDLE_TEST, %rdi
+    mov %rdx, (%rdi)
+
     call *__imp_GetLastError(%rip)
     movabs $SLOT_ERR_ACCESS, %rdi
     mov %rax, (%rdi)
@@ -348,6 +363,7 @@ path_missing:
     .set SLOT_FILE6,            SLOT_BASE + 0x230
     .set SLOT_ERR_ACCESS,       SLOT_BASE + 0x238
     .set SLOT_ERR_KEPT,         SLOT_BASE + 0x240
+    .set SLOT_HANDLE_TEST,      SLOT_BASE + 0x248 /* HANDLE sentinel compare */
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

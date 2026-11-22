@@ -113,6 +113,9 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "GetLastError answered ERROR_FILE_NOT_FOUND" \
         "GENERIC_WRITE was refused with ERROR_ACCESS_DENIED" \
         "SetLastError(0x1234) read back as 0x1234" \
+        "experimental win32-demo: negative control 8 -- a refused call answers with its export's own Windows failure value" \
+        "GENERIC_WRITE was refused with ERROR_ACCESS_DENIED (5), returned 0xffffffffffffffff rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test (1)" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1" \
         "-- OK, a real Windows-format console program called nine kernel32 exports" \
     ; do
         if ! grep -aqF -- "$needle" target/qemu-test-stdout.log; then

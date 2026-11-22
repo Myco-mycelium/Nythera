@@ -28,7 +28,10 @@
 //!    the closed handle used twice (`ERROR_INVALID_HANDLE`), and a refused
 //!    `GENERIC_WRITE` open (`ERROR_ACCESS_DENIED`) -- proves `SetLastError`
 //!    writes an arbitrary code, and proves a successful call leaves the code
-//!    alone.
+//!    alone. That refused open also returns `INVALID_HANDLE_VALUE`, which the
+//!    client itself tests the Windows way (`== INVALID_HANDLE_VALUE`, not
+//!    zero) and reports: a refusal carries the failure value of the export's
+//!    own prototype, so a client's handle test reads it as Windows does.
 //! 4. The surface REFUSES what ring 3 cannot justify -- an unknown function
 //!    index, a trap from outside kernel32's `.text`, a handle never issued, a
 //!    buffer or out-parameter outside the client's mapped regions, a length
@@ -161,13 +164,18 @@ const SLOT_ERR_SET: u64 = 0x228;
 const SLOT_FILE6: u64 = 0x230;
 const SLOT_ERR_ACCESS: u64 = 0x238;
 const SLOT_ERR_KEPT: u64 = 0x240;
+/// The client's own handle test on the REFUSED `CreateFileA`: 1 when the
+/// refusal's result compared equal to `INVALID_HANDLE_VALUE`. A field of its
+/// own rather than a derived expectation, because the point is exactly that
+/// the client -- not the kernel -- performs Windows' test on the value it got.
+const SLOT_HANDLE_TEST: u64 = 0x248;
 // A compile-time check that the error-code report fields do not overlap the
 // client's read buffers (which run up to SLOT_BIN + its eight bytes) or the
 // 0x300 region the kernel-side controls write their test paths into. The
 // collision this prevents was real: it produced a green-looking console line
 // and a failed read-back in the same boot.
 const _: () = assert!(
-    SLOT_ERR_CLOSED_READ >= SLOT_BIN + 8 && SLOT_ERR_KEPT + 8 <= 0x300,
+    SLOT_ERR_CLOSED_READ >= SLOT_BIN + 8 && SLOT_HANDLE_TEST + 8 <= 0x300,
     "win32-demo report fields must sit between the read buffers and 0x300"
 );
 
@@ -661,6 +669,45 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         codes.len()
     );
 
+    // Negative control 8: the failure VALUE of a refused call, per export.
+    //
+    // The client's first question is what the call RETURNED, and only its
+    // second is why, so a refusal that answered 0 for everything would make a
+    // refused `CreateFileA` look like a handle to any client that tests
+    // `h == INVALID_HANDLE_VALUE` -- the test Windows' prototype tells it to
+    // write. This pins the value for EVERY export, not just the two the client
+    // refuses: an export added with the wrong row must fail here. Pinned as
+    // literals rather than through `failure_value` itself, which would only
+    // prove the function is deterministic.
+    let failure_values: [(u64, u64); 9] = [
+        (0, win32::INVALID_HANDLE_VALUE), // GetStdHandle -> HANDLE
+        (1, 0),                           // WriteFile    -> BOOL
+        (2, 0),                           // GetTickCount -> DWORD
+        (3, 0),                           // ExitProcess  -> void
+        (4, win32::INVALID_HANDLE_VALUE), // CreateFileA  -> HANDLE
+        (5, 0),                           // ReadFile     -> BOOL
+        (6, 0),                           // CloseHandle  -> BOOL
+        (7, 0),                           // GetLastError -> DWORD
+        (8, 0),                           // SetLastError -> void
+    ];
+    for (index, value) in failure_values {
+        assert_eq!(
+            win32::failure_value(index),
+            value,
+            "export {} must answer its Windows failure value {:#x} when refused",
+            index,
+            value
+        );
+    }
+    assert_eq!(
+        win32::failure_value(9),
+        0,
+        "an index that names no export has no prototype to borrow a value from"
+    );
+    serial_println!(
+        "  experimental win32-demo: negative control 8 -- a refused call answers with its export's own Windows failure value: INVALID_HANDLE_VALUE from GetStdHandle and CreateFileA (HANDLE), 0 from WriteFile, ReadFile and CloseHandle (BOOL), 0 from GetTickCount and GetLastError (DWORD), 0 from ExitProcess and SetLastError (void), and 0 from an index that names no export -- OK, so the client's handle test reads a refusal exactly as Windows writes it"
+    );
+
     // No teardown for this demo (see teardown_demo): the space stays owned by
     // `STAGE_SPACE` for the rest of the boot, and this stack is the one the
     // ring-3 entry below returns to.
@@ -697,7 +744,9 @@ pub unsafe fn on_trap() -> ! {
     let (file4, file5) = (slot(SLOT_FILE4), slot(SLOT_FILE5));
     let (err_closed_read, err_closed_close) = (slot(SLOT_ERR_CLOSED_READ), slot(SLOT_ERR_CLOSED_CLOSE));
     let (err_missing, err_set) = (slot(SLOT_ERR_MISSING), slot(SLOT_ERR_SET));
-    let (file6, err_access, err_kept) = (slot(SLOT_FILE6), slot(SLOT_ERR_ACCESS), slot(SLOT_ERR_KEPT));
+    let (file6, err_access, err_kept) =
+        (slot(SLOT_FILE6), slot(SLOT_ERR_ACCESS), slot(SLOT_ERR_KEPT));
+    let handle_test = slot(SLOT_HANDLE_TEST);
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -727,12 +776,17 @@ pub unsafe fn on_trap() -> ! {
     // kernel raised: the miss (a failure VALUE), the closed handle used twice
     // (real refusals), the refused GENERIC_WRITE open (a real refusal), the
     // arbitrary code it set itself, and the code a SUCCESSFUL call must not
-    // disturb. `file6 == 0` is the refusal's Windows BOOL, kept as-is.
+    // disturb. `file6 == INVALID_HANDLE_VALUE` is the refused open's Windows
+    // failure VALUE -- the value CreateFileA's own prototype returns -- and
+    // `handle_test == 1` is the client's own `== INVALID_HANDLE_VALUE` test
+    // passing on it, rather than the client having been handed a 0 it would
+    // have read as success.
     let errors_ok = err_missing == win32::ERROR_FILE_NOT_FOUND as u64
         && err_closed_read == win32::ERROR_INVALID_HANDLE as u64
         && err_closed_close == win32::ERROR_INVALID_HANDLE as u64
         && err_set == 0x1234
-        && file6 == 0
+        && file6 == win32::INVALID_HANDLE_VALUE
+        && handle_test == 1
         && err_access == win32::ERROR_ACCESS_DENIED as u64
         && err_kept == err_access;
     let ok = console_ok
@@ -751,7 +805,7 @@ pub unsafe fn on_trap() -> ! {
     // then names its own cause in the transcript instead of asking the next
     // reader to re-derive it from a passing-looking line.
     serial_println!(
-        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
+        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
         console_ok,
         hello_ok,
         bytes_ok,
@@ -763,6 +817,7 @@ pub unsafe fn on_trap() -> ! {
         exit == Some(EXPECTED_EXIT_CODE),
         win32_fs::open_count() == 0,
         win32::refusals() == EXPECTED_REFUSALS,
+        handle_test,
         file1,
         file2,
         file3,
@@ -781,7 +836,7 @@ pub unsafe fn on_trap() -> ! {
         r6
     );
     serial_println!(
-        "  experimental win32-demo self-test: WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}), GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair and its refused write-access open) -- {}",
+        "  experimental win32-demo self-test: WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair and its refused write-access open) -- {}",
         write_ret,
         written,
         NameOf(stdout),
@@ -797,6 +852,8 @@ pub unsafe fn on_trap() -> ! {
         err_closed_read,
         err_closed_close,
         err_access,
+        file6,
+        handle_test,
         err_set,
         err_kept,
         tick1,
