@@ -1,11 +1,14 @@
-//! The Win32 API surface, v0: four `kernel32.dll` exports performed by this
+//! The Win32 API surface, v0: seven `kernel32.dll` exports performed by this
 //! kernel, reachable from ring 3 through a real Windows-format DLL whose
 //! bodies are trap stubs (`userprog/prog_win32_kernel32.s`).
 //!
 //! # What this is, precisely
 //!
-//! The first actual Win32 API surface in this kernel -- and four functions out
-//! of the tens of thousands kernel32 exposes. It is **not** Windows
+//! The first actual Win32 API surface in this kernel -- and seven functions
+//! out of the tens of thousands kernel32 exposes: the four a console program
+//! needs (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`) and the
+//! three that give it files (`CreateFileA`, `ReadFile`, `CloseHandle`) against
+//! the read-only volume in [`crate::experimental::win32_fs`]. It is **not** Windows
 //! compatibility: there is no NT system-call layer under it, no object
 //! manager, no user32/gdi32, and nothing here runs Microsoft's code. What it
 //! does prove is the mechanism every later function needs, end to end: a real
@@ -35,6 +38,7 @@
 //! client; a length past the surface's cap; and bytes that are not text. Each
 //! refusal is typed and counted, so the boot proof can show they fired.
 
+use crate::experimental::win32_fs;
 use crate::serial_println;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -49,12 +53,12 @@ pub const TRAP_VECTOR: u8 = 0x90;
 pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
-/// `0x190000001000`, size `0x98`. Pinned, and re-checked against the loaded
-/// image's own export RVAs at boot (`win32_demo::start`): every export must
-/// fall inside this window, which is what lets [`dispatch`] accept a trap only
-/// from this DLL's code.
+/// `0x190000001000`, size `0x130` (seven stubs). Pinned, and re-checked against
+/// the loaded image's own export RVAs at boot (`win32_demo::start`): every
+/// export must fall inside this window, which is what lets [`dispatch`] accept
+/// a trap only from this DLL's code.
 pub const TEXT_RVA: u64 = 0x1000;
-pub const TEXT_SIZE: u64 = 0x98;
+pub const TEXT_SIZE: u64 = 0x130;
 
 /// `.data`, holding `nyr_call_block` (VMA `0x190000002000`, size `0x40`).
 pub const BLOCK_RVA: u64 = 0x2000;
@@ -62,18 +66,35 @@ pub const BLOCK_RVA: u64 = 0x2000;
 pub const BLOCK_MAGIC: u64 = 0x4e59_5257_3332_5f31;
 
 // The block's field offsets, mirroring the fixture's documented layout. `+40`
-// is where the stub reads its RAX back and `+48` the stub's function index (a
-// claim this module verifies).
+// is where the stub reads its RAX back, `+48` the stub's function index (a
+// claim this module verifies), and `+56` the first STACK argument, which the
+// two five-parameter exports (`CreateFileA`, `ReadFile`) park there because
+// Microsoft's x64 convention passes it on the stack.
 const OFF_ARG0: u64 = 8;
 const OFF_ARG1: u64 = 16;
 const OFF_ARG2: u64 = 24;
 const OFF_ARG3: u64 = 32;
 const OFF_RESULT: u64 = 40;
 const OFF_INDEX: u64 = 48;
+const OFF_ARG4: u64 = 56;
 
-/// The one handle this surface issues (Windows' own pseudo-handle value for
-/// stdout is 0xB), and the only handle `WriteFile` accepts.
+/// The one console handle this surface issues (Windows' own pseudo-handle
+/// value for stdout is 0xB), and the only handle `WriteFile` accepts.
 pub const STDOUT_HANDLE: u64 = 0x0b;
+
+/// What `CreateFileA` returns when the volume has no such file. Windows
+/// reports that case as this sentinel rather than as an error, so the client is
+/// expected to test for it -- and this surface does the same, which is why the
+/// boot proof checks the sentinel from ring 3 instead of counting a refusal.
+pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
+
+/// `GENERIC_READ`: the only access right this volume can grant, since it has
+/// no way to write anything.
+pub const GENERIC_READ: u32 = 0x8000_0000;
+
+/// `OPEN_EXISTING`: the only creation disposition that means anything on a
+/// read-only volume, and therefore the only one this surface accepts.
+const OPEN_EXISTING: u64 = 3;
 
 /// The largest WriteFile this surface will perform, in bytes. A cap rather
 /// than a length limit from Windows: it keeps the copy in this module's own
@@ -97,6 +118,23 @@ pub enum Win32Error {
     OutPointerOutsideClient,
     /// Bytes that are not valid text (this surface's console is text).
     NotUtf8,
+    /// A path pointer outside the regions mapped for this client.
+    PathOutsideClient,
+    /// A path with no NUL terminator inside the client's region and within
+    /// `MAX_PATH` bytes -- refused rather than scanned into the next page.
+    PathTooLong,
+    /// A path that is not printable ASCII. This kernel's volume is named in
+    /// ASCII, so a path with a control byte or a high byte is refused.
+    PathNotText,
+    /// `CreateFileA`'s `dwDesiredAccess` asked for a right other than
+    /// `GENERIC_READ` (this volume cannot write).
+    UnsupportedAccess,
+    /// `CreateFileA`'s `dwCreationDisposition` is not `OPEN_EXISTING`.
+    UnsupportedDisposition,
+    /// `ReadFile`'s `lpOverlapped` is not NULL: v0 has no asynchronous I/O.
+    OverlappedNotSupported,
+    /// The volume refused the request; which rule is inside.
+    File(win32_fs::FsError),
 }
 
 /// The regions this kernel mapped for the client, and therefore the only
@@ -159,6 +197,45 @@ pub fn exit_code() -> Option<u64> {
     }
 }
 
+/// How many bytes are addressable from `ptr` in the region that contains it,
+/// or `None` when `ptr` is outside every region the client owns.
+fn region_remaining(surface: &Surface, ptr: u64) -> Option<u64> {
+    let regions = [
+        (surface.client_base, surface.client_size),
+        (surface.slot_base, surface.slot_size),
+    ];
+    regions.iter().find_map(|&(base, size)| {
+        (ptr >= base && ptr < base.checked_add(size)?).then(|| base + size - ptr)
+    })
+}
+
+/// Reads a bounded NUL-terminated path from `ptr`, which must lie in one of the
+/// client's regions.
+///
+/// The scan stops at the region's end as well as at `MAX_PATH`: a client that
+/// hands over a pointer to its last mapped byte with no NUL cannot make this
+/// kernel walk off the end of the mapping, it just gets a typed refusal.
+///
+/// # Safety
+/// `ptr` is a ring-3-supplied address; the region check is what makes the
+/// reads below safe.
+unsafe fn read_path<'a>(surface: &Surface, ptr: u64) -> Result<&'a [u8], Win32Error> {
+    let available = region_remaining(surface, ptr).ok_or(Win32Error::PathOutsideClient)?;
+    let limit = core::cmp::min(available, win32_fs::MAX_PATH as u64);
+    let mut len = 0u64;
+    while len < limit && core::ptr::read_volatile((ptr + len) as *const u8) != 0 {
+        len += 1;
+    }
+    if len == limit {
+        return Err(Win32Error::PathTooLong);
+    }
+    let path = core::slice::from_raw_parts(ptr as *const u8, len as usize);
+    if !path.iter().all(|b| (0x20..0x7f).contains(b)) {
+        return Err(Win32Error::PathNotText);
+    }
+    Ok(path)
+}
+
 /// `true` when `ptr .. ptr + len` lies wholly inside one of the client's
 /// mapped regions. Overflow is a refusal, not a wrap.
 fn allowed(surface: &Surface, ptr: u64, len: u64) -> bool {
@@ -172,16 +249,20 @@ fn allowed(surface: &Surface, ptr: u64, len: u64) -> bool {
 
 /// Performs one call from the block at `index`/`args`, trapped from `rip`.
 ///
-/// This is the whole API surface: return values are Windows-typed (a handle, a
-/// BOOL as 1/0, a DWORD tick count, `ExitProcess`'s unused 0), and every check
-/// is a typed refusal rather than a best-effort.
+/// `args` is the five arguments a call can carry: the four register arguments
+/// in order, then the first stack argument (`args[4]`), which only the two
+/// five-parameter exports read.
+///
+/// This is the whole API surface: return values are Windows-typed (a handle or
+/// `INVALID_HANDLE_VALUE`, a BOOL as 1/0, a DWORD tick count, `ExitProcess`'s
+/// unused 0), and every check is a typed refusal rather than a best-effort.
 ///
 /// # Safety
 /// The caller (the trap handler, or the boot proof's negative controls) must
 /// have a mapped block/console region; `args` are addresses ring 3 supplied.
 pub unsafe fn dispatch(
     index: u64,
-    args: [u64; 4],
+    args: [u64; 5],
     rip: u64,
 ) -> Result<u64, Win32Error> {
     // A kernel32 call must have come from kernel32's own code: an index in the
@@ -217,8 +298,11 @@ pub unsafe fn dispatch(
             if !allowed(surface, buf, len) {
                 return Err(Win32Error::BufferOutsideClient);
             }
-            // The out-parameter is optional on Windows; NULL is legal.
-            if args[3] != 0 && !allowed(surface, args[3], 8) {
+            // The out-parameter is optional on Windows; NULL is legal. Its
+            // type is LPDWORD, so exactly four bytes are written -- the first
+            // version of this surface wrote eight and would have clobbered the
+            // DWORD after a real client's variable.
+            if args[3] != 0 && !allowed(surface, args[3], 4) {
                 return Err(Win32Error::OutPointerOutsideClient);
             }
             let dst = (&raw mut STDOUT).cast::<u8>();
@@ -229,7 +313,7 @@ pub unsafe fn dispatch(
             // The program's own console output, on this kernel's console.
             serial_println!("{}", text.trim_end());
             if args[3] != 0 {
-                core::ptr::write_volatile(args[3] as *mut u64, len);
+                core::ptr::write_volatile(args[3] as *mut u32, len as u32);
             }
             Ok(1) // TRUE
         }
@@ -245,6 +329,59 @@ pub unsafe fn dispatch(
             EXIT_CODE.store(args[0], Ordering::Relaxed);
             Ok(0)
         }
+        // CreateFileA(lpFileName, dwDesiredAccess, dwShareMode,
+        //            lpSecurityAttributes, dwCreationDisposition,
+        //            dwFlagsAndAttributes, hTemplateFile).
+        //
+        // The three arguments this surface cannot honour are stated rather than
+        // ignored: `dwDesiredAccess` must be exactly GENERIC_READ,
+        // `dwCreationDisposition` must be OPEN_EXISTING (read from the fifth
+        // argument, the one the stub had to fetch off the stack), and the share
+        // mode, security attributes, flags and template are dropped -- a
+        // read-only volume has nothing for them to mean, and pretending to
+        // apply them would be worse than saying so.
+        4 => {
+            let path = read_path(surface, args[0])?;
+            // `DWORD dwDesiredAccess`: the low 32 bits, for the same reason
+            // GetStdHandle reads its argument as a DWORD -- a C caller sets
+            // only EDX and leaves the rest of RDX as it was.
+            if args[1] as u32 != GENERIC_READ {
+                return Err(Win32Error::UnsupportedAccess);
+            }
+            if args[4] != OPEN_EXISTING {
+                return Err(Win32Error::UnsupportedDisposition);
+            }
+            match win32_fs::open(path) {
+                Ok(handle) => Ok(handle),
+                Err(win32_fs::FsError::FileNotFound) => Ok(INVALID_HANDLE_VALUE),
+                Err(e) => Err(Win32Error::File(e)),
+            }
+        }
+        // ReadFile(hFile, lpBuffer, nNumberOfBytesToRead, lpNumberOfBytesRead,
+        //          lpOverlapped).
+        5 => {
+            if args[4] != 0 {
+                return Err(Win32Error::OverlappedNotSupported);
+            }
+            // The console handle belongs to the console, not to the volume.
+            if args[0] == STDOUT_HANDLE {
+                return Err(Win32Error::InvalidHandle);
+            }
+            let (buf, len) = (args[1], args[2]);
+            if !allowed(surface, buf, len) {
+                return Err(Win32Error::BufferOutsideClient);
+            }
+            if args[3] != 0 && !allowed(surface, args[3], 4) {
+                return Err(Win32Error::OutPointerOutsideClient);
+            }
+            let read = win32_fs::read(args[0], buf as *mut u8, len).map_err(Win32Error::File)?;
+            if args[3] != 0 {
+                core::ptr::write_volatile(args[3] as *mut u32, read as u32);
+            }
+            Ok(1) // TRUE, including a zero-byte read at EOF
+        }
+        // CloseHandle(hObject): releases a file handle's slot and cursor.
+        6 => win32_fs::close(args[0]).map(|()| 1).map_err(Win32Error::File),
         _ => Err(Win32Error::UnknownFunction),
     }
 }
@@ -268,6 +405,7 @@ pub unsafe fn service(frame: &InterruptStackFrame) {
         core::ptr::read_volatile((block + OFF_ARG1) as *const u64),
         core::ptr::read_volatile((block + OFF_ARG2) as *const u64),
         core::ptr::read_volatile((block + OFF_ARG3) as *const u64),
+        core::ptr::read_volatile((block + OFF_ARG4) as *const u64),
     ];
     let result = match dispatch(index, args, frame.instruction_pointer.as_u64()) {
         Ok(value) => value,

@@ -7226,3 +7226,98 @@ increment: `PASS: kernel reached BootPhase::Ready and exited cleanly`,
 `WriteFile returned 1 and wrote 44 byte(s) ... refusals 0` self-test).
 A hang still fails the gate; it just now takes longer than this host
 needs (measured ~3.5 minutes for the whole boot leg).
+
+## The Win32 API surface v0.1: files, and the read-only volume behind them (2026-11-22)
+
+The v0 tranche above proved the mechanism with four console functions.
+This increment adds the three calls a program needs before the console
+matters -- `CreateFileA`, `ReadFile`, `CloseHandle` -- and the smallest
+thing they can act on: `experimental::win32_fs`, a read-only in-memory
+volume of three files in the kernel image (`C:\nyrqis\hello.txt`,
+`C:\nyrqis\bytes.bin`, `C:\nyrqis\empty.txt`).
+
+**Why a separate module.** `win32` owns Win32 *semantics* (which
+arguments are legal, what each refusal is called, what a Windows-typed
+result looks like); `win32_fs` owns *state* (which files exist, which
+handles are open, where each read cursor is). The dispatcher never
+reaches into a file table and the volume never has to know what an
+`int $0x90` is.
+
+**What the volume decides, stated.** A path must be fully qualified
+(`C:\...`): a relative path is refused, because there is no current
+directory to resolve it against and guessing one would be a silent lie.
+Only `C:` is mounted, so `D:` is a typed `UnknownVolume`. Comparison is
+ASCII case-insensitive with `\` and `/` interchangeable, which is what
+Win32 path parsing and NTFS do. `CreateFileA` hands out `0x100 + 4*slot`
+for the first FREE slot of four, so a handle is a capability: a value
+the volume never issued is `NotAFileHandle`, a value it issued and then
+closed is `ClosedHandle`, and slots are reused in order after a close --
+the boot asserts the reuse by value (`0x100` three times) rather than
+assuming it. `ReadFile` is byte-oriented (no text decoding, no
+translation), advances the cursor, and reports EOF as a successful read
+of zero bytes, as Windows does.
+
+**Three things the first two boots of this link caught, kept here
+because the transcript is the point.** (1) The volume's negative
+controls wrote their paths into the client's report page, but that page
+was mapped further down the function -- a page fault at
+`0x4d0000001000`, which is what happens when a "harmless" assertion
+runs before the mapping it needs. The mapping now happens before any
+control, with a comment saying why. (2) The helper that NUL-terminates
+those paths appended the NUL past the last byte of the page -- a second
+fault, at exactly one byte beyond the mapping, in the control that
+proves an unterminated path is refused at the region's edge. That one
+byte is now written without a terminator, on purpose. (3) The first run
+of the client itself failed `refusals 0`: the program deliberately uses
+a closed handle twice, and the surface correctly refused both. The
+expectation is now `EXPECTED_REFUSALS = 2` with the reason written
+beside it, instead of an assumption that a real program never probes
+an error path.
+
+**The fifth argument, and the word that was reserved for it.** V0's
+`+56` was reserved so the block's `0x40` size (and its RVA pin) could
+not move. `CreateFileA` and `ReadFile` both declare five parameters, and
+Microsoft's x64 convention passes the fifth on the stack, so those two
+stubs now fetch `0x28(%rsp)` and park it at `+56`: the reserved word
+became load-bearing without a layout change, and the kernel can refuse a
+non-NULL `lpOverlapped` and a `dwCreationDisposition` other than
+`OPEN_EXISTING` instead of silently dropping what the client asked for.
+
+**The same DWORD lesson, twice more.** `GetStdHandle` already had to
+read its argument as the 32-bit value Windows declares; `CreateFileA`'s
+`dwDesiredAccess` is now read the same way (a C caller sets only `EDX`),
+and both out-parameters (`lpNumberOfBytesWritten`,
+`lpNumberOfBytesRead`) are written as a `DWORD`, not a qword. The first
+version of `WriteFile` wrote eight bytes into a four-byte out-parameter,
+which would have clobbered the variable next to it in any real client;
+that is fixed here rather than carried forward.
+
+**Proved on a real boot, transcript kept** (`./build.sh --qemu-test`
+green, then `tools/qemu_boot_test.sh` -> `GATE_EXIT=0`):
+
+```
+experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000; export table declares "kernel32.dll" with 7 name(s), all inside .text (+0x1000..+0x1130); call block magic 0x4e59525733325f31 at +0x2000 -- OK
+experimental win32-demo: resolved 7 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle), every slot reading back its export address -- OK
+experimental win32-demo: negative control 6 -- the read-only volume refused a relative path (PathNotAbsolute), drive D: (UnknownVolume), a control byte in a path (PathNotText), a path with no NUL inside the client's page (PathTooLong), a pointer outside the client (PathOutsideClient), GENERIC_WRITE (UnsupportedAccess), disposition 2 (UnsupportedDisposition), a non-NULL lpOverlapped (OverlappedNotSupported), the console handle as a file (InvalidHandle / NotAFileHandle) and a 5th open (OutOfHandles); a missing file returned INVALID_HANDLE_VALUE as Windows does, and every handle was closed again -- OK
+nyrqis: hello from the read-only volume
+experimental win32-demo self-test: WriteFile returned 1 and wrote 33 byte(s); the console received "hello from the read-only volume\x0d\x0a"; hello.txt opened as handle 0x100, read 5+28 byte(s) then 0 more at EOF, closed -> 1 and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile (0) and by a second CloseHandle (0); a missing file returned 0xffffffffffffffff; GetTickCount read 226160 then 226160 (monotonic); ExitProcess recorded Some(7); 0 file handle(s) still open; refusals 2 (the program's two deliberate uses of a closed handle) -- OK, a real Windows-format console program called seven kernel32 exports through a real PE32+ DLL's export table and the kernel performed them in ring 0 against a read-only in-memory volume -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)
+```
+
+The gate pins six of those lines by substring (`resolved 7 import(s)`,
+`negative control 6`, the self-test's `wrote 33 byte(s)`,
+`bytes.bin read back byte-identically`, `empty.txt read TRUE with 0
+byte(s)`, `a missing file returned 0xffffffffffffffff`), so the file
+tranche cannot silently stop running while the boot still exits 33.
+
+**Stated limits, not hidden ones.** Read-only: there is no write path, so
+`CreateFileA` refuses `GENERIC_WRITE` and there is no `WriteFile` to a
+file. Three files, no directories, no current directory, no dates, no
+security descriptors, no sharing semantics (the share mode is accepted
+and ignored, and the surface says so). Four handles. Synchronous only:
+`lpOverlapped` must be NULL. `GetLastError`/`SetLastError` do not exist
+yet, so a client that sees `INVALID_HANDLE_VALUE` cannot ask *why* --
+that is the next thing a real binary would need, and it is missing.
+Handle values are this surface's own, not NT's. And all of the v0 limits
+still stand: no NT system-call layer, no user32/gdi32, no Microsoft
+code, `ExitProcess` records and returns, and the console is the serial
+line.

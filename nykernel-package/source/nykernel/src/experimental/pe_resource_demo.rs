@@ -34,7 +34,7 @@
 use x86_64::VirtAddr;
 
 use crate::experimental::address_space::AddressSpace;
-use crate::experimental::{pe, usermode, isolation_demo};
+use crate::experimental::{pe, usermode};
 use crate::memory::frame_allocator::BumpFrameAllocator;
 use crate::serial_println;
 
@@ -78,8 +78,8 @@ static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 /// in private subtrees, refusing them for their exact typed reasons),
 /// states the walk's facts, and enters ring 3 at the good client's
 /// entry point. `on_trap` (vector 0x8F) reports the ring-3 result and
-/// chains into `experimental::isolation_demo`, keeping the single
-/// unified demo chain.
+/// chains into `experimental::win32_demo`, keeping the single unified
+/// demo chain.
 ///
 /// # Safety
 /// Must be called at most once, with Phases 1-4-prep already
@@ -200,8 +200,8 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
 /// Called from `idt::init`'s installed handler on the one trap this
 /// demo's program issues. Reports whether the good carrier's own code
 /// actually ran (a magic value only it could have written), then
-/// chains into `experimental::isolation_demo`, continuing this
-/// kernel's single unified demo chain.
+/// chains into `experimental::win32_demo`, continuing this kernel's
+/// single unified demo chain.
 pub unsafe fn on_trap() -> ! {
     let observed = core::ptr::read_volatile(PRIVATE_ADDR as *const u64);
     let ok = observed == EXPECTED_VALUE;
@@ -213,7 +213,7 @@ pub unsafe fn on_trap() -> ! {
 
     let fa = (*&raw mut FRAME_ALLOCATOR).take().unwrap();
     // The chain now continues with the Win32 API surface proof (a real
-    // Windows-format console client calling four kernel32 exports), which
+    // Windows-format console client calling seven kernel32 exports), which
     // chains into `isolation_demo` itself.
     crate::experimental::win32_demo::start(fa)
 }

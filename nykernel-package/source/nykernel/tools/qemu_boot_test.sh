@@ -103,8 +103,12 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "service-0x84 call proof self-test: the caller parked (state BLOCKED)" \
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
         "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
-        "experimental win32-demo: resolved 4 import(s) from the client's REAL .idata" \
-        "experimental win32-demo self-test: WriteFile returned 1 and wrote 44 byte(s)" \
+        "experimental win32-demo: resolved 7 import(s) from the client's REAL .idata" \
+        "experimental win32-demo: negative control 6 -- the read-only volume refused a relative path" \
+        "experimental win32-demo self-test: WriteFile returned 1 and wrote 33 byte(s)" \
+        "bytes.bin read back byte-identically" \
+        "empty.txt read TRUE with 0 byte(s)" \
+        "a missing file returned 0xffffffffffffffff" \
     ; do
         if ! grep -aqF -- "$needle" target/qemu-test-stdout.log; then
             echo "FAIL: blocking-receive demo line missing or out of contract: $needle"
