@@ -1,15 +1,18 @@
-//! The Win32 API surface, v0: nine `kernel32.dll` exports performed by this
+//! The Win32 API surface, v0: eleven `kernel32.dll` exports performed by this
 //! kernel, reachable from ring 3 through a real Windows-format DLL whose
 //! bodies are trap stubs (`userprog/prog_win32_kernel32.s`).
 //!
 //! # What this is, precisely
 //!
-//! The first actual Win32 API surface in this kernel -- and nine functions
+//! The first actual Win32 API surface in this kernel -- and eleven functions
 //! out of the tens of thousands kernel32 exposes: the four a console program
 //! needs (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`), the
 //! three that give it files (`CreateFileA`, `ReadFile`, `CloseHandle`) against
-//! the read-only volume in [`crate::experimental::win32_fs`], and the pair that
-//! tells it why a call failed (`GetLastError`, `SetLastError`). It is **not** Windows
+//! the read-only volume in [`crate::experimental::win32_fs`], the pair that
+//! tells it why a call failed (`GetLastError`, `SetLastError`), and the pair a
+//! CRT calls before it does anything else (`GetCommandLineA`,
+//! `GetModuleHandleA`), which answer with pointers into state the LOADER
+//! established rather than with values computed at call time. It is **not** Windows
 //! compatibility: there is no NT system-call layer under it, no object
 //! manager, no user32/gdi32, and nothing here runs Microsoft's code. What it
 //! does prove is the mechanism every later function needs, end to end: a real
@@ -63,6 +66,32 @@
 //! cleared it on success would hide a client's own bug (checking the code after
 //! a call that worked).
 //!
+//! # Why the startup pair has to come from the loader
+//!
+//! `GetCommandLineA` and `GetModuleHandleA(NULL)` are the first two calls a
+//! Windows CRT makes, and both are answers about the PROCESS rather than about
+//! the call: the command line is a string the loader placed before the first
+//! instruction ran, and the module handle is the base address the loader mapped
+//! the executable at (`HMODULE` for the main image IS its base, and it is the
+//! value a CRT stores so it can walk its own headers for the entry point).
+//!
+//! That is why neither is implemented as a constant here. `GetCommandLineA`
+//! answers with the address [`install_cmdline`] recorded after writing the
+//! string into the client's own mapped page -- the address a real loader would
+//! have used, and a stable one, so a second call answers the same pointer as it
+//! does on Windows. `GetModuleHandleA(NULL)` answers with the client base
+//! [`install`] was given. Both therefore FAIL, with a typed refusal, when the
+//! loader state they describe does not exist yet
+//! ([`Win32Error::LoaderStateMissing`]): a surface that returned `Ok(0)` or a
+//! guess would hand a starting CRT a pointer to nothing, which is the one bug
+//! a client cannot diagnose from its own side.
+//!
+//! A NAMED module is refused instead of resolved, because v0 has no module
+//! table: `GetModuleHandleA("kernel32.dll")` could only be answered by
+//! inventing an answer, and Windows' own code for "that module is not loaded
+//! in this process" is `ERROR_MOD_NOT_FOUND`, which is exactly true here. The
+//! client in the boot proof asks only the NULL form, which succeeds.
+//!
 //! # Why a refusal also returns something Windows-shaped
 //!
 //! A code alone is not enough to make a refusal read like Windows, because the
@@ -94,12 +123,13 @@ pub const TRAP_VECTOR: u8 = 0x90;
 pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
-/// `0x190000001000`, size `0x158` (nine stubs). Pinned, and re-checked against
+/// `0x190000001000`, size `0x188` (eleven stubs, the two startup stubs last).
+/// Pinned, and re-checked against
 /// the loaded image's own export RVAs at boot (`win32_demo::start`): every
 /// export must fall inside this window, which is what lets [`dispatch`] accept
 /// a trap only from this DLL's code.
 pub const TEXT_RVA: u64 = 0x1000;
-pub const TEXT_SIZE: u64 = 0x158;
+pub const TEXT_SIZE: u64 = 0x188;
 
 /// `.data`, holding `nyr_call_block` (VMA `0x190000002000`, size `0x40`).
 pub const BLOCK_RVA: u64 = 0x2000;
@@ -148,17 +178,25 @@ pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
 /// otherwise. A blanket 0 would therefore be wrong for exactly the two exports
 /// a client is most likely to test: `CreateFileA` and `GetStdHandle`.
 ///
-/// So the mapping follows the declared return type, and the boot proof checks
-/// it per export rather than only for the case the client happens to hit:
-/// `GetStdHandle` and `CreateFileA` are `HANDLE` and answer
-/// [`INVALID_HANDLE_VALUE`]; `WriteFile`, `ReadFile` and `CloseHandle` are
-/// `BOOL` and answer 0; `GetTickCount` and `GetLastError` are `DWORD` and
-/// answer 0; `SetLastError` is `void` and answers 0; `ExitProcess` is in the
-/// same row for completeness only -- on Windows it never returns, and here its
-/// stub returns after the kernel recorded the code. An index that names no
-/// export has no prototype to borrow from, so it answers 0 as well: the
-/// refusal is already `UnknownFunction`, and what the client gets is the same
-/// nothing a missing import would give it.
+/// So the mapping follows what the prototype DOCUMENTS as its failure
+/// result, and the boot proof checks it per export rather than only for the
+/// case the client happens to hit: `GetStdHandle` and `CreateFileA` are
+/// `HANDLE` and answer [`INVALID_HANDLE_VALUE`]; `WriteFile`, `ReadFile` and
+/// `CloseHandle` are `BOOL` and answer 0; `GetTickCount` and `GetLastError`
+/// are `DWORD` and answer 0; `SetLastError` is `void` and answers 0;
+/// `ExitProcess` is in the same row for completeness only -- on Windows it
+/// never returns, and here its stub returns after the kernel recorded the
+/// code. An index that names no export has no prototype to borrow from, so it
+/// answers 0 as well: the refusal is already `UnknownFunction`, and what the
+/// client gets is the same nothing a missing import would give it.
+///
+/// The two startup exports are why the row is "documented failure result" and
+/// not "return type": `GetCommandLineA` returns `LPSTR` and fails with NULL,
+/// and `GetModuleHandleA` returns `HMODULE` -- a handle type -- yet its
+/// documented failure is ALSO NULL, not [`INVALID_HANDLE_VALUE`]. A table keyed
+/// on "is this a handle" would hand a starting CRT all-ones as a module base
+/// and it would walk that address for its headers. So both answer 0, beside
+/// the BOOL row.
 ///
 /// This is a second table beside [`Win32Error::code`], and deliberately a
 /// different one: the code answers "why" and depends on the condition, the
@@ -166,9 +204,12 @@ pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
 /// surface that merged them would have to invent a code-shaped result.
 pub const fn failure_value(index: u64) -> u64 {
     match index {
-        // HANDLE: GetStdHandle, CreateFileA.
+        // HANDLE, documented to fail with the all-ones sentinel: GetStdHandle,
+        // CreateFileA.
         0 | 4 => INVALID_HANDLE_VALUE,
-        // BOOL, DWORD, void, and "no such export".
+        // BOOL, DWORD, void, LPSTR-whose-failure-is-NULL (GetCommandLineA),
+        // HMODULE-whose-failure-is-NULL (GetModuleHandleA), and "no such
+        // export".
         _ => 0,
     }
 }
@@ -193,8 +234,10 @@ pub const ERROR_TOO_MANY_OPEN_FILES: u32 = 4;
 pub const ERROR_ACCESS_DENIED: u32 = 5;
 pub const ERROR_INVALID_HANDLE: u32 = 6;
 pub const ERROR_INVALID_DRIVE: u32 = 15;
+pub const ERROR_NOT_READY: u32 = 21;
 pub const ERROR_NOT_SUPPORTED: u32 = 50;
 pub const ERROR_INVALID_PARAMETER: u32 = 87;
+pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_INVALID_NAME: u32 = 123;
 pub const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 pub const ERROR_INVALID_ADDRESS: u32 = 487;
@@ -208,7 +251,7 @@ pub const MAX_WRITE: usize = 96;
 /// Every way ring 3 can ask for something this surface will not do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Win32Error {
-    /// `+48` is not one of the nine exports.
+    /// `+48` is not one of the eleven exports.
     UnknownFunction,
     /// The trapping RIP is not inside kernel32.dll's `.text`.
     CallerOutsideKernel32,
@@ -237,6 +280,18 @@ pub enum Win32Error {
     UnsupportedDisposition,
     /// `ReadFile`'s `lpOverlapped` is not NULL: v0 has no asynchronous I/O.
     OverlappedNotSupported,
+    /// A startup call asked for loader state that does not exist: no command
+    /// line has been installed, or no client base has been.
+    LoaderStateMissing,
+    /// `GetModuleHandleA` was asked for a NAMED module. v0 has no module
+    /// table, so no name can resolve -- which is Windows' own
+    /// `ERROR_MOD_NOT_FOUND` condition, not a missing feature shoved into a
+    /// code that means something else.
+    ModuleNameNotSupported,
+    /// [`install_cmdline`] was given text that is not printable ASCII, or an
+    /// address outside the client's mapped regions, or more bytes than a
+    /// page holds. A kernel-side (loader) argument error, never a ring-3 one.
+    CommandLineInvalid,
     /// The volume refused the request; which rule is inside.
     File(win32_fs::FsError),
 }
@@ -272,6 +327,15 @@ impl Win32Error {
     /// are `ERROR_INVALID_PARAMETER`, and a non-text path is `ERROR_INVALID_NAME`
     /// (Windows' code for a name it will not parse), while an unterminated path
     /// is `ERROR_FILENAME_EXCED_RANGE` -- the name ran past the bound.
+    ///
+    /// The startup pair's three rows are the same rule applied to loader
+    /// state. `LoaderStateMissing` is `ERROR_NOT_READY`: the thing the call
+    /// describes is not available yet, which is precisely true and is not a
+    /// claim about the client's arguments. `ModuleNameNotSupported` is
+    /// `ERROR_MOD_NOT_FOUND` because a name that this process has no module
+    /// for is the condition Windows uses that code for. `CommandLineInvalid`
+    /// is `ERROR_INVALID_PARAMETER`: the only caller is [`install_cmdline`],
+    /// i.e. this kernel's own loader, and the argument it got was wrong.
     pub const fn code(self) -> u32 {
         match self {
             Win32Error::UnknownFunction => ERROR_INVALID_FUNCTION,
@@ -287,6 +351,9 @@ impl Win32Error {
             Win32Error::UnsupportedAccess => ERROR_ACCESS_DENIED,
             Win32Error::UnsupportedDisposition => ERROR_INVALID_PARAMETER,
             Win32Error::OverlappedNotSupported => ERROR_NOT_SUPPORTED,
+            Win32Error::LoaderStateMissing => ERROR_NOT_READY,
+            Win32Error::ModuleNameNotSupported => ERROR_MOD_NOT_FOUND,
+            Win32Error::CommandLineInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::File(e) => match e {
                 win32_fs::FsError::PathNotAbsolute => ERROR_PATH_NOT_FOUND,
                 win32_fs::FsError::UnknownVolume => ERROR_INVALID_DRIVE,
@@ -308,6 +375,9 @@ struct Surface {
     client_size: u64,
     slot_base: u64,
     slot_size: u64,
+    /// Where the loader placed the client's command line, or 0 while none has
+    /// been installed -- the cell `GetCommandLineA` answers from.
+    cmdline: u64,
 }
 
 static mut SURFACE: Surface = Surface {
@@ -315,6 +385,7 @@ static mut SURFACE: Surface = Surface {
     client_size: 0,
     slot_base: 0,
     slot_size: 0,
+    cmdline: 0,
 };
 static mut STDOUT: [u8; MAX_WRITE] = [0; MAX_WRITE];
 static STDOUT_LEN: AtomicU64 = AtomicU64::new(0);
@@ -359,6 +430,61 @@ pub unsafe fn install(client_base: u64, client_size: u64, slot_base: u64, slot_s
     surface.client_size = client_size;
     surface.slot_base = slot_base;
     surface.slot_size = slot_size;
+}
+
+/// The command line this surface will answer `GetCommandLineA` with.
+///
+/// # Why the kernel writes the string into the client's own page
+///
+/// `GetCommandLineA` returns `LPSTR`, and a pointer ring 3 cannot read is not
+/// an answer -- the kernel's own statics live in supervisor-only pages, so
+/// returning `&CMDLINE` would hand the client an address that faults the
+/// moment its CRT touches it. So the loader writes the bytes into a page the
+/// client owns (the boot proof passes a fixed offset in its report page) and
+/// records that address; the call then answers with it. That is the shape a
+/// real loader has too: the command line is process state placed before the
+/// first instruction, not something the getter synthesizes.
+///
+/// # Why the install is checked rather than trusted
+///
+/// The address and the bytes come from kernel-side code, so a wrong one is a
+/// bug HERE, not a hostile claim -- and the worst version of that bug is a
+/// pointer outside a mapping the client can read, which ring 3 would only
+/// discover as a page fault with no explanation. So both are checked and
+/// refused by name ([`Win32Error::CommandLineInvalid`]): printable-ASCII text
+/// only (this console and volume are ASCII), a NUL-terminated length that
+/// fits what is left of the client's region, and a range that lies wholly
+/// inside one of the regions [`install`] registered. A refused install leaves
+/// the previous state untouched.
+///
+/// # Safety
+/// Must run after [`install`], at most once. `addr` must name a page the
+/// client can read (the region check is what makes the copy below safe).
+pub unsafe fn install_cmdline(addr: u64, text: &[u8]) -> Result<(), Win32Error> {
+    let surface = &mut *&raw mut SURFACE;
+    // Text plus the terminating NUL: Windows' command line is a NUL-terminated
+    // ANSI string, so the last byte the client must be able to read is the NUL.
+    let total = (text.len() as u64).checked_add(1).ok_or(Win32Error::CommandLineInvalid)?;
+    if !text.iter().all(|b| (0x20..0x7f).contains(b)) {
+        return Err(Win32Error::CommandLineInvalid);
+    }
+    // The whole string must lie in ONE region, so a string that straddles two
+    // mappings (and therefore a hole) is refused rather than half-copied.
+    if !allowed(surface, addr, total) {
+        return Err(Win32Error::CommandLineInvalid);
+    }
+    let dst = addr as *mut u8;
+    core::ptr::copy_nonoverlapping(text.as_ptr(), dst, text.len());
+    core::ptr::write_volatile(dst.add(text.len()), 0);
+    surface.cmdline = addr;
+    Ok(())
+}
+
+/// The address `GetCommandLineA` answers with, or `None` while no command line
+/// has been installed (the boot proof asserts the refusal before it installs).
+pub fn command_line() -> Option<u64> {
+    let surface = unsafe { &*&raw const SURFACE };
+    (surface.cmdline != 0).then_some(surface.cmdline)
 }
 
 /// Exactly the bytes the client's `WriteFile` handed the console, CRLF
@@ -613,6 +739,34 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
         8 => {
             set_last_error(args[0] as u32);
             Ok(0) // void; the stub does not read the result back
+        }
+        // GetCommandLineA(): the pointer the loader installed, or a typed
+        // refusal when the loader never placed one. Two calls answer the same
+        // address, which is what a CRT relies on when it caches the pointer;
+        // nothing here is computed per call, so that is a property of the
+        // state and not of this function.
+        9 => match surface.cmdline {
+            0 => Err(Win32Error::LoaderStateMissing),
+            addr => Ok(addr),
+        },
+        // GetModuleHandleA(lpModuleName): NULL asks for THIS image's base.
+        //
+        // `HMODULE` for the main executable is its load address, and the base
+        // the client was mapped at is state this surface already owns -- so
+        // the answer is a fact rather than `APP_IMAGE_BASE` written out again
+        // at a second site. A non-NULL name is refused: with no module table
+        // there is nothing to look a name up in, and `ERROR_MOD_NOT_FOUND` is
+        // exactly the condition (the module is not loaded in this process).
+        // Read as a pointer, so the whole 64-bit argument is compared -- a
+        // name pointer is an address and has no DWORD-sized form.
+        10 => {
+            if surface.client_base == 0 {
+                return Err(Win32Error::LoaderStateMissing);
+            }
+            if args[0] != 0 {
+                return Err(Win32Error::ModuleNameNotSupported);
+            }
+            Ok(surface.client_base)
         }
         _ => Err(Win32Error::UnknownFunction),
     }

@@ -3,7 +3,7 @@
  * genuine Windows-format PE32+ console executable
  * (`ld -m i386pep --subsystem console`) linked DIRECTLY against
  * `kernel32.dll` above, so ld synthesizes its .idata the ordinary way:
- * all seven exports get an IAT slot that the loader fills from
+ * all eleven exports get an IAT slot that the loader fills from
  * kernel32.dll's real export directory.
  *
  * The program is the shape of a minimal console app, in Microsoft's own
@@ -35,6 +35,14 @@
  *     CloseHandle(f4)                                // FALSE: closed again
  *     CreateFileA("C:\nyrqis\missing.txt", ...)      // INVALID_HANDLE_VALUE
  *
+ *   tranche 4 -- startup, before anything else:
+ *     lpCmdLine = GetCommandLineA()              // the loader's string,
+ *                                                // stable across calls
+ *     (bytes at lpCmdLine == this program's own copy + NUL)  // 1
+ *     hmod = GetModuleHandleA(NULL)              // THIS image's base
+ *     ((char*)_start - hmod < SizeOfImage)       // 1: the handle names
+ *                                                // the running image
+ *
  *   tranche 3 -- why it failed:
  *     err = GetLastError()                          // ERROR_FILE_NOT_FOUND (2)
  *                                                   // -- after the miss above
@@ -63,6 +71,63 @@ _start:
     /* 0x30 = 32 bytes of shadow space + 16 for up to two stack
        arguments, a multiple of 16 so every `call` stays aligned. */
     sub $0x30, %rsp
+
+    /* ---- tranche 4: startup, the way a CRT does ---- */
+
+    /* lpCmdLine = GetCommandLineA(). The loader placed the string before
+       the first instruction ran, so this call only answers with its
+       address -- the program neither owns nor frees it. */
+    call *__imp_GetCommandLineA(%rip)
+    mov %rax, %rbx
+    movabs $SLOT_CMDLINE, %rdi
+    mov %rax, (%rdi)
+
+    /* Ask a second time: Windows answers the SAME pointer for the life of
+       the process, which is why a CRT can cache it. */
+    call *__imp_GetCommandLineA(%rip)
+    movabs $SLOT_CMDLINE2, %rdi
+    mov %rax, (%rdi)
+
+    /* Compare the bytes at that pointer with this program's own copy,
+       byte by byte, and require the NUL terminator too: a pointer to a
+       truncated or unterminated string must not pass. */
+    mov %rbx, %rsi
+    lea cmdline_expected(%rip), %rdi
+    mov $CMDLINE_LEN, %ecx
+    xor %eax, %eax
+1:
+    movzbq (%rsi), %rdx
+    movzbq (%rdi), %r8
+    cmp %r8, %rdx
+    jne 2f
+    inc %rsi
+    inc %rdi
+    loop 1b
+    cmpb $0, (%rsi)
+    jne 2f
+    mov $1, %eax
+2:
+    movabs $SLOT_CMDLINE_OK, %rdi
+    mov %rax, (%rdi)
+
+    /* hmod = GetModuleHandleA(NULL): the base address of THIS program's
+       image, which is what a CRT stores before it walks its own headers
+       for the entry point. */
+    xor %ecx, %ecx
+    call *__imp_GetModuleHandleA(%rip)
+    movabs $SLOT_MODULE, %rdi
+    mov %rax, (%rdi)
+
+    /* The handle must name the image this code is running FROM: _start
+       lies inside [hmod, hmod + SizeOfImage). A constant, a kernel
+       address, or another module's base all fail that test. */
+    lea _start(%rip), %rdx
+    sub %rax, %rdx
+    xor %ecx, %ecx
+    cmp $IMAGE_SIZE, %rdx
+    setb %cl
+    movabs $SLOT_MODULE_OK, %rdi
+    mov %rcx, (%rdi)
 
     /* ---- tranche 1: the console ---- */
 
@@ -316,6 +381,16 @@ path_empty:
     .asciz "C:\\nyrqis\\empty.txt"
 path_missing:
     .asciz "C:\\nyrqis\\missing.txt"
+/* This program's own copy of the command line the kernel's loader places
+   for it: the client compares the bytes at GetCommandLineA's pointer
+   against these, so the proof is about the STRING, not about a non-NULL
+   pointer. */
+cmdline_expected:
+    .asciz "C:\\nyrqis\\win32_console.exe"
+    .set CMDLINE_LEN, . - cmdline_expected - 1
+/* The SizeOfImage the link gives this executable (build.sh pins the same
+   0x4000 from objdump -p), used by the module-handle test above. */
+    .set IMAGE_SIZE, 0x4000
 
 /* The private report page, mapped USER_ACCESSIBLE|WRITABLE by the demo and
    zeroed before ring 3. Every field below is written by this program or by
@@ -364,6 +439,15 @@ path_missing:
     .set SLOT_ERR_ACCESS,       SLOT_BASE + 0x238
     .set SLOT_ERR_KEPT,         SLOT_BASE + 0x240
     .set SLOT_HANDLE_TEST,      SLOT_BASE + 0x248 /* HANDLE sentinel compare */
+/* tranche 4: the startup pair's answers. The command-line STRING itself
+   lives at +0x2a0, placed there by the kernel's loader-side install and
+   BELOW the 0x300 area the kernel's own controls write paths into. */
+    .set SLOT_CMDLINE,          SLOT_BASE + 0x250 /* first call's pointer */
+    .set SLOT_CMDLINE2,         SLOT_BASE + 0x258 /* second call's pointer */
+    .set SLOT_CMDLINE_OK,       SLOT_BASE + 0x260 /* bytes + NUL matched */
+    .set SLOT_MODULE,           SLOT_BASE + 0x268 /* GetModuleHandleA(NULL) */
+    .set SLOT_MODULE_OK,        SLOT_BASE + 0x270 /* handle names this image */
+    .set SLOT_CMDLINE_TEXT,     SLOT_BASE + 0x2a0
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

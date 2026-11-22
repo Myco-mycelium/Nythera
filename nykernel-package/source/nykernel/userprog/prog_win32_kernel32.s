@@ -7,6 +7,16 @@
  *   tranche 1 (console):  GetStdHandle, WriteFile, GetTickCount, ExitProcess
  *   tranche 2 (files):    CreateFileA, ReadFile, CloseHandle
  *   tranche 3 (errors):   GetLastError, SetLastError
+ *   tranche 4 (startup):  GetCommandLineA, GetModuleHandleA
+ *
+ * Why the startup pair is its own tranche: a CRT does not begin with a
+ * console write, it begins by asking the loader where it is and what it
+ * was told on the command line. Both answers are POINTERS into state the
+ * loader established before the first instruction ran, so neither can be
+ * faked at call time -- the kernel has to have placed the string and
+ * loaded the image already. They are the first two calls a real Windows
+ * program makes, and the cheapest proof that this surface's answers are
+ * about THIS process rather than about constants.
  *
  * Why the error pair is a separate tranche and not part of the file one:
  * the whole point of GetLastError is that it is the ONE place every failing
@@ -155,6 +165,28 @@ SetLastError:
     movq $8,  nyr_call_block+48(%rip)
     int $0x90
     /* void: no result is read back (see the note above). */
+    ret
+
+    .globl GetCommandLineA
+GetCommandLineA:
+    /* No arguments. The loader placed the string before the process
+       started, so this call is a pure read of that address: the kernel
+       answers with the pointer it installed, and a surface that has
+       none refuses rather than inventing one. */
+    movq $9,  nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl GetModuleHandleA
+GetModuleHandleA:
+    /* LPCSTR lpModuleName in RCX. NULL asks for THIS image's base, which
+       is the only answer v0 can give: there is no module table to look a
+       name up in, so a name is a refusal rather than a guess. */
+    mov %rcx, nyr_call_block+8(%rip)
+    movq $10, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
     ret
 
 

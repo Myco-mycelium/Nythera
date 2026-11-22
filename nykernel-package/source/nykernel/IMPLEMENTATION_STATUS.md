@@ -7459,3 +7459,100 @@ about Windows' internals: it does not model `GetLastError`'s
 does not translate NT `STATUS_*` codes, and it does not make an
 unissued handle safe to use -- the refusal is still counted and still
 reported. Every v0/v0.1/v0.2 limit stands.
+
+## The Win32 API surface v0.4: the startup pair a CRT calls first (2026-11-22)
+
+v0.3 made a refusal read the way Windows writes one. It still left a
+program unable to START the way a Windows program does: a CRT's first
+two calls are not console or file calls at all, they are
+`GetCommandLineA()` and `GetModuleHandleA(NULL)` -- where was I told to
+go, and where am I? Without them a client can only be a hand-written
+stub that already knows both answers, which is exactly the crutch the
+previous three tranches were supposed to remove. Both are now exports
+of the same `kernel32.dll` stub table (eleven, up from nine), and both
+are asked from ring 3 by the client in the boot proof, in the order a
+CRT asks them.
+
+**Loader state, not constants -- which is the whole point.** Neither
+answer is about the call; both are about the PROCESS. So neither is
+computed here:
+
+- `GetCommandLineA` returns the pointer the new
+  `win32::install_cmdline` recorded after writing the string into the
+  client's own mapped page. A kernel static would be the obvious
+  shortcut and would be a lie: its page is supervisor-only, so a ring-3
+  CRT reading the returned `LPSTR` would fault on an address this
+  surface told it to use. The install also refuses, by name, text that
+  is not printable ASCII, and a string that runs past the client's
+  region -- the one failure mode the client could not diagnose for
+  itself. Two calls answer the same address, so a CRT may cache it, as
+  on Windows.
+- `GetModuleHandleA(NULL)` returns the base the client was actually
+  mapped at, which the surface already owns from `install`. The client
+  proves it is not a constant by checking its own `_start` lies inside
+  `[hmod, hmod + SizeOfImage)`.
+- Both refuse with the new `LoaderStateMissing` (`ERROR_NOT_READY`)
+  when the loader state does not exist yet, instead of answering `Ok(0)`
+  -- a starting CRT handed a NULL would dereference it. The proof's
+  control fires that refusal BEFORE the install, so the ordering is a
+  fact of the boot rather than a claim about a branch.
+- A NAMED module is refused with `ModuleNameNotSupported`
+  (`ERROR_MOD_NOT_FOUND`): v0 has no module table, and "that module is
+  not loaded in this process" is exactly true. The client asks only the
+  NULL form, which succeeds.
+
+**The failure-value table was keyed on the wrong thing, and this
+tranche is where that shows.** v0.3 mapped "HANDLE-returning export" to
+`INVALID_HANDLE_VALUE`. `GetModuleHandleA` returns `HMODULE` -- a handle
+type -- but its documented failure is NULL, and `GetCommandLineA`
+(`LPSTR`) also fails with NULL. Returning all-ones as a module base
+would send a CRT walking address `0xffffffffffffffff` for its own
+headers. So the row is now "the failure result the prototype
+DOCUMENTS", both new exports answer 0, and control 8 pins that row
+beside the two that really do answer `INVALID_HANDLE_VALUE`.
+
+**Three new typed refusals, one new table row each.** `Win32Error`
+grew `LoaderStateMissing` (21), `ModuleNameNotSupported` (126) and
+`CommandLineInvalid` (87, the loader-side argument check), so the
+last-error table control went from 19 pinned rows to 22 -- adding a
+variant without deciding its Windows code still fails the boot.
+
+**Pins moved, deliberately, and the build refuses the drift first.**
+Two stubs appended for a stable layout: `.text` `0x158` -> `0x188`
+(`TEXT_SIZE`, and the `build.sh` objdump gate that checks it),
+`GetCommandLineA` at `0x1137`, `GetModuleHandleA` at `0x114c`; the call
+block, the DLL `ImageBase` and the client's `SizeOfImage 0x4000` are
+unchanged. Because the index space is now `0..=10`, the
+`UnknownFunction` control moved from index 9 to index 11 -- a
+negative control that still asked index 9 would now be answered by
+`GetCommandLineA` and would have silently stopped testing anything.
+
+**Proved from both sides in the same boot.** Kernel-side, control 9
+pins the refusal before the install, both bad installs, pointer
+stability across two calls, the bytes plus their NUL at the answered
+address, the module base, and the named-module refusal. From ring 3 the
+client compares the string at the returned pointer byte-for-byte
+against its own copy (NUL required), re-asks for the pointer and
+compares the two, and tests the module handle against its own `_start`.
+
+```
+experimental win32-demo: resolved 11 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA), every slot reading back its export address -- OK
+experimental win32-demo: negative control 9 -- GetCommandLineA was refused with the typed LoaderStateMissing before any loader placed a string; a non-text install and one running past the client's page were refused as CommandLineInvalid and published nothing; the real install then answered the SAME pointer twice (0x4d00000002a0) with "C:\nyrqis\win32_console.exe" plus its NUL readable there; and GetModuleHandleA(NULL) answered the client's own image base 0x1a0000000000 while a named module was refused as ModuleNameNotSupported -- OK, the startup pair reads loader state rather than inventing it
+experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true; handles f1=0x100 ...
+experimental win32-demo self-test: GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it, and GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it; WriteFile returned 1 and wrote 33 byte(s); ... -- OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then called eleven kernel32 exports ...
+```
+
+The gate pins control 9, the `startup=true` field, and both ring-3
+clauses, alongside the moved `resolved 11 import(s)` and `-- OK`
+needles. The client's own run still raises exactly three refusals -- the
+closed-handle pair and the refused `GENERIC_WRITE` open -- so the new
+calls add no refusals of their own: they are the first successful calls
+in the transcript.
+
+**Limits.** The command line carries no arguments (nothing passes any)
+and there is no environment block: `GetEnvironmentStrings`,
+`GetCommandLineW`, `GetStartupInfo` and `__getmainargs` are not here,
+so a real CRT's startup would still stop at the third call. There is no
+module table, so a named `GetModuleHandleA` is refused rather than
+resolved, and no `GetProcAddress`. Every v0/v0.1/v0.2/v0.3 limit stands
+unchanged.

@@ -103,9 +103,9 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "service-0x84 call proof self-test: the caller parked (state BLOCKED)" \
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
         "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
-        "experimental win32-demo: resolved 9 import(s) from the client's REAL .idata" \
+        "experimental win32-demo: resolved 11 import(s) from the client's REAL .idata" \
         "experimental win32-demo: negative control 6 -- the read-only volume refused a relative path" \
-        "experimental win32-demo self-test: WriteFile returned 1 and wrote 33 byte(s)" \
+        "WriteFile returned 1 and wrote 33 byte(s)" \
         "bytes.bin read back byte-identically" \
         "empty.txt read TRUE with 0 byte(s)" \
         "a missing file returned 0xffffffffffffffff" \
@@ -115,8 +115,12 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "SetLastError(0x1234) read back as 0x1234" \
         "experimental win32-demo: negative control 8 -- a refused call answers with its export's own Windows failure value" \
         "GENERIC_WRITE was refused with ERROR_ACCESS_DENIED (5), returned 0xffffffffffffffff rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test (1)" \
-        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1" \
-        "-- OK, a real Windows-format console program called nine kernel32 exports" \
+        "experimental win32-demo: negative control 9 -- GetCommandLineA was refused with the typed LoaderStateMissing before any loader placed a string" \
+        "GetModuleHandleA(NULL) answered the client's own image base 0x1a0000000000" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true" \
+        "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
+        "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \
+        "-- OK, a real Windows-format console program started the way a CRT does" \
     ; do
         if ! grep -aqF -- "$needle" target/qemu-test-stdout.log; then
             echo "FAIL: blocking-receive demo line missing or out of contract: $needle"

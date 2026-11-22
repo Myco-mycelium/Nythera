@@ -1,22 +1,29 @@
 //! The Win32 API surface proof: a genuine Windows-format PE32+ console
 //! program, linked against a genuine Windows-format PE32+ `kernel32.dll`,
-//! whose nine exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
+//! whose eleven exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
 //! `ExitProcess`, `CreateFileA`, `ReadFile`, `CloseHandle`, `GetLastError`,
-//! `SetLastError` -- are performed by this kernel.
+//! `SetLastError`, `GetCommandLineA`, `GetModuleHandleA` -- are performed by
+//! this kernel.
 //!
 //! What is proven, end to end, every boot:
 //!
 //! 1. `userprog/kernel32.dll` loads at its own `ImageBase`, and its REAL
-//!    export directory (`GetProcAddress` semantics) names exactly the nine
+//!    export directory (`GetProcAddress` semantics) names exactly the eleven
 //!    functions; every export address is inside its own `.text` window, and
 //!    the call block the stubs use is where the kernel pins it (magic
 //!    checked) -- the layout-drift rule.
 //! 2. `userprog/win32_console.exe` is loaded, and its REAL
 //!    `IMAGE_DIRECTORY_ENTRY_IMPORT` -- synthesized by GNU ld itself from the
-//!    DLL -- resolves to those nine export addresses. Every IAT slot is read
+//!    DLL -- resolves to those eleven export addresses. Every IAT slot is read
 //!    back against the export table's own answer, per symbol.
 //! 3. The client's own code runs in ring 3 and uses the imports the ordinary
-//!    Windows way. Console: `GetStdHandle` then `WriteFile`. Files: it opens
+//!    Windows way. Startup, in the order a CRT makes them: `GetCommandLineA`
+//!    answers a stable pointer to the string the loader placed, which the
+//!    client compares byte-for-byte (NUL included) against its own copy; and
+//!    `GetModuleHandleA(NULL)` answers the base of the image the client is
+//!    actually running from, which the client proves by checking that its own
+//!    `_start` lies inside `[hmod, hmod + SizeOfImage)`. Console:
+//!    `GetStdHandle` then `WriteFile`. Files: it opens
 //!    `C:\nyrqis\hello.txt` with `CreateFileA`, reads it in two pieces (which
 //!    proves the handle's cursor advances), reads past the end (TRUE, zero
 //!    bytes), writes the bytes it read to the console, and closes the handle;
@@ -39,13 +46,14 @@
 //!    non-ASCII path, a path with no terminator inside the client's region, a
 //!    write access request, a creation disposition other than OPEN_EXISTING,
 //!    a non-NULL overlapped pointer, using the console handle as a file, and
-//!    exhausting the volume's handle table -- each typed, each exercised
-//!    kernel-side before ring 3 runs (negative controls). Each control also
+//!    exhausting the volume's handle table, asking for a command line before
+//!    any loader placed one, and naming a module -- each typed, each
+//!    exercised kernel-side before ring 3 runs (negative controls). Each control also
 //!    asserts the Win32 code that refusal reports, so the `GetLastError` table
 //!    is proved for every variant and not only for the three the client hits;
 //!    the client's own run must raise exactly the refusals it asks for.
 //!
-//! Deliberate scope, stated: nine functions, no NT system-call layer beneath
+//! Deliberate scope, stated: eleven functions, no NT system-call layer beneath
 //! them, no user32/gdi32, no Microsoft code, and `ExitProcess` records its code
 //! and returns (v0 has no task teardown to switch to) -- the client's next
 //! instruction is this link's completion trap, whose handler asserts the
@@ -94,6 +102,18 @@ const EXPECTED_STDOUT: &[u8] = b"hello from the read-only volume\r\n";
 /// The code the client passes to `ExitProcess`.
 const EXPECTED_EXIT_CODE: u64 = 7;
 
+/// The command line this kernel's loader places for the client: the image path
+/// and no arguments, because nothing passes any. A loader would have put this
+/// string in the process's environment block long before the first
+/// instruction; here it goes into the client's own report page (below), and
+/// `GetCommandLineA` answers with that address.
+const CMDLINE: &[u8] = b"C:\\nyrqis\\win32_console.exe";
+/// Where [`CMDLINE`] lives in the report page: above the report fields and
+/// their string area, and BELOW 0x300, where the kernel-side controls write the
+/// paths they hand the surface. Pinned by the assertion under the slot
+/// constants so a new field cannot land on it.
+const CMDLINE_OFFSET: u64 = 0x2A0;
+
 /// How many refusals the surface must have counted during the client's run.
 ///
 /// Not zero any more, and deliberately so: a real program that uses a handle it
@@ -107,15 +127,18 @@ const EXPECTED_EXIT_CODE: u64 = 7;
 /// assertions below pin which.
 const EXPECTED_REFUSALS: u64 = 3;
 
-/// The nine exports the client imports, and the RVAs they must resolve to (the
-/// DLL's own export table is the authority; these are the independent answer
-/// the boot checks it against, per symbol). Sorted by name, which is the order
-/// GNU ld writes its name table in.
-const EXPECTED_EXPORTS: [(&[u8], u64); 9] = [
+/// The eleven exports the client imports, and the RVAs they must resolve to
+/// (the DLL's own export table is the authority; these are the independent
+/// answer the boot checks it against, per symbol). Sorted by name, which is the
+/// order GNU ld writes its name table in -- so the two startup stubs, appended
+/// last in the source for a stable `.text` layout, sort into the middle.
+const EXPECTED_EXPORTS: [(&[u8], u64); 11] = [
     (b"CloseHandle", 0x10F1),
     (b"CreateFileA", 0x1077),
     (b"ExitProcess", 0x1062),
+    (b"GetCommandLineA", 0x1137),
     (b"GetLastError", 0x110D),
+    (b"GetModuleHandleA", 0x114C),
     (b"GetStdHandle", 0x1000),
     (b"GetTickCount", 0x104D),
     (b"ReadFile", 0x10B4),
@@ -169,14 +192,30 @@ const SLOT_ERR_KEPT: u64 = 0x240;
 /// own rather than a derived expectation, because the point is exactly that
 /// the client -- not the kernel -- performs Windows' test on the value it got.
 const SLOT_HANDLE_TEST: u64 = 0x248;
-// A compile-time check that the error-code report fields do not overlap the
-// client's read buffers (which run up to SLOT_BIN + its eight bytes) or the
-// 0x300 region the kernel-side controls write their test paths into. The
-// collision this prevents was real: it produced a green-looking console line
-// and a failed read-back in the same boot.
+// The startup pair's answers, above the error-code fields and below
+// CMDLINE_OFFSET.
+/// The pointer the client's first `GetCommandLineA` returned.
+const SLOT_CMDLINE: u64 = 0x250;
+/// The pointer its second call returned: Windows answers the same one for the
+/// life of the process, so the two fields are compared, not just the bytes.
+const SLOT_CMDLINE2: u64 = 0x258;
+/// 1 when the client compared the bytes at that pointer with its own copy and
+/// they matched, NUL included.
+const SLOT_CMDLINE_OK: u64 = 0x260;
+/// The `HMODULE` the client's `GetModuleHandleA(NULL)` returned.
+const SLOT_MODULE: u64 = 0x268;
+/// 1 when the client's own `_start` lay inside `[hmod, hmod + SizeOfImage)`.
+const SLOT_MODULE_OK: u64 = 0x270;
+// A compile-time check that the report fields do not overlap the client's read
+// buffers (which run up to SLOT_BIN + its eight bytes), the command-line string
+// the loader installs, or the 0x300 region the kernel-side controls write
+// their test paths into. The collision this prevents was real: it produced a
+// green-looking console line and a failed read-back in the same boot.
 const _: () = assert!(
-    SLOT_ERR_CLOSED_READ >= SLOT_BIN + 8 && SLOT_HANDLE_TEST + 8 <= 0x300,
-    "win32-demo report fields must sit between the read buffers and 0x300"
+    SLOT_ERR_CLOSED_READ >= SLOT_BIN + 8
+        && SLOT_MODULE_OK + 8 <= CMDLINE_OFFSET
+        && CMDLINE_OFFSET + CMDLINE.len() as u64 + 1 <= 0x300,
+    "win32-demo report fields must sit between the read buffers and 0x300, and must not overlap the installed command line"
 );
 
 const SLOT_BUF: u64 = 0x100;
@@ -374,7 +413,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     assert_eq!(
         resolved.facts.len(),
         EXPECTED_EXPORTS.len(),
-        "exactly the nine kernel32 imports must resolve"
+        "exactly the eleven kernel32 imports must resolve"
     );
     for (name, rva) in EXPECTED_EXPORTS {
         let fact = resolved
@@ -390,7 +429,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         );
     }
     serial_println!(
-        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError), every slot reading back its export address -- OK",
+        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA), every slot reading back its export address -- OK",
         resolved.facts.len()
     );
 
@@ -429,9 +468,9 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         0,
         "the last error must start at ERROR_SUCCESS before any call"
     );
-    expect_refusal(9, [0; 5], from_text, win32::Win32Error::UnknownFunction);
+    expect_refusal(11, [0; 5], from_text, win32::Win32Error::UnknownFunction);
     serial_println!(
-        "  experimental win32-demo: negative control 3 -- index 9 refused with the typed UnknownFunction -- OK"
+        "  experimental win32-demo: negative control 3 -- index 11 refused with the typed UnknownFunction -- OK"
     );
     expect_refusal(
         0,
@@ -599,10 +638,10 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // relative path's ERROR_PATH_NOT_FOUND, ...) cannot silently report a
     // made-up number. Pinned as literals rather than through `.code()` itself,
     // which would only prove the function is deterministic.
-    // Nineteen rows: thirteen leaf variants plus the six volume rules. Adding
+    // Twenty-two rows: sixteen leaf variants plus the six volume rules. Adding
     // a variant without its Windows code must therefore fail HERE, at compile
     // time, rather than at a call site the boot never reaches.
-    let codes: [(win32::Win32Error, u32); 19] = [
+    let codes: [(win32::Win32Error, u32); 22] = [
         (win32::Win32Error::UnknownFunction, 1),
         (win32::Win32Error::CallerOutsideKernel32, 487),
         (win32::Win32Error::InvalidHandle, 6),
@@ -616,6 +655,9 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         (win32::Win32Error::UnsupportedAccess, 5),
         (win32::Win32Error::UnsupportedDisposition, 87),
         (win32::Win32Error::OverlappedNotSupported, 50),
+        (win32::Win32Error::LoaderStateMissing, 21),
+        (win32::Win32Error::ModuleNameNotSupported, 126),
+        (win32::Win32Error::CommandLineInvalid, 87),
         (win32::Win32Error::File(win32_fs::FsError::PathNotAbsolute), 3),
         (win32::Win32Error::File(win32_fs::FsError::UnknownVolume), 15),
         (win32::Win32Error::File(win32_fs::FsError::FileNotFound), 2),
@@ -665,7 +707,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         "the error-code controls must leave no file open either"
     );
     serial_println!(
-        "  experimental win32-demo: negative control 7 -- the last-error cell started at ERROR_SUCCESS (0), every one of the {} typed refusals answered its pinned Windows code (unknown function 1, trap outside .text 487, invalid handle 6, out-of-region buffer/out-parameter/path 998, oversized length 87, unterminated path 206, non-text path 123, write access 5, bad disposition 87, overlapped I/O 50, relative path 3, unknown drive 15, missing file 2, exhausted table 4), a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK",
+        "  experimental win32-demo: negative control 7 -- the last-error cell started at ERROR_SUCCESS (0), every one of the {} typed refusals answered its pinned Windows code (unknown function 1, trap outside .text 487, invalid handle 6, out-of-region buffer/out-parameter/path 998, oversized length 87, unterminated path 206, non-text path 123, write access 5, bad disposition 87, overlapped I/O 50, loader state missing 21, named module 126, bad loader install 87, relative path 3, unknown drive 15, missing file 2, exhausted table 4), a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK",
         codes.len()
     );
 
@@ -679,16 +721,19 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // refuses: an export added with the wrong row must fail here. Pinned as
     // literals rather than through `failure_value` itself, which would only
     // prove the function is deterministic.
-    let failure_values: [(u64, u64); 9] = [
-        (0, win32::INVALID_HANDLE_VALUE), // GetStdHandle -> HANDLE
-        (1, 0),                           // WriteFile    -> BOOL
-        (2, 0),                           // GetTickCount -> DWORD
-        (3, 0),                           // ExitProcess  -> void
-        (4, win32::INVALID_HANDLE_VALUE), // CreateFileA  -> HANDLE
-        (5, 0),                           // ReadFile     -> BOOL
-        (6, 0),                           // CloseHandle  -> BOOL
-        (7, 0),                           // GetLastError -> DWORD
-        (8, 0),                           // SetLastError -> void
+    let failure_values: [(u64, u64); 11] = [
+        (0, win32::INVALID_HANDLE_VALUE), // GetStdHandle      -> HANDLE
+        (1, 0),                           // WriteFile         -> BOOL
+        (2, 0),                           // GetTickCount      -> DWORD
+        (3, 0),                           // ExitProcess       -> void
+        (4, win32::INVALID_HANDLE_VALUE), // CreateFileA       -> HANDLE
+        (5, 0),                           // ReadFile          -> BOOL
+        (6, 0),                           // CloseHandle       -> BOOL
+        (7, 0),                           // GetLastError      -> DWORD
+        (8, 0),                           // SetLastError      -> void
+        (9, 0),                           // GetCommandLineA   -> LPSTR (NULL)
+        (10, 0),                          // GetModuleHandleA  -> HMODULE, but
+                                          //   its documented failure is NULL
     ];
     for (index, value) in failure_values {
         assert_eq!(
@@ -700,12 +745,93 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         );
     }
     assert_eq!(
-        win32::failure_value(9),
+        win32::failure_value(11),
         0,
         "an index that names no export has no prototype to borrow a value from"
     );
     serial_println!(
-        "  experimental win32-demo: negative control 8 -- a refused call answers with its export's own Windows failure value: INVALID_HANDLE_VALUE from GetStdHandle and CreateFileA (HANDLE), 0 from WriteFile, ReadFile and CloseHandle (BOOL), 0 from GetTickCount and GetLastError (DWORD), 0 from ExitProcess and SetLastError (void), and 0 from an index that names no export -- OK, so the client's handle test reads a refusal exactly as Windows writes it"
+        "  experimental win32-demo: negative control 8 -- a refused call answers with its export's own Windows failure value: INVALID_HANDLE_VALUE from GetStdHandle and CreateFileA (HANDLE), 0 from WriteFile, ReadFile and CloseHandle (BOOL), 0 from GetTickCount and GetLastError (DWORD), 0 from ExitProcess and SetLastError (void), 0 from GetCommandLineA and GetModuleHandleA (both document NULL, even though HMODULE is a handle type), and 0 from an index that names no export -- OK, so the client's handle test reads a refusal exactly as Windows writes it"
+    );
+
+    // Negative control 9: the loader state the startup pair describes.
+    //
+    // # Why this is refused BEFORE it is installed
+    //
+    // GetCommandLineA is the FIRST call a CRT makes, so the interesting
+    // failure is the one Windows never has: a surface asked for a command line
+    // that its loader never placed. Ordered first here, while the cell is still
+    // empty, so the refusal is a fact about this boot rather than a claim about
+    // a code path. A `Ok(0)` here would hand the client a NULL it would then
+    // dereference.
+    assert_eq!(
+        win32::command_line(),
+        None,
+        "the command line must not exist before the loader installs one"
+    );
+    expect_refusal(
+        9,
+        [0; 5],
+        from_text,
+        win32::Win32Error::LoaderStateMissing,
+    );
+    // A bad install is refused by name and leaves the state alone: not text,
+    // and a range that runs off the end of the client's page. The second one
+    // matters most -- a pointer the client cannot read is the only failure mode
+    // of this API that ring 3 could not diagnose for itself.
+    let cmdline_at = write_slot_string(CMDLINE_OFFSET, CMDLINE);
+    assert_eq!(
+        win32::install_cmdline(cmdline_at, b"C:\\nyrqis\\x\x01"),
+        Err(win32::Win32Error::CommandLineInvalid),
+        "non-text command line must be refused at install time"
+    );
+    assert_eq!(
+        win32::install_cmdline(SLOT_ADDR + 0x1000 - 6, b"C:\\nyrqis"),
+        Err(win32::Win32Error::CommandLineInvalid),
+        "a command line that runs past the client's page must be refused"
+    );
+    assert_eq!(
+        win32::command_line(),
+        None,
+        "a refused install must not publish a pointer"
+    );
+    // The real install: the loader's own act, after which the call answers.
+    win32::install_cmdline(cmdline_at, CMDLINE)
+        .unwrap_or_else(|e| panic!("installing the command line failed: {:?}", e));
+    assert_eq!(win32::command_line(), Some(cmdline_at));
+    // Twice, and both times the same address -- a client may cache the pointer,
+    // and nothing here recomputes it.
+    assert_eq!(win32::dispatch(9, [0; 5], from_text), Ok(cmdline_at));
+    assert_eq!(win32::dispatch(9, [0; 5], from_text), Ok(cmdline_at));
+    // The bytes really are there, NUL-terminated: a pointer is only an answer
+    // if the client can read the string it names.
+    let installed = core::slice::from_raw_parts(cmdline_at as *const u8, CMDLINE.len() + 1);
+    let mut copied = true;
+    for (i, want) in CMDLINE.iter().enumerate() {
+        copied &= installed.get(i) == Some(want);
+    }
+    // Windows' command line is a NUL-terminated ANSI string, so the byte after
+    // the last character is part of the contract too.
+    copied &= installed.get(CMDLINE.len()) == Some(&0u8);
+    assert!(
+        copied,
+        "the installed command line must be readable at the answered pointer and NUL-terminated"
+    );
+    // GetModuleHandleA(NULL) answers the base the client was mapped at, and a
+    // NAMED module is refused instead of guessed: v0 has no module table.
+    assert_eq!(win32::dispatch(10, [0; 5], from_text), Ok(APP_IMAGE_BASE));
+    expect_refusal(
+        10,
+        [cmdline_at, 0, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ModuleNameNotSupported,
+    );
+    // Both cell reads answer for the CLIENT after this, so the transcript's
+    // values come from the surface's own state and not from these controls.
+    serial_println!(
+        "  experimental win32-demo: negative control 9 -- GetCommandLineA was refused with the typed LoaderStateMissing before any loader placed a string; a non-text install and one running past the client's page were refused as CommandLineInvalid and published nothing; the real install then answered the SAME pointer twice ({:#x}) with {:?} plus its NUL readable there; and GetModuleHandleA(NULL) answered the client's own image base {:#x} while a named module was refused as ModuleNameNotSupported -- OK, the startup pair reads loader state rather than inventing it",
+        cmdline_at,
+        NameOf(CMDLINE),
+        APP_IMAGE_BASE
     );
 
     // No teardown for this demo (see teardown_demo): the space stays owned by
@@ -713,7 +839,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // ring-3 entry below returns to.
 
     serial_println!(
-        "  experimental win32-demo: kernel-side proof complete; entering the console client (ring 3), which calls kernel32.dll's own stubs for GetStdHandle, CreateFileA/ReadFile/CloseHandle on the read-only C: volume, WriteFile, GetTickCount twice, then ExitProcess({})",
+        "  experimental win32-demo: kernel-side proof complete; entering the console client (ring 3), which starts the way a CRT does -- GetCommandLineA and GetModuleHandleA(NULL) -- then calls kernel32.dll's own stubs for GetStdHandle, CreateFileA/ReadFile/CloseHandle on the read-only C: volume, WriteFile, GetTickCount twice, then ExitProcess({})",
         EXPECTED_EXIT_CODE
     );
     let user_rsp = VirtAddr::new(USER_STACK_ADDR + 4096 - 16);
@@ -747,6 +873,12 @@ pub unsafe fn on_trap() -> ! {
     let (file6, err_access, err_kept) =
         (slot(SLOT_FILE6), slot(SLOT_ERR_ACCESS), slot(SLOT_ERR_KEPT));
     let handle_test = slot(SLOT_HANDLE_TEST);
+    let (cmdline, cmdline2) = (slot(SLOT_CMDLINE), slot(SLOT_CMDLINE2));
+    let (cmdline_ok, module, module_ok) = (
+        slot(SLOT_CMDLINE_OK),
+        slot(SLOT_MODULE),
+        slot(SLOT_MODULE_OK),
+    );
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -789,7 +921,17 @@ pub unsafe fn on_trap() -> ! {
         && handle_test == 1
         && err_access == win32::ERROR_ACCESS_DENIED as u64
         && err_kept == err_access;
-    let ok = console_ok
+    // The startup pair, from ring 3: the pointer is the one the loader
+    // installed (so both calls agree), the bytes there are the client's own
+    // string, and the module handle names the image the client is running
+    // FROM -- the last one is why the client compares `_start`, not a constant.
+    let startup_ok = cmdline == SLOT_ADDR + CMDLINE_OFFSET
+        && cmdline2 == cmdline
+        && cmdline_ok == 1
+        && module == APP_IMAGE_BASE
+        && module_ok == 1;
+    let ok = startup_ok
+        && console_ok
         && hello_ok
         && bytes_ok
         && empty_ok
@@ -805,7 +947,7 @@ pub unsafe fn on_trap() -> ! {
     // then names its own cause in the transcript instead of asking the next
     // reader to re-derive it from a passing-looking line.
     serial_println!(
-        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
+        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
         console_ok,
         hello_ok,
         bytes_ok,
@@ -818,6 +960,7 @@ pub unsafe fn on_trap() -> ! {
         win32_fs::open_count() == 0,
         win32::refusals() == EXPECTED_REFUSALS,
         handle_test,
+        startup_ok,
         file1,
         file2,
         file3,
@@ -836,7 +979,11 @@ pub unsafe fn on_trap() -> ! {
         r6
     );
     serial_println!(
-        "  experimental win32-demo self-test: WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair and its refused write-access open) -- {}",
+        "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair and its refused write-access open) -- {}",
+        cmdline,
+        cmdline_ok,
+        module,
+        module_ok,
         write_ret,
         written,
         NameOf(stdout),
@@ -862,7 +1009,7 @@ pub unsafe fn on_trap() -> ! {
         win32_fs::open_count(),
         win32::refusals(),
         if ok {
-            "OK, a real Windows-format console program called nine kernel32 exports through a real PE32+ DLL's export table and the kernel performed them in ring 0 against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
+            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then called eleven kernel32 exports through a real PE32+ DLL's export table and the kernel performed them in ring 0 against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
         } else {
             "MISMATCH"
         }
