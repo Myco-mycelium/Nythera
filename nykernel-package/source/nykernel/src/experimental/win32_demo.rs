@@ -1,19 +1,19 @@
 //! The Win32 API surface proof: a genuine Windows-format PE32+ console
 //! program, linked against a genuine Windows-format PE32+ `kernel32.dll`,
-//! whose seven exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
-//! `ExitProcess`, `CreateFileA`, `ReadFile`, `CloseHandle` -- are performed by
-//! this kernel.
+//! whose nine exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
+//! `ExitProcess`, `CreateFileA`, `ReadFile`, `CloseHandle`, `GetLastError`,
+//! `SetLastError` -- are performed by this kernel.
 //!
 //! What is proven, end to end, every boot:
 //!
 //! 1. `userprog/kernel32.dll` loads at its own `ImageBase`, and its REAL
-//!    export directory (`GetProcAddress` semantics) names exactly the seven
+//!    export directory (`GetProcAddress` semantics) names exactly the nine
 //!    functions; every export address is inside its own `.text` window, and
 //!    the call block the stubs use is where the kernel pins it (magic
 //!    checked) -- the layout-drift rule.
 //! 2. `userprog/win32_console.exe` is loaded, and its REAL
 //!    `IMAGE_DIRECTORY_ENTRY_IMPORT` -- synthesized by GNU ld itself from the
-//!    DLL -- resolves to those seven export addresses. Every IAT slot is read
+//!    DLL -- resolves to those nine export addresses. Every IAT slot is read
 //!    back against the export table's own answer, per symbol.
 //! 3. The client's own code runs in ring 3 and uses the imports the ordinary
 //!    Windows way. Console: `GetStdHandle` then `WriteFile`. Files: it opens
@@ -23,7 +23,12 @@
 //!    then it opens a file that is deliberately NOT text (`0x00`, `0x80`,
 //!    `0xfe`), a zero-length file, and a file it then uses after closing it
 //!    (which must fail); and it asks for a file that does not exist (which
-//!    must return `INVALID_HANDLE_VALUE`, not an error).
+//!    must return `INVALID_HANDLE_VALUE`, not an error). Errors: it then asks
+//!    `GetLastError` WHY each of those failed -- the miss (`ERROR_FILE_NOT_FOUND`),
+//!    the closed handle used twice (`ERROR_INVALID_HANDLE`), and a refused
+//!    `GENERIC_WRITE` open (`ERROR_ACCESS_DENIED`) -- proves `SetLastError`
+//!    writes an arbitrary code, and proves a successful call leaves the code
+//!    alone.
 //! 4. The surface REFUSES what ring 3 cannot justify -- an unknown function
 //!    index, a trap from outside kernel32's `.text`, a handle never issued, a
 //!    buffer or out-parameter outside the client's mapped regions, a length
@@ -32,15 +37,19 @@
 //!    write access request, a creation disposition other than OPEN_EXISTING,
 //!    a non-NULL overlapped pointer, using the console handle as a file, and
 //!    exhausting the volume's handle table -- each typed, each exercised
-//!    kernel-side before ring 3 runs (negative controls), and the client's own
-//!    run must raise none.
+//!    kernel-side before ring 3 runs (negative controls). Each control also
+//!    asserts the Win32 code that refusal reports, so the `GetLastError` table
+//!    is proved for every variant and not only for the three the client hits;
+//!    the client's own run must raise exactly the refusals it asks for.
 //!
-//! Deliberate scope, stated: seven functions, no NT system-call layer beneath
+//! Deliberate scope, stated: nine functions, no NT system-call layer beneath
 //! them, no user32/gdi32, no Microsoft code, and `ExitProcess` records its code
 //! and returns (v0 has no task teardown to switch to) -- the client's next
 //! instruction is this link's completion trap, whose handler asserts the
 //! recorded code. The volume is three read-only files in the kernel image, not
 //! a file system: no directories, no writes, no current directory, no dates.
+//! The last error is one cell for the whole kernel, because v0 has one ring-3
+//! client; Windows keeps it per thread in a TEB this kernel does not have.
 //! That is the difference between a real Win32 API surface and Windows
 //! compatibility, and this file only claims the former.
 //!
@@ -88,22 +97,26 @@ const EXPECTED_EXIT_CODE: u64 = 7;
 /// has already closed is making a mistake, and this surface answers it with a
 /// typed refusal instead of a silent zero. The client does exactly that twice
 /// on purpose -- `ReadFile` and a second `CloseHandle` on the closed handle --
-/// so the surface must have refused exactly those two. A different number means
-/// either an extra refusal (a bug in the surface) or a missing one (the client
-/// never reached the probe), and the per-field assertions below pin which.
-const EXPECTED_REFUSALS: u64 = 2;
+/// and it also asks for `GENERIC_WRITE` on a read-only volume, which is a
+/// refusal too. So the surface must have refused exactly those three. A
+/// different number means either an extra refusal (a bug in the surface) or a
+/// missing one (the client never reached the probe), and the per-field
+/// assertions below pin which.
+const EXPECTED_REFUSALS: u64 = 3;
 
-/// The seven exports the client imports, and the RVAs they must resolve to (the
+/// The nine exports the client imports, and the RVAs they must resolve to (the
 /// DLL's own export table is the authority; these are the independent answer
 /// the boot checks it against, per symbol). Sorted by name, which is the order
 /// GNU ld writes its name table in.
-const EXPECTED_EXPORTS: [(&[u8], u64); 7] = [
+const EXPECTED_EXPORTS: [(&[u8], u64); 9] = [
     (b"CloseHandle", 0x10F1),
     (b"CreateFileA", 0x1077),
     (b"ExitProcess", 0x1062),
+    (b"GetLastError", 0x110D),
     (b"GetStdHandle", 0x1000),
     (b"GetTickCount", 0x104D),
     (b"ReadFile", 0x10B4),
+    (b"SetLastError", 0x1122),
     (b"WriteFile", 0x101C),
 ];
 
@@ -134,10 +147,60 @@ const SLOT_R6: u64 = 176;
 const SLOT_N6: u64 = 184;
 const SLOT_CLOSE4B: u64 = 192;
 const SLOT_FILE5: u64 = 200;
+// The error-code fields sit ABOVE the four read buffers (0x100, 0x140, 0x180,
+// 0x200) and BELOW the 0x300 area the kernel-side controls write paths into.
+// They were first numbered from +208, and the last of them landed on 0x100 --
+// on top of the buffer holding the file bytes the client writes to the console,
+// which produced a transcript with a correct console message and a false
+// read-back check. Pinned here rather than only in the fixture so that collision
+// cannot come back silently.
+const SLOT_ERR_CLOSED_READ: u64 = 0x210;
+const SLOT_ERR_CLOSED_CLOSE: u64 = 0x218;
+const SLOT_ERR_MISSING: u64 = 0x220;
+const SLOT_ERR_SET: u64 = 0x228;
+const SLOT_FILE6: u64 = 0x230;
+const SLOT_ERR_ACCESS: u64 = 0x238;
+const SLOT_ERR_KEPT: u64 = 0x240;
+// A compile-time check that the error-code report fields do not overlap the
+// client's read buffers (which run up to SLOT_BIN + its eight bytes) or the
+// 0x300 region the kernel-side controls write their test paths into. The
+// collision this prevents was real: it produced a green-looking console line
+// and a failed read-back in the same boot.
+const _: () = assert!(
+    SLOT_ERR_CLOSED_READ >= SLOT_BIN + 8 && SLOT_ERR_KEPT + 8 <= 0x300,
+    "win32-demo report fields must sit between the read buffers and 0x300"
+);
+
 const SLOT_BUF: u64 = 0x100;
 const SLOT_BIN: u64 = 0x200;
 
+/// The pages this stage's kernel-side work is given, deliberately rather than
+/// by default.
+///
+/// # Why an explicit budget, and why this stage needed one
+///
+/// This demo did NOT run on its own stack before the error-code tranche: both
+/// `start` and the `on_trap` continuation ran as ordinary calls on the stack its
+/// predecessor (`pe_resource_demo`) happened to be using, and that stack was
+/// already carrying the frames of every demo before it. The third tranche's few
+/// hundred bytes of locals and control code were enough to cross the edge, and
+/// the guard page below the stack caught it exactly as designed -- a #DF in
+/// `kernel_stack`'s region, zero corruption, no panic message to guess at.
+///
+/// So this stage now follows the chain-partition rule every sibling follows
+/// (`chain::run_on_fresh_stack`, see `pe_reloc_demo`'s note): its kernel-side
+/// work runs on ITS OWN guarded RSP0 stack, and the budget is stated here. Eight
+/// pages is the same figure the accumulated-chain era needed and the figure
+/// `pe_reloc_demo` still states, because the failure shape is the same -- this
+/// stage plus the `on_trap` continuation that chains into `isolation_demo` with
+/// an ordinary call, not one stage in isolation. Borrowing a predecessor's
+/// stack is what made the overflow depend on unrelated demos' frame sizes.
+const WIN32_STACK_PAGES: u64 = 8;
+
 static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
+/// This demo's address space, stashed for the stage-two continuation (the
+/// chain-partition rule: no caller frame survives the stack switch).
+static mut STAGE_SPACE: Option<AddressSpace> = None;
 
 /// Reads one qword of the client's report page.
 ///
@@ -156,10 +219,8 @@ unsafe fn slot_bytes(offset: u64, len: usize) -> &'static [u8] {
     core::slice::from_raw_parts((SLOT_ADDR + offset) as *const u8, len)
 }
 
-/// Builds an address space, loads `kernel32.dll` and the console client, runs
-/// the import and surface negative controls, resolves the client's imports for
-/// real, and enters ring 3 at the client's entry point. [`on_trap`] (vector
-/// 0x91) reports the results and chains into `experimental::isolation_demo`.
+/// Builds this stage's address space (with [`WIN32_STACK_PAGES`], see that
+/// constant's note) and jumps onto its own kernel stack, where the proof runs.
 ///
 /// # Safety
 /// Must be called at most once, with Phases 1-4-prep already initialized.
@@ -167,10 +228,34 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     FRAME_ALLOCATOR = Some(frame_allocator);
     let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
-    let mut space = AddressSpace::new_sharing_kernel(fa)
+    let space = AddressSpace::new_sharing_kernel_with_stack_pages(fa, WIN32_STACK_PAGES)
         .unwrap_or_else(|_| panic!("failed to build win32-demo address space"));
     space.activate();
+    STAGE_SPACE = Some(space);
+    // The chain-partition rule: everything below runs on this space's own
+    // guarded RSP0 stack, so this stage's budget does not depend on how deep
+    // the demos before it left the shared one.
+    crate::experimental::chain::run_on_fresh_stack(
+        (*&raw const STAGE_SPACE).as_ref().unwrap(),
+        stage_two_after_stack_switch,
+    )
+}
+
+/// The whole proof, running on THIS space's own kernel stack: it loads
+/// `kernel32.dll` and the console client, runs the import and surface negative
+/// controls, resolves the client's imports for real, and enters ring 3 at the
+/// client's entry point. [`on_trap`] (vector 0x91) reports the results and
+/// chains into `experimental::isolation_demo`.
+///
+/// # Safety
+/// Reached only through [`start`]'s trampoline; the statics it reads are set
+/// there, and no caller frame survives the switch.
+unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
+    let space = (*&raw mut STAGE_SPACE)
+        .as_mut()
+        .expect("win32-demo stage space missing");
     let mut mapper = space.mapper();
+    let fa = (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap();
 
     // --- the provider: a real DLL, its real export directory ---
     let dll = pe::load(KERNEL32_DLL, &mut mapper, fa, 0)
@@ -281,7 +366,7 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
     assert_eq!(
         resolved.facts.len(),
         EXPECTED_EXPORTS.len(),
-        "exactly the seven kernel32 imports must resolve"
+        "exactly the nine kernel32 imports must resolve"
     );
     for (name, rva) in EXPECTED_EXPORTS {
         let fact = resolved
@@ -297,7 +382,7 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         );
     }
     serial_println!(
-        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle), every slot reading back its export address -- OK",
+        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError), every slot reading back its export address -- OK",
         resolved.facts.len()
     );
 
@@ -326,6 +411,16 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         core::ptr::write_volatile((SLOT_ADDR + i * 8) as *mut u64, 0);
     }
     let from_text = win32::IMAGE_BASE + win32::TEXT_RVA + 4;
+
+    // Negative control 3 -- and the start of the last-error contract: before
+    // any call has failed, the code is ERROR_SUCCESS, exactly as a Windows
+    // thread's TEB starts. A surface that started at random would make a
+    // client's first GetLastError() a lie about a call it never made.
+    assert_eq!(
+        win32::last_error(),
+        0,
+        "the last error must start at ERROR_SUCCESS before any call"
+    );
     expect_refusal(9, [0; 5], from_text, win32::Win32Error::UnknownFunction);
     serial_println!(
         "  experimental win32-demo: negative control 3 -- index 9 refused with the typed UnknownFunction -- OK"
@@ -490,7 +585,85 @@ pub unsafe fn start(frame_allocator: BumpFrameAllocator) -> ! {
         win32_fs::MAX_OPEN + 1
     );
 
-    core::mem::forget(space); // no teardown for this demo -- see teardown_demo
+    // Negative control 7: the error-code TABLE, pinned. The controls above
+    // prove the codes of the refusals they fire; this proves the rest of the
+    // table, so a variant that no control reaches (a non-text console write, a
+    // relative path's ERROR_PATH_NOT_FOUND, ...) cannot silently report a
+    // made-up number. Pinned as literals rather than through `.code()` itself,
+    // which would only prove the function is deterministic.
+    // Nineteen rows: thirteen leaf variants plus the six volume rules. Adding
+    // a variant without its Windows code must therefore fail HERE, at compile
+    // time, rather than at a call site the boot never reaches.
+    let codes: [(win32::Win32Error, u32); 19] = [
+        (win32::Win32Error::UnknownFunction, 1),
+        (win32::Win32Error::CallerOutsideKernel32, 487),
+        (win32::Win32Error::InvalidHandle, 6),
+        (win32::Win32Error::BufferOutsideClient, 998),
+        (win32::Win32Error::LengthTooLarge, 87),
+        (win32::Win32Error::OutPointerOutsideClient, 998),
+        (win32::Win32Error::NotUtf8, 87),
+        (win32::Win32Error::PathOutsideClient, 998),
+        (win32::Win32Error::PathTooLong, 206),
+        (win32::Win32Error::PathNotText, 123),
+        (win32::Win32Error::UnsupportedAccess, 5),
+        (win32::Win32Error::UnsupportedDisposition, 87),
+        (win32::Win32Error::OverlappedNotSupported, 50),
+        (win32::Win32Error::File(win32_fs::FsError::PathNotAbsolute), 3),
+        (win32::Win32Error::File(win32_fs::FsError::UnknownVolume), 15),
+        (win32::Win32Error::File(win32_fs::FsError::FileNotFound), 2),
+        (win32::Win32Error::File(win32_fs::FsError::OutOfHandles), 4),
+        (win32::Win32Error::File(win32_fs::FsError::NotAFileHandle), 6),
+        (win32::Win32Error::File(win32_fs::FsError::ClosedHandle), 6),
+    ];
+    for (error, code) in codes {
+        assert_eq!(
+            error.code(),
+            code,
+            "{:?} must report the Windows code {}",
+            error,
+            code
+        );
+    }
+
+    // A SUCCESSFUL call must not clear the code: after the certifications
+    // above the cell holds 2 (the miss), and a successful open must leave it
+    // there -- otherwise a client that checks GetLastError after a call that
+    // worked would read success as a failure. (The client proves the same from
+    // ring 3 with a successful GetTickCount.)
+    win32::set_last_error(win32::ERROR_FILE_NOT_FOUND);
+    let rb = win32::dispatch(4, [hello, read, 1, 0, open_existing], from_text)
+        .unwrap_or_else(|e| panic!("reopening a volume file failed: {:?}", e));
+    assert_eq!(rb, win32_fs::handle_at(0), "a successful open returns slot 0's handle");
+    assert_eq!(
+        win32::last_error(),
+        win32::ERROR_FILE_NOT_FOUND,
+        "a successful call must leave the last error alone"
+    );
+    assert_eq!(win32::dispatch(6, [rb, 0, 0, 0, 0], from_text), Ok(1));
+    // SetLastError is the writer half of the pair, so the kernel-side proof
+    // exercises it directly too, including that a DWORD-sized argument is read
+    // as its low 32 bits (0x1234 must not come back as a wider value).
+    win32::set_last_error(0xDEAD_BEEF);
+    assert_eq!(win32::last_error(), 0xDEAD_BEEF);
+    assert_eq!(
+        win32::dispatch(8, [0x1234, 0, 0, 0, 0], from_text),
+        Ok(0),
+        "SetLastError returns void"
+    );
+    assert_eq!(win32::dispatch(7, [0; 5], from_text), Ok(0x1234));
+    assert_eq!(
+        win32_fs::open_count(),
+        0,
+        "the error-code controls must leave no file open either"
+    );
+    serial_println!(
+        "  experimental win32-demo: negative control 7 -- the last-error cell started at ERROR_SUCCESS (0), every one of the {} typed refusals answered its pinned Windows code (unknown function 1, trap outside .text 487, invalid handle 6, out-of-region buffer/out-parameter/path 998, oversized length 87, unterminated path 206, non-text path 123, write access 5, bad disposition 87, overlapped I/O 50, relative path 3, unknown drive 15, missing file 2, exhausted table 4), a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK",
+        codes.len()
+    );
+
+    // No teardown for this demo (see teardown_demo): the space stays owned by
+    // `STAGE_SPACE` for the rest of the boot, and this stack is the one the
+    // ring-3 entry below returns to.
 
     serial_println!(
         "  experimental win32-demo: kernel-side proof complete; entering the console client (ring 3), which calls kernel32.dll's own stubs for GetStdHandle, CreateFileA/ReadFile/CloseHandle on the read-only C: volume, WriteFile, GetTickCount twice, then ExitProcess({})",
@@ -521,7 +694,10 @@ pub unsafe fn on_trap() -> ! {
     let close3 = slot(SLOT_CLOSE3);
     let (close4, close4b) = (slot(SLOT_CLOSE4), slot(SLOT_CLOSE4B));
     let (r6, n6) = (slot(SLOT_R6), slot(SLOT_N6));
-    let file5 = slot(SLOT_FILE5);
+    let (file4, file5) = (slot(SLOT_FILE4), slot(SLOT_FILE5));
+    let (err_closed_read, err_closed_close) = (slot(SLOT_ERR_CLOSED_READ), slot(SLOT_ERR_CLOSED_CLOSE));
+    let (err_missing, err_set) = (slot(SLOT_ERR_MISSING), slot(SLOT_ERR_SET));
+    let (file6, err_access, err_kept) = (slot(SLOT_FILE6), slot(SLOT_ERR_ACCESS), slot(SLOT_ERR_KEPT));
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -547,18 +723,65 @@ pub unsafe fn on_trap() -> ! {
     let empty_ok = file3 == h0 && r5 == 1 && n5 == 0 && close3 == 1;
     let closed_ok = close4 == 1 && r6 == 0 && n6 == 0 && close4b == 0;
     let miss_ok = file5 == win32::INVALID_HANDLE_VALUE;
+    // The error codes the client asked about, from the same typed refusals the
+    // kernel raised: the miss (a failure VALUE), the closed handle used twice
+    // (real refusals), the refused GENERIC_WRITE open (a real refusal), the
+    // arbitrary code it set itself, and the code a SUCCESSFUL call must not
+    // disturb. `file6 == 0` is the refusal's Windows BOOL, kept as-is.
+    let errors_ok = err_missing == win32::ERROR_FILE_NOT_FOUND as u64
+        && err_closed_read == win32::ERROR_INVALID_HANDLE as u64
+        && err_closed_close == win32::ERROR_INVALID_HANDLE as u64
+        && err_set == 0x1234
+        && file6 == 0
+        && err_access == win32::ERROR_ACCESS_DENIED as u64
+        && err_kept == err_access;
     let ok = console_ok
         && hello_ok
         && bytes_ok
         && empty_ok
         && closed_ok
         && miss_ok
+        && errors_ok
         && tick2 >= tick1
         && exit == Some(EXPECTED_EXIT_CODE)
         && win32_fs::open_count() == 0
         && win32::refusals() == EXPECTED_REFUSALS;
+    // State every check and the raw values behind the ones that are not part of
+    // the sentence below (each handle, each close result). A MISMATCH verdict
+    // then names its own cause in the transcript instead of asking the next
+    // reader to re-derive it from a passing-looking line.
     serial_println!(
-        "  experimental win32-demo self-test: WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's two deliberate uses of a closed handle) -- {}",
+        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
+        console_ok,
+        hello_ok,
+        bytes_ok,
+        empty_ok,
+        closed_ok,
+        miss_ok,
+        errors_ok,
+        tick2 >= tick1,
+        exit == Some(EXPECTED_EXIT_CODE),
+        win32_fs::open_count() == 0,
+        win32::refusals() == EXPECTED_REFUSALS,
+        file1,
+        file2,
+        file3,
+        file4,
+        file5,
+        file6,
+        close1,
+        close2,
+        close3,
+        close4,
+        r1,
+        r2,
+        r3,
+        r4,
+        r5,
+        r6
+    );
+    serial_println!(
+        "  experimental win32-demo self-test: WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}), GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair and its refused write-access open) -- {}",
         write_ret,
         written,
         NameOf(stdout),
@@ -570,13 +793,19 @@ pub unsafe fn on_trap() -> ! {
         r6,
         close4b,
         file5,
+        err_missing,
+        err_closed_read,
+        err_closed_close,
+        err_access,
+        err_set,
+        err_kept,
         tick1,
         tick2,
         exit,
         win32_fs::open_count(),
         win32::refusals(),
         if ok {
-            "OK, a real Windows-format console program called seven kernel32 exports through a real PE32+ DLL's export table and the kernel performed them in ring 0 against a read-only in-memory volume -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
+            "OK, a real Windows-format console program called nine kernel32 exports through a real PE32+ DLL's export table and the kernel performed them in ring 0 against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
         } else {
             "MISMATCH"
         }
@@ -600,7 +829,9 @@ unsafe fn write_slot_string(offset: u64, bytes: &[u8]) -> u64 {
 }
 
 /// Asserts one kernel32 request is refused with exactly `want`, so a refusal
-/// that fires for the WRONG reason fails the boot too.
+/// that fires for the WRONG reason fails the boot too -- and asserts that the
+/// refusal recorded the Win32 code `want` maps to, so `GetLastError` cannot
+/// answer with a number that does not belong to the condition.
 ///
 /// # Safety
 /// Same contract as [`win32::dispatch`].
@@ -610,6 +841,14 @@ unsafe fn expect_refusal(index: u64, args: [u64; 5], rip: u64, want: win32::Win3
         Err(want),
         "expected a {:?} refusal",
         want
+    );
+    assert_eq!(
+        win32::last_error(),
+        want.code(),
+        "a {:?} refusal must leave GetLastError answering {}, not {}",
+        want,
+        want.code(),
+        win32::last_error()
     );
 }
 

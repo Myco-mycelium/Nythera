@@ -7321,3 +7321,81 @@ Handle values are this surface's own, not NT's. And all of the v0 limits
 still stand: no NT system-call layer, no user32/gdi32, no Microsoft
 code, `ExitProcess` records and returns, and the console is the serial
 line.
+
+## The Win32 API surface v0.2: GetLastError, and the codes behind every refusal (2026-11-22)
+
+The v0.1 section above ends by admitting the gap this increment closes:
+a client that receives `INVALID_HANDLE_VALUE` could not ask *why*.
+`GetLastError` and `SetLastError` now exist, and -- this is the part
+that makes the pair worth having -- the codes they answer come from the
+same typed refusals the surface already raises.
+
+**One table, not a number at each call site.** `Win32Error::code()` maps
+every variant (and every `FsError` inside `Win32Error::File`) to the
+value Windows itself uses: `ERROR_INVALID_FUNCTION` (1) for an index no
+export answers, `ERROR_FILE_NOT_FOUND` (2), `ERROR_PATH_NOT_FOUND` (3),
+`ERROR_TOO_MANY_OPEN_FILES` (4), `ERROR_ACCESS_DENIED` (5),
+`ERROR_INVALID_HANDLE` (6), `ERROR_INVALID_DRIVE` (15),
+`ERROR_NOT_SUPPORTED` (50), `ERROR_INVALID_PARAMETER` (87),
+`ERROR_INVALID_NAME` (123), `ERROR_FILENAME_EXCED_RANGE` (206),
+`ERROR_INVALID_ADDRESS` (487) and `ERROR_NOACCESS` (998). A code written
+next to the `return Err(..)` that raised it drifts the moment a check is
+reused, and the drift is invisible because the client still gets a
+plausible number; deriving it from the variant means a refusal can only
+report the code of the condition it actually detected.
+
+**Two kinds of failure, kept distinct.** A REFUSAL (the call was not
+performed) records its code and returns `FALSE`/0 to the stub. A
+Windows-style FAILURE VALUE is not a refusal but still a failure:
+`CreateFileA` on a missing file returns `INVALID_HANDLE_VALUE` *and*
+records `ERROR_FILE_NOT_FOUND`, which is the exact case the boot
+client asks about. A SUCCESSFUL call leaves the cell alone, as Windows
+does -- the code is only meaningful immediately after a failure, and a
+surface that cleared it would hide a client checking in the wrong place.
+`dispatch` is the single gate that records, so no path can refuse
+without its code being stored (the boot's kernel-side controls go
+through it too, which is how they assert the mapping).
+
+**Proved on a real boot, transcript kept** (`./build.sh --qemu-test`
+green, then `tools/qemu_boot_test.sh` -> `GATE_EXIT=0`):
+
+```
+experimental win32-demo: resolved 9 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError), every slot reading back its export address -- OK
+experimental win32-demo: negative control 7 -- the last-error cell started at ERROR_SUCCESS (0), every one of the 19 typed refusals answered its pinned Windows code (unknown function 1, trap outside .text 487, invalid handle 6, out-of-region buffer/out-parameter/path 998, oversized length 87, unterminated path 206, non-text path 123, write access 5, bad disposition 87, overlapped I/O 50, relative path 3, unknown drive 15, missing file 2, exhausted table 4), a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK
+experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true; handles f1=0x100 f2=0x100 f3=0x100 f4=0x100 f5=0xffffffffffffffff f6=0x0; closes 1 1 1 1; reads 1/1/1/1/1/0
+experimental win32-demo self-test: ... a missing file returned 0xffffffffffffffff and GetLastError answered ERROR_FILE_NOT_FOUND (2), the closed handle answered ERROR_INVALID_HANDLE (6 then 6), GENERIC_WRITE was refused with ERROR_ACCESS_DENIED (5), SetLastError(0x1234) read back as 0x1234, and a successful GetTickCount left the code at 5; ... refusals 3 (the program's closed-handle pair and its refused write-access open) -- OK, a real Windows-format console program called nine kernel32 exports ...
+```
+
+The gate pins the count (`resolved 9 import(s)`), control 7, the three
+codes the client reads back, and now the self-test's own `-- OK`
+verdict, so a MISMATCH line cannot satisfy the gate.
+
+**Three things the boots of this link caught, kept because the
+transcript is the point.** (1) The first boot after adding the two
+exports died with a `DOUBLE FAULT` and no panic message at all. The
+frame put RSP page-aligned in `kernel_stack`'s region: this stage had
+never run on its own stack, it rode the inherited one (already carrying
+every earlier demo's frames), and the tranche's few hundred bytes
+crossed the guard page. The guard did its job -- zero corruption, no
+guesswork -- and the fix is the rule every sibling follows: the win32
+stage now allocates its space with `WIN32_STACK_PAGES = 8` and jumps
+onto it with `chain::run_on_fresh_stack`. (2) The next boot printed a
+perfect console line and still said MISMATCH: the new report fields were
+numbered from `+208` and the last landed on `+0x100`, on top of the
+buffer holding the file bytes the client writes to the console -- the
+console write had already copied them, the read-back had not. They are
+now at `0x210..0x240`, and a `const` assertion refuses at COMPILE time
+any layout where they overlap the read buffers or the `0x300` control
+paths. (3) The gate passed that MISMATCH boot, because every needle was
+a substring of a line that was present either way; the `-- OK` verdict
+is a needle now.
+
+**Stated limits, not hidden ones.** The last error is one cell for the
+kernel, not one per thread: Windows keeps it in a TEB this kernel does
+not have, and v0 has a single ring-3 client. Codes exist only for the
+conditions this surface can detect -- there is no `FormatMessage`, no
+`ERROR_*` catalogue beyond the 19 rows the refusals produce, and
+`SetLastError` accepts any DWORD. All v0/v0.1 limits stand: no NT
+system-call layer, no directories or writes, four handles, synchronous
+I/O only, `ExitProcess` records and returns, and the console is the
+serial line.

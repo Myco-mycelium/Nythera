@@ -35,6 +35,18 @@
  *     CloseHandle(f4)                                // FALSE: closed again
  *     CreateFileA("C:\nyrqis\missing.txt", ...)      // INVALID_HANDLE_VALUE
  *
+ *   tranche 3 -- why it failed:
+ *     err = GetLastError()                          // ERROR_FILE_NOT_FOUND (2)
+ *                                                   // -- after the miss above
+ *     err = GetLastError()                          // after the closed-handle
+ *                                                   // ReadFile: 6, and 6 again
+ *                                                   // after the second close
+ *     SetLastError(0x1234); GetLastError()          // 0x1234: the writer works
+ *     CreateFileA(hello, GENERIC_WRITE, ...)        // refused (0)
+ *       -> GetLastError()                           // ERROR_ACCESS_DENIED (5)
+ *     GetTickCount(); GetLastError()                // 5 still: success does
+ *                                                   // NOT clear the code
+ *
  * Every result is written to the private slot page the kernel maps for
  * this demo (0x4d0000000000), which is zeroed before ring 3 runs, and the
  * completion trap (`int $0x91`) hands those bytes back to the kernel to
@@ -199,9 +211,19 @@ _start:
     movabs $SLOT_R6, %rdi
     mov %rax, (%rdi)
 
+    /* Ask why ReadFile failed on the closed handle, BEFORE the second close
+       overwrites it: the code must name the condition the surface refused. */
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_ERR_CLOSED_READ, %rdi
+    mov %rax, (%rdi)
+
     mov %rbx, %rcx
     call *__imp_CloseHandle(%rip)
     movabs $SLOT_CLOSE4B, %rdi
+    mov %rax, (%rdi)
+
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_ERR_CLOSED_CLOSE, %rdi
     mov %rax, (%rdi)
 
     /* CreateFileA(missing.txt) -- INVALID_HANDLE_VALUE, not an error */
@@ -214,11 +236,47 @@ _start:
     movabs $SLOT_FILE5, %rdi
     mov %rax, (%rdi)
 
-    /* ---- tranche 1 again: the clock, then exit ---- */
+    /* ---- tranche 3: why it failed ---- */
 
+    /* The sentinel alone does not say what went wrong: ask. */
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_ERR_MISSING, %rdi
+    mov %rax, (%rdi)
+
+    /* SetLastError is the writer half; without it the reader is a log. Only
+       ECX is set, like every other DWORD argument here. */
+    mov $0x1234, %ecx
+    call *__imp_SetLastError(%rip)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_ERR_SET, %rdi
+    mov %rax, (%rdi)
+
+    /* A REFUSED call (GENERIC_WRITE against a read-only volume): FALSE, and
+       an explainable code. This one is a real refusal, not a failure value. */
+    lea path_hello(%rip), %rcx
+    mov $0x40000000, %edx
+    mov $1, %r8d
+    xor %r9d, %r9d
+    movq $3, 0x20(%rsp)
+    call *__imp_CreateFileA(%rip)
+    movabs $SLOT_FILE6, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_ERR_ACCESS, %rdi
+    mov %rax, (%rdi)
+
+    /* A successful call must leave the code alone, as Windows does: the code
+       is meaningful only right after a failure, and clearing it on success
+       would hide a client that checked in the wrong place. */
     call *__imp_GetTickCount(%rip)
     movabs $SLOT_TICK1, %rdi
     mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_ERR_KEPT, %rdi
+    mov %rax, (%rdi)
+
+    /* ---- tranche 1 again: the clock, then exit ---- */
+
     call *__imp_GetTickCount(%rip)
     movabs $SLOT_TICK2, %rdi
     mov %rax, (%rdi)
@@ -274,6 +332,22 @@ path_missing:
     .set SLOT_N6,        SLOT_BASE + 184
     .set SLOT_CLOSE4B,   SLOT_BASE + 192
     .set SLOT_FILE5,     SLOT_BASE + 200
+/* The error-code fields live at 0x210.., ABOVE the four read buffers
+   (0x100 buf, 0x140 EOF probe, 0x180 closed-handle probe, 0x200 binary
+   bytes) and below the 0x300 area the kernel's own controls use. The
+   first cut of this tranche numbered them from +208 and the last one
+   landed on 0x100, i.e. on top of the buffer holding the file bytes
+   this program writes to the console -- the transcript then showed a
+   correct console message and a self-test mismatch on the read-back,
+   because the page had been overwritten after the write. Layout stated
+   here, and checked by the kernel's slot pins. */
+    .set SLOT_ERR_CLOSED_READ,  SLOT_BASE + 0x210
+    .set SLOT_ERR_CLOSED_CLOSE, SLOT_BASE + 0x218
+    .set SLOT_ERR_MISSING,      SLOT_BASE + 0x220
+    .set SLOT_ERR_SET,          SLOT_BASE + 0x228
+    .set SLOT_FILE6,            SLOT_BASE + 0x230
+    .set SLOT_ERR_ACCESS,       SLOT_BASE + 0x238
+    .set SLOT_ERR_KEPT,         SLOT_BASE + 0x240
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

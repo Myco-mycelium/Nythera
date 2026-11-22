@@ -6,6 +6,20 @@
  *
  *   tranche 1 (console):  GetStdHandle, WriteFile, GetTickCount, ExitProcess
  *   tranche 2 (files):    CreateFileA, ReadFile, CloseHandle
+ *   tranche 3 (errors):   GetLastError, SetLastError
+ *
+ * Why the error pair is a separate tranche and not part of the file one:
+ * the whole point of GetLastError is that it is the ONE place every failing
+ * call in the process agrees to report itself, so it must be answerable by
+ * the surface's own typed refusals -- not by the client inventing an
+ * errno-style convention of its own. The two stubs are therefore thin: the
+ * kernel owns the code cell and sets it whenever a dispatch is refused (and
+ * when a call returns a Windows failure value instead of succeeding), the
+ * stub only carries the argument in and the code out.
+ *
+ * SetLastError's body deliberately does NOT load the result into RAX: the
+ * function returns void, so the trap's written-back 0 is not a value a
+ * caller may read. GetLastError, which does return a DWORD, loads it.
  *
  * None of these bodies is a Microsoft implementation: each is a ring-3
  * TRAP STUB, which is exactly what a Wine-style shim in this kernel has
@@ -120,13 +134,29 @@ ReadFile:
     mov nyr_call_block+40(%rip), %rax
     ret
 
-    .globl CloseHandle
+        .globl CloseHandle
 CloseHandle:
     mov %rcx, nyr_call_block+8(%rip)
-    movq $6, nyr_call_block+48(%rip)
+    movq $6,  nyr_call_block+48(%rip)
     int $0x90
     mov nyr_call_block+40(%rip), %rax
     ret
+
+    .globl GetLastError
+GetLastError:
+    movq $7,  nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl SetLastError
+SetLastError:
+    mov %rcx, nyr_call_block+8(%rip)
+    movq $8,  nyr_call_block+48(%rip)
+    int $0x90
+    /* void: no result is read back (see the note above). */
+    ret
+
 
     .data
     .p2align 4

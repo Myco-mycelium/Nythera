@@ -1,14 +1,15 @@
-//! The Win32 API surface, v0: seven `kernel32.dll` exports performed by this
+//! The Win32 API surface, v0: nine `kernel32.dll` exports performed by this
 //! kernel, reachable from ring 3 through a real Windows-format DLL whose
 //! bodies are trap stubs (`userprog/prog_win32_kernel32.s`).
 //!
 //! # What this is, precisely
 //!
-//! The first actual Win32 API surface in this kernel -- and seven functions
+//! The first actual Win32 API surface in this kernel -- and nine functions
 //! out of the tens of thousands kernel32 exposes: the four a console program
-//! needs (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`) and the
+//! needs (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`), the
 //! three that give it files (`CreateFileA`, `ReadFile`, `CloseHandle`) against
-//! the read-only volume in [`crate::experimental::win32_fs`]. It is **not** Windows
+//! the read-only volume in [`crate::experimental::win32_fs`], and the pair that
+//! tells it why a call failed (`GetLastError`, `SetLastError`). It is **not** Windows
 //! compatibility: there is no NT system-call layer under it, no object
 //! manager, no user32/gdi32, and nothing here runs Microsoft's code. What it
 //! does prove is the mechanism every later function needs, end to end: a real
@@ -37,6 +38,34 @@
 //! a buffer or out-parameter outside the regions this kernel mapped for the
 //! client; a length past the surface's cap; and bytes that are not text. Each
 //! refusal is typed and counted, so the boot proof can show they fired.
+//!
+//! # Why the refusals also carry Win32 error codes
+//!
+//! A typed refusal is this kernel's own vocabulary; a Windows client does not
+//! speak it. It calls `GetLastError` and switches on a number, and if the
+//! number is invented the pair is decoration. So every [`Win32Error`] maps to
+//! the code Windows itself uses for that condition ([`Win32Error::code`]):
+//! `ERROR_INVALID_HANDLE` for an unissued or closed handle,
+//! `ERROR_ACCESS_DENIED` for `GENERIC_WRITE` on a read-only volume,
+//! `ERROR_FILE_NOT_FOUND` for a name the volume does not have, and so on.
+//! There is exactly one table, and it is derived from the typed refusal -- the
+//! surface never stores a number at a call site, so a refusal that fires for
+//! the wrong reason cannot report a plausible-looking code.
+//!
+//! Two different things set the last error, and the distinction matters to a
+//! client: a REFUSAL (the call did not happen, `dispatch` returned `Err`) and a
+//! Windows-style FAILURE VALUE (`CreateFileA` on a missing file returns
+//! `INVALID_HANDLE_VALUE` and sets `ERROR_FILE_NOT_FOUND`). The second is not a
+//! refusal -- Windows reports a miss that way -- but it is still a failure the
+//! client must be able to explain, which is the whole reason this tranche
+//! exists. A SUCCESSFUL call leaves the cell alone, as Windows does: the code
+//! is only meaningful immediately after a call that failed, and a surface that
+//! cleared it on success would hide a client's own bug (checking the code after
+//! a call that worked).
+//!
+//! The cell is one per kernel, not one per thread: v0 has a single ring-3
+//! client, and Windows' per-thread last error lives in a TEB this kernel does
+//! not have yet. That is a stated scope limit, not a design choice to keep.
 
 use crate::experimental::win32_fs;
 use crate::serial_println;
@@ -53,12 +82,12 @@ pub const TRAP_VECTOR: u8 = 0x90;
 pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
-/// `0x190000001000`, size `0x130` (seven stubs). Pinned, and re-checked against
+/// `0x190000001000`, size `0x158` (nine stubs). Pinned, and re-checked against
 /// the loaded image's own export RVAs at boot (`win32_demo::start`): every
 /// export must fall inside this window, which is what lets [`dispatch`] accept
 /// a trap only from this DLL's code.
 pub const TEXT_RVA: u64 = 0x1000;
-pub const TEXT_SIZE: u64 = 0x130;
+pub const TEXT_SIZE: u64 = 0x158;
 
 /// `.data`, holding `nyr_call_block` (VMA `0x190000002000`, size `0x40`).
 pub const BLOCK_RVA: u64 = 0x2000;
@@ -86,6 +115,9 @@ pub const STDOUT_HANDLE: u64 = 0x0b;
 /// reports that case as this sentinel rather than as an error, so the client is
 /// expected to test for it -- and this surface does the same, which is why the
 /// boot proof checks the sentinel from ring 3 instead of counting a refusal.
+/// The sentinel alone does not say WHAT went wrong, though, so this path also
+/// records [`ERROR_FILE_NOT_FOUND`]: that is the case `GetLastError` exists
+/// for, and the one the client in the boot proof actually asks about.
 pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
 
 /// `GENERIC_READ`: the only access right this volume can grant, since it has
@@ -96,6 +128,25 @@ pub const GENERIC_READ: u32 = 0x8000_0000;
 /// read-only volume, and therefore the only one this surface accepts.
 const OPEN_EXISTING: u64 = 3;
 
+// The Win32 error codes this surface reports through `GetLastError`. Every one
+// is the value Windows itself uses for the same condition, so a client's own
+// `switch (GetLastError())` keeps its meaning here. They are constants with
+// their Windows names rather than bare numbers at the call sites, because the
+// mapping is a claim about Windows that should be readable and checkable.
+pub const ERROR_INVALID_FUNCTION: u32 = 1;
+pub const ERROR_FILE_NOT_FOUND: u32 = 2;
+pub const ERROR_PATH_NOT_FOUND: u32 = 3;
+pub const ERROR_TOO_MANY_OPEN_FILES: u32 = 4;
+pub const ERROR_ACCESS_DENIED: u32 = 5;
+pub const ERROR_INVALID_HANDLE: u32 = 6;
+pub const ERROR_INVALID_DRIVE: u32 = 15;
+pub const ERROR_NOT_SUPPORTED: u32 = 50;
+pub const ERROR_INVALID_PARAMETER: u32 = 87;
+pub const ERROR_INVALID_NAME: u32 = 123;
+pub const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
+pub const ERROR_INVALID_ADDRESS: u32 = 487;
+pub const ERROR_NOACCESS: u32 = 998;
+
 /// The largest WriteFile this surface will perform, in bytes. A cap rather
 /// than a length limit from Windows: it keeps the copy in this module's own
 /// static buffer and makes "too large" a typed refusal instead of a trap.
@@ -104,7 +155,7 @@ pub const MAX_WRITE: usize = 96;
 /// Every way ring 3 can ask for something this surface will not do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Win32Error {
-    /// `+48` is not one of the four exports.
+    /// `+48` is not one of the nine exports.
     UnknownFunction,
     /// The trapping RIP is not inside kernel32.dll's `.text`.
     CallerOutsideKernel32,
@@ -137,6 +188,64 @@ pub enum Win32Error {
     File(win32_fs::FsError),
 }
 
+impl Win32Error {
+    /// The Win32 error code Windows reports for this condition -- the single
+    /// table `GetLastError` answers from.
+    ///
+    /// # Why every arm maps instead of some calls storing a number
+    ///
+    /// A code written next to the `return Err(..)` that raised it drifts the
+    /// moment the refusal is reused or a new check is inserted, and the drift
+    /// is invisible: the client still gets a plausible number. Deriving the
+    /// code from the variant means a refusal can only report the code of the
+    /// condition it actually detected. The boot proof exercises this in both
+    /// directions: kernel-side controls assert each variant's code, and the
+    /// client reads the same codes back through `GetLastError` after real
+    /// failures of its own.
+    ///
+    /// Choices worth naming. `UnsupportedAccess` is `ERROR_ACCESS_DENIED`
+    /// because asking a read-only volume for `GENERIC_WRITE` is exactly the
+    /// "the object exists and you may not do that" case. Both "a handle this
+    /// surface never issued" and "a handle already closed" are
+    /// `ERROR_INVALID_HANDLE`, as on Windows -- the client cannot tell those
+    /// states apart, and neither should the code imply it can. A pointer
+    /// outside the client's own regions is `ERROR_NOACCESS` (Windows' code for
+    /// a bad buffer) rather than a page fault, and a trap from outside
+    /// kernel32's `.text` is `ERROR_INVALID_ADDRESS` -- the trapping RIP is not
+    /// a call site at all. `UnknownFunction` is `ERROR_INVALID_FUNCTION`:
+    /// nothing in this surface's number space answers that index, which is not
+    /// the same claim as a missing export (`ERROR_PROC_NOT_FOUND`), where the
+    /// name is known and unimplemented. `LengthTooLarge` and a bad disposition
+    /// are `ERROR_INVALID_PARAMETER`, and a non-text path is `ERROR_INVALID_NAME`
+    /// (Windows' code for a name it will not parse), while an unterminated path
+    /// is `ERROR_FILENAME_EXCED_RANGE` -- the name ran past the bound.
+    pub const fn code(self) -> u32 {
+        match self {
+            Win32Error::UnknownFunction => ERROR_INVALID_FUNCTION,
+            Win32Error::CallerOutsideKernel32 => ERROR_INVALID_ADDRESS,
+            Win32Error::InvalidHandle => ERROR_INVALID_HANDLE,
+            Win32Error::BufferOutsideClient => ERROR_NOACCESS,
+            Win32Error::LengthTooLarge => ERROR_INVALID_PARAMETER,
+            Win32Error::OutPointerOutsideClient => ERROR_NOACCESS,
+            Win32Error::NotUtf8 => ERROR_INVALID_PARAMETER,
+            Win32Error::PathOutsideClient => ERROR_NOACCESS,
+            Win32Error::PathTooLong => ERROR_FILENAME_EXCED_RANGE,
+            Win32Error::PathNotText => ERROR_INVALID_NAME,
+            Win32Error::UnsupportedAccess => ERROR_ACCESS_DENIED,
+            Win32Error::UnsupportedDisposition => ERROR_INVALID_PARAMETER,
+            Win32Error::OverlappedNotSupported => ERROR_NOT_SUPPORTED,
+            Win32Error::File(e) => match e {
+                win32_fs::FsError::PathNotAbsolute => ERROR_PATH_NOT_FOUND,
+                win32_fs::FsError::UnknownVolume => ERROR_INVALID_DRIVE,
+                win32_fs::FsError::FileNotFound => ERROR_FILE_NOT_FOUND,
+                win32_fs::FsError::OutOfHandles => ERROR_TOO_MANY_OPEN_FILES,
+                win32_fs::FsError::NotAFileHandle => ERROR_INVALID_HANDLE,
+                win32_fs::FsError::ClosedHandle => ERROR_INVALID_HANDLE,
+            },
+        }
+    }
+}
+
 /// The regions this kernel mapped for the client, and therefore the only
 /// addresses its arguments may name. Zero-length until [`install`] runs, and a
 /// zero-length region accepts no pointer -- so a trap that arrives early is
@@ -159,6 +268,33 @@ static STDOUT_LEN: AtomicU64 = AtomicU64::new(0);
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
 /// The `ExitProcess` code, or `u64::MAX` while none has been recorded.
 static EXIT_CODE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// The process's last error, as `GetLastError` reports it.
+///
+/// Starts at zero (`ERROR_SUCCESS`), which is what a Windows thread's TEB
+/// starts with, so a client that reads the code without a preceding failure
+/// sees "no error" rather than an unrelated code from earlier. Plain atomic
+/// rather than a lock: a single 32-bit value, written by the trap handler and
+/// read by the next trap, and no client can observe a torn one because the
+/// only writer is the kernel.
+static LAST_ERROR: AtomicU64 = AtomicU64::new(0);
+
+/// The last error a failed call recorded, as a client would read it with
+/// `GetLastError`.
+pub fn last_error() -> u32 {
+    LAST_ERROR.load(Ordering::Relaxed) as u32
+}
+
+/// `SetLastError`: makes the process's last error `code`.
+///
+/// Windows exposes this so a client can clear the code before a call whose
+/// failure it cannot distinguish from a stale error, and so a library can
+/// report its own condition. This surface honours it for the same reasons --
+/// and because a reader that cannot be written is not a last-error value at
+/// all, it is a log.
+pub fn set_last_error(code: u32) {
+    LAST_ERROR.store(code as u64, Ordering::Relaxed);
+}
 
 /// Installs the client's two regions. Called by the boot proof before ring 3.
 ///
@@ -257,6 +393,12 @@ fn allowed(surface: &Surface, ptr: u64, len: u64) -> bool {
 /// `INVALID_HANDLE_VALUE`, a BOOL as 1/0, a DWORD tick count, `ExitProcess`'s
 /// unused 0), and every check is a typed refusal rather than a best-effort.
 ///
+/// Records the Win32 error code of a refused call, so `GetLastError` can
+/// answer for it -- then returns the refusal unchanged. Every path into the
+/// surface goes through here, including the boot proof's kernel-side controls,
+/// which is what lets those controls assert the mapping and not just the
+/// refusal.
+///
 /// # Safety
 /// The caller (the trap handler, or the boot proof's negative controls) must
 /// have a mapped block/console region; `args` are addresses ring 3 supplied.
@@ -265,6 +407,20 @@ pub unsafe fn dispatch(
     args: [u64; 5],
     rip: u64,
 ) -> Result<u64, Win32Error> {
+    let result = call(index, args, rip);
+    if let Err(e) = result {
+        LAST_ERROR.store(e.code() as u64, Ordering::Relaxed);
+    }
+    result
+}
+
+/// The dispatch proper, without the last-error bookkeeping: [`dispatch`] is the
+/// only public entry, so no call can be refused without its code being
+/// recorded.
+///
+/// # Safety
+/// Same contract as [`dispatch`].
+unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> {
     // A kernel32 call must have come from kernel32's own code: an index in the
     // block is a claim, the trapping address is evidence.
     if rip < IMAGE_BASE + TEXT_RVA || rip >= IMAGE_BASE + TEXT_RVA + TEXT_SIZE {
@@ -353,7 +509,14 @@ pub unsafe fn dispatch(
             }
             match win32_fs::open(path) {
                 Ok(handle) => Ok(handle),
-                Err(win32_fs::FsError::FileNotFound) => Ok(INVALID_HANDLE_VALUE),
+                // A miss is a failure VALUE, not a refusal -- Windows' own shape
+                // -- but it is still a failure, so it records its code before
+                // returning the sentinel. This is the call the client below
+                // asks `GetLastError` about, which is the point of the pair.
+                Err(win32_fs::FsError::FileNotFound) => {
+                    LAST_ERROR.store(ERROR_FILE_NOT_FOUND as u64, Ordering::Relaxed);
+                    Ok(INVALID_HANDLE_VALUE)
+                }
                 Err(e) => Err(Win32Error::File(e)),
             }
         }
@@ -382,12 +545,29 @@ pub unsafe fn dispatch(
         }
         // CloseHandle(hObject): releases a file handle's slot and cursor.
         6 => win32_fs::close(args[0]).map(|()| 1).map_err(Win32Error::File),
+        // GetLastError(): the code the last failed call recorded. It reads the
+        // cell and writes nothing, so asking is never what changes the answer --
+        // a client may ask twice, or ask after a successful call, and get the
+        // same code.
+        7 => Ok(last_error() as u64),
+        // SetLastError(dwErrCode): makes the code exactly this.
+        //
+        // `DWORD dwErrCode`: the low 32 bits, read for the same reason
+        // GetStdHandle and CreateFileA read theirs that way -- a C caller sets
+        // only ECX and leaves the upper half of RCX as it was. Taking the full
+        // register would store garbage above the DWORD and make GetLastError
+        // answer with a code no Windows client could have set.
+        8 => {
+            set_last_error(args[0] as u32);
+            Ok(0) // void; the stub does not read the result back
+        }
         _ => Err(Win32Error::UnknownFunction),
     }
 }
 
 /// The `int $0x90` handler: reads the call block, dispatches, writes the result
-/// back, and returns to ring 3 at the stub's next instruction. Never chains -- a refused call still returns to its caller,
+/// back, and returns to ring 3 at the stub's next instruction. Never chains --
+/// a refused call still returns to its caller,
 /// with 0 as the result, so a misbehaving client fails the demo's assertions
 /// instead of hanging the machine.
 ///
