@@ -71,6 +71,19 @@
  *     GetProcAddress(hnyr, "GetTickCount")        // 0, ERROR_PROC_NOT_FOUND:
  *                                                // the other direction
  *
+ *   tranche 7 -- Windows' ORDINAL form of GetProcAddress:
+ *     GetProcAddress(hnyr, (LPCSTR)11)            // nyrqis.dll declares
+ *                                                 // OrdinalBase 10, so its
+ *                                                 // second EAT slot is
+ *                                                 // ordinal 11, not 2
+ *     (that answer == the NAME answer)            // 1: both forms name the
+ *                                                 // same export of the file
+ *     pfn()                                       // 1, called through it
+ *     GetProcAddress(hnyr, (LPCSTR)9)             // 0, below the base:
+ *                                                 // ERROR_PROC_NOT_FOUND
+ *     GetProcAddress(hnyr, (LPCSTR)12)            // 0, past the last slot:
+ *                                                 // ERROR_PROC_NOT_FOUND
+ *
  *   tranche 3 -- why it failed:
  *     err = GetLastError()                          // ERROR_FILE_NOT_FOUND (2)
  *                                                   // -- after the miss above
@@ -511,6 +524,60 @@ _start:
     movabs $SLOT_CROSS_SEC_ERR, %rdi
     mov %rax, (%rdi)
 
+    /* ---- tranche 7: Windows' ORDINAL form ---- */
+
+    /* GetProcAddress(hnyr, (LPCSTR)11). nyrqis.dll declares OrdinalBase 10
+       (its .def states it), so its SECOND function is ordinal ELEVEN -- not
+       2, which is the index a lookup that ignored the base would use, and
+       not 11 as an index either. Only the file's own base turns this number
+       into the right EAT slot. */
+    mov %rbp, %rcx
+    mov $11, %edx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_ORD_MODE, %rdi
+    mov %rax, (%rdi)
+
+    /* The ordinal form and the name form must answer the SAME address: one
+       walks the name table to an ordinal, the other subtracts the base and
+       reads the EAT directly, and both must land on NyrqisMode. */
+    movabs $SLOT_SECOND_MODE, %rsi
+    mov (%rsi), %rdx
+    xor %ecx, %ecx
+    cmp %rdx, %rax
+    sete %cl
+    movabs $SLOT_ORD_SAME, %rdi
+    mov %rcx, (%rdi)
+
+    /* And the ordinal answer must be CALLABLE, exactly like the named one:
+       NyrqisMode returns 1. */
+    movabs $SLOT_ORD_MODE, %rdi
+    mov (%rdi), %rax
+    call *%rax
+    movabs $SLOT_ORD_MODE_VALUE, %rdi
+    mov %rax, (%rdi)
+
+    /* One below the declared base (9): the base is not an index, so this
+       names nothing. NULL and ERROR_PROC_NOT_FOUND -- not a wrapped slot. */
+    mov %rbp, %rcx
+    mov $9, %edx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_ORD_LOW_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_ORD_LOW_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* ... and one past the last slot (the image exports two, so 12 is
+       past end): the same answer for the same reason. */
+    mov %rbp, %rcx
+    mov $12, %edx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_ORD_HIGH_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_ORD_HIGH_ERR, %rdi
+    mov %rax, (%rdi)
+
     /* ---- tranche 1 again: the clock, then exit ---- */
 
     call *__imp_GetTickCount(%rip)
@@ -651,6 +718,16 @@ proc_mode:
     .set SLOT_CROSS_K32_ERR,    SLOT_BASE + 0x730 /* ... ERROR_PROC_NOT_FOUND */
     .set SLOT_CROSS_SEC_NONE,   SLOT_BASE + 0x738 /* nyrqis asked for tick */
     .set SLOT_CROSS_SEC_ERR,    SLOT_BASE + 0x740 /* ... ERROR_PROC_NOT_FOUND */
+/* tranche 7: the ordinal form's answers, still below 0x800. `nyrqis.dll`
+   declares OrdinalBase 10, so ordinal 11 is its second export: the fields
+   below ask BOTH ends of the range and the address the middle resolves to. */
+    .set SLOT_ORD_MODE,         SLOT_BASE + 0x748 /* GetProcAddress(hnyr, 11) */
+    .set SLOT_ORD_SAME,         SLOT_BASE + 0x750 /* == the NAME answer */
+    .set SLOT_ORD_MODE_VALUE,   SLOT_BASE + 0x758 /* called through: 1 */
+    .set SLOT_ORD_LOW_NONE,     SLOT_BASE + 0x760 /* ordinal 9 -> 0 */
+    .set SLOT_ORD_LOW_ERR,      SLOT_BASE + 0x768 /* ... 127 */
+    .set SLOT_ORD_HIGH_NONE,    SLOT_BASE + 0x770 /* ordinal 12 -> 0 */
+    .set SLOT_ORD_HIGH_ERR,     SLOT_BASE + 0x778 /* ... 127 */
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

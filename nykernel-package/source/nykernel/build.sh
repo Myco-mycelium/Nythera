@@ -186,11 +186,11 @@ as --64 userprog/prog_pe_bound_ref2stale.s -o userprog/prog_pe_bound_ref2stale.o
 ld -m i386pep --subsystem native -e _start --image-base=0x600000000000 -o userprog/userprog_pe_bound_ref2stale.exe userprog/prog_pe_bound_ref2stale.o userprog/userprog_pe_import_fwdprov.dll
 python3 tools/patch_pe_bound.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_fwdprov.dll userprog/userprog_pe_import_app.exe userprog/userprog_pe_bound_bad.exe userprog/userprog_pe_bound_refstale.exe userprog/userprog_pe_bound_ref2bad.exe userprog/userprog_pe_bound_ref2stale.exe
 
-echo "==> link userprog/kernel32.dll, userprog/nyrqis.dll and userprog/win32_console.exe (the Win32 API surface v0 carriers: a real PE32+ DLL whose twelve exports are ring-3 trap stubs, a SECOND provider DLL whose two exports are ordinary ring-3 code so the module table's rows are per-module, and a real PE32+ console client that imports the first)"
+echo "==> link userprog/kernel32.dll, userprog/nyrqis.dll and userprog/win32_console.exe (the Win32 API surface v0 carriers: a real PE32+ DLL whose twelve exports are ring-3 trap stubs, a SECOND provider DLL whose two exports are ordinary ring-3 code so the module table's rows are per-module and whose export table declares OrdinalBase 10 so the ordinal form of GetProcAddress is not an index guess, and a real PE32+ console client that imports the first)"
 as --64 userprog/prog_win32_kernel32.s -o userprog/prog_win32_kernel32.o
 ld -m i386pep --shared --enable-auto-import --image-base=0x190000000000 -o userprog/kernel32.dll userprog/prog_win32_kernel32.o
 as --64 userprog/prog_win32_nyrqis.s -o userprog/prog_win32_nyrqis.o
-ld -m i386pep --shared --enable-auto-import --image-base=0x190100000000 -o userprog/nyrqis.dll userprog/prog_win32_nyrqis.o
+ld -m i386pep --shared --enable-auto-import --image-base=0x190100000000 -o userprog/nyrqis.dll userprog/prog_win32_nyrqis.o userprog/nyrqis.def
 as --64 userprog/prog_win32_app.s -o userprog/prog_win32_app.o
 ld -m i386pep --subsystem console -e _start --image-base=0x1A0000000000 -o userprog/win32_console.exe userprog/prog_win32_app.o userprog/kernel32.dll
 # The kernel pins these addresses (`experimental::win32`): the DLL's .text
@@ -200,6 +200,7 @@ ld -m i386pep --subsystem console -e _start --image-base=0x1A0000000000 -o userp
 _win32_text=$(objdump -h userprog/kernel32.dll | awk '$2==".text"{print $4" "$3}')
 _win32_data=$(objdump -h userprog/kernel32.dll | awk '$2==".data"{print $4" "$3}')
 _win32_nyr=$(objdump -h userprog/nyrqis.dll | awk '$2==".text"{print $4" "$3}')
+_win32_nyr_ordbase=$(objdump -p userprog/nyrqis.dll | awk '/Export Address Table -- Ordinal Base/{print $NF}')
 _win32_appbase=$(objdump -p userprog/win32_console.exe | awk '/ImageBase/{print $2}')
 _win32_appsize=$(objdump -p userprog/win32_console.exe | awk '/SizeOfImage/{print $2}')
 if [[ "$_win32_text" != "0000190000001000 000001b0" ]]; then
@@ -212,6 +213,12 @@ fi
 # ImageBase is pinned by `experimental::win32::SECOND_IMAGE_BASE`.
 if [[ "$_win32_nyr" != "0000190100001000 00000030" ]]; then
     echo "FAIL: nyrqis.dll .text drifted ($_win32_nyr); update experimental::win32's SECOND_IMAGE_BASE and win32_demo's export pins" >&2; exit 1
+fi
+# The declared ordinal base is a pin too: the boot's ordinal proof is only
+# discriminating while this provider's exports are ordinals 10/11 rather than
+# the linker default 1/2, so a DEF file this ld stopped honoring fails HERE.
+if [[ "$_win32_nyr_ordbase" != "10" ]]; then
+    echo "FAIL: nyrqis.dll export OrdinalBase drifted ($_win32_nyr_ordbase); update userprog/nyrqis.def and experimental::win32_demo's EXPECTED_NYRQIS_ORDINAL_BASE" >&2; exit 1
 fi
 if [[ "$_win32_appbase" != "00001a0000000000" || "$_win32_appsize" != "00004000" ]]; then
     echo "FAIL: win32_console.exe layout drifted (base $_win32_appbase, image $_win32_appsize); update experimental::win32_demo's pins" >&2; exit 1

@@ -207,10 +207,11 @@ GetModuleHandleA:
     .globl GetProcAddress
 GetProcAddress:
     /* HMODULE hModule in RCX, LPCSTR lpProcName in RDX. Both are parked:
-       the handle selects a module ROW and the name selects an EXPORT
-       inside it, and the kernel answers from that row's own export
-       directory. An ordinal-form lpProcName (a small integer) is refused
-       by name before anything reads it as an address. */
+       the handle selects a module ROW and the second argument selects an
+       EXPORT inside it, and the kernel answers from that row's own export
+       directory. Both of Windows' forms go through unchanged: a pointer is
+       read as a name, and a value whose high word is zero is the ordinal
+       form and is resolved through the file's declared OrdinalBase. */
     mov %rcx, nyr_call_block+8(%rip)
     mov %rdx, nyr_call_block+16(%rip)
     movq $11, nyr_call_block+48(%rip)

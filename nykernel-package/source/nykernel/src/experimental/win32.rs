@@ -142,15 +142,31 @@
 //! IAT slot and no link-time address, and the only way its exports can be
 //! called is the pointer `GetProcAddress` returned.
 //!
-//! What the table deliberately does not do: it holds no ordinal map
-//! (`GetProcAddress` in its low-word-ordinal form is refused with
-//! `ERROR_NOT_SUPPORTED` rather than answered from an EAT index this surface
-//! never read); it does not chase forwarded exports (a forwarder yields nothing
-//! here, which is the `ERROR_PROC_NOT_FOUND` a name that cannot be resolved
-//! gets); and it has room for exactly three rows -- this process's own image
-//! and two providers. A fourth registration is a typed refusal
-//! ([`Win32Error::ModuleTableFull`]), not a silent overflow: a bigger table would
-//! be a claim about a loader this kernel does not have yet.
+//! # Why the ordinal form is answered by the SAME table
+//!
+//! `GetProcAddress` has a second calling form,
+//! `GetProcAddress(h, (LPCSTR)(ULONG_PTR)n)`, where a value whose high word is
+//! zero names export ordinal `n` instead of a string. The PE rule behind it is
+//! not "`n` is an EAT index": an ordinal is `OrdinalBase + index`, and
+//! `IMAGE_EXPORT_DIRECTORY` declares that base itself. So
+//! [`pe::DllExportTable::lookup_ordinal`] -- not a second, hand-kept ordinal
+//! map beside the module table -- answers this form out of the very EAT the
+//! named form walks, subtracting the base the provider declared. The second
+//! provider makes that rule observable instead of decorative: `nyrqis.def`
+//! gives it `OrdinalBase 10`, so its two functions are ordinals 10 and 11 and
+//! its first EAT slot is reached by `10 - 10`, not by ordinal 1 and not by
+//! index 10. The boot asks for both ordinals, requires the SAME addresses the
+//! names answered, calls through the pointer the ordinal form returned, and
+//! requires `ERROR_PROC_NOT_FOUND` below the base and past the last function --
+//! the two ends a guessed index would have to get wrong.
+//!
+//! What the table deliberately does not do: it does not chase forwarded
+//! exports (a forwarder yields nothing here, which is the
+//! `ERROR_PROC_NOT_FOUND` a name that cannot be resolved gets; the import walk
+//! still chases them through the registry); and it has room for exactly three
+//! rows -- this process's own image and two providers. A fourth registration is
+//! a typed refusal ([`Win32Error::ModuleTableFull`]), not a silent overflow: a
+//! bigger table would be a claim about a loader this kernel does not have yet.
 //!
 //! # Why a refusal also returns something Windows-shaped
 //!
@@ -325,11 +341,13 @@ pub const MAX_MODULE_NAME: usize = 63;
 pub const MAX_MODULES: usize = 3;
 
 /// `GetProcAddress`'s documented ordinal form is `(LPCSTR)(ULONG_PTR)ordinal`,
-/// so any argument below this could be a number rather than a pointer. It is
-/// refused by name ([`Win32Error::OrdinalNotSupported`]) instead of being read
-/// as an address: `MAX_MODULES`-worth of EAT index space is not something this
-/// surface has read, and a low value would otherwise be a page-fault-shaped
-/// refusal that said nothing true about the caller's argument.
+/// so an argument whose high word is zero names a number rather than a string.
+/// Windows draws the line here (`HIWORD(lpProcName) == 0`); below it this
+/// surface asks the selected module's own export directory
+/// ([`pe::DllExportTable::lookup_ordinal`]), and at or above it the argument is
+/// read as a name pointer like any other. The line is a property of the
+/// ARGUMENT, not a capability flag: which ordinals exist is the file's answer,
+/// and one the file does not declare is `ERROR_PROC_NOT_FOUND`.
 const ORDINAL_LIMIT: u64 = 0x1_0000;
 
 /// `OPEN_EXISTING`: the only creation disposition that means anything on a
@@ -419,13 +437,11 @@ pub enum Win32Error {
     /// duplicate name, or an export table naming an address outside the image
     /// that table was parsed from.
     ModuleInstallInvalid,
-    /// That module has no export of that name. Boldly FALSE would be worse:
-    /// Windows' `ERROR_PROC_NOT_FOUND`, and the name was compared exactly.
+    /// That module has no export of that name, or names no export at that
+    /// ordinal. Boldly FALSE would be worse: Windows' `ERROR_PROC_NOT_FOUND`,
+    /// and the name was compared exactly (the ordinal was resolved through the
+    /// module's own `OrdinalBase`, never treated as a bare index).
     ProcNotFound,
-    /// `GetProcAddress` was asked in the low-word-ordinal form. v0 binds by
-    /// name only; `ERROR_NOT_SUPPORTED` says "that request form is not served"
-    /// rather than claiming the ordinal does not exist.
-    OrdinalNotSupported,
     /// A name argument (module name or export name) that cannot be read as a
     /// bounded, printable, NUL-terminated string inside the client's regions.
     /// One variant rather than three because for a NAME there is only one thing
@@ -481,7 +497,7 @@ impl Win32Error {
     /// is `ERROR_INVALID_PARAMETER`: the only caller is [`install_cmdline`],
     /// i.e. this kernel's own loader, and the argument it got was wrong.
     ///
-    /// The module table's seven rows follow the same discipline, and each one
+    /// The module table's six rows follow the same discipline, and each one
     /// names the question Windows' code actually answers:
     /// `ModuleNotFound` is `ERROR_MOD_NOT_FOUND` (that module is not loaded in
     /// this process) while `ProcNotFound` is `ERROR_PROC_NOT_FOUND` (that module
@@ -494,11 +510,6 @@ impl Win32Error {
     /// `ModuleInstallInvalid` and `NameInvalid` are both
     /// `ERROR_INVALID_PARAMETER`, at the two places an unusable argument can
     /// arrive (this kernel's loader, and ring 3's string pointers).
-    /// `OrdinalNotSupported` is `ERROR_NOT_SUPPORTED`, the code Windows uses when
-    /// the REQUEST is unsupported (the same sense as `OverlappedNotSupported`)
-    /// rather than the object being absent -- so a client that asked by ordinal
-    /// learns that this surface does not serve that form, not that its ordinal
-    /// was wrong.
     pub const fn code(self) -> u32 {
         match self {
             Win32Error::UnknownFunction => ERROR_INVALID_FUNCTION,
@@ -520,7 +531,6 @@ impl Win32Error {
             Win32Error::ModuleTableFull => ERROR_OUTOFMEMORY,
             Win32Error::ModuleInstallInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::ProcNotFound => ERROR_PROC_NOT_FOUND,
-            Win32Error::OrdinalNotSupported => ERROR_NOT_SUPPORTED,
             Win32Error::NameInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::CommandLineInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::File(e) => match e {
@@ -1115,15 +1125,20 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
             if surface.module_count == 0 {
                 return Err(Win32Error::LoaderStateMissing);
             }
-            // Windows' ordinal form is `(LPCSTR)(ULONG_PTR)n`: a small value is
-            // a number, not a pointer. Refused by name before anything reads it
-            // as an address, so the client gets `ERROR_NOT_SUPPORTED` ("this
-            // form is not served") instead of a pointer-shaped error about an
-            // argument it may well have formed correctly.
-            if args[1] != 0 && args[1] < ORDINAL_LIMIT {
-                return Err(Win32Error::OrdinalNotSupported);
-            }
             let module = module_by_base(surface, args[0]).ok_or(Win32Error::ModuleNotLoaded)?;
+            // Windows' ordinal form is `(LPCSTR)(ULONG_PTR)n`: a low value is a
+            // number, not a pointer. Deciding on the VALUE (not on whether a
+            // string happens to be readable at that address) is what keeps the
+            // two forms distinguishable -- and both end at this module's own
+            // export directory: `lookup_ordinal` subtracts the base the file
+            // declares and reads the EAT slot, exactly where `lookup`'s name
+            // walk would have landed for the same export.
+            if args[1] != 0 && args[1] < ORDINAL_LIMIT {
+                return module
+                    .exports
+                    .lookup_ordinal(args[1])
+                    .ok_or(Win32Error::ProcNotFound);
+            }
             let name = read_name(surface, args[1])?;
             module.exports.lookup(name).ok_or(Win32Error::ProcNotFound)
         }

@@ -1,0 +1,21 @@
+; nyrqis.def -- the export table of the boot's SECOND provider, stated as
+; ordinals rather than left to the linker's default.
+;
+; GNU ld's PE backend numbers exports from 1 by default, which would make
+; "ordinal 1" and "EAT index 0" the same number -- and a `GetProcAddress`
+; that treated the Windows ordinal form as a bare index would then answer
+; every question correctly. The ordinal form exists because the two are NOT
+; the same: Windows computes `ordinal - OrdinalBase`, and the provider
+; declares the base. So this provider declares 10, and `NyrqisBuild` and
+; `NyrqisMode` are ordinals 10 and 11 (EAT slots 0 and 1). The boot asks for
+; both, requires exactly the addresses their NAMES answer, and requires
+; 9 (below the base) and 12 (past the last slot) to resolve to nothing --
+; which is a question a base-1 fixture could not put to the implementation.
+;
+; ld reads this file as an input beside the object; the ordinals are also the
+; pin `build.sh` checks out of the linked DLL (`Export Address Table --
+; Ordinal Base 10`), so a linker that ignored the base would fail the build.
+LIBRARY nyrqis.dll
+EXPORTS
+NyrqisBuild @10
+NyrqisMode @11

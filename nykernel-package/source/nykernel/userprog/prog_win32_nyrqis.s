@@ -47,6 +47,15 @@
  * Microsoft implementation, and nothing here is dispatched by the
  * kernel.
  *
+ * Why the exports are declared in `nyrqis.def` rather than left to the
+ * linker: that file states `OrdinalBase 10`, so these two functions are
+ * ordinals 10 and 11. An export directory numbered from 1 would make the
+ * Windows ordinal form indistinguishable from a bare EAT index, because
+ * ordinal N would equal slot N-1; a base of 10 puts real daylight between
+ * them, which is what the boot's ordinal probes need in order to be able to
+ * fail. The ordinals are part of this provider's declaration, not of its
+ * code -- the bodies below are unchanged.
+ *
  * Everything is position-independent (`mov $imm, %eax` / `ret`) so the
  * DLL carries no base relocations and loads at its stated ImageBase --
  * the loader refuses a PE that needs rebasing.

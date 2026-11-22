@@ -1913,10 +1913,10 @@ fn ordinal_label(ordinal: u64) -> NameBuf {
 // ---------------------------------------------------------------------
 
 /// A provider DLL's `IMAGE_DIRECTORY_ENTRY_EXPORT`, parsed once at load
-/// time; `lookup` is `GetProcAddress` minus forwarding support (typed,
-/// below). Reads the provider's MAPPED image -- export entries are
-/// `RVA`s, so an export's absolute runtime address is `load_base + rva`
-/// for any load base.
+/// time; `lookup` and `lookup_ordinal` are `GetProcAddress` minus
+/// forwarding support (typed, below). Reads the provider's MAPPED
+/// image -- export entries are `RVA`s, so an export's absolute runtime
+/// address is `load_base + rva` for any load base.
 #[derive(Clone, Copy)]
 pub struct DllExportTable {
     load_base: u64,
@@ -2066,6 +2066,67 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
         match self.lookup_name_raw(name) {
             Ok(Some(RawExport::Function(rva))) => Some(self.load_base.wrapping_add(rva)),
             _ => None,
+        }
+    }
+
+    /// `GetProcAddress`'s ORDINAL form, resolved out of the same EAT the
+    /// named form walks.
+    ///
+    /// # Why the answer is the file's, and not a second index
+    ///
+    /// Windows calls this form `GetProcAddress(h, (LPCSTR)(ULONG_PTR)n)`:
+    /// a value whose high word is zero names export ordinal `n`, not a
+    /// string. The PE rule that turns `n` into an EAT slot is
+    /// `n - OrdinalBase` -- `IMAGE_EXPORT_DIRECTORY.OrdinalBase`, the
+    /// field a provider declares and this table parsed in [`Self::parse`].
+    /// So an ordinal is NOT the EAT index: a directory with base 10
+    /// (the shape the boot's second provider carries, see
+    /// `userprog/nyrqis.def`) names its first function ordinal 10 and its
+    /// second ordinal 11, and a lookup that treated `n` as an index would
+    /// answer nothing for 10 while resolving two names it was never asked
+    /// about for 1 and 2. Reading the base from the file is what makes
+    /// this a real ordinal lookup rather than an off-by-base guess.
+    ///
+    /// Absent is absent, never a guess: ordinal 0 (not a legal ordinal --
+    /// the caller's NULL is a NAME error, decided before this is called),
+    /// an ordinal below the declared base, an ordinal past
+    /// `OrdinalBase + NumberOfFunctions`, a null EAT slot (a slot the
+    /// provider never filled is UNAVAILABLE, GetProcAddress semantics),
+    /// a forwarded export (a registry question, never resolved here), and
+    /// the empty table all answer `None`. `Some` is always a plain
+    /// function or data address inside the image the table was parsed
+    /// from -- the same certification [`Self::every_export_within`] applies
+    /// at module-install time covers this form too, because it is the same
+    /// EAT.
+    ///
+    /// # Safety
+    /// image must be mapped.
+    pub unsafe fn lookup_ordinal(&self, ordinal: u64) -> Option<u64> {
+        if self.is_empty() || ordinal == 0 {
+            return None;
+        }
+        let base = self.ordinal_base as u64;
+        if ordinal < base {
+            return None; // below the declared base: the file names no such ordinal
+        }
+        match self.entry_raw(ordinal - base) {
+            Ok(Some(RawExport::Function(rva))) => Some(self.load_base.wrapping_add(rva)),
+            // Null slot, past-end index (entry_raw's own bound), forwarder,
+            // or a malformed read: all "this table names no address for that
+            // ordinal", never an address to guess at.
+            _ => None,
+        }
+    }
+
+    /// The directory's declared `OrdinalBase` (0 for the empty table): the
+    /// number Windows' ordinal form subtracts before indexing the EAT.
+    /// Exposed so a caller can state the fact and pin it against the
+    /// fixture's own declaration instead of assuming the usual 1.
+    pub fn ordinal_base(&self) -> u32 {
+        if self.is_empty() {
+            0
+        } else {
+            self.ordinal_base
         }
     }
 

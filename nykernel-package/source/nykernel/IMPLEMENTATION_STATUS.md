@@ -7774,3 +7774,74 @@ provider is a fixture, not a second API surface: its two functions exist to make
 the module table's per-module claim testable, and no kernel operation is
 dispatched on their behalf. The startup pair, the error table, the TEB limit and
 every v0/v0.1/v0.2/v0.3/v0.4/v0.5 limit stand unchanged.
+## The Win32 API surface v0.7: GetProcAddress's ordinal form, out of the file's own OrdinalBase (2026-11-22)
+
+**The question this tranche answers.** v0.6's `GetProcAddress` served names only: a
+low-word argument -- Windows' documented ordinal form, `(LPCSTR)(ULONG_PTR)n` --
+was refused with `ERROR_NOT_SUPPORTED` because the module table had never read
+an ordinal. But the ordinal is not a second table's question. `IMAGE_EXPORT_DIRECTORY`
+declares `OrdinalBase`, an ordinal names EAT slot `n - OrdinalBase`, and the
+table the named form already walks is the same EAT the ordinal indexes. So the
+refusal was a gap in the surface, not a missing file fact, and this tranche closes
+it: `pe::DllExportTable::lookup_ordinal` resolves the form from the provider's
+own directory, and `Win32Error::OrdinalNotSupported` is gone from the enum and
+from the 28-row error-code table (which is now 27 rows).
+
+**Why the second provider now declares OrdinalBase 10.** With the linker's
+default base of 1, "ordinal N" and "EAT index N-1" are the same number for every
+export, so a boot that asked ordinal 2 would pass whether or not the
+implementation read the base at all -- the proof would be decorative. So
+`userprog/nyrqis.def` states `NyrqisBuild @10` and `NyrqisMode @11`, making the
+provider's exports ordinals 10 and 11. `build.sh` pins the linked DLL's own
+`Export Address Table -- Ordinal Base 10`, so a DEF file this ld stopped honoring
+fails the build before a boot can weaken. The two export RVAs and `.text` are
+unchanged (`0x1000`, `0x1006`, `0x30`) -- only the numbering the directory
+declares is different.
+
+**What changed.** `DllExportTable` gained `lookup_ordinal` (absent for ordinal 0,
+below the base, past `OrdinalBase + NumberOfFunctions`, a null EAT slot, or a
+forwarder -- never a guessed slot) and an `ordinal_base()` accessor. Arm 11 of
+`dispatch` now decides on the VALUE: below `ORDINAL_LIMIT` it resolves through
+the selected row's own base, at or above it it reads a name pointer as before.
+The client gained a tranche 7 with seven report fields at `0x748..0x778`: the
+ordinal answer for 11, whether it equals the NAME answer, the value read by
+CALLING through it, and the two out-of-range probes. `EXPECTED_REFUSALS` rose
+from 7 to 9 -- ordinals 9 and 12, from ring 3 -- while the kernel-side control
+grew the same probes from the other side: ordinals 10 and 11 equal their named
+answers, kernel32's slot 0 (ordinal 1 under base 1) is CloseHandle, and 9 and 12
+answer `ProcNotFound`.
+
+**Pins moved, deliberately, and the build refuses the drift first.** `nyrqis.def`
+is new and pinned through `objdump -p` (`Ordinal Base 10`); `nyrqis.dll`'s
+`.text` stays `0000190100001000 00000030`, and its `.edata` is still `0x5e`.
+`kernel32.dll` is untouched. The client's `.text` grew from `0x6a8` to `0x758`;
+its `.idata` stays `0x1fc` (twelve imports) and `SizeOfImage` stays `0x4000`.
+
+**Proved from both sides in the same boot.** Kernel-side, control 10 now states
+the ordinal facts beside the named ones; from ring 3 the client asks the second
+provider for ordinal 11, compares that address with the one the NAME answered,
+CALLS through it and reads 1, then asks for 9 and 12 and gets NULL with
+`ERROR_PROC_NOT_FOUND` both times.
+
+```
+experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing and a named GetModuleHandleA as ModuleNotFound; five unusable rows (empty name, non-text name, zero base, zero image, an image too small for the exports it names) were refused as ModuleInstallInvalid and published nothing; kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows, both spellings of kernel32.dll's name answered 0x190000000000 and nyrqis.dll answered its own 0x190100000000, a duplicate and a fourth row were refused (ModuleInstallInvalid, ModuleTableFull at 3 rows), all 12 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (12+2), a lowercase export name and the client's exportless image answered ProcNotFound, kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module), an unregistered base ModuleNotLoaded, a NULL name NameInvalid, and the ORDINAL form answered from the same directories -- nyrqis.dll's declared OrdinalBase 10 made its first two exports ordinals 10 and 11 (both answered the addresses their NAMES did), kernel32.dll's first slot answered ordinal 1 under the ordinary base 1, and ordinals 9 and 12 (below that base and past its last slot) answered ProcNotFound rather than an index guess -- OK, GetProcAddress answers PER MODULE from a module table the loader built and then certified
+experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true; handles f1=0x100 f2=0x100 f3=0x100 f4=0x100 f5=0xffffffffffffffff f6=0xffffffffffffffff; closes 1 1 1 1; reads 1/1/1/1/1/0
+experimental win32-demo self-test: ... kernel32.dll asked for NyrqisBuild answered 0x0 with ERROR_PROC_NOT_FOUND (127) and nyrqis.dll asked for GetTickCount answered 0x0 the same (127); asked in Windows' ordinal form, the second provider's base-11 ordinal 11 answered 0x190100001006 -- the same address its NAME did (1) -- which the client CALLED through, reading 1; ordinals 9 and 12 (below the base, past the last slot) answered 0x0 and 0x0 with ERROR_PROC_NOT_FOUND (127) and (127); ... refusals 9 (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, and its two cross-module probes, and its two out-of-range ordinal probes) -- OK, a real Windows-format console program ...
+```
+
+The gate pins the ordinal clause of control 10 (`OrdinalBase 10 ... ordinals 10
+and 11`, the 9/12 refusals), `ordinals=true` on the checks line, and the ring-3
+self-test sentence -- the ordinal-11 address `0x190100001006`, equal-to-name
+`1`, and both `ERROR_PROC_NOT_FOUND (127)` answers. The client's run raises
+exactly nine refusals: two `File(ClosedHandle)`, one `UnsupportedAccess`, one
+`ModuleNotFound`, and five `ProcNotFound` -- the absent-export probe, the two
+cross-module probes, and the two out-of-range ordinals.
+
+**Limits.** The ordinal form is answered per module from the same three-row table,
+so it inherits every v0.5/v0.6 limit: no `LoadLibrary`/`FreeLibrary`, no
+forwarder chase (a forwarded ordinal answers `ERROR_PROC_NOT_FOUND`, exactly as a
+forwarded name does -- the import walk still chases them), and bare module names.
+It adds no ordinal cache and no second name list: the answer is still the mapped
+file's EAT. The startup pair, the error table, the TEB limit and every
+v0/v0.1/v0.2/v0.3/v0.4/v0.5/v0.6 limit stand unchanged.
+
