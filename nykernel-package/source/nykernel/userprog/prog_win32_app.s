@@ -3,7 +3,7 @@
  * genuine Windows-format PE32+ console executable
  * (`ld -m i386pep --subsystem console`) linked DIRECTLY against
  * `kernel32.dll` above, so ld synthesizes its .idata the ordinary way:
- * all eleven exports get an IAT slot that the loader fills from
+ * all twelve exports get an IAT slot that the loader fills from
  * kernel32.dll's real export directory.
  *
  * The program is the shape of a minimal console app, in Microsoft's own
@@ -42,6 +42,19 @@
  *     hmod = GetModuleHandleA(NULL)              // THIS image's base
  *     ((char*)_start - hmod < SizeOfImage)       // 1: the handle names
  *                                                // the running image
+ *
+ *   tranche 5 -- binding an import AT RUNTIME:
+ *     hmod32 = GetModuleHandleA("kernel32.dll")   // a NAMED module now
+ *                                                // resolves
+ *     GetModuleHandleA("KERNEL32.DLL")           // the same base: module
+ *                                                // names are case-blind
+ *     pfn = GetProcAddress(hmod32, "GetTickCount")
+ *     (pfn == __imp_GetTickCount)                // 1: the runtime answer
+ *                                                // is the loader's answer
+ *     pfn()                                       // callable through the
+ *                                                // pointer it returned
+ *     GetModuleHandleA("nope.dll")               // 0, ERROR_MOD_NOT_FOUND
+ *     GetProcAddress(hmod32, "NoSuchExport")     // 0, ERROR_PROC_NOT_FOUND
  *
  *   tranche 3 -- why it failed:
  *     err = GetLastError()                          // ERROR_FILE_NOT_FOUND (2)
@@ -355,6 +368,73 @@ _start:
     movabs $SLOT_ERR_KEPT, %rdi
     mov %rax, (%rdi)
 
+    /* ---- tranche 5: binding an import at runtime ---- */
+
+    /* hmod32 = GetModuleHandleA("kernel32.dll"): a NAMED module. The
+       previous tranche could only refuse this; now the loader's module
+       table answers it, and the answer is a handle this program can use. */
+    lea name_kernel32(%rip), %rcx
+    call *__imp_GetModuleHandleA(%rip)
+    mov %rax, %rbx
+    movabs $SLOT_NAMED_MODULE, %rdi
+    mov %rax, (%rdi)
+
+    /* The SAME module in another case: Windows compares module names
+       case-insensitively, because a module name is a file name. */
+    lea name_kernel32_upper(%rip), %rcx
+    call *__imp_GetModuleHandleA(%rip)
+    movabs $SLOT_NAMED_MODULE2, %rdi
+    mov %rax, (%rdi)
+
+    /* pfn = GetProcAddress(hmod32, "GetTickCount"): the address the
+       provider's OWN export directory names, found at runtime rather than
+       patched in by the loader. */
+    mov %rbx, %rcx
+    lea proc_tick(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_PROC_TICK, %rdi
+    mov %rax, (%rdi)
+
+    /* It must be the very address the loader wrote into this program's IAT.
+       Two independent paths to one export, and the program compares them:
+       a kernel-side name list would have to agree with the EAT to pass. */
+    mov __imp_GetTickCount(%rip), %rdx
+    xor %ecx, %ecx
+    cmp %rdx, %rax
+    sete %cl
+    movabs $SLOT_PROC_TICK_SAME, %rdi
+    mov %rcx, (%rdi)
+
+    /* And it must be CALLABLE: call through the pointer the surface just
+       handed over, not through the IAT slot. */
+    movabs $SLOT_PROC_TICK, %rdi
+    mov (%rdi), %rax
+    call *%rax
+    movabs $SLOT_PROC_TICK_VALUE, %rdi
+    mov %rax, (%rdi)
+
+    /* Negative: a module that is not loaded. NULL, and a code that says
+       so -- not a guess at some other image's base. */
+    lea name_absent(%rip), %rcx
+    call *__imp_GetModuleHandleA(%rip)
+    movabs $SLOT_NAMED_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_NAMED_NONE_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* Negative: a name that module does not export. NULL, and
+       ERROR_PROC_NOT_FOUND -- a different code from the one above, so a
+       client can tell "wrong library" from "wrong function". */
+    mov %rbx, %rcx
+    lea proc_absent(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_PROC_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_PROC_NONE_ERR, %rdi
+    mov %rax, (%rdi)
+
     /* ---- tranche 1 again: the clock, then exit ---- */
 
     call *__imp_GetTickCount(%rip)
@@ -388,6 +468,19 @@ path_missing:
 cmdline_expected:
     .asciz "C:\\nyrqis\\win32_console.exe"
     .set CMDLINE_LEN, . - cmdline_expected - 1
+/* tranche 5's module and export names. The module name appears in both cases
+   Windows must treat as one module; the export name appears in the exact case
+   that resolves and beside a name this DLL does not export. */
+name_kernel32:
+    .asciz "kernel32.dll"
+name_kernel32_upper:
+    .asciz "KERNEL32.DLL"
+name_absent:
+    .asciz "nope.dll"
+proc_tick:
+    .asciz "GetTickCount"
+proc_absent:
+    .asciz "NoSuchExport"
 /* The SizeOfImage the link gives this executable (build.sh pins the same
    0x4000 from objdump -p), used by the module-handle test above. */
     .set IMAGE_SIZE, 0x4000
@@ -448,6 +541,19 @@ cmdline_expected:
     .set SLOT_MODULE,           SLOT_BASE + 0x268 /* GetModuleHandleA(NULL) */
     .set SLOT_MODULE_OK,        SLOT_BASE + 0x270 /* handle names this image */
     .set SLOT_CMDLINE_TEXT,     SLOT_BASE + 0x2a0
+/* tranche 5: the runtime binding's answers. The first five sit in the gap
+   between the startup fields (which end at 0x278) and the command-line string
+   at 0x2a0; the four negative probes sit ABOVE the string and below the 0x300
+   area the kernel-side controls write their test paths into. */
+    .set SLOT_NAMED_MODULE,     SLOT_BASE + 0x278 /* GetModuleHandleA(name) */
+    .set SLOT_NAMED_MODULE2,    SLOT_BASE + 0x280 /* ... in upper case */
+    .set SLOT_PROC_TICK,        SLOT_BASE + 0x288 /* GetProcAddress answer */
+    .set SLOT_PROC_TICK_SAME,   SLOT_BASE + 0x290 /* == the IAT slot */
+    .set SLOT_PROC_TICK_VALUE,  SLOT_BASE + 0x298 /* called through it */
+    .set SLOT_NAMED_NONE,       SLOT_BASE + 0x2c0 /* "nope.dll" -> NULL */
+    .set SLOT_NAMED_NONE_ERR,   SLOT_BASE + 0x2c8 /* ... ERROR_MOD_NOT_FOUND */
+    .set SLOT_PROC_NONE,        SLOT_BASE + 0x2d0 /* absent export -> NULL */
+    .set SLOT_PROC_NONE_ERR,    SLOT_BASE + 0x2d8 /* ... ERROR_PROC_NOT_FOUND */
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

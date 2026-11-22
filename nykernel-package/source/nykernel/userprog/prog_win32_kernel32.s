@@ -8,6 +8,20 @@
  *   tranche 2 (files):    CreateFileA, ReadFile, CloseHandle
  *   tranche 3 (errors):   GetLastError, SetLastError
  *   tranche 4 (startup):  GetCommandLineA, GetModuleHandleA
+ *   tranche 5 (binding):  GetProcAddress
+ *
+ * Why GetProcAddress is the export that completes the startup pair: a CRT
+ * (or any program that loads a library late) takes the HMODULE a name
+ * resolved to and asks IT where a function lives. So this stub is the one
+ * export whose answer is ABOUT the table it lives in: the kernel walks
+ * the KERNEL's module table to the row for that handle, then walks THAT
+ * row's real IMAGE_EXPORT_DIRECTORY -- this very DLL's .edata -- for the
+ * name. Which means the stub's own body is two registers and a trap like
+ * every other, while the answer it returns is a fact parsed out of the
+ * file this stub is compiled into. A hand-kept name->address list in the
+ * kernel would answer the same for a program that never imported
+ * anything, and that is exactly the kind of answer this tranche exists to
+ * rule out.
  *
  * Why the startup pair is its own tranche: a CRT does not begin with a
  * console write, it begins by asking the loader where it is and what it
@@ -180,11 +194,26 @@ GetCommandLineA:
 
     .globl GetModuleHandleA
 GetModuleHandleA:
-    /* LPCSTR lpModuleName in RCX. NULL asks for THIS image's base, which
-       is the only answer v0 can give: there is no module table to look a
-       name up in, so a name is a refusal rather than a guess. */
+    /* LPCSTR lpModuleName in RCX. NULL asks for THIS image's base; a name
+       is looked up in the loader's module table, case-insensitively (a
+       module name is a file name), and a name no row answers to is
+       ERROR_MOD_NOT_FOUND rather than a guess. */
     mov %rcx, nyr_call_block+8(%rip)
     movq $10, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl GetProcAddress
+GetProcAddress:
+    /* HMODULE hModule in RCX, LPCSTR lpProcName in RDX. Both are parked:
+       the handle selects a module ROW and the name selects an EXPORT
+       inside it, and the kernel answers from that row's own export
+       directory. An ordinal-form lpProcName (a small integer) is refused
+       by name before anything reads it as an address. */
+    mov %rcx, nyr_call_block+8(%rip)
+    mov %rdx, nyr_call_block+16(%rip)
+    movq $11, nyr_call_block+48(%rip)
     int $0x90
     mov nyr_call_block+40(%rip), %rax
     ret

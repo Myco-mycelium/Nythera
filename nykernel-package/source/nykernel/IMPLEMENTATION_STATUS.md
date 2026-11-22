@@ -7556,3 +7556,142 @@ so a real CRT's startup would still stop at the third call. There is no
 module table, so a named `GetModuleHandleA` is refused rather than
 resolved, and no `GetProcAddress`. Every v0/v0.1/v0.2/v0.3 limit stands
 unchanged.
+
+## The Win32 API surface v0.5: GetProcAddress and a real module table (2026-11-22)
+
+v0.4 let a program START the way a Windows program starts: it could ask
+where its image is and what it was told on the command line. It could
+not BIND. Every address it used had been patched into its IAT before
+its first instruction, which makes its imports a link-time fact -- and
+that is not how a Windows program behaves the moment it does anything
+interesting: a plugin, a late-loaded library, or a CRT resolving its own
+helpers by name all ask a module for an export AFTER the loader is done.
+The gap was visible in v0.4 itself: `GetModuleHandleA("kernel32.dll")`
+could only be refused, because a name had nothing to resolve against.
+
+So this tranche adds the other half of that pair -- `GetProcAddress`,
+twelfth export of the same `kernel32.dll` stub table -- and the thing it
+needs to be honest: a MODULE TABLE filled by the loader, one row per
+module it mapped, each row carrying that module's own parsed
+`IMAGE_EXPORT_DIRECTORY`. A named `GetModuleHandleA` now resolves
+(case-insensitively, as Windows compares a file name), and
+`GetProcAddress` answers out of the row's real export table rather than
+out of a list kept beside the dispatcher.
+
+**Why the table, and not a name->address list.** The cheapest way to
+pass a boot proof here would have been a `match name { b"GetTickCount"
+=> 0x19000000104d, ... }` inside `win32`. It would answer correctly for
+this fixture and prove nothing: it would answer just as correctly for a
+DLL that exported nothing, and the client's comparison against its
+loader-bound IAT slot would still pass, because both sides would be
+reading the same hand-typed number. Answering from the EAT means the
+answer is the FILE's claim: `DllExportTable::lookup` walks the mapped
+image's name pointer table, ordinal table and export address table, so a
+name resolves exactly when the loaded provider says it does. The proof
+is then structural rather than textual: a `(name, address)` literal has
+nothing to disagree with, and an EAT lookup disagrees the moment the
+fixture's table and the kernel's idea of it drift.
+
+**Why a row is certified at install time.** `install_module(name, base,
+image_size, exports)` is loader-side code, so a wrong argument is a bug
+here -- but one of those bugs has teeth. `lookup` returns an RVA the
+export header merely POINTS AT; it never asks whether that RVA is inside
+the image. For the import walk that was tolerable (a wrong address
+traps in the client, where the crash is attributable); once an address
+is handed to ring 3 as a function to CALL, an uncertified EAT entry is a
+pointer into whatever is mapped next, kernel text included. So the new
+`pe::DllExportTable::every_export_within` walks every EAT slot once, and
+a row that fails it is refused WHOLE (`ModuleInstallInvalid`) instead of
+being published and re-checked on every call. A refused registration
+leaves the table exactly as it was, so the rows a client's calls see are
+always certified rows.
+
+**Two comparison rules, deliberately different.** Module names are
+compared ASCII case-insensitively; export names byte-exactly. That
+asymmetry is Windows': `GetModuleHandleA("KERNEL32.DLL")` and
+`("kernel32.dll")` name one module because a module name is a file name,
+while `GetProcAddress(h, "gettickcount")` fails because a PE export name
+is a string compared exactly. Both rules are pinned -- the kernel-side
+control asks the uppercase spelling and requires the same base, and asks
+an export name in the wrong case and requires `ERROR_PROC_NOT_FOUND` --
+because a description of an asymmetry is worth nothing if only one half
+of it is exercised.
+
+**Seven new typed refusals, each with the code Windows uses for that
+condition.** `ModuleNotFound` (126) is "that module is not loaded in this
+process" and `ProcNotFound` (127) is "that module has no such export" --
+two different questions a client must be able to tell apart, because one
+means it named the wrong library and the other the wrong function.
+`ModuleNotLoaded` (6) is a base that is not a row -- the same
+`ERROR_INVALID_HANDLE` every other unissued handle answers.
+`ModuleTableFull` (14) is the table's cap: a resource condition, not a
+bad argument. `ModuleInstallInvalid` (87) is an unusable row (empty,
+non-text or over-long name; duplicate; zero base; zero image; an export
+outside the image). `NameInvalid` (87) is a name argument ring 3 made
+unreadable (NULL, outside its pages, not text, unterminated) -- one
+variant where a path has three, because for a NAME there is only one
+thing the client can do about it. `OrdinalNotSupported` (50) is
+`GetProcAddress` in its low-word-ordinal form: `ERROR_NOT_SUPPORTED`
+says "this request form is not served", which is true, rather than
+`ERROR_PROC_NOT_FOUND`, which would claim the ordinal does not exist.
+The table `GetLastError` answers from is now 28 rows, and control 7
+pins every one of them as a literal.
+
+**Pins moved, deliberately, and the build refuses the drift first.**
+`GetProcAddress` is appended last in the fixture so every earlier RVA
+stayed put: `.text` `0x188` -> `0x1b0` (`TEXT_SIZE`, and the `build.sh`
+objdump gate that checks it), the new stub at `0x1168`, the DLL's
+`ImageBase`/call block and the client's `SizeOfImage 0x4000` unchanged.
+The client's import count is now twelve, and because the index space is
+now `0..=11` the `UnknownFunction` control moved from index 11 to index
+12 -- a control that still asked 11 would now be ANSWERED by
+`GetProcAddress` and would have silently stopped testing anything. The
+client's report page grew nine fields, and the compile-time assert that
+keeps them from overlapping the read buffers, the installed command
+line, the `0x300` control-path area or each other was tightened to
+cover the new ranges -- the collision it guards against really happened
+once (see the v0.3 section) and produced a green-looking console line
+beside a failed read-back.
+
+**Proved from both sides in the same boot.** Kernel-side, control 10
+walks the whole table surface before ring 3 runs: an empty table (where
+"nothing loaded" and "no such module" must be different answers), five
+unusable registrations, a duplicate row, the two-row cap, all twelve
+exports BY NAME, the wrong-case export name, the client's exportless
+image, an unregistered base, the ordinal form and a NULL name. From
+ring 3 the client asks what a real program asks: `GetModuleHandleA`
+by name in both cases, `GetProcAddress` for `GetTickCount`, a compare
+of that answer against the IAT slot the loader filled (two independent
+paths to one export), and then a CALL through the pointer it was
+handed -- so the runtime-bound address is proved callable, not merely
+equal. It also asks for a module that is not loaded and an export that
+module does not have, and reads back 126 and 127.
+
+```
+experimental win32-demo: resolved 12 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress), every slot reading back its export address -- OK
+experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing and a named GetModuleHandleA as ModuleNotFound; five unusable rows (empty name, non-text name, zero base, zero image, an image too small for the exports it names) were refused as ModuleInstallInvalid and published nothing; kernel32.dll and win32_console.exe then registered, both spellings of the provider's name answered 0x190000000000, a duplicate and a third row were refused (ModuleInstallInvalid, ModuleTableFull at 2 rows), all 12 exports resolved BY NAME from the provider's own export directory, a lowercase export name and the client's exportless image answered ProcNotFound, an unregistered base ModuleNotLoaded, an ordinal request OrdinalNotSupported and a NULL name NameInvalid -- OK, GetProcAddress answers from a module table the loader built and then certified
+experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true; handles f1=0x100 f2=0x100 f3=0x100 f4=0x100 f5=0xffffffffffffffff f6=0xffffffffffffffff; closes 1 1 1 1; reads 1/1/1/1/1/0
+experimental win32-demo self-test: GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it, and GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it; GetModuleHandleA("kernel32.dll") answered the provider's own base 0x190000000000 in either case, and GetProcAddress named GetTickCount at 0x19000000104d -- the very address the loader bound into the IAT (1) -- which the client then CALLED through, reading 220055 (>= 220055); a module that is not loaded answered 0x0 with ERROR_MOD_NOT_FOUND (126) and a name that module does not export answered 0x0 with ERROR_PROC_NOT_FOUND (127); WriteFile returned 1 and wrote 33 byte(s); ... refusals 5 (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes) -- OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll by name, bound GetTickCount through GetProcAddress out of that module's own export directory and called twelve kernel32 exports through a real PE32+ DLL's stubs, which the kernel performed in ring 0 against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)
+```
+
+The gate pins control 10, the `bindings=true` field, the runtime-binding
+clause of the self-test sentence and both of its error codes, alongside
+the moved `resolved 12 import(s)` needle. The client's own run raises
+exactly five refusals -- the closed-handle pair, the refused
+`GENERIC_WRITE` open, and this tranche's two deliberate negative probes,
+which are visible in the transcript as `service refusal ModuleNotFound`
+and `service refusal ProcNotFound` -- so every refusal the surface counts
+is one the program asked for.
+
+**Limits.** The table holds two rows (this process's image and the one
+provider) and a third registration is a typed refusal; there is no
+`LoadLibrary`/`FreeLibrary`, so a module is never unloaded and a row's
+base and table can never go stale. `GetProcAddress` serves the name form
+only (the ordinal form is refused by name), does not chase forwarded
+exports (a forwarder is `ERROR_PROC_NOT_FOUND`), and matches a BARE
+module name -- a path-qualified name is not matched against a basename,
+because nothing here searches. The startup pair still carries no
+arguments and no environment block (`GetEnvironmentStrings`,
+`GetCommandLineW`, `GetStartupInfo`, `__getmainargs` are absent), there
+is still no TEB, so the last error remains one cell per kernel rather
+than per thread. Every v0/v0.1/v0.2/v0.3/v0.4 limit stands unchanged.

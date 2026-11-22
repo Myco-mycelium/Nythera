@@ -186,7 +186,7 @@ as --64 userprog/prog_pe_bound_ref2stale.s -o userprog/prog_pe_bound_ref2stale.o
 ld -m i386pep --subsystem native -e _start --image-base=0x600000000000 -o userprog/userprog_pe_bound_ref2stale.exe userprog/prog_pe_bound_ref2stale.o userprog/userprog_pe_import_fwdprov.dll
 python3 tools/patch_pe_bound.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_fwdprov.dll userprog/userprog_pe_import_app.exe userprog/userprog_pe_bound_bad.exe userprog/userprog_pe_bound_refstale.exe userprog/userprog_pe_bound_ref2bad.exe userprog/userprog_pe_bound_ref2stale.exe
 
-echo "==> link userprog/kernel32.dll and userprog/win32_console.exe (the Win32 API surface v0 carriers: a real PE32+ DLL whose eleven exports are ring-3 trap stubs, and a real PE32+ console client that imports them)"
+echo "==> link userprog/kernel32.dll and userprog/win32_console.exe (the Win32 API surface v0 carriers: a real PE32+ DLL whose twelve exports are ring-3 trap stubs, and a real PE32+ console client that imports them)"
 as --64 userprog/prog_win32_kernel32.s -o userprog/prog_win32_kernel32.o
 ld -m i386pep --shared --enable-auto-import --image-base=0x190000000000 -o userprog/kernel32.dll userprog/prog_win32_kernel32.o
 as --64 userprog/prog_win32_app.s -o userprog/prog_win32_app.o
@@ -199,7 +199,7 @@ _win32_text=$(objdump -h userprog/kernel32.dll | awk '$2==".text"{print $4" "$3}
 _win32_data=$(objdump -h userprog/kernel32.dll | awk '$2==".data"{print $4" "$3}')
 _win32_appbase=$(objdump -p userprog/win32_console.exe | awk '/ImageBase/{print $2}')
 _win32_appsize=$(objdump -p userprog/win32_console.exe | awk '/SizeOfImage/{print $2}')
-if [[ "$_win32_text" != "0000190000001000 00000188" ]]; then
+if [[ "$_win32_text" != "0000190000001000 000001b0" ]]; then
     echo "FAIL: kernel32.dll .text drifted ($_win32_text); update experimental::win32's TEXT_RVA/TEXT_SIZE pins" >&2; exit 1
 fi
 if [[ "$_win32_data" != "0000190000002000 00000040" ]]; then

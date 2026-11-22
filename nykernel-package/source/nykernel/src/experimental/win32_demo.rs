@@ -1,20 +1,20 @@
 //! The Win32 API surface proof: a genuine Windows-format PE32+ console
 //! program, linked against a genuine Windows-format PE32+ `kernel32.dll`,
-//! whose eleven exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
+//! whose twelve exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
 //! `ExitProcess`, `CreateFileA`, `ReadFile`, `CloseHandle`, `GetLastError`,
-//! `SetLastError`, `GetCommandLineA`, `GetModuleHandleA` -- are performed by
-//! this kernel.
+//! `SetLastError`, `GetCommandLineA`, `GetModuleHandleA`, `GetProcAddress` --
+//! are performed by this kernel.
 //!
 //! What is proven, end to end, every boot:
 //!
 //! 1. `userprog/kernel32.dll` loads at its own `ImageBase`, and its REAL
-//!    export directory (`GetProcAddress` semantics) names exactly the eleven
+//!    export directory (`GetProcAddress` semantics) names exactly the twelve
 //!    functions; every export address is inside its own `.text` window, and
 //!    the call block the stubs use is where the kernel pins it (magic
 //!    checked) -- the layout-drift rule.
 //! 2. `userprog/win32_console.exe` is loaded, and its REAL
 //!    `IMAGE_DIRECTORY_ENTRY_IMPORT` -- synthesized by GNU ld itself from the
-//!    DLL -- resolves to those eleven export addresses. Every IAT slot is read
+//!    DLL -- resolves to those twelve export addresses. Every IAT slot is read
 //!    back against the export table's own answer, per symbol.
 //! 3. The client's own code runs in ring 3 and uses the imports the ordinary
 //!    Windows way. Startup, in the order a CRT makes them: `GetCommandLineA`
@@ -22,7 +22,15 @@
 //!    client compares byte-for-byte (NUL included) against its own copy; and
 //!    `GetModuleHandleA(NULL)` answers the base of the image the client is
 //!    actually running from, which the client proves by checking that its own
-//!    `_start` lies inside `[hmod, hmod + SizeOfImage)`. Console:
+//!    `_start` lies inside `[hmod, hmod + SizeOfImage)`. Runtime binding: the
+//!    client asks `GetModuleHandleA("kernel32.dll")` -- the NAMED form the
+//!    previous tranche could only refuse -- gets a handle, asks it
+//!    `GetProcAddress(.., "GetTickCount")`, and requires the answer to be the
+//!    very address the loader wrote into its IAT; then it CALLS through that
+//!    pointer, so the runtime-bound address is proved callable and not merely
+//!    equal. It also asks for a module that is not loaded and for an export
+//!    that module does not have, and reads back `ERROR_MOD_NOT_FOUND` /
+//!    `ERROR_PROC_NOT_FOUND` respectively. Console:
 //!    `GetStdHandle` then `WriteFile`. Files: it opens
 //!    `C:\nyrqis\hello.txt` with `CreateFileA`, reads it in two pieces (which
 //!    proves the handle's cursor advances), reads past the end (TRUE, zero
@@ -47,13 +55,18 @@
 //!    write access request, a creation disposition other than OPEN_EXISTING,
 //!    a non-NULL overlapped pointer, using the console handle as a file, and
 //!    exhausting the volume's handle table, asking for a command line before
-//!    any loader placed one, and naming a module -- each typed, each
+//!    any loader placed one, naming a module before any was registered, asking
+//!    an unregistered base for an export, an export a module does not have,
+//!    an export name in the wrong case, an ordinal-form request, and
+//!    registering a module row that is unusable (empty name, non-text name,
+//!    zero base, zero image, duplicate name, an export outside the image) or a
+//!    third row -- each typed, each
 //!    exercised kernel-side before ring 3 runs (negative controls). Each control also
 //!    asserts the Win32 code that refusal reports, so the `GetLastError` table
 //!    is proved for every variant and not only for the three the client hits;
 //!    the client's own run must raise exactly the refusals it asks for.
 //!
-//! Deliberate scope, stated: eleven functions, no NT system-call layer beneath
+//! Deliberate scope, stated: twelve functions, no NT system-call layer beneath
 //! them, no user32/gdi32, no Microsoft code, and `ExitProcess` records its code
 //! and returns (v0 has no task teardown to switch to) -- the client's next
 //! instruction is this link's completion trap, whose handler asserts the
@@ -121,30 +134,46 @@ const CMDLINE_OFFSET: u64 = 0x2A0;
 /// typed refusal instead of a silent zero. The client does exactly that twice
 /// on purpose -- `ReadFile` and a second `CloseHandle` on the closed handle --
 /// and it also asks for `GENERIC_WRITE` on a read-only volume, which is a
-/// refusal too. So the surface must have refused exactly those three. A
+/// refusal too. This tranche adds two more, both of them questions a client is
+/// entitled to ask and entitled to a Windows answer for: `GetModuleHandleA` for
+/// a module that is not loaded, and `GetProcAddress` for an export that module
+/// does not have. So the surface must have refused exactly those five. A
 /// different number means either an extra refusal (a bug in the surface) or a
 /// missing one (the client never reached the probe), and the per-field
 /// assertions below pin which.
-const EXPECTED_REFUSALS: u64 = 3;
+const EXPECTED_REFUSALS: u64 = 5;
 
-/// The eleven exports the client imports, and the RVAs they must resolve to
+/// The twelve exports the client imports, and the RVAs they must resolve to
 /// (the DLL's own export table is the authority; these are the independent
 /// answer the boot checks it against, per symbol). Sorted by name, which is the
-/// order GNU ld writes its name table in -- so the two startup stubs, appended
-/// last in the source for a stable `.text` layout, sort into the middle.
-const EXPECTED_EXPORTS: [(&[u8], u64); 11] = [
+/// order GNU ld writes its name table in -- so the stubs appended last in the
+/// source for a stable `.text` layout sort into the middle.
+const EXPECTED_EXPORTS: [(&[u8], u64); 12] = [
     (b"CloseHandle", 0x10F1),
     (b"CreateFileA", 0x1077),
     (b"ExitProcess", 0x1062),
     (b"GetCommandLineA", 0x1137),
     (b"GetLastError", 0x110D),
     (b"GetModuleHandleA", 0x114C),
+    (b"GetProcAddress", 0x1168),
     (b"GetStdHandle", 0x1000),
     (b"GetTickCount", 0x104D),
     (b"ReadFile", 0x10B4),
     (b"SetLastError", 0x1122),
     (b"WriteFile", 0x101C),
 ];
+
+/// The RVA the pinned table above gives `name`, for a check that has to name one
+/// export rather than loop over all of them (the runtime binding binds
+/// `GetTickCount`, and the expectation must come from the same pin the IAT check
+/// used -- two answers written twice would be two things to keep in step).
+fn expected_rva(name: &[u8]) -> u64 {
+    EXPECTED_EXPORTS
+        .iter()
+        .find(|(pinned, _)| *pinned == name)
+        .map(|(_, rva)| *rva)
+        .unwrap_or_else(|| panic!("{:?} is not one of the pinned exports", NameOf(name)))
+}
 
 // The client's report fields, mirroring `userprog/prog_win32_app.s`.
 const SLOT_WRITE_RET: u64 = 0;
@@ -206,16 +235,37 @@ const SLOT_CMDLINE_OK: u64 = 0x260;
 const SLOT_MODULE: u64 = 0x268;
 /// 1 when the client's own `_start` lay inside `[hmod, hmod + SizeOfImage)`.
 const SLOT_MODULE_OK: u64 = 0x270;
+// The runtime binding's answers. The first five fill the gap between the startup
+// fields and the installed command line at CMDLINE_OFFSET; the four negative
+// probes sit above that string and below the 0x300 region.
+/// The base `GetModuleHandleA("kernel32.dll")` returned.
+const SLOT_NAMED_MODULE: u64 = 0x278;
+/// The same ask, spelled `"KERNEL32.DLL"`: module names are case-blind.
+const SLOT_NAMED_MODULE2: u64 = 0x280;
+/// The address `GetProcAddress(hmod32, "GetTickCount")` returned.
+const SLOT_PROC_TICK: u64 = 0x288;
+/// 1 when that address equaled the IAT slot the loader filled.
+const SLOT_PROC_TICK_SAME: u64 = 0x290;
+/// The value of the client calling THROUGH that pointer.
+const SLOT_PROC_TICK_VALUE: u64 = 0x298;
+/// `GetModuleHandleA("nope.dll")` -> 0, and the code it left behind.
+const SLOT_NAMED_NONE: u64 = 0x2C0;
+const SLOT_NAMED_NONE_ERR: u64 = 0x2C8;
+/// `GetProcAddress(hmod32, "NoSuchExport")` -> 0, and its code.
+const SLOT_PROC_NONE: u64 = 0x2D0;
+const SLOT_PROC_NONE_ERR: u64 = 0x2D8;
 // A compile-time check that the report fields do not overlap the client's read
 // buffers (which run up to SLOT_BIN + its eight bytes), the command-line string
-// the loader installs, or the 0x300 region the kernel-side controls write
-// their test paths into. The collision this prevents was real: it produced a
-// green-looking console line and a failed read-back in the same boot.
+// the loader installs, the 0x300 region the kernel-side controls write their
+// test paths into, or EACH OTHER. The collision this prevents was real: it
+// produced a green-looking console line and a failed read-back in the same boot.
 const _: () = assert!(
     SLOT_ERR_CLOSED_READ >= SLOT_BIN + 8
-        && SLOT_MODULE_OK + 8 <= CMDLINE_OFFSET
-        && CMDLINE_OFFSET + CMDLINE.len() as u64 + 1 <= 0x300,
-    "win32-demo report fields must sit between the read buffers and 0x300, and must not overlap the installed command line"
+        && SLOT_MODULE_OK + 8 <= SLOT_NAMED_MODULE
+        && SLOT_PROC_TICK_VALUE + 8 <= CMDLINE_OFFSET
+        && CMDLINE_OFFSET + CMDLINE.len() as u64 + 1 <= SLOT_NAMED_NONE
+        && SLOT_PROC_NONE_ERR + 8 <= 0x300,
+    "win32-demo report fields must sit between the read buffers and 0x300, must not overlap each other, and must not overlap the installed command line"
 );
 
 const SLOT_BUF: u64 = 0x100;
@@ -413,7 +463,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     assert_eq!(
         resolved.facts.len(),
         EXPECTED_EXPORTS.len(),
-        "exactly the eleven kernel32 imports must resolve"
+        "exactly the twelve kernel32 imports must resolve"
     );
     for (name, rva) in EXPECTED_EXPORTS {
         let fact = resolved
@@ -429,7 +479,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         );
     }
     serial_println!(
-        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA), every slot reading back its export address -- OK",
+        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress), every slot reading back its export address -- OK",
         resolved.facts.len()
     );
 
@@ -468,9 +518,9 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         0,
         "the last error must start at ERROR_SUCCESS before any call"
     );
-    expect_refusal(11, [0; 5], from_text, win32::Win32Error::UnknownFunction);
+    expect_refusal(12, [0; 5], from_text, win32::Win32Error::UnknownFunction);
     serial_println!(
-        "  experimental win32-demo: negative control 3 -- index 11 refused with the typed UnknownFunction -- OK"
+        "  experimental win32-demo: negative control 3 -- index 12 refused with the typed UnknownFunction -- OK"
     );
     expect_refusal(
         0,
@@ -638,10 +688,10 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // relative path's ERROR_PATH_NOT_FOUND, ...) cannot silently report a
     // made-up number. Pinned as literals rather than through `.code()` itself,
     // which would only prove the function is deterministic.
-    // Twenty-two rows: sixteen leaf variants plus the six volume rules. Adding
-    // a variant without its Windows code must therefore fail HERE, at compile
-    // time, rather than at a call site the boot never reaches.
-    let codes: [(win32::Win32Error, u32); 22] = [
+    // Twenty-eight rows: twenty-two leaf variants plus the six volume rules.
+    // Adding a variant without its Windows code must therefore fail HERE, at
+    // compile time, rather than at a call site the boot never reaches.
+    let codes: [(win32::Win32Error, u32); 28] = [
         (win32::Win32Error::UnknownFunction, 1),
         (win32::Win32Error::CallerOutsideKernel32, 487),
         (win32::Win32Error::InvalidHandle, 6),
@@ -656,7 +706,13 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         (win32::Win32Error::UnsupportedDisposition, 87),
         (win32::Win32Error::OverlappedNotSupported, 50),
         (win32::Win32Error::LoaderStateMissing, 21),
-        (win32::Win32Error::ModuleNameNotSupported, 126),
+        (win32::Win32Error::ModuleNotFound, 126),
+        (win32::Win32Error::ModuleNotLoaded, 6),
+        (win32::Win32Error::ModuleTableFull, 14),
+        (win32::Win32Error::ModuleInstallInvalid, 87),
+        (win32::Win32Error::ProcNotFound, 127),
+        (win32::Win32Error::OrdinalNotSupported, 50),
+        (win32::Win32Error::NameInvalid, 87),
         (win32::Win32Error::CommandLineInvalid, 87),
         (win32::Win32Error::File(win32_fs::FsError::PathNotAbsolute), 3),
         (win32::Win32Error::File(win32_fs::FsError::UnknownVolume), 15),
@@ -707,7 +763,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         "the error-code controls must leave no file open either"
     );
     serial_println!(
-        "  experimental win32-demo: negative control 7 -- the last-error cell started at ERROR_SUCCESS (0), every one of the {} typed refusals answered its pinned Windows code (unknown function 1, trap outside .text 487, invalid handle 6, out-of-region buffer/out-parameter/path 998, oversized length 87, unterminated path 206, non-text path 123, write access 5, bad disposition 87, overlapped I/O 50, loader state missing 21, named module 126, bad loader install 87, relative path 3, unknown drive 15, missing file 2, exhausted table 4), a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK",
+        "  experimental win32-demo: negative control 7 -- the last-error cell started at ERROR_SUCCESS (0), every one of the {} typed refusals answered its pinned Windows code (unknown function 1, trap outside .text 487, invalid handle 6, out-of-region buffer/out-parameter/path 998, oversized length 87, unterminated path 206, non-text path 123, write access 5, bad disposition 87, overlapped I/O 50, loader state missing 21, unloaded module 126, unregistered module handle 6, full module table 14, bad module row 87, absent export 127, ordinal form 50, unreadable name 87, bad loader install 87, relative path 3, unknown drive 15, missing file 2, exhausted table 4), a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK",
         codes.len()
     );
 
@@ -721,7 +777,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // refuses: an export added with the wrong row must fail here. Pinned as
     // literals rather than through `failure_value` itself, which would only
     // prove the function is deterministic.
-    let failure_values: [(u64, u64); 11] = [
+    let failure_values: [(u64, u64); 12] = [
         (0, win32::INVALID_HANDLE_VALUE), // GetStdHandle      -> HANDLE
         (1, 0),                           // WriteFile         -> BOOL
         (2, 0),                           // GetTickCount      -> DWORD
@@ -734,6 +790,8 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         (9, 0),                           // GetCommandLineA   -> LPSTR (NULL)
         (10, 0),                          // GetModuleHandleA  -> HMODULE, but
                                           //   its documented failure is NULL
+        (11, 0),                          // GetProcAddress    -> FARPROC, whose
+                                          //   documented failure is also NULL
     ];
     for (index, value) in failure_values {
         assert_eq!(
@@ -745,12 +803,12 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         );
     }
     assert_eq!(
-        win32::failure_value(11),
+        win32::failure_value(12),
         0,
         "an index that names no export has no prototype to borrow a value from"
     );
     serial_println!(
-        "  experimental win32-demo: negative control 8 -- a refused call answers with its export's own Windows failure value: INVALID_HANDLE_VALUE from GetStdHandle and CreateFileA (HANDLE), 0 from WriteFile, ReadFile and CloseHandle (BOOL), 0 from GetTickCount and GetLastError (DWORD), 0 from ExitProcess and SetLastError (void), 0 from GetCommandLineA and GetModuleHandleA (both document NULL, even though HMODULE is a handle type), and 0 from an index that names no export -- OK, so the client's handle test reads a refusal exactly as Windows writes it"
+        "  experimental win32-demo: negative control 8 -- a refused call answers with its export's own Windows failure value: INVALID_HANDLE_VALUE from GetStdHandle and CreateFileA (HANDLE), 0 from WriteFile, ReadFile and CloseHandle (BOOL), 0 from GetTickCount and GetLastError (DWORD), 0 from ExitProcess and SetLastError (void), 0 from GetCommandLineA, GetModuleHandleA and GetProcAddress (all three document NULL, even though HMODULE is a handle type and FARPROC is a code pointer), and 0 from an index that names no export -- OK, so the client's handle test reads a refusal exactly as Windows writes it"
     );
 
     // Negative control 9: the loader state the startup pair describes.
@@ -816,22 +874,185 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         copied,
         "the installed command line must be readable at the answered pointer and NUL-terminated"
     );
-    // GetModuleHandleA(NULL) answers the base the client was mapped at, and a
-    // NAMED module is refused instead of guessed: v0 has no module table.
+    // GetModuleHandleA(NULL) answers the base the client was mapped at. A
+    // NAMED module goes to the module table, which is still empty here -- so
+    // the named form is "that module is not loaded", which is exactly what
+    // ERROR_MOD_NOT_FOUND means, and not the refusal a missing feature got
+    // before this tranche.
     assert_eq!(win32::dispatch(10, [0; 5], from_text), Ok(APP_IMAGE_BASE));
     expect_refusal(
         10,
         [cmdline_at, 0, 0, 0, 0],
         from_text,
-        win32::Win32Error::ModuleNameNotSupported,
+        win32::Win32Error::ModuleNotFound,
     );
     // Both cell reads answer for the CLIENT after this, so the transcript's
     // values come from the surface's own state and not from these controls.
     serial_println!(
-        "  experimental win32-demo: negative control 9 -- GetCommandLineA was refused with the typed LoaderStateMissing before any loader placed a string; a non-text install and one running past the client's page were refused as CommandLineInvalid and published nothing; the real install then answered the SAME pointer twice ({:#x}) with {:?} plus its NUL readable there; and GetModuleHandleA(NULL) answered the client's own image base {:#x} while a named module was refused as ModuleNameNotSupported -- OK, the startup pair reads loader state rather than inventing it",
+        "  experimental win32-demo: negative control 9 -- GetCommandLineA was refused with the typed LoaderStateMissing before any loader placed a string; a non-text install and one running past the client's page were refused as CommandLineInvalid and published nothing; the real install then answered the SAME pointer twice ({:#x}) with {:?} plus its NUL readable there; and GetModuleHandleA(NULL) answered the client's own image base {:#x} while a named module no row answers to was refused as ModuleNotFound -- OK, the startup pair reads loader state rather than inventing it",
         cmdline_at,
         NameOf(CMDLINE),
         APP_IMAGE_BASE
+    );
+
+    // Negative control 10: the module table `GetProcAddress` answers from.
+    //
+    // # Why the table is walked before ring 3 is allowed to ask
+    //
+    // `GetProcAddress` is only as good as the rows it looks in, and every row is
+    // the LOADER's claim about what it mapped. So the whole surface of the table
+    // is exercised kernel-side first: an empty table ("nothing is loaded" and
+    // "no such module" are different answers and must not share a code), each
+    // way a registration can be unusable, a duplicate name, the cap, every one of
+    // the provider's exports BY NAME, an export the module does not have, the
+    // same name in another case, the ordinal form, an unregistered base, and a
+    // NULL name. Only then does the client ask, so whatever it gets back is an
+    // answer the kernel has already checked from the other side.
+    let dll_name = write_slot_string(0x3E0, b"kernel32.dll");
+    let dll_name_upper = write_slot_string(0x3F0, b"KERNEL32.DLL");
+    // An export name in the wrong case: the module name above is case-blind, an
+    // export name is not, and that asymmetry is Windows'.
+    let lower_export = write_slot_string(0x440, b"gettickcount");
+
+    assert_eq!(
+        win32::module_count(),
+        0,
+        "no module may be registered before the loader registers one"
+    );
+    // The two distinct "no" answers, before any row exists.
+    expect_refusal(
+        11,
+        [win32::IMAGE_BASE, dll_name, 0, 0, 0],
+        from_text,
+        win32::Win32Error::LoaderStateMissing,
+    );
+    expect_refusal(
+        10,
+        [dll_name, 0, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ModuleNotFound,
+    );
+    // Every unusable registration, refused by name and publishing nothing.
+    //
+    // The truncated-image one is the row that matters: a module whose recorded
+    // image is smaller than the addresses its export table names would let
+    // `GetProcAddress` hand ring 3 a pointer outside the image it claimed to
+    // describe -- so the check is at install time, where the row can still be
+    // refused whole.
+    let bad_rows: [(&[u8], u64, u64); 5] = [
+        (b"", win32::IMAGE_BASE, dll.image_max_rva),
+        (b"bad\x01name", win32::IMAGE_BASE, dll.image_max_rva),
+        (b"zero.dll", 0, dll.image_max_rva),
+        (b"zeroimage.dll", win32::IMAGE_BASE, 0),
+        (b"trunc.dll", win32::IMAGE_BASE, 0x1000),
+    ];
+    for (name, base, image_size) in bad_rows {
+        assert_eq!(
+            win32::install_module(name, base, image_size, export),
+            Err(win32::Win32Error::ModuleInstallInvalid),
+            "an unusable module row ({:?}, base {:#x}, image {:#x}) must be refused",
+            NameOf(name),
+            base,
+            image_size
+        );
+    }
+    assert_eq!(
+        win32::module_count(),
+        0,
+        "a refused registration must not publish a row"
+    );
+    // The loader's real act: the provider, with its own export directory.
+    win32::install_module(b"kernel32.dll", win32::IMAGE_BASE, dll.image_max_rva, export)
+        .unwrap_or_else(|e| panic!("registering kernel32.dll as a module failed: {:?}", e));
+    assert_eq!(win32::module_count(), 1);
+    // ... and this process's own image, whose (legal, empty) export table is
+    // what makes `GetProcAddress` against IT an `ERROR_PROC_NOT_FOUND` instead
+    // of "unknown module": the table keys on the BASE, as Windows does, not on
+    // a list of names that exist to be resolved.
+    win32::install_module(
+        b"win32_console.exe",
+        APP_IMAGE_BASE,
+        app.image_max_rva,
+        client_exports,
+    )
+    .unwrap_or_else(|e| panic!("registering the client image as a module failed: {:?}", e));
+    assert_eq!(win32::module_count(), 2);
+    // Both spellings are one module; a duplicate row and a third row are not.
+    assert_eq!(
+        win32::dispatch(10, [dll_name, 0, 0, 0, 0], from_text),
+        Ok(win32::IMAGE_BASE)
+    );
+    assert_eq!(
+        win32::dispatch(10, [dll_name_upper, 0, 0, 0, 0], from_text),
+        Ok(win32::IMAGE_BASE),
+        "a module name is compared case-insensitively, as Windows compares it"
+    );
+    assert_eq!(
+        win32::install_module(b"KERNEL32.DLL", win32::IMAGE_BASE, dll.image_max_rva, export),
+        Err(win32::Win32Error::ModuleInstallInvalid),
+        "a second row for a module already registered must be refused"
+    );
+    assert_eq!(
+        win32::install_module(b"third.dll", win32::IMAGE_BASE, dll.image_max_rva, export),
+        Err(win32::Win32Error::ModuleTableFull),
+        "the table's cap must be a typed refusal, not an overflow"
+    );
+    assert_eq!(
+        win32::module_count(),
+        2,
+        "neither a duplicate nor a full table may change the live rows"
+    );
+    // Every export of the provider, BY NAME, answered from that provider's own
+    // export directory -- the same address the import walk bound into the IAT.
+    // Names are copied into the client's page first so the surface reads exactly
+    // what ring 3 would hand it, through its own checked reader.
+    let mut named_resolved = 0;
+    for (i, (name, rva)) in EXPECTED_EXPORTS.iter().enumerate() {
+        let at = write_slot_string(0x500 + (i as u64) * 0x20, name);
+        assert_eq!(
+            win32::dispatch(11, [win32::IMAGE_BASE, at, 0, 0, 0], from_text),
+            Ok(win32::IMAGE_BASE + rva),
+            "GetProcAddress({:?}) must answer the provider's own export address",
+            NameOf(name)
+        );
+        named_resolved += 1;
+    }
+    // The five refusals, each for its own reason and each with its own code.
+    expect_refusal(
+        11,
+        [win32::IMAGE_BASE, lower_export, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ProcNotFound,
+    );
+    expect_refusal(
+        11,
+        [APP_IMAGE_BASE, dll_name, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ProcNotFound,
+    );
+    expect_refusal(
+        11,
+        [0x1234, dll_name, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ModuleNotLoaded,
+    );
+    expect_refusal(
+        11,
+        [win32::IMAGE_BASE, 3, 0, 0, 0],
+        from_text,
+        win32::Win32Error::OrdinalNotSupported,
+    );
+    expect_refusal(
+        11,
+        [win32::IMAGE_BASE, 0, 0, 0, 0],
+        from_text,
+        win32::Win32Error::NameInvalid,
+    );
+    serial_println!(
+        "  experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing and a named GetModuleHandleA as ModuleNotFound; five unusable rows (empty name, non-text name, zero base, zero image, an image too small for the exports it names) were refused as ModuleInstallInvalid and published nothing; kernel32.dll and win32_console.exe then registered, both spellings of the provider's name answered {:#x}, a duplicate and a third row were refused (ModuleInstallInvalid, ModuleTableFull at {} rows), all {} exports resolved BY NAME from the provider's own export directory, a lowercase export name and the client's exportless image answered ProcNotFound, an unregistered base ModuleNotLoaded, an ordinal request OrdinalNotSupported and a NULL name NameInvalid -- OK, GetProcAddress answers from a module table the loader built and then certified",
+        win32::IMAGE_BASE,
+        win32::MAX_MODULES,
+        named_resolved
     );
 
     // No teardown for this demo (see teardown_demo): the space stays owned by
@@ -839,7 +1060,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // ring-3 entry below returns to.
 
     serial_println!(
-        "  experimental win32-demo: kernel-side proof complete; entering the console client (ring 3), which starts the way a CRT does -- GetCommandLineA and GetModuleHandleA(NULL) -- then calls kernel32.dll's own stubs for GetStdHandle, CreateFileA/ReadFile/CloseHandle on the read-only C: volume, WriteFile, GetTickCount twice, then ExitProcess({})",
+        "  experimental win32-demo: kernel-side proof complete; entering the console client (ring 3), which starts the way a CRT does -- GetCommandLineA and GetModuleHandleA(NULL) -- then resolves kernel32.dll BY NAME and binds GetTickCount through GetProcAddress, and calls kernel32.dll's own stubs for GetStdHandle, CreateFileA/ReadFile/CloseHandle on the read-only C: volume, WriteFile, GetTickCount twice, then ExitProcess({})",
         EXPECTED_EXIT_CODE
     );
     let user_rsp = VirtAddr::new(USER_STACK_ADDR + 4096 - 16);
@@ -879,6 +1100,11 @@ pub unsafe fn on_trap() -> ! {
         slot(SLOT_MODULE),
         slot(SLOT_MODULE_OK),
     );
+    let (named_module, named_module2) = (slot(SLOT_NAMED_MODULE), slot(SLOT_NAMED_MODULE2));
+    let (proc_tick, proc_tick_value) = (slot(SLOT_PROC_TICK), slot(SLOT_PROC_TICK_VALUE));
+    let proc_tick_same = slot(SLOT_PROC_TICK_SAME);
+    let (named_none, named_none_err) = (slot(SLOT_NAMED_NONE), slot(SLOT_NAMED_NONE_ERR));
+    let (proc_none, proc_none_err) = (slot(SLOT_PROC_NONE), slot(SLOT_PROC_NONE_ERR));
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -930,7 +1156,25 @@ pub unsafe fn on_trap() -> ! {
         && cmdline_ok == 1
         && module == APP_IMAGE_BASE
         && module_ok == 1;
+    // The runtime binding, from ring 3: the named handle is the provider's base
+    // in either case, `GetProcAddress` answered the address the loader also
+    // bound into the IAT (so two independent paths agree), that address was
+    // CALLABLE, and the two "no" answers carried the two distinct codes a
+    // client must be able to tell apart. `proc_tick_value >= tick1` is the
+    // condition rather than equality because the tick count may advance between
+    // the two calls -- what must hold is that the runtime-bound pointer returned
+    // a live tick, not that time stood still.
+    let bindings_ok = named_module == win32::IMAGE_BASE
+        && named_module2 == named_module
+        && proc_tick == win32::IMAGE_BASE + expected_rva(b"GetTickCount")
+        && proc_tick_same == 1
+        && proc_tick_value >= tick1
+        && named_none == 0
+        && named_none_err == win32::ERROR_MOD_NOT_FOUND as u64
+        && proc_none == 0
+        && proc_none_err == win32::ERROR_PROC_NOT_FOUND as u64;
     let ok = startup_ok
+        && bindings_ok
         && console_ok
         && hello_ok
         && bytes_ok
@@ -947,7 +1191,7 @@ pub unsafe fn on_trap() -> ! {
     // then names its own cause in the transcript instead of asking the next
     // reader to re-derive it from a passing-looking line.
     serial_println!(
-        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
+        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
         console_ok,
         hello_ok,
         bytes_ok,
@@ -961,6 +1205,7 @@ pub unsafe fn on_trap() -> ! {
         win32::refusals() == EXPECTED_REFUSALS,
         handle_test,
         startup_ok,
+        bindings_ok,
         file1,
         file2,
         file3,
@@ -979,11 +1224,20 @@ pub unsafe fn on_trap() -> ! {
         r6
     );
     serial_println!(
-        "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair and its refused write-access open) -- {}",
+        "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; GetModuleHandleA(\"kernel32.dll\") answered the provider's own base {:#x} in either case, and GetProcAddress named GetTickCount at {:#x} -- the very address the loader bound into the IAT ({}) -- which the client then CALLED through, reading {} (>= {}); a module that is not loaded answered {:#x} with ERROR_MOD_NOT_FOUND ({}) and a name that module does not export answered {:#x} with ERROR_PROC_NOT_FOUND ({}); WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes) -- {}",
         cmdline,
         cmdline_ok,
         module,
         module_ok,
+        named_module,
+        proc_tick,
+        proc_tick_same,
+        proc_tick_value,
+        tick1,
+        named_none,
+        named_none_err,
+        proc_none,
+        proc_none_err,
         write_ret,
         written,
         NameOf(stdout),
@@ -1009,7 +1263,7 @@ pub unsafe fn on_trap() -> ! {
         win32_fs::open_count(),
         win32::refusals(),
         if ok {
-            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then called eleven kernel32 exports through a real PE32+ DLL's export table and the kernel performed them in ring 0 against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
+            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll by name, bound GetTickCount through GetProcAddress out of that module's own export directory and called twelve kernel32 exports through a real PE32+ DLL's stubs, which the kernel performed in ring 0 against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
         } else {
             "MISMATCH"
         }

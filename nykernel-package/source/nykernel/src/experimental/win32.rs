@@ -1,18 +1,21 @@
-//! The Win32 API surface, v0: eleven `kernel32.dll` exports performed by this
+//! The Win32 API surface, v0: twelve `kernel32.dll` exports performed by this
 //! kernel, reachable from ring 3 through a real Windows-format DLL whose
 //! bodies are trap stubs (`userprog/prog_win32_kernel32.s`).
 //!
 //! # What this is, precisely
 //!
-//! The first actual Win32 API surface in this kernel -- and eleven functions
+//! The first actual Win32 API surface in this kernel -- and twelve functions
 //! out of the tens of thousands kernel32 exposes: the four a console program
 //! needs (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`), the
 //! three that give it files (`CreateFileA`, `ReadFile`, `CloseHandle`) against
 //! the read-only volume in [`crate::experimental::win32_fs`], the pair that
-//! tells it why a call failed (`GetLastError`, `SetLastError`), and the pair a
+//! tells it why a call failed (`GetLastError`, `SetLastError`), the pair a
 //! CRT calls before it does anything else (`GetCommandLineA`,
 //! `GetModuleHandleA`), which answer with pointers into state the LOADER
-//! established rather than with values computed at call time. It is **not** Windows
+//! established rather than with values computed at call time, and
+//! `GetProcAddress`, which finds an export in a module the loader registered and
+//! hands back its address -- the call that turns a program's imports into a
+//! runtime question. It is **not** Windows
 //! compatibility: there is no NT system-call layer under it, no object
 //! manager, no user32/gdi32, and nothing here runs Microsoft's code. What it
 //! does prove is the mechanism every later function needs, end to end: a real
@@ -86,11 +89,53 @@
 //! guess would hand a starting CRT a pointer to nothing, which is the one bug
 //! a client cannot diagnose from its own side.
 //!
-//! A NAMED module is refused instead of resolved, because v0 has no module
-//! table: `GetModuleHandleA("kernel32.dll")` could only be answered by
-//! inventing an answer, and Windows' own code for "that module is not loaded
-//! in this process" is `ERROR_MOD_NOT_FOUND`, which is exactly true here. The
-//! client in the boot proof asks only the NULL form, which succeeds.
+//! A NAMED module is a different question, and it is answered from loader state
+//! too -- see the module-table section below.
+//!
+//! # Why GetProcAddress needs a module table, and what the table holds
+//!
+//! `GetProcAddress(hModule, name)` is the other half of the startup pair, and it
+//! is what makes a Windows program's imports a RUNTIME question: a client takes
+//! the `HMODULE` a name resolved to and asks it where its functions live,
+//! instead of having every address patched in before its first instruction.
+//! That question has an answer only if the loader recorded what it loaded -- the
+//! module's base, its name and its export directory -- so this surface keeps
+//! [`MAX_MODULES`] rows of the loader's own state, filled by [`install_module`],
+//! and both the named `GetModuleHandleA` and `GetProcAddress` answer out of them.
+//!
+//! Three decisions in that table are worth naming, because each is observable
+//! from ring 3:
+//!
+//! - **The answer is the provider's OWN export directory**, parsed from the
+//!   mapped image (the same [`pe::DllExportTable`] the import walk resolves
+//!   against), never a second hard-coded name list beside `dispatch`'s index
+//!   arms. A table of `(name, address)` literals here would answer correctly
+//!   whether or not the file exported anything, and the boot's comparison against
+//!   the loader-bound IAT would still pass. Answering from the EAT means a name
+//!   resolves exactly when the loaded file says it does.
+//! - **Module names match case-insensitively; export names case-sensitively.**
+//!   The asymmetry is Windows': `GetModuleHandleA("KERNEL32.DLL")` and
+//!   `GetModuleHandleA("kernel32.dll")` name one module, because a module name
+//!   is a file name, while `GetProcAddress(h, "gettickcount")` fails, because a
+//!   PE export name is a byte string compared exactly. The boot proof asks the
+//!   uppercase module form (same base required) and the lowercase export form
+//!   (`ERROR_PROC_NOT_FOUND` required), so both rules are pinned rather than
+//!   described.
+//! - **A row is certified before ring 3 can ask about it.** [`install_module`]
+//!   refuses a registration whose export table names any address outside the
+//!   module's own image, so `GetProcAddress` may hand out a code pointer without
+//!   re-checking it: a malformed provider is a refused LOAD, not a pointer into
+//!   whatever happens to be mapped next.
+//!
+//! What the table deliberately does not do: it holds no ordinal map
+//! (`GetProcAddress` in its low-word-ordinal form is refused with
+//! `ERROR_NOT_SUPPORTED` rather than answered from an EAT index this surface
+//! never read); it does not chase forwarded exports (a forwarder yields nothing
+//! here, which is the `ERROR_PROC_NOT_FOUND` a name that cannot be resolved
+//! gets); and it has room for exactly two rows -- this process's own image and
+//! the one provider it imports from. A third registration is a typed refusal
+//! ([`Win32Error::ModuleTableFull`]), not a silent overflow: a bigger table would
+//! be a claim about a loader this kernel does not have yet.
 //!
 //! # Why a refusal also returns something Windows-shaped
 //!
@@ -108,7 +153,7 @@
 //! client, and Windows' per-thread last error lives in a TEB this kernel does
 //! not have yet. That is a stated scope limit, not a design choice to keep.
 
-use crate::experimental::win32_fs;
+use crate::experimental::{pe, win32_fs};
 use crate::serial_println;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -123,13 +168,14 @@ pub const TRAP_VECTOR: u8 = 0x90;
 pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
-/// `0x190000001000`, size `0x188` (eleven stubs, the two startup stubs last).
+/// `0x190000001000`, size `0x1b0` (twelve stubs, the startup pair and
+/// `GetProcAddress` last, so every earlier RVA stayed put).
 /// Pinned, and re-checked against
 /// the loaded image's own export RVAs at boot (`win32_demo::start`): every
 /// export must fall inside this window, which is what lets [`dispatch`] accept
 /// a trap only from this DLL's code.
 pub const TEXT_RVA: u64 = 0x1000;
-pub const TEXT_SIZE: u64 = 0x188;
+pub const TEXT_SIZE: u64 = 0x1b0;
 
 /// `.data`, holding `nyr_call_block` (VMA `0x190000002000`, size `0x40`).
 pub const BLOCK_RVA: u64 = 0x2000;
@@ -190,13 +236,16 @@ pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
 /// answers 0 as well: the refusal is already `UnknownFunction`, and what the
 /// client gets is the same nothing a missing import would give it.
 ///
-/// The two startup exports are why the row is "documented failure result" and
+/// The startup exports are why the row is "documented failure result" and
 /// not "return type": `GetCommandLineA` returns `LPSTR` and fails with NULL,
 /// and `GetModuleHandleA` returns `HMODULE` -- a handle type -- yet its
 /// documented failure is ALSO NULL, not [`INVALID_HANDLE_VALUE`]. A table keyed
 /// on "is this a handle" would hand a starting CRT all-ones as a module base
 /// and it would walk that address for its headers. So both answer 0, beside
-/// the BOOL row.
+/// the BOOL row. `GetProcAddress` is the third of that shape: `FARPROC` is a
+/// code pointer, and Windows documents NULL as the failure every client tests
+/// for (`if (!pfn) ...`), so it answers 0 too -- and a client that checked
+/// `== INVALID_HANDLE_VALUE` on it would be testing the wrong prototype.
 ///
 /// This is a second table beside [`Win32Error::code`], and deliberately a
 /// different one: the code answers "why" and depends on the condition, the
@@ -208,8 +257,8 @@ pub const fn failure_value(index: u64) -> u64 {
         // CreateFileA.
         0 | 4 => INVALID_HANDLE_VALUE,
         // BOOL, DWORD, void, LPSTR-whose-failure-is-NULL (GetCommandLineA),
-        // HMODULE-whose-failure-is-NULL (GetModuleHandleA), and "no such
-        // export".
+        // HMODULE-whose-failure-is-NULL (GetModuleHandleA), FARPROC whose
+        // failure is also NULL (GetProcAddress), and "no such export".
         _ => 0,
     }
 }
@@ -217,6 +266,29 @@ pub const fn failure_value(index: u64) -> u64 {
 /// `GENERIC_READ`: the only access right this volume can grant, since it has
 /// no way to write anything.
 pub const GENERIC_READ: u32 = 0x8000_0000;
+
+/// The longest module name the table stores, in bytes. A bare module name is
+/// what this v0 can be asked for (no paths, no drive letters), and 63 bytes
+/// covers every one of them with room to spare. A longer name is refused at
+/// [`install_module`] time, so no truncated name can ever be matched against a
+/// question a client asks.
+pub const MAX_MODULE_NAME: usize = 63;
+
+/// How many modules the table holds: this process's own image, and the one
+/// provider whose exports it binds. Stated as a cap rather than "as many as
+/// asked" because a fixed static table has to be sized, and a FULL table is a
+/// typed refusal ([`Win32Error::ModuleTableFull`]) rather than an overflow --
+/// growing past this is a claim about a loader (search paths, dependency
+/// walking, refcounts) that this kernel does not have yet.
+pub const MAX_MODULES: usize = 2;
+
+/// `GetProcAddress`'s documented ordinal form is `(LPCSTR)(ULONG_PTR)ordinal`,
+/// so any argument below this could be a number rather than a pointer. It is
+/// refused by name ([`Win32Error::OrdinalNotSupported`]) instead of being read
+/// as an address: `MAX_MODULES`-worth of EAT index space is not something this
+/// surface has read, and a low value would otherwise be a page-fault-shaped
+/// refusal that said nothing true about the caller's argument.
+const ORDINAL_LIMIT: u64 = 0x1_0000;
 
 /// `OPEN_EXISTING`: the only creation disposition that means anything on a
 /// read-only volume, and therefore the only one this surface accepts.
@@ -233,11 +305,17 @@ pub const ERROR_PATH_NOT_FOUND: u32 = 3;
 pub const ERROR_TOO_MANY_OPEN_FILES: u32 = 4;
 pub const ERROR_ACCESS_DENIED: u32 = 5;
 pub const ERROR_INVALID_HANDLE: u32 = 6;
+/// Windows' code for "the table cannot grow any further". Used for a full
+/// module table, which only this kernel's own loader can reach.
+pub const ERROR_OUTOFMEMORY: u32 = 14;
 pub const ERROR_INVALID_DRIVE: u32 = 15;
 pub const ERROR_NOT_READY: u32 = 21;
 pub const ERROR_NOT_SUPPORTED: u32 = 50;
 pub const ERROR_INVALID_PARAMETER: u32 = 87;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
+/// Windows' code for "that name is not an export of that module" -- a
+/// different question from `ERROR_MOD_NOT_FOUND`, which is about the module.
+pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_INVALID_NAME: u32 = 123;
 pub const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 pub const ERROR_INVALID_ADDRESS: u32 = 487;
@@ -251,7 +329,7 @@ pub const MAX_WRITE: usize = 96;
 /// Every way ring 3 can ask for something this surface will not do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Win32Error {
-    /// `+48` is not one of the eleven exports.
+    /// `+48` is not one of the twelve exports.
     UnknownFunction,
     /// The trapping RIP is not inside kernel32.dll's `.text`.
     CallerOutsideKernel32,
@@ -283,11 +361,35 @@ pub enum Win32Error {
     /// A startup call asked for loader state that does not exist: no command
     /// line has been installed, or no client base has been.
     LoaderStateMissing,
-    /// `GetModuleHandleA` was asked for a NAMED module. v0 has no module
-    /// table, so no name can resolve -- which is Windows' own
-    /// `ERROR_MOD_NOT_FOUND` condition, not a missing feature shoved into a
-    /// code that means something else.
-    ModuleNameNotSupported,
+    /// A module name no registered row answers to, case-insensitively. This is
+    /// exactly Windows' `ERROR_MOD_NOT_FOUND` condition for a name that is not
+    /// loaded in this process.
+    ModuleNotFound,
+    /// `GetProcAddress` was given a base that is not a registered module's. The
+    /// handle is a claim, like every other handle, and the table is the
+    /// evidence -- Windows reports a handle it cannot name this way.
+    ModuleNotLoaded,
+    /// [`install_module`] was called with the table already at [`MAX_MODULES`].
+    /// A kernel-side (loader) condition: a client cannot grow the table.
+    ModuleTableFull,
+    /// [`install_module`] got something a table row cannot honestly hold: an
+    /// empty, non-ASCII or over-long name, a zero base, a zero image size, a
+    /// duplicate name, or an export table naming an address outside the image
+    /// that table was parsed from.
+    ModuleInstallInvalid,
+    /// That module has no export of that name. Boldly FALSE would be worse:
+    /// Windows' `ERROR_PROC_NOT_FOUND`, and the name was compared exactly.
+    ProcNotFound,
+    /// `GetProcAddress` was asked in the low-word-ordinal form. v0 binds by
+    /// name only; `ERROR_NOT_SUPPORTED` says "that request form is not served"
+    /// rather than claiming the ordinal does not exist.
+    OrdinalNotSupported,
+    /// A name argument (module name or export name) that cannot be read as a
+    /// bounded, printable, NUL-terminated string inside the client's regions.
+    /// One variant rather than three because for a NAME there is only one thing
+    /// the client can do about it, and `ERROR_INVALID_PARAMETER` is Windows' own
+    /// word for "this argument is not usable".
+    NameInvalid,
     /// [`install_cmdline`] was given text that is not printable ASCII, or an
     /// address outside the client's mapped regions, or more bytes than a
     /// page holds. A kernel-side (loader) argument error, never a ring-3 one.
@@ -336,6 +438,25 @@ impl Win32Error {
     /// for is the condition Windows uses that code for. `CommandLineInvalid`
     /// is `ERROR_INVALID_PARAMETER`: the only caller is [`install_cmdline`],
     /// i.e. this kernel's own loader, and the argument it got was wrong.
+    ///
+    /// The module table's seven rows follow the same discipline, and each one
+    /// names the question Windows' code actually answers:
+    /// `ModuleNotFound` is `ERROR_MOD_NOT_FOUND` (that module is not loaded in
+    /// this process) while `ProcNotFound` is `ERROR_PROC_NOT_FOUND` (that module
+    /// has no such export) -- two different questions a client must be able to
+    /// tell apart, because one means it named the wrong library and the other
+    /// the wrong function. `ModuleNotLoaded` is `ERROR_INVALID_HANDLE`, the same
+    /// code every other unissued handle answers, because a base that is not a
+    /// row is not a module handle. `ModuleTableFull` is `ERROR_OUTOFMEMORY`: the
+    /// table cannot grow, which is a resource condition and not a bad argument.
+    /// `ModuleInstallInvalid` and `NameInvalid` are both
+    /// `ERROR_INVALID_PARAMETER`, at the two places an unusable argument can
+    /// arrive (this kernel's loader, and ring 3's string pointers).
+    /// `OrdinalNotSupported` is `ERROR_NOT_SUPPORTED`, the code Windows uses when
+    /// the REQUEST is unsupported (the same sense as `OverlappedNotSupported`)
+    /// rather than the object being absent -- so a client that asked by ordinal
+    /// learns that this surface does not serve that form, not that its ordinal
+    /// was wrong.
     pub const fn code(self) -> u32 {
         match self {
             Win32Error::UnknownFunction => ERROR_INVALID_FUNCTION,
@@ -352,7 +473,13 @@ impl Win32Error {
             Win32Error::UnsupportedDisposition => ERROR_INVALID_PARAMETER,
             Win32Error::OverlappedNotSupported => ERROR_NOT_SUPPORTED,
             Win32Error::LoaderStateMissing => ERROR_NOT_READY,
-            Win32Error::ModuleNameNotSupported => ERROR_MOD_NOT_FOUND,
+            Win32Error::ModuleNotFound => ERROR_MOD_NOT_FOUND,
+            Win32Error::ModuleNotLoaded => ERROR_INVALID_HANDLE,
+            Win32Error::ModuleTableFull => ERROR_OUTOFMEMORY,
+            Win32Error::ModuleInstallInvalid => ERROR_INVALID_PARAMETER,
+            Win32Error::ProcNotFound => ERROR_PROC_NOT_FOUND,
+            Win32Error::OrdinalNotSupported => ERROR_NOT_SUPPORTED,
+            Win32Error::NameInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::CommandLineInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::File(e) => match e {
                 win32_fs::FsError::PathNotAbsolute => ERROR_PATH_NOT_FOUND,
@@ -364,6 +491,22 @@ impl Win32Error {
             },
         }
     }
+}
+
+/// One row of the module table: what the loader loaded, where, and how to ask it
+/// for an export. `exports` is the provider's OWN parsed export directory (see
+/// the module-table section of this file's docs), so `GetProcAddress` answers
+/// from the file rather than from a list kept here.
+#[derive(Clone, Copy)]
+struct Module {
+    /// The registered name, NOT NUL-terminated: `name_len` is the truth, so a
+    /// name shorter than the buffer cannot accidentally compare against its
+    /// trailing zeros.
+    name: [u8; MAX_MODULE_NAME],
+    name_len: u8,
+    /// The base the loader mapped the module at -- the value `HMODULE` means.
+    base: u64,
+    exports: pe::DllExportTable,
 }
 
 /// The regions this kernel mapped for the client, and therefore the only
@@ -378,6 +521,11 @@ struct Surface {
     /// Where the loader placed the client's command line, or 0 while none has
     /// been installed -- the cell `GetCommandLineA` answers from.
     cmdline: u64,
+    /// The loader's module table: rows `0..module_count` are live, the rest are
+    /// `None`. Kept in the surface (not in a free-standing static) because it is
+    /// per-process loader state, exactly like the regions above it.
+    modules: [Option<Module>; MAX_MODULES],
+    module_count: usize,
 }
 
 static mut SURFACE: Surface = Surface {
@@ -386,6 +534,8 @@ static mut SURFACE: Surface = Surface {
     slot_base: 0,
     slot_size: 0,
     cmdline: 0,
+    modules: [None; MAX_MODULES],
+    module_count: 0,
 };
 static mut STDOUT: [u8; MAX_WRITE] = [0; MAX_WRITE];
 static STDOUT_LEN: AtomicU64 = AtomicU64::new(0);
@@ -487,6 +637,109 @@ pub fn command_line() -> Option<u64> {
     (surface.cmdline != 0).then_some(surface.cmdline)
 }
 
+/// Registers a module the loader mapped, so a named `GetModuleHandleA` can
+/// resolve it and `GetProcAddress` can be asked about its exports.
+///
+/// # Why the registration is checked rather than trusted
+///
+/// The arguments come from kernel-side loader code, so a wrong one is a bug
+/// HERE and not a hostile claim -- but two of the bugs are invisible until ring 3
+/// trips over them, and both are refused by name
+/// ([`Win32Error::ModuleInstallInvalid`]) instead:
+///
+/// - A name that is empty, not printable ASCII, too long for [`MAX_MODULE_NAME`]
+///   or already registered. A truncated or duplicated row would answer the wrong
+///   `HMODULE` to a perfectly ordinary question, and the client has no way to
+///   tell.
+/// - An export table naming an address outside `[base, base + image_size)`. That
+///   is the one bug with teeth: `GetProcAddress` hands the answer to ring 3 as a
+///   code pointer, so an uncertified EAT entry could point into kernel text. The
+///   check is here, at install time, so no later call has to re-walk the EAT to
+///   decide whether its own answer is safe.
+///
+/// A REFUSED registration changes nothing: the count is not bumped and the row is
+/// not written, so the table a client's calls see is always a table of certified
+/// rows.
+///
+/// An EMPTY export table is legal and is registered as such: an executable has no
+/// export directory, and `GetProcAddress` against it must answer
+/// `ERROR_PROC_NOT_FOUND` (a real answer) rather than the module being unusable.
+///
+/// # Safety
+/// Must run after [`install`] (it reads the same surface). At most [`MAX_MODULES`]
+/// successful calls.
+pub unsafe fn install_module(
+    name: &[u8],
+    base: u64,
+    image_size: u64,
+    exports: pe::DllExportTable,
+) -> Result<(), Win32Error> {
+    let surface = &mut *&raw mut SURFACE;
+    let name_ok = !name.is_empty()
+        && name.len() <= MAX_MODULE_NAME
+        && name.iter().all(|b| (0x20..0x7f).contains(b));
+    if !name_ok || base == 0 || image_size == 0 || !exports.every_export_within(image_size) {
+        return Err(Win32Error::ModuleInstallInvalid);
+    }
+    let live = surface.modules[..surface.module_count]
+        .iter()
+        .flatten();
+    if live.clone().any(|m| module_name_equals(m, name)) {
+        return Err(Win32Error::ModuleInstallInvalid);
+    }
+    if surface.module_count == MAX_MODULES {
+        return Err(Win32Error::ModuleTableFull);
+    }
+    let mut row = Module {
+        name: [0; MAX_MODULE_NAME],
+        name_len: name.len() as u8,
+        base,
+        exports,
+    };
+    row.name[..name.len()].copy_from_slice(name);
+    surface.modules[surface.module_count] = Some(row);
+    surface.module_count += 1;
+    Ok(())
+}
+
+/// How many modules the loader has registered. The boot proof pins this, so a
+/// registration that silently did nothing (or happened twice) cannot pass.
+pub fn module_count() -> usize {
+    let surface = unsafe { &*&raw const SURFACE };
+    surface.module_count
+}
+
+/// `true` when `stored`'s name is `name` compared as a Windows module name
+/// compares: ASCII case-insensitively, and only over the stored length (the row's
+/// buffer is longer than most names).
+fn module_name_equals(stored: &Module, name: &[u8]) -> bool {
+    let len = stored.name_len as usize;
+    stored.name[..len].eq_ignore_ascii_case(name)
+}
+
+/// The base of the registered module that answers to `name`, or `None`.
+///
+/// `None` means "no such module is loaded", which is a real Windows condition
+/// ([`ERROR_MOD_NOT_FOUND`]); the caller distinguishes it from "nothing has been
+/// loaded at all" ([`Win32Error::LoaderStateMissing`]), because those are
+/// different bugs with different fixes.
+fn module_base_by_name(surface: &Surface, name: &[u8]) -> Option<u64> {
+    surface.modules[..surface.module_count]
+        .iter()
+        .flatten()
+        .find(|m| module_name_equals(m, name))
+        .map(|m| m.base)
+}
+
+/// The registered module whose base is exactly `base`, or `None` -- the lookup
+/// `GetProcAddress` does with its `HMODULE`.
+fn module_by_base(surface: &Surface, base: u64) -> Option<&Module> {
+    surface.modules[..surface.module_count]
+        .iter()
+        .flatten()
+        .find(|m| m.base == base)
+}
+
 /// Exactly the bytes the client's `WriteFile` handed the console, CRLF
 /// included -- what the demo compares to its own message.
 pub fn received() -> &'static [u8] {
@@ -560,6 +813,32 @@ fn allowed(surface: &Surface, ptr: u64, len: u64) -> bool {
     let in_client = ptr >= surface.client_base && end <= surface.client_base + surface.client_size;
     let in_slot = ptr >= surface.slot_base && end <= surface.slot_base + surface.slot_size;
     in_client || in_slot
+}
+
+/// Reads a NAME argument (an `LPCSTR` module name or export name) out of the
+/// client's regions.
+///
+/// # Why one refusal covers three scan failures
+///
+/// A path and a name are both `LPCSTR` and both go through the same bounded
+/// reader, but they are not the same claim. A path's failure modes are
+/// distinguishable to the client ("not absolute" is your bug, "no such drive" is
+/// the volume's), so [`read_path`] reports them separately. A NAME has one thing
+/// wrong with it from the client's side -- this surface cannot read it -- and
+/// Windows' word for an unusable argument is `ERROR_INVALID_PARAMETER`, so NULL,
+/// outside the client's pages, not text and unterminated all answer
+/// [`Win32Error::NameInvalid`]. The bound is the same `MAX_PATH`-sized window, so
+/// a name near the end of the client's page is refused rather than scanned into
+/// the next mapping.
+///
+/// # Safety
+/// `ptr` is a ring-3-supplied address; the region check inside [`read_path`] is
+/// what makes the reads safe.
+unsafe fn read_name<'a>(surface: &Surface, ptr: u64) -> Result<&'a [u8], Win32Error> {
+    if ptr == 0 {
+        return Err(Win32Error::NameInvalid);
+    }
+    read_path(surface, ptr).map_err(|_| Win32Error::NameInvalid)
 }
 
 /// Performs one call from the block at `index`/`args`, trapped from `rip`.
@@ -749,24 +1028,62 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
             0 => Err(Win32Error::LoaderStateMissing),
             addr => Ok(addr),
         },
-        // GetModuleHandleA(lpModuleName): NULL asks for THIS image's base.
+        // GetModuleHandleA(lpModuleName): NULL asks for THIS image's base; a
+        // name asks the module table.
         //
         // `HMODULE` for the main executable is its load address, and the base
         // the client was mapped at is state this surface already owns -- so
-        // the answer is a fact rather than `APP_IMAGE_BASE` written out again
-        // at a second site. A non-NULL name is refused: with no module table
-        // there is nothing to look a name up in, and `ERROR_MOD_NOT_FOUND` is
-        // exactly the condition (the module is not loaded in this process).
-        // Read as a pointer, so the whole 64-bit argument is compared -- a
-        // name pointer is an address and has no DWORD-sized form.
+        // the NULL answer is a fact rather than `APP_IMAGE_BASE` written out
+        // again at a second site. A NAME is answered from the rows
+        // [`install_module`] wrote, compared the way Windows compares a module
+        // name: ASCII case-insensitively, because a module name is a file name.
+        // A name no row answers to is `ERROR_MOD_NOT_FOUND` -- the condition
+        // Windows uses for "that module is not loaded in this process", which is
+        // now a statement about a table rather than about a missing feature.
+        // Read as a pointer, so the whole 64-bit argument is compared -- a name
+        // pointer is an address and has no DWORD-sized form.
         10 => {
             if surface.client_base == 0 {
                 return Err(Win32Error::LoaderStateMissing);
             }
-            if args[0] != 0 {
-                return Err(Win32Error::ModuleNameNotSupported);
+            if args[0] == 0 {
+                return Ok(surface.client_base);
             }
-            Ok(surface.client_base)
+            let name = read_name(surface, args[0])?;
+            module_base_by_name(surface, name).ok_or(Win32Error::ModuleNotFound)
+        }
+        // GetProcAddress(hModule, lpProcName): the address of one export in one
+        // loaded module -- the call that lets a program bind its imports at
+        // runtime instead of at load time.
+        //
+        // The order of the checks is the order the questions have to be
+        // answered in: is there a module table at all, is the handle one of its
+        // rows, is the name readable, and does THAT MODULE's own export
+        // directory have it. The last step is the point of the whole tranche --
+        // the answer comes from the mapped file's EAT, so it cannot be right
+        // about a module whose table does not export the name, and it cannot
+        // name an address the install did not certify as inside the image.
+        //
+        // An export name is compared CASE-SENSITIVELY (inside `lookup`, byte for
+        // byte): that is the PE rule, and the opposite of the module-name rule
+        // one arm above. A forwarded export yields nothing from `lookup`, and
+        // v0 does not chase forwarders, so it answers `ERROR_PROC_NOT_FOUND`
+        // rather than a guessed address.
+        11 => {
+            if surface.module_count == 0 {
+                return Err(Win32Error::LoaderStateMissing);
+            }
+            // Windows' ordinal form is `(LPCSTR)(ULONG_PTR)n`: a small value is
+            // a number, not a pointer. Refused by name before anything reads it
+            // as an address, so the client gets `ERROR_NOT_SUPPORTED` ("this
+            // form is not served") instead of a pointer-shaped error about an
+            // argument it may well have formed correctly.
+            if args[1] != 0 && args[1] < ORDINAL_LIMIT {
+                return Err(Win32Error::OrdinalNotSupported);
+            }
+            let module = module_by_base(surface, args[0]).ok_or(Win32Error::ModuleNotLoaded)?;
+            let name = read_name(surface, args[1])?;
+            module.exports.lookup(name).ok_or(Win32Error::ProcNotFound)
         }
         _ => Err(Win32Error::UnknownFunction),
     }

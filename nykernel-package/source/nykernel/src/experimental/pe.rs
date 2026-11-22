@@ -2142,6 +2142,46 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
             self.number_of_functions
         }
     }
+
+    /// `true` when every EAT slot names either a plain address inside
+    /// `image_size` or a directory-internal forwarder string (which `parse`
+    /// already bounded inside the image).
+    ///
+    /// # Why this exists, and why it is not part of `parse`
+    ///
+    /// `lookup` answers an RVA the header merely POINTS AT; it never asked
+    /// whether that RVA is inside the image. For the import walk that did not
+    /// matter much (a wrong address traps in the client, where the crash is at
+    /// least attributable). It matters once an address is handed to ring 3 as a
+    /// function to CALL: a provider whose EAT names an address outside its own
+    /// image is handing out a pointer into whatever is mapped next, kernel text
+    /// included. So the caller that publishes addresses -- `win32`'s module
+    /// table -- certifies the whole table once, at install time, instead of
+    /// re-walking the EAT on every `GetProcAddress`.
+    ///
+    /// A NULL slot (never published, legal PE) and a forwarder are NOT failures
+    /// here: neither names an address this table would return, so neither can
+    /// point outside the image. Whether a name resolves at all is `lookup`'s
+    /// question, not this one's.
+    ///
+    /// # Safety
+    /// image must be mapped.
+    pub unsafe fn every_export_within(&self, image_size: u64) -> bool {
+        for ord in 0..self.number_of_functions as u64 {
+            match self.entry_raw(ord) {
+                Ok(Some(RawExport::Function(rva))) => {
+                    if rva == 0 || rva >= image_size {
+                        return false;
+                    }
+                }
+                // Absent or forwarded: no address is published for either, so
+                // neither can name anything outside the image.
+                Ok(Some(RawExport::Forwarder(_)) | None) => {}
+                Err(_) => return false,
+            }
+        }
+        true
+    }
 }
 
 /// The DLL-name -> export-table map the import walk resolves against.

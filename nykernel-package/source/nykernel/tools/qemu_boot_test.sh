@@ -103,7 +103,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "service-0x84 call proof self-test: the caller parked (state BLOCKED)" \
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
         "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
-        "experimental win32-demo: resolved 11 import(s) from the client's REAL .idata" \
+        "experimental win32-demo: resolved 12 import(s) from the client's REAL .idata" \
         "experimental win32-demo: negative control 6 -- the read-only volume refused a relative path" \
         "WriteFile returned 1 and wrote 33 byte(s)" \
         "bytes.bin read back byte-identically" \
@@ -117,9 +117,14 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "GENERIC_WRITE was refused with ERROR_ACCESS_DENIED (5), returned 0xffffffffffffffff rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test (1)" \
         "experimental win32-demo: negative control 9 -- GetCommandLineA was refused with the typed LoaderStateMissing before any loader placed a string" \
         "GetModuleHandleA(NULL) answered the client's own image base 0x1a0000000000" \
-        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true" \
+        "experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing" \
+        "all 12 exports resolved BY NAME from the provider's own export directory" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true" \
         "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
         "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \
+        "GetModuleHandleA(\"kernel32.dll\") answered the provider's own base 0x190000000000 in either case" \
+        "GetProcAddress named GetTickCount at 0x19000000104d" \
+        "a module that is not loaded answered 0x0 with ERROR_MOD_NOT_FOUND (126) and a name that module does not export answered 0x0 with ERROR_PROC_NOT_FOUND (127)" \
         "-- OK, a real Windows-format console program started the way a CRT does" \
     ; do
         if ! grep -aqF -- "$needle" target/qemu-test-stdout.log; then
