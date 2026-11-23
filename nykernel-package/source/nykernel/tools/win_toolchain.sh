@@ -219,7 +219,6 @@ chmod +x "$SHIM_DIR"/as "$SHIM_DIR"/ld "$SHIM_DIR"/objdump \
 # rustc's MSVC host port invoke coreutils' `link.exe` ("link: extra operand")
 # instead of a real linker, which is a silent, confusing break.
 export PATH="$SHIM_DIR:$ELF_BIN:$MINGW_BIN:$WIN_TOOLS/grub/grub-2.06-for-windows:$PATH:$WIN_TOOLS/msys64/usr/bin"
-export NYKERNEL_WIN_TOOLS="$WIN_TOOLS"
 
 # Cargo builds every build script and proc macro for the HOST, and the pinned
 # 1.99.1 toolchain here is the x86_64-pc-windows-msvc one, whose host links go
@@ -235,7 +234,6 @@ export NYKERNEL_WIN_TOOLS="$WIN_TOOLS"
 # RUSTUP_TOOLCHAIN is the documented escape hatch that wins over
 # rust-toolchain.toml, so the pin file still records the SUPPORTED pairing and
 # this only redirects the host port. It is set with := so an explicit caller
-# choice is never overridden.
-if [[ -x "$MINGW_BIN/gcc.exe" ]]; then
-    export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.99.1-x86_64-pc-windows-gnu}"
-fi
+# choice is never overridden. (gcc itself is already a required file above, so
+# no test is repeated here.)
+export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.99.1-x86_64-pc-windows-gnu}"

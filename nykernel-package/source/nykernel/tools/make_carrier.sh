@@ -65,11 +65,11 @@ cd "$(dirname "$0")/.."
 # (`-subj /CN=.../OU=...`) is exactly that shape and is NOT a path, so under
 # the default rewrite it arrives as `C:/Users/.../CN=Nyrqis dev trust anchor/...`
 # and openssl refuses with "subject name is expected to be in the format
-# /type0=value0/...". Both switches are set because Git Bash reads the first
-# and MSYS2 reads the second; neither is known to a Linux shell, where they are
-# simply inert, and every real path this script passes is already spelled the
-# way the receiving program needs it.
-export MSYS_NO_PATHCONV=1
+# /type0=value0/...". MSYS2_ARG_CONV_EXCL is the runtime's own opt-out (the
+# MSYS_NO_PATHCONV spelling is Git-for-Windows-only), so this one switch covers
+# both shells; it is unknown to a Linux shell, where it is simply inert, and
+# every real path this script passes is already spelled the way the receiving
+# program needs it.
 export MSYS2_ARG_CONV_EXCL='*'
 
 if [[ $# -ne 3 ]]; then
