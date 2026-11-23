@@ -104,7 +104,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
         "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
         "experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase 0x190100000000" \
-        "experimental win32-demo: resolved 14 import(s) from the client's REAL .idata" \
+        "experimental win32-demo: resolved 15 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA)" \
         "experimental win32-demo: negative control 6 -- the read-only volume refused a relative path" \
         "WriteFile returned 1 and wrote 33 byte(s)" \
         "bytes.bin read back byte-identically" \
@@ -127,10 +127,15 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "LoadLibraryA(\"C:\\nyrqis\\nyrqis_dyn.dll\") answered the image's own base 0x190200000000 and made it a fourth row, a SECOND load of the same file answered the same base with no new row, a fifth registration was refused as ModuleTableFull (4 rows)" \
         "one FreeLibrary left it loaded with the forwarder still resolving, the second dropped the row so the name answered ERROR_MOD_NOT_FOUND (126) and the forwarder ERROR_PROC_NOT_FOUND (127)" \
         "a DLL the volume does not have answered NULL with ERROR_MOD_NOT_FOUND (126) -- OK, the module table grows and shrinks while a program runs" \
+        "experimental win32-demo: module files -- GetModuleFileNameA(NULL) answered \"C:\\nyrqis\\win32_console.exe\" (27 bytes) for this process's own row, kernel32.dll's handle answered \"C:\\nyrqis\\kernel32.dll\" and nyrqis.dll's \"C:\\nyrqis\\nyrqis.dll\"" \
+        "the RUNTIME row answered the path LoadLibraryA was given while it was loaded, an 8-byte buffer cut that 27-byte path to 7 bytes plus NUL and answered 8 with ERROR_INSUFFICIENT_BUFFER (122)" \
+        "nSize 0 wrote nothing and answered 0 with the same code, and the freed row's base was refused as ModuleNotLoaded" \
+        "GetModuleFileNameA asked of that row answered the very path LoadLibraryA was given" \
+        "asked WHICH FILE each handle came from, GetModuleFileNameA answered 27 bytes for the client's own row (its own byte-and-NUL compare 1 it), 22 for kernel32.dll and 24 for the runtime row while it was loaded" \
         "kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows" \
-        "all 14 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (14+2)" \
+        "all 15 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (15+2)" \
         "kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module)" \
-        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true" \
         "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
         "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \
         "GetModuleHandleA(\"kernel32.dll\") answered the provider's own base 0x190000000000 in either case" \

@@ -1,12 +1,13 @@
-//! The Win32 API surface, v0: fourteen `kernel32.dll` exports performed by this
+//! The Win32 API surface, v0: fifteen `kernel32.dll` exports performed by this
 //! kernel, reachable from ring 3 through a real Windows-format DLL whose
 //! bodies are trap stubs (`userprog/prog_win32_kernel32.s`) -- including
 //! `LoadLibraryA` and `FreeLibrary`, which let the module table below grow and
-//! shrink while a program runs.
+//! shrink while a program runs, and `GetModuleFileNameA`, which answers which
+//! FILE a module handle came from.
 //!
 //! # What this is, precisely
 //!
-//! The first actual Win32 API surface in this kernel -- and fourteen functions
+//! The first actual Win32 API surface in this kernel -- and fifteen functions
 //! out of the tens of thousands kernel32 exposes: the four a console program
 //! needs (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`), the
 //! three that give it files (`CreateFileA`, `ReadFile`, `CloseHandle`) against
@@ -17,7 +18,9 @@
 //! established rather than with values computed at call time, and
 //! `GetProcAddress`, which finds an export in a module the loader registered and
 //! hands back its address -- the call that turns a program's imports into a
-//! runtime question. It is **not** Windows
+//! runtime question, plus `GetModuleFileNameA`, which answers the path the
+//! loader recorded for a row so a handle can be traced back to a file. It is
+//! **not** Windows
 //! compatibility: there is no NT system-call layer under it, no object
 //! manager, no user32/gdi32, and nothing here runs Microsoft's code. What it
 //! does prove is the mechanism every later function needs, end to end: a real
@@ -226,6 +229,41 @@
 //! would be a claim about a loader this kernel does not have yet, and the boot
 //! proves the cap is reachable only while the dynamic row is live.
 //!
+//! # Why a row remembers its PATH, and not only its name
+//!
+//! A module has two names on Windows and they answer different questions. The
+//! NAME is what `GetModuleHandleA` compares and what a forwarder string names
+//! (`kernel32.dll`); the PATH is what the loader actually loaded, and it is
+//! what `GetModuleFileNameA` reports for ANY handle, including one this
+//! process created at runtime. A table that kept only the name could answer
+//! "is this module loaded" but never "where did it come from", and the second
+//! question is the one a program asks when it must reload, unload, or report a
+//! module it never linked against. So [`install_module`] takes the PATH and
+//! derives the name from it ([`module_name_from_path`]), exactly the direction
+//! Windows' loader works: the row stores what the loader was told, and the
+//! name is the last component of that record rather than a second string that
+//! could disagree with it.
+//!
+//! `GetModuleFileNameA(NULL, ...)` is the executable's path, which is this
+//! process's own row; any other handle must be a live row, and a base that is
+//! not one is `ERROR_INVALID_HANDLE` (the same answer every other unissued
+//! handle gives). The path is copied into the client's buffer with Windows'
+//! truncation contract: `nSize` counts the NUL, a path that does not fit is
+//! truncated to `nSize - 1` bytes and still terminated, and the return value
+//! is `nSize` with `ERROR_INSUFFICIENT_BUFFER` -- so a program that sized its
+//! buffer wrong gets a Windows-shaped answer it can test rather than a
+//! silently shortened string. `nSize == 0` writes nothing and returns 0 with
+//! the same code.
+//!
+//! Stated limits: this surface answers the SHORT path form only (no `\\?\`
+//! prefixes, no 8.3 aliases, no case normalisation of the recorded path -- the
+//! bytes are the loader's, returned verbatim), and the three provider images
+//! are embedded in this kernel rather than read from [`win32_fs::FILES`], so
+//! their recorded path is the load path this boot installed them under, not a
+//! path anything re-checked against the volume. A runtime row's path IS the
+//! volume path `LoadLibraryA` was given, because that is how the file was
+//! found.
+//!
 //! # Why a refusal also returns something Windows-shaped
 //!
 //! A code alone is not enough to make a refusal read like Windows, because the
@@ -273,17 +311,17 @@ pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
 pub const SECOND_IMAGE_BASE: u64 = 0x1901_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
-/// `0x190000001000`, size `0x1e8` (fourteen stubs: the twelve up to the
-/// startup pair, `GetProcAddress`, and the runtime pair `LoadLibraryA` and
-/// `FreeLibrary` appended last, so every earlier RVA stayed put -- the
-/// tranche that added the pair re-linked and re-checked that claim against
-/// the DLL's own EAT).
+/// `0x190000001000`, size `0x210` (fifteen stubs: the twelve up to the
+/// startup pair, `GetProcAddress`, the runtime pair `LoadLibraryA` and
+/// `FreeLibrary`, and `GetModuleFileNameA` appended last, so every earlier
+/// RVA stayed put -- each tranche that appended a stub re-linked and
+/// re-checked that claim against the DLL's own EAT).
 /// Pinned, and re-checked against
 /// the loaded image's own export RVAs at boot (`win32_demo::start`): every
 /// export must fall inside this window, which is what lets [`dispatch`] accept
 /// a trap only from this DLL's code.
 pub const TEXT_RVA: u64 = 0x1000;
-pub const TEXT_SIZE: u64 = 0x1e8;
+pub const TEXT_SIZE: u64 = 0x210;
 
 /// `.data`, holding `nyr_call_block` (VMA `0x190000002000`, size `0x40`).
 pub const BLOCK_RVA: u64 = 0x2000;
@@ -394,6 +432,11 @@ pub const GENERIC_READ: u32 = 0x8000_0000;
 /// question a client asks.
 pub const MAX_MODULE_NAME: usize = 63;
 
+/// The longest recorded PATH a row can hold, in bytes: the volume's own bound
+/// ([`win32_fs::MAX_PATH`]), because the only paths this surface ever records
+/// are ones it derived from that volume or installed itself.
+pub const MAX_MODULE_PATH: usize = win32_fs::MAX_PATH;
+
 /// How many modules the table holds: this process's own image, the TWO
 /// providers the loader registers before ring 3, and ONE module a program may
 /// load at runtime. Stated as a cap rather than "as many as asked" because a
@@ -466,6 +509,10 @@ pub const ERROR_BAD_EXE_FORMAT: u32 = 193;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_INVALID_NAME: u32 = 123;
 pub const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
+/// Windows' code for "the buffer was too small and the answer was truncated".
+/// `GetModuleFileNameA` reports it while still returning `nSize`, which is the
+/// documented shape of a truncated name.
+pub const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 pub const ERROR_INVALID_ADDRESS: u32 = 487;
 pub const ERROR_NOACCESS: u32 = 998;
 
@@ -477,7 +524,7 @@ pub const MAX_WRITE: usize = 96;
 /// Every way ring 3 can ask for something this surface will not do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Win32Error {
-    /// `+48` is not one of the fourteen exports.
+    /// `+48` is not one of the fifteen exports.
     UnknownFunction,
     /// The trapping RIP is not inside kernel32.dll's `.text`.
     CallerOutsideKernel32,
@@ -656,6 +703,12 @@ struct Module {
     /// trailing zeros.
     name: [u8; MAX_MODULE_NAME],
     name_len: u8,
+    /// The PATH the loader recorded for this row, also not NUL-terminated:
+    /// what `GetModuleFileNameA` answers with. The name above is derived from
+    /// this string at install time, so the two cannot describe different
+    /// files -- the direction Windows' loader works in.
+    path: [u8; MAX_MODULE_PATH],
+    path_len: u16,
     /// The base the loader mapped the module at -- the value `HMODULE` means.
     base: u64,
     exports: pe::DllExportTable,
@@ -869,18 +922,22 @@ pub fn command_line() -> Option<u64> {
 /// Must run after [`install`] (it reads the same surface). At most [`MAX_MODULES`]
 /// successful calls.
 pub unsafe fn install_module(
-    name: &[u8],
+    path: &[u8],
     base: u64,
     image_size: u64,
     exports: pe::DllExportTable,
 ) -> Result<(), Win32Error> {
     let surface = &mut *&raw mut SURFACE;
-    let name_ok = !name.is_empty()
-        && name.len() <= MAX_MODULE_NAME
-        && name.iter().all(|b| (0x20..0x7f).contains(b));
-    if !name_ok || base == 0 || image_size == 0 || !exports.every_export_within(image_size) {
+    let path_ok = !path.is_empty()
+        && path.len() <= MAX_MODULE_PATH
+        && path.iter().all(|b| (0x20..0x7f).contains(b));
+    if !path_ok || base == 0 || image_size == 0 || !exports.every_export_within(image_size) {
         return Err(Win32Error::ModuleInstallInvalid);
     }
+    // The NAME is not a second argument: it is the last component of the path
+    // the loader recorded, so a row cannot answer "where did I come from" and
+    // "what am I called" with two strings that name different files.
+    let name = module_name_from_path(path).map_err(|_| Win32Error::ModuleInstallInvalid)?;
     let live = surface.modules[..surface.module_count]
         .iter()
         .flatten();
@@ -893,6 +950,8 @@ pub unsafe fn install_module(
     let mut row = Module {
         name: [0; MAX_MODULE_NAME],
         name_len: name.len() as u8,
+        path: [0; MAX_MODULE_PATH],
+        path_len: path.len() as u16,
         base,
         exports,
         // The loader's own installation is the first reference: a module the
@@ -901,6 +960,7 @@ pub unsafe fn install_module(
         refs: 1,
     };
     row.name[..name.len()].copy_from_slice(name);
+    row.path[..path.len()].copy_from_slice(path);
     surface.modules[surface.module_count] = Some(row);
     surface.module_count += 1;
     Ok(())
@@ -1472,7 +1532,10 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
             // a row cannot honestly hold; the image stays mapped (there is no
             // unmap to call) but no pointer to it can be obtained, which is
             // the safe half of the failure.
-            install_module(name, loaded.base, loaded.image_size, loaded.exports)?;
+            // The PATH, not the name: `install_module` derives the name from
+            // it, and the row keeps the path the client actually used -- which
+            // is what `GetModuleFileNameA` must answer for this row later.
+            install_module(path, loaded.base, loaded.image_size, loaded.exports)?;
             Ok(loaded.base)
         }
         // FreeLibrary(hLibModule): release one reference to a loaded module,
@@ -1502,6 +1565,74 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
                 remove_module_at(surface, row_index);
             }
             Ok(1) // TRUE
+        }
+        // GetModuleFileNameA(hModule, lpFilename, nSize): which FILE a module
+        // handle came from.
+        //
+        // This is the call that makes a row's PATH load-bearing. A handle is
+        // otherwise an opaque address: `GetProcAddress` uses it to pick a row
+        // and `FreeLibrary` to drop one, but neither says anything about where
+        // the image came from. Here the client asks a handle a question about
+        // its own provenance -- and for the row `LoadLibraryA` created, the
+        // answer is the path this process handed to the loader at runtime,
+        // which nothing in the client's image contains.
+        //
+        // NULL is the executable, which is this process's own row: Windows'
+        // rule, and the reason the answer for NULL is a path rather than a
+        // failure. Anything else must be a LIVE base -- the same evidence rule
+        // `FreeLibrary` applies -- so a handle from a dropped row is
+        // `ERROR_INVALID_HANDLE` rather than a stale path a caller could still
+        // believe in.
+        //
+        // The copy is Windows' truncation contract, and each half is stated
+        // because a shorter answer must not look like a success: `nSize`
+        // INCLUDES the NUL, a path that does not fit is cut to `nSize - 1`
+        // bytes and still terminated, and the return value is then `nSize`
+        // with `ERROR_INSUFFICIENT_BUFFER` -- the client tests the length, not
+        // the buffer, to know whether it read the whole name. `nSize == 0`
+        // writes nothing and answers 0 with that same code.
+        //
+        // The destination is validated as a WRITE, not a read: the whole
+        // `nSize` range must lie inside one of the client's own regions
+        // ([`allowed`]), so the kernel never writes across a mapping edge, and
+        // a bad pointer is the typed refusal behind `ERROR_NOACCESS` rather
+        // than a page fault in the trap handler.
+        14 => {
+            if surface.client_base == 0 {
+                return Err(Win32Error::LoaderStateMissing);
+            }
+            let size = args[2];
+            if !allowed(surface, args[1], size) {
+                return Err(Win32Error::BufferOutsideClient);
+            }
+            let base = if args[0] == 0 {
+                surface.client_base
+            } else {
+                args[0]
+            };
+            let row = module_by_base(surface, base).ok_or(Win32Error::ModuleNotLoaded)?;
+            if size == 0 {
+                LAST_ERROR.store(ERROR_INSUFFICIENT_BUFFER as u64, Ordering::Relaxed);
+                return Ok(0);
+            }
+            let path = &row.path[..row.path_len as usize];
+            let capacity = (size - 1) as usize;
+            let copied = core::cmp::min(path.len(), capacity);
+            let dst = args[1] as *mut u8;
+            let mut i = 0;
+            while i < copied {
+                // SAFETY: `allowed` above proved `dst .. dst + size` is inside
+                // the client's region, and `copied < size` here.
+                core::ptr::write_volatile(dst.add(i), path[i]);
+                i += 1;
+            }
+            // SAFETY: same region, and the NUL lands at `copied <= size - 1`.
+            core::ptr::write_volatile(dst.add(copied), 0);
+            if copied < path.len() {
+                LAST_ERROR.store(ERROR_INSUFFICIENT_BUFFER as u64, Ordering::Relaxed);
+                return Ok(size);
+            }
+            Ok(copied as u64)
         }
         _ => Err(Win32Error::UnknownFunction),
     }

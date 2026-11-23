@@ -8047,3 +8047,90 @@ the loader hook is kernel-installed state, not a service ring 3 can point
 somewhere else. The v0.8 limit list stands otherwise: bare module names for the
 handle argument, eight forwarder hops, one code for every way a chase can fail,
 no forwarder-string validation at install time, one last-error cell and no TEB.
+
+## The Win32 API surface v1.0: GetModuleFileNameA -- a handle says which FILE it came from (2026-11-23)
+
+A module handle was still an address with no history: `GetProcAddress` used it
+to pick a row, `FreeLibrary` to drop one, and neither could tell a program
+which file the code behind it came from. kernel32's 15th export fixes that, and
+the fix changed the SHAPE of a row rather than adding a lookup on top of it.
+
+`install_module` now takes the PATH and derives the module NAME from it
+([`module_name_from_path`]) instead of the other way round -- the direction
+Windows' loader works in -- so a row literally cannot answer "where did I come
+from" and "what am I called" with two strings that name different files. The
+row stores the path through the volume's own bound (`MAX_MODULE_PATH` = 260
+bytes, `path_len: u16`), and `GetModuleFileNameA` answers out of that record:
+`NULL` is the executable (this process's own row), any other handle must be a
+LIVE row (`ERROR_INVALID_HANDLE` otherwise, the same evidence rule
+`FreeLibrary` applies), and the copy is Windows' truncation contract --
+`nSize` counts the NUL, a path that does not fit is cut to `nSize - 1` bytes
+and still terminated, and the return is `nSize` with
+`ERROR_INSUFFICIENT_BUFFER`; `nSize == 0` writes nothing and answers 0 with the
+same code. The destination is validated as a WRITE over its whole `nSize`
+range, so the kernel can never be made to write across a mapping edge.
+
+The interesting row is the one `LoadLibraryA` created. Its path is the string
+the client handed the loader at runtime -- no byte of it exists in the client's
+image, and nothing in the kernel's own data but that row -- so the boot asks
+for it while the row is live, twice: once from the kernel, comparing against
+the recorded path byte for byte, and once from ring 3, where the client
+compares the answer against its own copy.
+
+**Five things the first boots caught**, each with the fix stated:
+
+1. Index 14 had been the "unknown function" negative control; it is now an
+   export. Control 3 moved to index 15 (one past the last export) and its
+   transcript line says so.
+2. Fifteen export names made the name loop write through `0x6C0..0x6E0`, which
+   was where the v0.8 forwarder names sat. They moved to `0x4E0`/`0x4F0` (the
+   gap above the second provider's own names, below the loop), with the reason
+   in the comment -- this block has now moved three times for one cause.
+3. The kernel-side scratch buffer for the new control first sat at `0x900`,
+   which is where the runtime module's own path string lives; it moved to the
+   free `0x6E0` gap (32 bytes: enough for the 27-byte client path plus NUL).
+4. `LoadLibraryA` was registering its row under the module NAME it had just
+   derived, not the path -- so the runtime row answered 14 bytes instead of 24
+   and the kernel-side assertion named it. Arm 12 now passes `path`, which is
+   also the more honest thing to store.
+5. The client's truncation prefix was written as 8 bytes where an 8-byte buffer
+   holds 7, and the NUL check compared a one-byte slice against `b""` (a
+   zero-length slice). Both are the kind of off-by-one a boot finds and a
+   reading does not.
+
+**Last verified boot transcript** (`tools/qemu_boot_test.sh`, passing):
+
+```
+  experimental win32-demo: module files -- GetModuleFileNameA(NULL) answered "C:\nyrqis\win32_console.exe" (27 bytes) for this process's own row, kernel32.dll's handle answered "C:\nyrqis\kernel32.dll" and nyrqis.dll's "C:\nyrqis\nyrqis.dll" -- the paths the loader installed them under, each compared byte for byte; the RUNTIME row answered the path LoadLibraryA was given while it was loaded, an 8-byte buffer cut that 27-byte path to 7 bytes plus NUL and answered 8 with ERROR_INSUFFICIENT_BUFFER (122), nSize 0 wrote nothing and answered 0 with the same code, and the freed row's base was refused as ModuleNotLoaded -- OK, a module handle answers which file it came from
+  experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true; handles f1=0x100 f2=0x100 f3=0x100 f4=0x100 f ...
+resolved 15 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA), every sl ...
+```
+
+The gate pins the new `module files` line in three pieces (the three startup
+paths, the runtime row's provenance and the truncation pair, and the freed
+base's refusal), the client's own clause for the same sequence
+(`asked WHICH FILE each handle came from`), `files=true` on the checks line,
+the 15-name and 15-import load lines, and the runtime-modules line's new
+sentence about `GetModuleFileNameA` answering that row. Needle count 59, all
+matched against a real boot.
+
+**Measured.** `kernel32.dll` `.text` `0x1e8 -> 0x210` with the new stub appended
+last (`GetModuleFileNameA` at RVA `0x11C3`, so every earlier RVA is unchanged);
+client `.text` `0x7e8 -> 0xb48`, `.idata` `0x1fc -> 0x270`, `SizeOfImage
+0x4000` and ImageBase unchanged; kernel32 declares 15 exports; the client
+imports all 15. The client's run raises 13 refusals (the twelfth tranche's 12
+plus its own `GetModuleFileNameA` probe on a base that names no row, which
+answers 0 with `ERROR_INVALID_HANDLE`).
+
+**Limits.** The SHORT path form only (no `\\?\` prefixes, no 8.3 aliases, no
+case normalisation: the bytes are the loader's, returned verbatim); the three
+provider images are embedded in this kernel rather than read from the volume,
+so their recorded path is the load path this boot installed them under and
+nothing re-checks it against `win32_fs::FILES`; there is no `GetModuleFileNameW`
+and no long-path API; and the truncation terminates the copy, which is the
+kinder half of the documented Windows behaviour (older Windows leaves a
+truncated buffer unterminated) and is stated rather than assumed. Everything
+the v0.9 limit list says about the table itself still holds: one runtime slot,
+no unmap on `FreeLibrary`, bare names for the handle argument of
+`GetModuleHandleA`, eight forwarder hops, one code per failure family, no
+forwarder-string validation at install time, one last-error cell and no TEB.

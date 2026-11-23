@@ -10,6 +10,7 @@
  *   tranche 4 (startup):  GetCommandLineA, GetModuleHandleA
  *   tranche 5 (binding):  GetProcAddress
  *   tranche 9 (runtime):  LoadLibraryA, FreeLibrary
+ *   tranche 10 (provenance): GetModuleFileNameA
  *
  * Why GetProcAddress is the export that completes the startup pair: a CRT
  * (or any program that loads a library late) takes the HMODULE a name
@@ -244,6 +245,25 @@ FreeLibrary:
        that is not a live row. */
     mov %rcx, nyr_call_block+8(%rip)
     movq $13, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl GetModuleFileNameA
+GetModuleFileNameA:
+    /* HMODULE hModule in RCX, LPSTR lpFilename in RDX, DWORD nSize in R8.
+       All three are parked: the handle selects a ROW, the destination is
+       validated as a write before anything touches it, and nSize (which
+       counts the terminating NUL) decides whether the answer fits. Windows
+       answers the byte count WITHOUT the NUL, or nSize with
+       ERROR_INSUFFICIENT_BUFFER when the path had to be truncated -- so a
+       caller that got a short buffer can tell, and never mistakes a cut
+       path for the whole one. NULL means THIS process's image, which is why
+       a program can ask where its own executable lives. */
+    mov %rcx, nyr_call_block+8(%rip)
+    mov %rdx, nyr_call_block+16(%rip)
+    mov %r8,  nyr_call_block+24(%rip)
+    movq $14, nyr_call_block+48(%rip)
     int $0x90
     mov nyr_call_block+40(%rip), %rax
     ret

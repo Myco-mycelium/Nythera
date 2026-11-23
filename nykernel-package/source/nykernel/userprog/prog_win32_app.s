@@ -698,6 +698,39 @@ _start:
     movabs $SLOT_DYN_OWN, %rdi
     mov %rax, (%rdi)
 
+    /* WHICH FILE that row came from: the PATH this program handed
+       LoadLibraryA, not the file name the module is registered under. That
+       string exists nowhere in this image -- the client never linked against
+       the module -- so an answer that matched proves the row kept the record
+       the loader was given. */
+    mov %r13, %rcx
+    movabs $buf_file, %rdx
+    mov $64, %r8d
+    call *__imp_GetModuleFileNameA(%rip)
+    movabs $SLOT_FILE_DYN_LEN, %rdi
+    mov %rax, (%rdi)
+
+    movabs $buf_file, %rsi
+    lea path_dyn(%rip), %rdi
+    mov $DYNAMIC_PATH_LEN, %ecx
+    mov $1, %eax
+3:
+    movzbq (%rsi), %rdx
+    movzbq (%rdi), %r8
+    cmp %r8, %rdx
+    jne 4f
+    inc %rsi
+    inc %rdi
+    loop 3b
+    cmpb $0, (%rsi)
+    jne 4f
+    jmp 5f
+4:
+    xor %eax, %eax
+5:
+    movabs $SLOT_FILE_DYN_OK, %rdi
+    mov %rax, (%rdi)
+
     /* FreeLibrary(hdyn): the row is dropped (this was its only reference),
        so the module is no longer loaded in this process. */
     mov %r13, %rcx
@@ -725,6 +758,134 @@ _start:
     mov %rax, (%rdi)
     call *__imp_GetLastError(%rip)
     movabs $SLOT_DYN_MISS_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* ---- tranche 10: which FILE a handle came from ---- */
+
+    /* GetModuleFileNameA(NULL, buf, 64): Windows' spelling of "where is the
+       executable". The answer is this process's own row's path, compared
+       against this program's own copy of it -- a length alone would pass on a
+       wrong path of the same size. */
+    xor %ecx, %ecx
+    movabs $buf_file, %rdx
+    mov $64, %r8d
+    call *__imp_GetModuleFileNameA(%rip)
+    movabs $SLOT_FILE_SELF_LEN, %rdi
+    mov %rax, (%rdi)
+
+    movabs $buf_file, %rsi
+    lea path_self(%rip), %rdi
+    mov $SELF_PATH_LEN, %ecx
+    mov $1, %eax
+3:
+    movzbq (%rsi), %rdx
+    movzbq (%rdi), %r8
+    cmp %r8, %rdx
+    jne 4f
+    inc %rsi
+    inc %rdi
+    loop 3b
+    cmpb $0, (%rsi)
+    jne 4f
+    jmp 5f
+4:
+    xor %eax, %eax
+5:
+    movabs $SLOT_FILE_SELF_OK, %rdi
+    mov %rax, (%rdi)
+
+    /* ... and kernel32.dll's own handle, which must answer THAT module's path:
+       one row answering the previous row's string is exactly the mistake a
+       table keyed by anything other than the handle would make. */
+    lea name_kernel32(%rip), %rcx
+    call *__imp_GetModuleHandleA(%rip)
+    mov %rax, %rcx
+    movabs $buf_file, %rdx
+    mov $64, %r8d
+    call *__imp_GetModuleFileNameA(%rip)
+    movabs $SLOT_FILE_K32_LEN, %rdi
+    mov %rax, (%rdi)
+
+    movabs $buf_file, %rsi
+    lea path_kernel32_file(%rip), %rdi
+    mov $K32_PATH_LEN, %ecx
+    mov $1, %eax
+3:
+    movzbq (%rsi), %rdx
+    movzbq (%rdi), %r8
+    cmp %r8, %rdx
+    jne 4f
+    inc %rsi
+    inc %rdi
+    loop 3b
+    cmpb $0, (%rsi)
+    jne 4f
+    jmp 5f
+4:
+    xor %eax, %eax
+5:
+    movabs $SLOT_FILE_K32_OK, %rdi
+    mov %rax, (%rdi)
+
+    /* A buffer too small: Windows returns nSize (not the full length) and
+       leaves ERROR_INSUFFICIENT_BUFFER, and what it copied is nSize-1 bytes
+       plus a NUL. All three halves are checked, because a truncation that
+       dropped the terminator would be a string this program could not use. */
+    xor %ecx, %ecx
+    movabs $buf_trunc, %rdx
+    mov $8, %r8d
+    call *__imp_GetModuleFileNameA(%rip)
+    movabs $SLOT_FILE_TRUNC_RET, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_FILE_TRUNC_ERR, %rdi
+    mov %rax, (%rdi)
+
+    movabs $buf_trunc, %rsi
+    lea path_trunc_prefix(%rip), %rdi
+    mov $TRUNC_PREFIX_LEN, %ecx
+    mov $1, %eax
+3:
+    movzbq (%rsi), %rdx
+    movzbq (%rdi), %r8
+    cmp %r8, %rdx
+    jne 4f
+    inc %rsi
+    inc %rdi
+    loop 3b
+    cmpb $0, (%rsi)
+    jne 4f
+    jmp 5f
+4:
+    xor %eax, %eax
+5:
+    movabs $SLOT_FILE_TRUNC_OK, %rdi
+    mov %rax, (%rdi)
+
+    /* nSize 0 writes NOTHING and answers 0 with the same code: the buffer is
+       deliberately left holding the truncated bytes above, so a surface that
+       wrote through a zero length would corrupt a byte this program can see. */
+    xor %ecx, %ecx
+    movabs $buf_trunc, %rdx
+    xor %r8d, %r8d
+    call *__imp_GetModuleFileNameA(%rip)
+    movabs $SLOT_FILE_ZERO_RET, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_FILE_ZERO_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* A base that names no row: a FAILED call, 0 plus ERROR_INVALID_HANDLE --
+       the same answer every other unissued handle gives, and this program's
+       thirteenth deliberate refusal. */
+    mov $0x1234, %ecx
+    movabs $buf_file, %rdx
+    mov $64, %r8d
+    call *__imp_GetModuleFileNameA(%rip)
+    movabs $SLOT_FILE_BAD_RET, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_FILE_BAD_ERR, %rdi
     mov %rax, (%rdi)
 
     /* ---- tranche 1 again: the clock, then exit ---- */
@@ -788,11 +949,25 @@ proc_fwd_tick:
     .asciz "NyrqisTick"
 proc_fwd_ghost:
     .asciz "NyrqisGhost"
+/* tranche 10: this program's own path, the provider's, and the prefix a
+   truncated copy of its own path must leave behind. All three are copies the
+   CLIENT holds, so the comparison is against something the kernel cannot have
+   supplied at call time. */
+path_self:
+    .asciz "C:\\nyrqis\\win32_console.exe"
+    .set SELF_PATH_LEN, . - path_self - 1
+path_kernel32_file:
+    .asciz "C:\\nyrqis\\kernel32.dll"
+    .set K32_PATH_LEN, . - path_kernel32_file - 1
+path_trunc_prefix:
+    .asciz "C:\\nyrq"
+    .set TRUNC_PREFIX_LEN, . - path_trunc_prefix - 1
 /* tranche 9's runtime module: the path handed to LoadLibraryA, the file
    name Windows registers it under, the forwarder that names it and the
    export that forwarder resolves to once the row exists. */
 path_dyn:
     .asciz "C:\\nyrqis\\nyrqis_dyn.dll"
+    .set DYNAMIC_PATH_LEN, . - path_dyn - 1
 path_dyn_missing:
     .asciz "C:\\nyrqis\\missing.dll"
 name_dyn:
@@ -920,6 +1095,25 @@ proc_dyn_value:
     .set SLOT_DYN_AFTER_ERR,    SLOT_BASE + 0x7f0 /* ... 127 */
     .set SLOT_DYN_MISS_NONE,    SLOT_BASE + 0x7f8 /* missing DLL -> 0 */
     .set SLOT_DYN_MISS_ERR,     SLOT_BASE + 0x800 /* ... 126 */
+/* tranche 10: a handle's provenance. The runtime row's answer is taken while
+   it is loaded; the startup rows' after that. `TRUNC_OK` is the client's own
+   byte-and-NUL compare of what a too-small buffer received, and the zero-length
+   probe reuses the SAME buffer so a write through nSize 0 would be visible. */
+    .set SLOT_FILE_SELF_LEN,    SLOT_BASE + 0x820 /* GetModuleFileNameA(NULL) */
+    .set SLOT_FILE_SELF_OK,     SLOT_BASE + 0x828 /* ... bytes + NUL matched */
+    .set SLOT_FILE_K32_LEN,     SLOT_BASE + 0x830 /* kernel32.dll's path */
+    .set SLOT_FILE_K32_OK,      SLOT_BASE + 0x838 /* ... bytes + NUL matched */
+    .set SLOT_FILE_TRUNC_RET,   SLOT_BASE + 0x840 /* 8, not 27 */
+    .set SLOT_FILE_TRUNC_ERR,   SLOT_BASE + 0x848 /* ... 122 */
+    .set SLOT_FILE_TRUNC_OK,    SLOT_BASE + 0x850 /* ... 7 bytes + NUL */
+    .set SLOT_FILE_DYN_LEN,     SLOT_BASE + 0x858 /* the runtime row's path */
+    .set SLOT_FILE_DYN_OK,      SLOT_BASE + 0x860 /* ... bytes + NUL matched */
+    .set SLOT_FILE_BAD_RET,     SLOT_BASE + 0x868 /* no such row -> 0 */
+    .set SLOT_FILE_BAD_ERR,     SLOT_BASE + 0x870 /* ... 6 */
+    .set SLOT_FILE_ZERO_RET,    SLOT_BASE + 0x878 /* nSize 0 -> 0 */
+    .set SLOT_FILE_ZERO_ERR,    SLOT_BASE + 0x880 /* ... 122 */
+    .set buf_trunc,             SLOT_BASE + 0x890
+    .set buf_file,              SLOT_BASE + 0x8a0
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180
