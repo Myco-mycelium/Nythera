@@ -160,10 +160,27 @@
 //! requires `ERROR_PROC_NOT_FOUND` below the base and past the last function --
 //! the two ends a guessed index would have to get wrong.
 //!
-//! What the table deliberately does not do: it does not chase forwarded
-//! exports (a forwarder yields nothing here, which is the
-//! `ERROR_PROC_NOT_FOUND` a name that cannot be resolved gets; the import walk
-//! still chases them through the registry); and it has room for exactly three
+//! # Why a forwarded export is chased across the rows
+//!
+//! A PE export's EAT slot can hold a forwarded-export STRING
+//! (`other.dll.other_fn`) instead of an address: Windows' `GetProcAddress` marks
+//! that case and answers from the NAMED module's own export directory, not
+//! from the forwarder's image and not with a failure. The module table already
+//! holds those directories, so the chase needs no second registry: the selected
+//! row's table classifies its own slot
+//! ([`pe::DllExportTable::resolve_export`]), a `Forward` names another ROW, and
+//! that row answers in turn. The module half is matched the way every module
+//! name here is (ASCII case-insensitively), and a string with no dot is retried
+//! as `<name>.dll`, because forwarder strings conventionally omit the
+//! extension. The walk is capped at [`FORWARDER_DEPTH_LIMIT`] hops -- the same
+//! cap [`pe::DllRegistry`] applies to an import walk -- and every way it can
+//! fail (an absent target module, an absent target export, a malformed string,
+//! a chain that only forwards) is Windows' single answer for an export that
+//! cannot be produced, `ERROR_PROC_NOT_FOUND`. The rows were certified at
+//! install time, so an address the chase lands on is still an address from a
+//! certified image.
+//!
+//! What the table deliberately does not do: it has room for exactly three
 //! rows -- this process's own image and two providers. A fourth registration is
 //! a typed refusal ([`Win32Error::ModuleTableFull`]), not a silent overflow: a
 //! bigger table would be a claim about a loader this kernel does not have yet.
@@ -350,6 +367,14 @@ pub const MAX_MODULES: usize = 3;
 /// and one the file does not declare is `ERROR_PROC_NOT_FOUND`.
 const ORDINAL_LIMIT: u64 = 0x1_0000;
 
+/// How many forwarded-export hops `GetProcAddress` follows before it gives up.
+/// The same bound [`pe::DllRegistry`] applies to an import walk, stated once
+/// here for the module table: a chain that has not landed after eight hops is
+/// a provider loop, and Windows' answer for an export that cannot be produced
+/// is `ERROR_PROC_NOT_FOUND`, not an unbounded walk over attacker-shaped
+/// tables.
+const FORWARDER_DEPTH_LIMIT: u8 = 8;
+
 /// `OPEN_EXISTING`: the only creation disposition that means anything on a
 /// read-only volume, and therefore the only one this surface accepts.
 const OPEN_EXISTING: u64 = 3;
@@ -437,10 +462,14 @@ pub enum Win32Error {
     /// duplicate name, or an export table naming an address outside the image
     /// that table was parsed from.
     ModuleInstallInvalid,
-    /// That module has no export of that name, or names no export at that
-    /// ordinal. Boldly FALSE would be worse: Windows' `ERROR_PROC_NOT_FOUND`,
-    /// and the name was compared exactly (the ordinal was resolved through the
-    /// module's own `OrdinalBase`, never treated as a bare index).
+    /// That module has no export of that name, names no export at that
+    /// ordinal, or names a forwarded export whose target cannot be produced
+    /// (target module not loaded, target export absent, malformed forwarder
+    /// string, or a chain longer than [`FORWARDER_DEPTH_LIMIT`]). Boldly FALSE
+    /// would be worse: Windows' `ERROR_PROC_NOT_FOUND` is the one code it
+    /// reports for an export that cannot be produced, and the name was
+    /// compared exactly (the ordinal was resolved through the module's own
+    /// `OrdinalBase`, never treated as a bare index).
     ProcNotFound,
     /// A name argument (module name or export name) that cannot be read as a
     /// bounded, printable, NUL-terminated string inside the client's regions.
@@ -783,6 +812,87 @@ fn module_base_by_name(surface: &Surface, name: &[u8]) -> Option<u64> {
         .map(|m| m.base)
 }
 
+/// The loaded module a forwarder string names, or `None`. A forwarder is
+/// matched by the same case-insensitive module-name rule every other module
+/// question uses, and a name with no dot is retried as `<name>.dll` because
+/// forwarder strings conventionally omit the extension (`kernel32.GetTickCount`)
+/// while a row's registered name is a file name (`kernel32.dll`).
+fn forwarded_module_base(surface: &Surface, dll: &[u8]) -> Option<u64> {
+    if let Some(base) = module_base_by_name(surface, dll) {
+        return Some(base);
+    }
+    if dll.iter().any(|b| *b == b'.') {
+        return None; // already names a file (or something that is not a module)
+    }
+    let mut with_ext = [0u8; MAX_MODULE_NAME + 4];
+    if dll.len() + 4 > with_ext.len() {
+        return None;
+    }
+    with_ext[..dll.len()].copy_from_slice(dll);
+    with_ext[dll.len()..dll.len() + 4].copy_from_slice(b".dll");
+    module_base_by_name(surface, &with_ext[..dll.len() + 4])
+}
+
+/// Which half of `GetProcAddress`'s argument space a question names: the
+/// string form, or Windows' ordinal form (a value below [`ORDINAL_LIMIT`], not
+/// a pointer).
+enum ProcTarget<'a> {
+    Name(&'a [u8]),
+    Ordinal(u64),
+}
+
+/// One `GetProcAddress` question, asked of the module at `base` and followed
+/// through the table when the answer is a forwarded export.
+///
+/// # Why the chase lives here and not in `pe`
+///
+/// [`pe::DllExportTable`] can say that an EAT slot is a forwarder and split its
+/// `other.dll.other_fn` string, but it cannot know which modules are LOADED --
+/// that is this surface's `modules` array. So the per-table classification is
+/// `pe`'s and the row-to-row walk is the table's, exactly where Windows' loader
+/// draws the line. Each hop re-enters the target row's own export directory, so
+/// a forwarded name is answered by the FILE that exports it, never by the
+/// forwarder's table.
+///
+/// # Why every failure is `ProcNotFound`
+///
+/// Windows' `GetProcAddress` has one failure shape: NULL and
+/// `ERROR_PROC_NOT_FOUND` for an export that cannot be produced, whether the
+/// name is absent, the ordinal names no slot, a forwarder string is malformed,
+/// the forwarded-to module is not loaded, or the chain never lands. Those are
+/// different causes internally, but a client cannot act on the difference, so
+/// none of them may become an address or a different code.
+fn resolve_proc(
+    surface: &Surface,
+    base: u64,
+    target: ProcTarget<'_>,
+    depth: u8,
+) -> Result<u64, Win32Error> {
+    let module = module_by_base(surface, base).ok_or(Win32Error::ProcNotFound)?;
+    // SAFETY: every row's table was parsed from the mapped image its base
+    // names, and `install_module` certified its export addresses; the mapped
+    // images live for the whole process.
+    let answer = unsafe {
+        match target {
+            ProcTarget::Name(name) => module.exports.resolve_export(Some(name), None),
+            ProcTarget::Ordinal(ordinal) => module.exports.resolve_export(None, Some(ordinal)),
+        }
+    }
+    .map_err(|_| Win32Error::ProcNotFound)?;
+    match answer {
+        None => Err(Win32Error::ProcNotFound),
+        Some(pe::ExportAnswer::Address(addr)) => Ok(addr),
+        Some(pe::ExportAnswer::Forward { dll, symbol }) => {
+            if depth >= FORWARDER_DEPTH_LIMIT {
+                return Err(Win32Error::ProcNotFound);
+            }
+            let next =
+                forwarded_module_base(surface, dll.as_slice()).ok_or(Win32Error::ProcNotFound)?;
+            resolve_proc(surface, next, ProcTarget::Name(symbol.as_slice()), depth + 1)
+        }
+    }
+}
+
 /// The registered module whose base is exactly `base`, or `None` -- the lookup
 /// `GetProcAddress` does with its `HMODULE`.
 fn module_by_base(surface: &Surface, base: u64) -> Option<&Module> {
@@ -1116,31 +1226,34 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
         // about a module whose table does not export the name, and it cannot
         // name an address the install did not certify as inside the image.
         //
-        // An export name is compared CASE-SENSITIVELY (inside `lookup`, byte for
-        // byte): that is the PE rule, and the opposite of the module-name rule
-        // one arm above. A forwarded export yields nothing from `lookup`, and
-        // v0 does not chase forwarders, so it answers `ERROR_PROC_NOT_FOUND`
-        // rather than a guessed address.
+        // An export name is compared CASE-SENSITIVELY (inside the export
+        // directory's name walk, byte for byte): that is the PE rule, and the
+        // opposite of the module-name rule one arm above. A forwarded export is
+        // CHASED through the table instead of refused: the slot names
+        // `other.dll.other_fn`, so the answer is the target row's own EAT
+        // entry ([`resolve_proc`] states the walk and its hop cap), and every
+        // way that walk can fail is Windows' `ERROR_PROC_NOT_FOUND`.
         11 => {
             if surface.module_count == 0 {
                 return Err(Win32Error::LoaderStateMissing);
             }
-            let module = module_by_base(surface, args[0]).ok_or(Win32Error::ModuleNotLoaded)?;
+            // The handle is answered before the name is read, so a registered
+            // module question keeps its own error (an unregistered base is
+            // `ModuleNotLoaded`, a NULL name is `NameInvalid`) rather than
+            // collapsing into the per-export answer.
+            module_by_base(surface, args[0]).ok_or(Win32Error::ModuleNotLoaded)?;
             // Windows' ordinal form is `(LPCSTR)(ULONG_PTR)n`: a low value is a
             // number, not a pointer. Deciding on the VALUE (not on whether a
             // string happens to be readable at that address) is what keeps the
             // two forms distinguishable -- and both end at this module's own
-            // export directory: `lookup_ordinal` subtracts the base the file
-            // declares and reads the EAT slot, exactly where `lookup`'s name
-            // walk would have landed for the same export.
+            // export directory: the ordinal subtracts the base the file
+            // declares and reads the EAT slot, exactly where the name walk
+            // would have landed for the same export.
             if args[1] != 0 && args[1] < ORDINAL_LIMIT {
-                return module
-                    .exports
-                    .lookup_ordinal(args[1])
-                    .ok_or(Win32Error::ProcNotFound);
+                return resolve_proc(surface, args[0], ProcTarget::Ordinal(args[1]), 0);
             }
             let name = read_name(surface, args[1])?;
-            module.exports.lookup(name).ok_or(Win32Error::ProcNotFound)
+            resolve_proc(surface, args[0], ProcTarget::Name(name), 0)
         }
         _ => Err(Win32Error::UnknownFunction),
     }

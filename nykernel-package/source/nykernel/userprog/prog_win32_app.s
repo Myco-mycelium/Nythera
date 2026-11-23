@@ -81,8 +81,24 @@
  *     pfn()                                       // 1, called through it
  *     GetProcAddress(hnyr, (LPCSTR)9)             // 0, below the base:
  *                                                 // ERROR_PROC_NOT_FOUND
- *     GetProcAddress(hnyr, (LPCSTR)12)            // 0, past the last slot:
+ *     GetProcAddress(hnyr, (LPCSTR)14)            // 0, past the last slot
+ *                                                 // (four EAT slots now):
  *                                                 // ERROR_PROC_NOT_FOUND
+ *
+ *   tranche 8 -- a FORWARDED export, chased to its real module:
+ *     GetProcAddress(hnyr, "NyrqisTick")          // nyrqis.dll's EAT slot is
+ *                                                 // the STRING
+ *                                                 // kernel32.dll.GetTickCount,
+ *                                                 // not code
+ *     (that answer == GetProcAddress(hmod32,
+ *                        "GetTickCount"))        // 1: the chase landed in
+ *                                                 // the NAMED module, whose
+ *                                                 // row answered
+ *     pfn()                                       // a live tick: the address
+ *                                                 // is kernel32's own stub
+ *     GetProcAddress(hnyr, "NyrqisGhost")         // 0, ERROR_PROC_NOT_FOUND:
+ *                                                 // a forwarder to an export
+ *                                                 // the target lacks
  *
  *   tranche 3 -- why it failed:
  *     err = GetLastError()                          // ERROR_FILE_NOT_FOUND (2)
@@ -567,15 +583,59 @@ _start:
     movabs $SLOT_ORD_LOW_ERR, %rdi
     mov %rax, (%rdi)
 
-    /* ... and one past the last slot (the image exports two, so 12 is
-       past end): the same answer for the same reason. */
+    /* ... and one past the last slot (the image exports four slots now,
+       two functions and two forwarders, so 14 is past end): the same answer
+       for the same reason. */
     mov %rbp, %rcx
-    mov $12, %edx
+    mov $14, %edx
     call *__imp_GetProcAddress(%rip)
     movabs $SLOT_ORD_HIGH_NONE, %rdi
     mov %rax, (%rdi)
     call *__imp_GetLastError(%rip)
     movabs $SLOT_ORD_HIGH_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* ---- tranche 8: a FORWARDED export ---- */
+
+    /* pfn = GetProcAddress(hnyr, "NyrqisTick"). That name's EAT slot holds
+       the STRING "kernel32.dll.GetTickCount", not an address, so the
+       surface must chase it into kernel32.dll's own row and answer THAT
+       module's stop. */
+    mov %rbp, %rcx
+    lea proc_fwd_tick(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_FWD_TICK, %rdi
+    mov %rax, (%rdi)
+
+    /* It must be exactly the address kernel32.dll's own row gave
+       GetTickCount earlier: two rows, one real export, and the answer came
+       from the module the forwarder names. */
+    movabs $SLOT_PROC_TICK, %rsi
+    mov (%rsi), %rdx
+    xor %ecx, %ecx
+    cmp %rdx, %rax
+    sete %cl
+    movabs $SLOT_FWD_SAME, %rdi
+    mov %rcx, (%rdi)
+
+    /* And CALLABLE: the chased address is kernel32's GetTickCount stub, so
+       the call traps from kernel32's .text and returns a live tick count,
+       even though the name was looked up in nyrqis.dll. */
+    movabs $SLOT_FWD_TICK, %rdi
+    mov (%rdi), %rax
+    call *%rax
+    movabs $SLOT_FWD_TICK_VALUE, %rdi
+    mov %rax, (%rdi)
+
+    /* The other forwarder names an export kernel32.dll does not have:
+       NULL and ERROR_PROC_NOT_FOUND, never an address from either image. */
+    mov %rbp, %rcx
+    lea proc_fwd_ghost(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_FWD_GHOST_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_FWD_GHOST_ERR, %rdi
     mov %rax, (%rdi)
 
     /* ---- tranche 1 again: the clock, then exit ---- */
@@ -632,6 +692,13 @@ proc_build:
     .asciz "NyrqisBuild"
 proc_mode:
     .asciz "NyrqisMode"
+/* tranche 8's forwarded export and its negative: the first is the EAT string
+   "kernel32.dll.GetTickCount", the second names an export that module does
+   not have. */
+proc_fwd_tick:
+    .asciz "NyrqisTick"
+proc_fwd_ghost:
+    .asciz "NyrqisGhost"
 /* The SizeOfImage the link gives this executable (build.sh pins the same
    0x4000 from objdump -p), used by the module-handle test above. */
     .set IMAGE_SIZE, 0x4000
@@ -726,8 +793,17 @@ proc_mode:
     .set SLOT_ORD_MODE_VALUE,   SLOT_BASE + 0x758 /* called through: 1 */
     .set SLOT_ORD_LOW_NONE,     SLOT_BASE + 0x760 /* ordinal 9 -> 0 */
     .set SLOT_ORD_LOW_ERR,      SLOT_BASE + 0x768 /* ... 127 */
-    .set SLOT_ORD_HIGH_NONE,    SLOT_BASE + 0x770 /* ordinal 12 -> 0 */
+    .set SLOT_ORD_HIGH_NONE,    SLOT_BASE + 0x770 /* ordinal 14 -> 0 */
     .set SLOT_ORD_HIGH_ERR,     SLOT_BASE + 0x778 /* ... 127 */
+/* tranche 8: the forwarded export's answers. `NyrqisTick` is a forwarder to
+   kernel32.dll.GetTickCount, so its address must equal the one kernel32's own
+   row gave and must be callable; `NyrqisGhost` forwards to an export that
+   module does not have and must fail with ERROR_PROC_NOT_FOUND. */
+    .set SLOT_FWD_TICK,         SLOT_BASE + 0x780 /* NyrqisTick answer */
+    .set SLOT_FWD_SAME,         SLOT_BASE + 0x788 /* == kernel32's answer */
+    .set SLOT_FWD_TICK_VALUE,   SLOT_BASE + 0x790 /* called through: a tick */
+    .set SLOT_FWD_GHOST_NONE,   SLOT_BASE + 0x798 /* NyrqisGhost -> 0 */
+    .set SLOT_FWD_GHOST_ERR,    SLOT_BASE + 0x7a0 /* ... 127 */
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

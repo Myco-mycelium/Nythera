@@ -120,11 +120,13 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "GetModuleHandleA(NULL) answered the client's own image base 0x1a0000000000" \
         "experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing" \
         "nyrqis.dll's declared OrdinalBase 10 made its first two exports ordinals 10 and 11 (both answered the addresses their NAMES did)" \
-        "ordinals 9 and 12 (below that base and past its last slot) answered ProcNotFound rather than an index guess" \
+        "ordinals 9 and 14 (below that base and past its last slot) answered ProcNotFound rather than an index guess" \
+        "experimental win32-demo: forwarded exports -- nyrqis.dll's NyrqisTick (a forwarder to kernel32.dll.GetTickCount) answered 0x19000000104d" \
+        "NyrqisGhost (a forwarder to kernel32.dll.NoSuchExport) answered ProcNotFound with ERROR_PROC_NOT_FOUND (127)" \
         "kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows" \
         "all 12 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (12+2)" \
         "kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module)" \
-        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true" \
         "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
         "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \
         "GetModuleHandleA(\"kernel32.dll\") answered the provider's own base 0x190000000000 in either case" \
@@ -133,7 +135,9 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "resolved there at 0x190100001000 and 0x190100001006, which the client CALLED through, reading 6 and 1" \
         "kernel32.dll asked for NyrqisBuild answered 0x0 with ERROR_PROC_NOT_FOUND (127) and nyrqis.dll asked for GetTickCount answered 0x0 the same (127)" \
         "asked in Windows' ordinal form, the second provider's base-11 ordinal 11 answered 0x190100001006 -- the same address its NAME did (1) -- which the client CALLED through, reading 1" \
-        "ordinals 9 and 12 (below the base, past the last slot) answered 0x0 and 0x0 with ERROR_PROC_NOT_FOUND (127) and (127)" \
+        "ordinals 9 and 14 (below the base, past the last slot) answered 0x0 and 0x0 with ERROR_PROC_NOT_FOUND (127) and (127)" \
+        "its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered 0x19000000104d BY NAME and BY ORDINAL 12" \
+        "a forwarder to an export kernel32.dll does not have answered 0x0 with ERROR_PROC_NOT_FOUND (127)" \
         "a module that is not loaded answered 0x0 with ERROR_MOD_NOT_FOUND (126) and a name that module does not export answered 0x0 with ERROR_PROC_NOT_FOUND (127)" \
         "-- OK, a real Windows-format console program started the way a CRT does" \
     ; do

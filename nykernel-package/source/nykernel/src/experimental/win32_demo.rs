@@ -154,13 +154,16 @@ const CMDLINE_OFFSET: u64 = 0x2A0;
 /// `GetTickCount` (which IT does not export), so the per-module claim is made
 /// from ring 3 in both directions. This tranche adds two more: the client asks
 /// the second provider for ordinal 9 (below its declared `OrdinalBase` of 10)
-/// and ordinal 12 (past its two EAT slots), and both requests name no export,
-/// so both are `ProcNotFound`. So the surface must have refused exactly those
-/// nine. A
+/// and ordinal 14 (past its four EAT slots, two of them forwarders), and both
+/// requests name no export, so both are `ProcNotFound`. This tranche adds one
+/// for the forwarded-export proof: `NyrqisGhost` is a real forwarder whose
+/// target export `kernel32.dll` does not have, so asking for it must end in
+/// `ProcNotFound` rather than an address. The surface must therefore have
+/// refused exactly those ten. A
 /// different number means either an extra refusal (a bug in the surface) or a
 /// missing one (the client never reached the probe), and the per-field
 /// assertions below pin which.
-const EXPECTED_REFUSALS: u64 = 9;
+const EXPECTED_REFUSALS: u64 = 10;
 
 /// The twelve exports the client imports, and the RVAs they must resolve to
 /// (the DLL's own export table is the authority; these are the independent
@@ -200,6 +203,18 @@ fn expected_rva(name: &[u8]) -> u64 {
 /// these -- two independent answers to the same question).
 const EXPECTED_NYRQIS_EXPORTS: [(&[u8], u64); 2] =
     [(b"NyrqisBuild", 0x1000), (b"NyrqisMode", 0x1006)];
+
+/// The second provider's two FORWARDED exports: the export name, the module
+/// its forwarder string names, and the export it names there. They are not in
+/// [`EXPECTED_NYRQIS_EXPORTS`] because that table pins RVAs inside
+/// `nyrqis.dll`, while a forwarder's answer is another module's code -- which
+/// is exactly the distinction this tranche's proof turns on. `NyrqisTick` must
+/// resolve to `kernel32.dll`'s own `GetTickCount`; `NyrqisGhost` names an
+/// export that module does not have and must resolve to nothing.
+const EXPECTED_NYRQIS_FORWARDERS: [(&[u8], &[u8], &[u8]); 2] = [
+    (b"NyrqisTick", b"kernel32.dll", b"GetTickCount"),
+    (b"NyrqisGhost", b"kernel32.dll", b"NoSuchExport"),
+];
 
 /// The RVA of one of the second provider's exports, from the same pin the
 /// kernel-side control used, so the ring-3 expectation is not a second
@@ -339,6 +354,17 @@ const SLOT_ORD_LOW_NONE: u64 = 0x760;
 const SLOT_ORD_LOW_ERR: u64 = 0x768;
 const SLOT_ORD_HIGH_NONE: u64 = 0x770;
 const SLOT_ORD_HIGH_ERR: u64 = 0x778;
+/// The forwarded-export answers: the address `GetProcAddress(hnyr,
+/// "NyrqisTick")` returned -- a forwarder to `kernel32.dll.GetTickCount`, so
+/// the answer must be THAT module's code -- whether it equaled the address the
+/// target module's own row answered, the value of CALLING through it, and the
+/// two halves of the ghost probe (a forwarder to an export `kernel32.dll` does
+/// not have).
+const SLOT_FWD_TICK: u64 = 0x780;
+const SLOT_FWD_SAME: u64 = 0x788;
+const SLOT_FWD_TICK_VALUE: u64 = 0x790;
+const SLOT_FWD_GHOST_NONE: u64 = 0x798;
+const SLOT_FWD_GHOST_ERR: u64 = 0x7A0;
 // A compile-time check that the report fields do not overlap the client's read
 // buffers (which run up to SLOT_BIN + its eight bytes), the command-line string
 // the loader installs, the 0x300 region the kernel-side controls write their
@@ -352,7 +378,8 @@ const _: () = assert!(
         && SLOT_PROC_NONE_ERR + 8 <= 0x300
         && SLOT_NAMED_SECOND >= 0x700
         && SLOT_CROSS_SEC_ERR + 8 <= SLOT_ORD_MODE
-        && SLOT_ORD_HIGH_ERR + 8 <= 0x800,
+        && SLOT_ORD_HIGH_ERR + 8 <= SLOT_FWD_TICK
+        && SLOT_FWD_GHOST_ERR + 8 <= 0x800,
     "win32-demo report fields must sit between the read buffers and 0x300 (or above 0x700, past the kernel's control strings), must not overlap each other, and must not overlap the installed command line"
 );
 
@@ -522,8 +549,8 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     );
     assert_eq!(
         nyr_exports.name_count(),
-        EXPECTED_NYRQIS_EXPORTS.len() as u32,
-        "nyrqis.dll must export exactly the two functions this tranche's proof asks for"
+        (EXPECTED_NYRQIS_EXPORTS.len() + EXPECTED_NYRQIS_FORWARDERS.len()) as u32,
+        "nyrqis.dll must export exactly the two functions and two forwarders its .def states"
     );
     for (name, rva) in EXPECTED_NYRQIS_EXPORTS {
         let addr = nyr_exports
@@ -544,8 +571,41 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
             rva
         );
     }
+    // The forwarders, from the same parsed table: each must be classified as a
+    // `Forward` naming exactly the module and export its .def states, and must
+    // NOT answer an address out of its OWN image (`lookup` is the
+    // registry-agnostic form -- this is the state the surface used to report
+    // as `ERROR_PROC_NOT_FOUND`).
+    for (name, fwd_dll, fwd_symbol) in EXPECTED_NYRQIS_FORWARDERS {
+        assert!(
+            nyr_exports.lookup(name).is_none(),
+            "forwarded export {:?} must not answer an address out of its own image",
+            NameOf(name)
+        );
+        match nyr_exports.resolve_export(Some(name), None) {
+            Ok(Some(pe::ExportAnswer::Forward { dll: got_dll, symbol: got_symbol })) => {
+                assert_eq!(
+                    got_dll.as_slice(),
+                    fwd_dll,
+                    "forwarded export {:?} must name the target module its .def states",
+                    NameOf(name)
+                );
+                assert_eq!(
+                    got_symbol.as_slice(),
+                    fwd_symbol,
+                    "forwarded export {:?} must name the target export its .def states",
+                    NameOf(name)
+                );
+            }
+            other => panic!(
+                "forwarded export {:?} must be classified as a Forward, got {:?}",
+                NameOf(name),
+                other
+            ),
+        }
+    }
     serial_println!(
-        "  experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase {:#x}; export table declares {:?} with {} name(s) (NyrqisBuild, NyrqisMode), all inside .text (+0x1000..+0x1030) -- OK, a second image with its own export directory for the module table to serve",
+        "  experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase {:#x}; export table declares {:?} with {} name(s) (two functions, two forwarded exports), the functions inside .text (+0x1000..+0x1030) -- OK, a second image whose EAT the module table serves, forwarders included",
         win32::SECOND_IMAGE_BASE,
         nyr_declared,
         nyr_exports.name_count()
@@ -1042,8 +1102,10 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // "no such module" are different answers and must not share a code), each
     // way a registration can be unusable, a duplicate name, the cap, every one of
     // the provider's exports BY NAME, an export the module does not have, the
-    // same name in another case, both ends of the export-ordinal range, an
-    // unregistered base, and a NULL name. Only then does the client ask, so whatever it gets back is an
+    // same name in another case, both ends of the export-ordinal range, the
+    // forwarded exports of both kinds (one that lands in the target module, one
+    // whose target export is absent), an unregistered base, and a NULL name.
+    // Only then does the client ask, so whatever it gets back is an
     // answer the kernel has already checked from the other side.
     let dll_name = write_slot_string(0x3E0, b"kernel32.dll");
     let dll_name_upper = write_slot_string(0x3F0, b"KERNEL32.DLL");
@@ -1057,6 +1119,13 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     let tick_name = write_slot_string(0x480, b"GetTickCount");
     let build_name = write_slot_string(0x4A0, b"NyrqisBuild");
     let mode_name = write_slot_string(0x4C0, b"NyrqisMode");
+    // The second provider's two FORWARDED export names. They sit ABOVE the
+    // twelve kernel32 names the loop below writes at 0x500, 0x520, ... 0x660 --
+    // the first placement at 0x660 was exactly the twelfth slot, so the loop
+    // overwrote "NyrqisTick" with "WriteFile" before the probe ran and the
+    // surface correctly refused a name nyrqis.dll does not export.
+    let fwd_tick_name = write_slot_string(0x680, b"NyrqisTick");
+    let fwd_ghost_name = write_slot_string(0x6A0, b"NyrqisGhost");
 
     assert_eq!(
         win32::module_count(),
@@ -1302,9 +1371,42 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     );
     expect_refusal(
         11,
-        [win32::SECOND_IMAGE_BASE, EXPECTED_NYRQIS_ORDINAL_BASE as u64 + 2, 0, 0, 0],
+        [
+            win32::SECOND_IMAGE_BASE,
+            EXPECTED_NYRQIS_ORDINAL_BASE as u64 + 4,
+            0,
+            0,
+            0,
+        ],
         from_text,
         win32::Win32Error::ProcNotFound,
+    );
+    // The FORWARDED exports. Asked for `NyrqisTick` -- whose EAT slot is the
+    // string `kernel32.dll.GetTickCount`, not code -- the surface must answer
+    // the TARGET row's real GetTickCount address, the very value kernel32's own
+    // row returns, by name and by ordinal 12 (the forwarder's own ordinal).
+    // `NyrqisGhost` names an export kernel32 does not have, so the same chase
+    // must end in `ProcNotFound` rather than in either image.
+    assert_eq!(
+        win32::dispatch(11, [win32::SECOND_IMAGE_BASE, fwd_tick_name, 0, 0, 0], from_text),
+        Ok(win32::IMAGE_BASE + expected_rva(b"GetTickCount")),
+        "a forwarded export must answer the TARGET module's real address"
+    );
+    assert_eq!(
+        win32::dispatch(11, [win32::SECOND_IMAGE_BASE, 12, 0, 0, 0], from_text),
+        Ok(win32::IMAGE_BASE + expected_rva(b"GetTickCount")),
+        "the ordinal form of a forwarder must chase the same way its name does"
+    );
+    expect_refusal(
+        11,
+        [win32::SECOND_IMAGE_BASE, fwd_ghost_name, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ProcNotFound,
+    );
+    serial_println!(
+        "  experimental win32-demo: forwarded exports -- nyrqis.dll's NyrqisTick (a forwarder to kernel32.dll.GetTickCount) answered {:#x}, the very address kernel32.dll's own row gives GetTickCount, BY NAME and BY ORDINAL 12; NyrqisGhost (a forwarder to kernel32.dll.NoSuchExport) answered ProcNotFound with ERROR_PROC_NOT_FOUND ({}) because the target module has no such export -- OK, a forwarder is chased through the module table into the target row's own export directory, not answered out of the forwarder's image",
+        win32::IMAGE_BASE + expected_rva(b"GetTickCount"),
+        win32::ERROR_PROC_NOT_FOUND
     );
     serial_println!(
         "  experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing and a named GetModuleHandleA as ModuleNotFound; five unusable rows (empty name, non-text name, zero base, zero image, an image too small for the exports it names) were refused as ModuleInstallInvalid and published nothing; kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows, both spellings of kernel32.dll's name answered {:#x} and nyrqis.dll answered its own {:#x}, a duplicate and a fourth row were refused (ModuleInstallInvalid, ModuleTableFull at {} rows), all {} kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories ({}+{}), a lowercase export name and the client's exportless image answered ProcNotFound, kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module), an unregistered base ModuleNotLoaded, a NULL name NameInvalid, and the ORDINAL form answered from the same directories -- nyrqis.dll's declared OrdinalBase {} made its first two exports ordinals {} and {} (both answered the addresses their NAMES did), kernel32.dll's first slot answered ordinal 1 under the ordinary base 1, and ordinals {} and {} (below that base and past its last slot) answered ProcNotFound rather than an index guess -- OK, GetProcAddress answers PER MODULE from a module table the loader built and then certified",
@@ -1318,7 +1420,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         EXPECTED_NYRQIS_ORDINAL_BASE,
         EXPECTED_NYRQIS_ORDINAL_BASE + 1,
         EXPECTED_NYRQIS_ORDINAL_BASE - 1,
-        EXPECTED_NYRQIS_ORDINAL_BASE + 2
+        EXPECTED_NYRQIS_ORDINAL_BASE + 4
     );
 
     // No teardown for this demo (see teardown_demo): the space stays owned by
@@ -1381,6 +1483,13 @@ pub unsafe fn on_trap() -> ! {
         (slot(SLOT_ORD_MODE), slot(SLOT_ORD_SAME), slot(SLOT_ORD_MODE_VALUE));
     let (ord_low_none, ord_low_err) = (slot(SLOT_ORD_LOW_NONE), slot(SLOT_ORD_LOW_ERR));
     let (ord_high_none, ord_high_err) = (slot(SLOT_ORD_HIGH_NONE), slot(SLOT_ORD_HIGH_ERR));
+    let (fwd_tick, fwd_same, fwd_tick_value) = (
+        slot(SLOT_FWD_TICK),
+        slot(SLOT_FWD_SAME),
+        slot(SLOT_FWD_TICK_VALUE),
+    );
+    let (fwd_ghost_none, fwd_ghost_err) =
+        (slot(SLOT_FWD_GHOST_NONE), slot(SLOT_FWD_GHOST_ERR));
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -1479,10 +1588,23 @@ pub unsafe fn on_trap() -> ! {
         && ord_low_err == win32::ERROR_PROC_NOT_FOUND as u64
         && ord_high_none == 0
         && ord_high_err == win32::ERROR_PROC_NOT_FOUND as u64;
+    // The FORWARDED export, from ring 3: `NyrqisTick` names
+    // kernel32.dll.GetTickCount, so its answer must be the very address
+    // kernel32's own row gave GetTickCount (not a value inside nyrqis.dll),
+    // and the client must be able to CALL through it -- the address is a
+    // kernel32 stub, so the call traps from kernel32's .text. `NyrqisGhost`
+    // names an export kernel32 does not have and must fail like any absent
+    // export. The ghost probe is why EXPECTED_REFUSALS rose from 9 to 10.
+    let forwarders_ok = fwd_tick == win32::IMAGE_BASE + expected_rva(b"GetTickCount")
+        && fwd_same == 1
+        && fwd_tick_value >= tick1
+        && fwd_ghost_none == 0
+        && fwd_ghost_err == win32::ERROR_PROC_NOT_FOUND as u64;
     let ok = startup_ok
         && bindings_ok
         && modules_ok
         && ordinals_ok
+        && forwarders_ok
         && console_ok
         && hello_ok
         && bytes_ok
@@ -1499,7 +1621,7 @@ pub unsafe fn on_trap() -> ! {
     // then names its own cause in the transcript instead of asking the next
     // reader to re-derive it from a passing-looking line.
     serial_println!(
-        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={} modules={} ordinals={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
+        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={} modules={} ordinals={} forwarders={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
         console_ok,
         hello_ok,
         bytes_ok,
@@ -1516,6 +1638,7 @@ pub unsafe fn on_trap() -> ! {
         bindings_ok,
         modules_ok,
         ordinals_ok,
+        forwarders_ok,
         file1,
         file2,
         file3,
@@ -1534,7 +1657,7 @@ pub unsafe fn on_trap() -> ! {
         r6
     );
     serial_println!(
-        "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; GetModuleHandleA(\"kernel32.dll\") answered the provider's own base {:#x} in either case, and GetProcAddress named GetTickCount at {:#x} -- the very address the loader bound into the IAT ({}) -- which the client then CALLED through, reading {} (>= {}); a second provider, nyrqis.dll, answered its own row's base {:#x} (different from kernel32's), and its NyrqisBuild and NyrqisMode exports resolved there at {:#x} and {:#x}, which the client CALLED through, reading {} and {}; kernel32.dll asked for NyrqisBuild answered {:#x} with ERROR_PROC_NOT_FOUND ({}) and nyrqis.dll asked for GetTickCount answered {:#x} the same ({}); asked in Windows' ordinal form, the second provider's base-{} ordinal {} answered {:#x} -- the same address its NAME did ({}) -- which the client CALLED through, reading {}; ordinals {} and {} (below the base, past the last slot) answered {:#x} and {:#x} with ERROR_PROC_NOT_FOUND ({}) and ({}); a module that is not loaded answered {:#x} with ERROR_MOD_NOT_FOUND ({}) and a name that module does not export answered {:#x} with ERROR_PROC_NOT_FOUND ({}); WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, and its two cross-module probes, and its two out-of-range ordinal probes) -- {}",
+        "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; GetModuleHandleA(\"kernel32.dll\") answered the provider's own base {:#x} in either case, and GetProcAddress named GetTickCount at {:#x} -- the very address the loader bound into the IAT ({}) -- which the client then CALLED through, reading {} (>= {}); a second provider, nyrqis.dll, answered its own row's base {:#x} (different from kernel32's), and its NyrqisBuild and NyrqisMode exports resolved there at {:#x} and {:#x}, which the client CALLED through, reading {} and {}; kernel32.dll asked for NyrqisBuild answered {:#x} with ERROR_PROC_NOT_FOUND ({}) and nyrqis.dll asked for GetTickCount answered {:#x} the same ({}); asked in Windows' ordinal form, the second provider's base-{} ordinal {} answered {:#x} -- the same address its NAME did ({}) -- which the client CALLED through, reading {}; ordinals {} and {} (below the base, past the last slot) answered {:#x} and {:#x} with ERROR_PROC_NOT_FOUND ({}) and ({}); its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered {:#x} BY NAME and BY ORDINAL 12 -- the same address kernel32.dll's own row gave GetTickCount ({}) -- which the client CALLED through, reading {}; a forwarder to an export kernel32.dll does not have answered {:#x} with ERROR_PROC_NOT_FOUND ({}); a module that is not loaded answered {:#x} with ERROR_MOD_NOT_FOUND ({}) and a name that module does not export answered {:#x} with ERROR_PROC_NOT_FOUND ({}); WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, its two cross-module probes, its two out-of-range ordinal probes, and its forwarder-to-an-absent-export probe) -- {}",
         cmdline,
         cmdline_ok,
         module,
@@ -1559,11 +1682,16 @@ pub unsafe fn on_trap() -> ! {
         ord_same,
         ord_mode_value,
         EXPECTED_NYRQIS_ORDINAL_BASE - 1,
-        EXPECTED_NYRQIS_ORDINAL_BASE + 2,
+        EXPECTED_NYRQIS_ORDINAL_BASE + 4,
         ord_low_none,
         ord_high_none,
         ord_low_err,
         ord_high_err,
+        fwd_tick,
+        fwd_same,
+        fwd_tick_value,
+        fwd_ghost_none,
+        fwd_ghost_err,
         named_none,
         named_none_err,
         proc_none,
@@ -1593,7 +1721,7 @@ pub unsafe fn on_trap() -> ! {
         win32_fs::open_count(),
         win32::refusals(),
         if ok {
-            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll and a second provider, nyrqis.dll, by name AND by Windows' ordinal form (the second provider's declared OrdinalBase 10 making its exports ordinals 10 and 11, never bare indices), bound GetTickCount through GetProcAddress out of each module's own export directory (every name resolving only in the row that exports it) and called twelve kernel32 exports plus two nyrqis exports through real PE32+ DLLs, which the kernel performed in ring 0 for the kernel32 half against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
+            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll and a second provider, nyrqis.dll, by name AND by Windows' ordinal form (the second provider's declared OrdinalBase 10 making its exports ordinals 10 and 11, never bare indices), bound GetTickCount through GetProcAddress out of each module's own export directory (every name resolving only in the row that exports it), chased a forwarded export into the module it names (nyrqis.dll's NyrqisTick answering kernel32.dll's real GetTickCount, by name and by ordinal), and called twelve kernel32 exports plus two nyrqis exports through real PE32+ DLLs, which the kernel performed in ring 0 for the kernel32 half against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
         } else {
             "MISMATCH"
         }

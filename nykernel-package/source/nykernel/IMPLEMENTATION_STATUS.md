@@ -7845,3 +7845,98 @@ It adds no ordinal cache and no second name list: the answer is still the mapped
 file's EAT. The startup pair, the error table, the TEB limit and every
 v0/v0.1/v0.2/v0.3/v0.4/v0.5/v0.6 limit stand unchanged.
 
+## The Win32 API surface v0.8: GetProcAddress chases forwarded exports (2026-11-22)
+
+**The question this tranche answers.** v0.7 closed the gap between the name table
+and the EAT, but both forms still stopped at an EAT slot whose value lies INSIDE
+the export directory. That is a forwarded-export STRING (`other.dll.other_fn`),
+and Windows' `GetProcAddress` follows it into the named module's own export
+directory rather than failing. The module table already IS the list of loaded
+modules, so answering `ERROR_PROC_NOT_FOUND` for such a slot was a missing
+chase, not a fact about the file. This tranche adds it: a forwarder's answer is
+the TARGET module's real address, and only a chain that cannot land stays
+`ERROR_PROC_NOT_FOUND`.
+
+**Why the fixture needs a real forwarder.** A proof cannot be built from a
+string the demo invents: the linker must write the string into the EAT. So
+`userprog/nyrqis.def` now declares two forwarded exports beside its two
+functions: `NyrqisTick = kernel32.dll.GetTickCount @12` and
+`NyrqisGhost = kernel32.dll.NoSuchExport @13`. The first names a real export of
+the OTHER provider, so its answer must be kernel32's own code -- an address
+outside `nyrqis.dll`; the second names an export kernel32 does not have, so the
+same chase must end in `ERROR_PROC_NOT_FOUND`. With four contiguous EAT slots
+(ordinals 10..13), the "past the last slot" probe moves from 12 to 14, and 12
+becomes the forwarder's own ordinal: the boot asks it as a POSITIVE probe, which
+proves the ordinal form chases through the same table.
+
+**What changed.** `pe::DllExportTable::resolve_export` classifies one EAT slot as
+`ExportAnswer::Address` or `ExportAnswer::Forward { dll, symbol }`; `lookup` and
+`lookup_ordinal` are now built on it, so the name form and the ordinal form
+share ONE classification instead of each re-deriving "is this RVA inside the
+directory". `pe::DllRegistry::chase` uses the same method, so the import walk
+and the module table cannot disagree about what a forwarder is.
+`win32::resolve_proc` performs the row-to-row walk: it matches the forwarder's
+module with the same case-insensitive rule every module question uses, retries
+`<name>.dll` when the string omits the extension (forwarder strings
+conventionally do), caps the chain at `FORWARDER_DEPTH_LIMIT` (8, the import
+walk's own cap), and maps every failure -- absent target module, absent target
+export, malformed string, a chain that only forwards -- to `ERROR_PROC_NOT_FOUND`,
+Windows' single answer for an export that cannot be produced. The three-row
+table, its install-time certification, and every error code are unchanged (no
+new `Win32Error` variant, still a 27-row code table).
+
+**A collision the first boot caught.** The kernel-side forwarder probes write
+their names into the client report page. The first placement put `NyrqisTick` at
+`0x660` -- exactly the twelfth export-name slot the twelve-kernel32-name loop
+writes -- so the loop overwrote it with `WriteFile` before the probe and the
+surface correctly refused a name `nyrqis.dll` does not export. The boot failed
+on the new assertion rather than passing for the wrong reason. The forwarder
+names now sit at `0x680`/`0x6A0`, above the loop and below the client's fields
+at `0x700`, with the reason recorded in the fixture.
+
+**Pins moved, deliberately, and the build refuses the drift first.** `build.sh`
+now pins both forwarder strings out of `objdump -p`
+(`kernel32.dll.GetTickCount` and `kernel32.dll.NoSuchExport`) beside the existing
+`Ordinal Base 10` pin, so a linker that stopped writing forwarders fails the
+build before a boot can weaken. `nyrqis.dll`'s `.text` stays
+`0000190100001000 00000030`; its `.edata` grows from `0x5e` to `0xbd` (the two
+strings). `kernel32.dll` is untouched. The client's `.text` grows from `0x758`
+to `0x7e8`; its `.idata` stays `0x1fc` (twelve imports) and `SizeOfImage` stays
+`0x4000`.
+
+**Proved from both sides in the same boot.** Kernel-side, the second-provider
+pin asserts that each forwarder's `lookup` answers nothing out of its OWN image
+and that `resolve_export` names exactly `kernel32.dll` +
+`GetTickCount`/`NoSuchExport`; the surface then answers `NyrqisTick` with
+kernel32's own `GetTickCount` address, BY NAME and BY ORDINAL 12, and refuses
+`NyrqisGhost` with `ProcNotFound`. From ring 3 the client asks for `NyrqisTick`,
+compares the answer with the address kernel32's row gave `GetTickCount`, CALLS
+through it and reads a live tick, then asks for `NyrqisGhost` and gets NULL with
+`ERROR_PROC_NOT_FOUND`.
+
+```
+experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase 0x190100000000; export table declares "nyrqis.dll" with 4 name(s) (two functions, two forwarded exports), the functions inside .text (+0x1000..+0x1030) -- OK, a second image whose EAT the module table serves, forwarders included
+experimental win32-demo: forwarded exports -- nyrqis.dll's NyrqisTick (a forwarder to kernel32.dll.GetTickCount) answered 0x19000000104d, the very address kernel32.dll's own row gives GetTickCount, BY NAME and BY ORDINAL 12; NyrqisGhost (a forwarder to kernel32.dll.NoSuchExport) answered ProcNotFound with ERROR_PROC_NOT_FOUND (127) because the target module has no such export -- OK, a forwarder is chased through the module table into the target row's own export directory, not answered out of the forwarder's image
+experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true; handles f1=0x100 f2=0x100 f3=0x100 f4=0x100 f5=0xffffffffffffffff f6=0xffffffffffffffff; closes 1 1 1 1; reads 1/1/1/1/1/0
+experimental win32-demo self-test: ... ordinals 9 and 14 (below the base, past the last slot) answered 0x0 and 0x0 with ERROR_PROC_NOT_FOUND (127) and (127); its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered 0x19000000104d BY NAME and BY ORDINAL 12 -- the same address kernel32.dll's own row gave GetTickCount (1) -- which the client CALLED through, reading 230340; a forwarder to an export kernel32.dll does not have answered 0x0 with ERROR_PROC_NOT_FOUND (127); ... refusals 10 (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, its two cross-module probes, its two out-of-range ordinal probes, and its forwarder-to-an-absent-export probe) -- OK, a real Windows-format console program ...
+```
+
+The gate pins the `4 name(s) ... forwarders included` load line, the full
+forwarder line above, `forwarders=true` on the checks line, the ring-3
+`NyrqisTick ... BY NAME and BY ORDINAL 12` clause and the ghost's
+`ERROR_PROC_NOT_FOUND (127)`, and the updated 9/14 ordinal clause. The client's
+run raises exactly ten refusals: two `File(ClosedHandle)`, one
+`UnsupportedAccess`, one `ModuleNotFound`, and six `ProcNotFound` -- the
+absent-export probe, the two cross-module probes, the two out-of-range ordinal
+probes, and the forwarder whose target export is absent.
+
+**Limits.** The chase is bounded by the same three-row table as v0.5-v0.7: no
+`LoadLibrary`/`FreeLibrary`, so a forwarder can only land in a module the loader
+already registered; bare module names for the handle argument; eight forwarder
+hops; and Windows' one failure code for every way the chase can fail. A
+forwarder string is read and split by the provider's own directory, but it is
+not validated at install time -- `GetProcAddress` reports a malformed one as
+`ERROR_PROC_NOT_FOUND`, while the import walk keeps its typed
+`MalformedForwarder`. The startup pair, the error table, the TEB limit and every
+v0/v0.1/v0.2/v0.3/v0.4/v0.5/v0.6/v0.7 limit stand unchanged.
+

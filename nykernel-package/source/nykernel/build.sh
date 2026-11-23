@@ -201,6 +201,7 @@ _win32_text=$(objdump -h userprog/kernel32.dll | awk '$2==".text"{print $4" "$3}
 _win32_data=$(objdump -h userprog/kernel32.dll | awk '$2==".data"{print $4" "$3}')
 _win32_nyr=$(objdump -h userprog/nyrqis.dll | awk '$2==".text"{print $4" "$3}')
 _win32_nyr_ordbase=$(objdump -p userprog/nyrqis.dll | awk '/Export Address Table -- Ordinal Base/{print $NF}')
+_win32_nyr_fwd=$(objdump -p userprog/nyrqis.dll | awk '/Forwarder RVA/{print $NF}' | sort | tr '\n' ' ')
 _win32_appbase=$(objdump -p userprog/win32_console.exe | awk '/ImageBase/{print $2}')
 _win32_appsize=$(objdump -p userprog/win32_console.exe | awk '/SizeOfImage/{print $2}')
 if [[ "$_win32_text" != "0000190000001000 000001b0" ]]; then
@@ -219,6 +220,11 @@ fi
 # the linker default 1/2, so a DEF file this ld stopped honoring fails HERE.
 if [[ "$_win32_nyr_ordbase" != "10" ]]; then
     echo "FAIL: nyrqis.dll export OrdinalBase drifted ($_win32_nyr_ordbase); update userprog/nyrqis.def and experimental::win32_demo's EXPECTED_NYRQIS_ORDINAL_BASE" >&2; exit 1
+fi
+# The forwarder strings are pins too: the module table's chase proof is only
+# about a REAL forwarded export while ld writes these two strings into the EAT.
+if [[ "$_win32_nyr_fwd" != "kernel32.dll.GetTickCount kernel32.dll.NoSuchExport " ]]; then
+    echo "FAIL: nyrqis.dll's forwarded exports drifted ($_win32_nyr_fwd); update userprog/nyrqis.def and experimental::win32_demo's EXPECTED_NYRQIS_FORWARDERS" >&2; exit 1
 fi
 if [[ "$_win32_appbase" != "00001a0000000000" || "$_win32_appsize" != "00004000" ]]; then
     echo "FAIL: win32_console.exe layout drifted (base $_win32_appbase, image $_win32_appsize); update experimental::win32_demo's pins" >&2; exit 1

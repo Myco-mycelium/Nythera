@@ -1814,6 +1814,16 @@ enum RawExport {
     Forwarder(u64),
 }
 
+/// What [`DllExportTable::resolve_export`] answers for one question: an
+/// absolute runtime address inside the image the table was parsed from, or a
+/// forwarded-export STRING already split into the module and export it names.
+/// The caller supplies the module list the `Forward` half is resolved against.
+#[derive(Debug)]
+pub enum ExportAnswer {
+    Address(u64),
+    Forward { dll: NameBuf, symbol: NameBuf },
+}
+
 /// How an EAT slot is located: by symbol name (the named-import path)
 /// or by ordinal (the `IMAGE_ORDINAL_FLAG64` import path). One chase
 /// loop serves both.
@@ -1885,6 +1895,17 @@ fn split_forwarder(s: &[u8]) -> Result<(&[u8], &[u8]), PeError> {
 /// ordinal IS the symbol's identity on this path; the label exists so
 /// every boot can state the fact the named path states (no `fmt`
 /// machinery, no heap).
+/// A [`NameBuf`] from a validated byte slice: the forwarder-string reader
+/// caps every name at 64 bytes before splitting it, so the copy is complete by
+/// construction rather than truncated here.
+fn namebuf(bytes: &[u8]) -> NameBuf {
+    let mut out = NameBuf::empty();
+    let n = bytes.len().min(64);
+    out.bytes[..n].copy_from_slice(&bytes[..n]);
+    out.len = n;
+    out
+}
+
 fn ordinal_label(ordinal: u64) -> NameBuf {
     let mut out = NameBuf::empty();
     out.bytes[0] = b'o';
@@ -1913,10 +1934,13 @@ fn ordinal_label(ordinal: u64) -> NameBuf {
 // ---------------------------------------------------------------------
 
 /// A provider DLL's `IMAGE_DIRECTORY_ENTRY_EXPORT`, parsed once at load
-/// time; `lookup` and `lookup_ordinal` are `GetProcAddress` minus
-/// forwarding support (typed, below). Reads the provider's MAPPED
-/// image -- export entries are `RVA`s, so an export's absolute runtime
-/// address is `load_base + rva` for any load base.
+/// time; `lookup` and `lookup_ordinal` answer plain function addresses,
+/// and [`Self::resolve_export`] additionally classifies a
+/// forwarded-export STRING so a caller that knows which modules are
+/// loaded (the import walk's [`DllRegistry`], the Win32 module table)
+/// can follow it. Reads the provider's MAPPED image -- export entries
+/// are `RVA`s, so an export's absolute runtime address is
+/// `load_base + rva` for any load base.
 #[derive(Clone, Copy)]
 pub struct DllExportTable {
     load_base: u64,
@@ -2056,15 +2080,18 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
     /// is absent, the name's stored ordinal exceeds the EAT bounds, its
     /// EAT slot is null (a null slot is UNAVAILABLE -- GetProcAddress
     /// semantics, never `load_base` itself), or the entry is a
-    /// FORWARDED export (whose resolution is a registry question; use
-    /// `DllRegistry::resolve_in`). Absent-or-address, never a guessed
-    /// answer.
+    /// FORWARDED export (whose resolution needs the list of loaded
+    /// modules; [`Self::resolve_export`] classifies it, and
+    /// [`DllRegistry::resolve_in`] or the Win32 module table chases it).
+    /// Absent-or-address, never a guessed answer.
     ///
     /// # Safety
     /// image must be mapped.
     pub unsafe fn lookup(&self, name: &[u8]) -> Option<u64> {
-        match self.lookup_name_raw(name) {
-            Ok(Some(RawExport::Function(rva))) => Some(self.load_base.wrapping_add(rva)),
+        match self.resolve_export(Some(name), None) {
+            Ok(Some(ExportAnswer::Address(addr))) => Some(addr),
+            // Absent, null slot, a forwarder this table cannot answer alone,
+            // or a malformed read: all "this table names no address".
             _ => None,
         }
     }
@@ -2102,18 +2129,11 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
     /// # Safety
     /// image must be mapped.
     pub unsafe fn lookup_ordinal(&self, ordinal: u64) -> Option<u64> {
-        if self.is_empty() || ordinal == 0 {
-            return None;
-        }
-        let base = self.ordinal_base as u64;
-        if ordinal < base {
-            return None; // below the declared base: the file names no such ordinal
-        }
-        match self.entry_raw(ordinal - base) {
-            Ok(Some(RawExport::Function(rva))) => Some(self.load_base.wrapping_add(rva)),
-            // Null slot, past-end index (entry_raw's own bound), forwarder,
-            // or a malformed read: all "this table names no address for that
-            // ordinal", never an address to guess at.
+        match self.resolve_export(None, Some(ordinal)) {
+            Ok(Some(ExportAnswer::Address(addr))) => Some(addr),
+            // Null slot, past-end index, forwarder, or a malformed read: all
+            // "this table names no address for that ordinal", never an
+            // address to guess at.
             _ => None,
         }
     }
@@ -2127,6 +2147,78 @@ pub unsafe fn parse(load_base: u64, max_rva: u64) -> Result<DllExportTable, PeEr
             0
         } else {
             self.ordinal_base
+        }
+    }
+
+    /// One `GetProcAddress` question -- by name, or by Windows' ordinal
+    /// form -- answered as the PE spec defines it: either a plain address
+    /// inside this image, or the two halves of a forwarded-export STRING.
+    ///
+    /// # Why the classification is separate from the chase
+    ///
+    /// An EAT slot inside the export directory's own span is not code; it is
+    /// a `"other.dll.other_fn"` string (the shape `GetProcAddress`'s docs
+    /// draw). Whether that string CAN be resolved depends on which modules are
+    /// loaded, which a table parsed from one image cannot know. So this method
+    /// answers what the FILE says -- `Address` or `Forward` -- and the caller
+    /// that owns the module list ([`DllRegistry`] for an import walk, the Win32
+    /// module table for `GetProcAddress`) performs the next hop. Keeping the
+    /// split here means both chases classify a slot the same way instead of
+    /// each re-deriving "is this RVA inside the directory".
+    ///
+    /// Absent is absent, never a guess: a name the name table does not carry,
+    /// an ordinal of 0, one below the declared `OrdinalBase`, one past
+    /// `OrdinalBase + NumberOfFunctions`, a null slot, and the empty table all
+    /// answer `Ok(None)`. A malformed forwarder string (no component dot, a
+    /// dot at an end, an unterminated or overlong string) is a typed
+    /// `MalformedForwarder`/`MalformedImageDirectory` refusal -- the caller
+    /// decides how its own API reports that, but this layer never fabricates
+    /// an address for it.
+    ///
+    /// # Safety
+    /// image must be mapped.
+    pub unsafe fn resolve_export(
+        &self,
+        name: Option<&[u8]>,
+        ordinal: Option<u64>,
+    ) -> Result<Option<ExportAnswer>, PeError> {
+        let raw = if let Some(n) = name {
+            if ordinal.is_some() {
+                return Err(PeError::MalformedImageDirectory(
+                    "export question names both a name and an ordinal",
+                ));
+            }
+            self.lookup_name_raw(n)?
+        } else {
+            let o = ordinal.ok_or(PeError::MalformedImageDirectory(
+                "export question names neither a name nor an ordinal",
+            ))?;
+            if o == 0 {
+                return Ok(None); // ordinal 0 is not a legal export ordinal
+            }
+            let base = self.ordinal_base as u64;
+            if o < base {
+                return Ok(None); // below the declared base: the file names no such ordinal
+            }
+            self.entry_raw(o - base)?
+        };
+        match raw {
+            None => Ok(None),
+            Some(RawExport::Function(rva)) => {
+                Ok(Some(ExportAnswer::Address(self.load_base.wrapping_add(rva))))
+            }
+            Some(RawExport::Forwarder(s_rva)) => {
+                let s = read_forwarder_string(
+                    self.load_base,
+                    s_rva,
+                    self.dir_rva as u64 + self.dir_size as u64,
+                )?;
+                let (dll, symbol) = split_forwarder(s.as_slice())?;
+                Ok(Some(ExportAnswer::Forward {
+                    dll: namebuf(dll),
+                    symbol: namebuf(symbol),
+                }))
+            }
         }
     }
 
@@ -2314,44 +2406,29 @@ impl DllRegistry {
         // entry is a chain that only ever forwards again, refused.
         let mut depth = 0u8;
         loop {
-            let raw = match target {
-                RawTarget::Name(ref nb) => table.lookup_name_raw(nb.as_slice())?,
-                RawTarget::Ordinal(o) => {
-                    // An import-thunk ordinal names EAT index
-                    // `ordinal - OrdinalBase` (the directory's own
-                    // declared base -- parsed, never assumed).
-                    let base = table.ordinal_base as u64;
-                    if o < base {
-                        return Ok(None); // below the base: absent, the same not-guessed rule
-                    }
-                    table.entry_raw(o - base)?
+            // Both shapes go through the table's own classification: an
+            // ordinal is turned into `ordinal - OrdinalBase` there (the
+            // directory's declared base -- parsed, never assumed), and a
+            // forwarder string is split into its two validated halves.
+            let answer = match target {
+                RawTarget::Name(ref nb) => {
+                    table.resolve_export(Some(nb.as_slice()), None)?
                 }
+                RawTarget::Ordinal(o) => table.resolve_export(None, Some(o))?,
             };
-            match raw {
+            match answer {
                 None => return Ok(None),
-                Some(RawExport::Function(rva)) => {
-                    return Ok(Some(table.load_base.wrapping_add(rva)));
-                }
-                Some(RawExport::Forwarder(s_rva)) => {
+                Some(ExportAnswer::Address(addr)) => return Ok(Some(addr)),
+                Some(ExportAnswer::Forward { dll, symbol }) => {
                     if depth >= 8 {
                         return Err(PeError::ForwarderDepthExceeded);
                     }
-                    let s = read_forwarder_string(
-                        table.load_base,
-                        s_rva,
-                        table.dir_rva as u64 + table.dir_size as u64,
-                    )?;
-                    let (dll, sym) = split_forwarder(s.as_slice())?;
-                    let next = match self.find(dll) {
+                    let next = match self.find(dll.as_slice()) {
                         Some(t) => t,
                         None => return Err(PeError::MissingDllImport),
                     };
-                    let mut nb = NameBuf::empty();
-                    let sym_len = sym.len().min(64);
-                    nb.bytes[..sym_len].copy_from_slice(&sym[..sym_len]);
-                    nb.len = sym_len;
                     table = next;
-                    target = RawTarget::Name(nb);
+                    target = RawTarget::Name(symbol);
                     depth += 1;
                 }
             }

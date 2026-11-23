@@ -15,7 +15,19 @@
 ; ld reads this file as an input beside the object; the ordinals are also the
 ; pin `build.sh` checks out of the linked DLL (`Export Address Table --
 ; Ordinal Base 10`), so a linker that ignored the base would fail the build.
+;
+; The last two entries are FORWARDED exports, not code: `= module.export` makes
+; ld write the string into the export directory instead of an RVA into .text.
+; `NyrqisTick` names kernel32.dll's own GetTickCount, so `GetProcAddress` on it
+; must answer THAT module's real address (and the client can call through it);
+; `NyrqisGhost` names an export kernel32.dll does not have, so the same chase
+; must end in ERROR_PROC_NOT_FOUND rather than in this image. They are ordinals
+; 12 and 13, which keeps the EAT contiguous and moves the "past the last slot"
+; probe from 12 to 14. `build.sh` pins both forwarder strings out of
+; `objdump -p`, so a linker that stopped writing forwarders fails there first.
 LIBRARY nyrqis.dll
 EXPORTS
 NyrqisBuild @10
 NyrqisMode @11
+NyrqisTick = kernel32.dll.GetTickCount @12
+NyrqisGhost = kernel32.dll.NoSuchExport @13
