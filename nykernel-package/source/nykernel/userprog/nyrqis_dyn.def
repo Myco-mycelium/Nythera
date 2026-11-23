@@ -1,0 +1,24 @@
+; nyrqis_dyn.def -- the export table of the module that exists ONLY at
+; runtime: `nyrqis_dyn.dll` is a volume file, not a kernel image, and the
+; first thing that ever loads it is the client's own `LoadLibraryA` call.
+;
+; Why a third provider is a file on the volume rather than another embedded
+; image: the previous tranche proved that the module table chases a forwarded
+; export across rows. Every row in that proof was installed before ring 3 ran,
+; so a table built only by the loader would look identical to a table that
+; grew. This DLL is the falsifiable case: `nyrqis.dll` forwards `NyrqisDyn`
+; to `nyrqis_dyn.dll.NyrqisDynValue`, and until the client calls
+; `LoadLibraryA("C:\nyrqis\nyrqis_dyn.dll")` that module is not a row -- so
+; the same `GetProcAddress` must answer ERROR_PROC_NOT_FOUND, then the
+; target's real address, then ERROR_PROC_NOT_FOUND again after
+; `FreeLibrary`. Nothing about that sequence is a loader-time fact.
+;
+; `OrdinalBase 1` is the ordinary default here (unlike `nyrqis.def`'s 10):
+; nothing in this tranche asks for an ordinal of this module, and declaring a
+; second unusual base would suggest the number mattered to the proof.
+; `build.sh` pins the linked `.text` window and the exported name, and the
+; boot parses this table out of the mapped image exactly as it does for the
+; two embedded providers.
+LIBRARY nyrqis_dyn.dll
+EXPORTS
+NyrqisDynValue @1

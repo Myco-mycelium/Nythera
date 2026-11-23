@@ -12,12 +12,15 @@
 //!
 //! # What this volume is, precisely
 //!
-//! Three files on `C:`, read-only, loaded from the kernel image itself
+//! Four files on `C:`, read-only, loaded from the kernel image itself
 //! ([`FILES`]) -- there is no disk, no block device, no cache and no writer.
 //! One of them is text, one is deliberately *not* text (it contains `0x00`,
 //! `0x80` and `0xfe`), and one is empty, because a byte-oriented `ReadFile`
 //! and EOF-at-zero-bytes are the two behaviours a text-only table would never
-//! exercise.
+//! exercise. The fourth is a real PE32+ DLL: it exists here so that a
+//! `LoadLibraryA` can be given a NAME a loader resolves to BYTES, which is
+//! the only shape in which "the module table grew at runtime" is a claim about
+//! a file rather than about a kernel-side table.
 //!
 //! Path rules, stated rather than assumed: a path must be fully qualified
 //! (`C:\...`), because this volume has no current directory to resolve a
@@ -62,7 +65,7 @@ pub struct File {
 
 /// The whole volume. Read-only, so this is the only copy of the contents and
 /// `ReadFile` copies out of it into the client's own buffer.
-pub const FILES: [File; 3] = [
+pub const FILES: [File; 4] = [
     File {
         path: b"C:\\nyrqis\\hello.txt",
         data: b"hello from the read-only volume\r\n",
@@ -74,6 +77,16 @@ pub const FILES: [File; 3] = [
     File {
         path: b"C:\\nyrqis\\empty.txt",
         data: b"",
+    },
+    // The runtime module. Its bytes are the linked `nyrqis_dyn.dll` -- the
+    // same image `build.sh` pins and the boot parses -- carried as FILE
+    // CONTENT rather than embedded as a kernel symbol. That distinction is
+    // the whole tranche: `win32::LoadLibraryA` finds this entry by path,
+    // hands the bytes to the loader, and the module table gains a row only
+    // because a ring-3 program asked for it.
+    File {
+        path: b"C:\\nyrqis\\nyrqis_dyn.dll",
+        data: include_bytes!("../../userprog/nyrqis_dyn.dll"),
     },
 ];
 
@@ -185,6 +198,21 @@ fn slot_of(handle: u64) -> Result<usize, FsError> {
         return Err(FsError::NotAFileHandle);
     }
     Ok(slot)
+}
+
+/// The BYTES of the volume file `path` names, for a reader that needs the
+/// whole file rather than a cursor -- today that is `LoadLibraryA`, which
+/// maps an image out of these bytes. It applies the same path rules as
+/// [`open`] and, deliberately, none of the handle bookkeeping: a loader is
+/// not a file handle, and making it consume one of [`MAX_OPEN`] slots would
+/// tie "how many files may be open" to "how many modules may be loaded".
+///
+/// A miss is [`FsError::FileNotFound`], which `LoadLibraryA` reports the way
+/// Windows does -- a NULL answer plus `ERROR_MOD_NOT_FOUND` -- while a
+/// relative path or an unknown drive stays a real refusal, because those are
+/// the caller's error rather than a module that is merely absent.
+pub fn file_bytes(path: &[u8]) -> Result<&'static [u8], FsError> {
+    lookup(path).map(|i| FILES[i].data)
 }
 
 /// Finds the volume file `path` names, applying the path rules above.

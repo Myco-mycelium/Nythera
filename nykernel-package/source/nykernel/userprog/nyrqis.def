@@ -25,9 +25,19 @@
 ; 12 and 13, which keeps the EAT contiguous and moves the "past the last slot"
 ; probe from 12 to 14. `build.sh` pins both forwarder strings out of
 ; `objdump -p`, so a linker that stopped writing forwarders fails there first.
+;
+; The third forwarder is what a RUNTIME row makes observable: `NyrqisDyn`
+; names `nyrqis_dyn.dll.NyrqisDynValue`, and that module is a file on the
+; volume that nothing loads until the ring-3 client calls LoadLibraryA. So the
+; SAME GetProcAddress question must answer ERROR_PROC_NOT_FOUND before the
+; load, the target's real address after it, and ERROR_PROC_NOT_FOUND again
+; after FreeLibrary -- three different answers from one EAT slot, decided by
+; rows that only exist while the module is loaded. It is ordinal 14, and the
+; EAT is contiguous again, so the "past the last slot" probe is 15.
 LIBRARY nyrqis.dll
 EXPORTS
 NyrqisBuild @10
 NyrqisMode @11
 NyrqisTick = kernel32.dll.GetTickCount @12
 NyrqisGhost = kernel32.dll.NoSuchExport @13
+NyrqisDyn = nyrqis_dyn.dll.NyrqisDynValue @14

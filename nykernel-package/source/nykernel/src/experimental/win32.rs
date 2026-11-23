@@ -1,10 +1,12 @@
-//! The Win32 API surface, v0: twelve `kernel32.dll` exports performed by this
+//! The Win32 API surface, v0: fourteen `kernel32.dll` exports performed by this
 //! kernel, reachable from ring 3 through a real Windows-format DLL whose
-//! bodies are trap stubs (`userprog/prog_win32_kernel32.s`).
+//! bodies are trap stubs (`userprog/prog_win32_kernel32.s`) -- including
+//! `LoadLibraryA` and `FreeLibrary`, which let the module table below grow and
+//! shrink while a program runs.
 //!
 //! # What this is, precisely
 //!
-//! The first actual Win32 API surface in this kernel -- and twelve functions
+//! The first actual Win32 API surface in this kernel -- and fourteen functions
 //! out of the tens of thousands kernel32 exposes: the four a console program
 //! needs (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`), the
 //! three that give it files (`CreateFileA`, `ReadFile`, `CloseHandle`) against
@@ -180,10 +182,49 @@
 //! install time, so an address the chase lands on is still an address from a
 //! certified image.
 //!
-//! What the table deliberately does not do: it has room for exactly three
-//! rows -- this process's own image and two providers. A fourth registration is
-//! a typed refusal ([`Win32Error::ModuleTableFull`]), not a silent overflow: a
-//! bigger table would be a claim about a loader this kernel does not have yet.
+//! # Why LoadLibraryA is what makes the table a LOADER's table
+//!
+//! Every row up to here was installed before the client's first instruction:
+//! the module table was written by this kernel's own loader code, so a table
+//! that could never grow would answer every question identically. `LoadLibraryA`
+//! makes growth observable. It takes a path, finds the FILE on the read-only
+//! volume ([`win32_fs::file_bytes`]), hands those bytes to the loader
+//! ([`install_dynamic_loader`] -- the mapping lives with the address space,
+//! which is this surface's caller, exactly where Windows splits kernel32 from
+//! the loader), and only then adds a row. `FreeLibrary` is the other half: it
+//! drops the row at reference count zero.
+//!
+//! Three consequences are the point of the tranche, and each is a question a
+//! loader-time table cannot be asked:
+//!
+//! - A FORWARDER into a module that is not loaded must fail, and start
+//!   working the moment that module is loaded. `nyrqis.dll` exports
+//!   `NyrqisDyn`, a forwarder to `nyrqis_dyn.dll.NyrqisDynValue`; that file is
+//!   on the volume and nothing loads it before ring 3 asks. The same
+//!   `GetProcAddress` question therefore answers `ERROR_PROC_NOT_FOUND`, then
+//!   the target's real address, then `ERROR_PROC_NOT_FOUND` again after
+//!   `FreeLibrary` -- from one EAT slot, decided by the set of rows.
+//! - Loading the same file twice answers the SAME base and bumps a reference
+//!   count, because `HMODULE` identity is Windows' and two rows for one image
+//!   would make `FreeLibrary`'s count meaningless. The count is per row, so
+//!   one `FreeLibrary` after two loads leaves the module loaded.
+//! - A base that is not a live row is `ERROR_INVALID_HANDLE` from
+//!   `FreeLibrary`, the same code every other unissued handle answers.
+//!
+//! What the unload does NOT do is stated rather than implied: this kernel's PE
+//! loader has no unmap, so `FreeLibrary` removes the ROW and leaves the image's
+//! pages mapped for the life of the process. A later `LoadLibraryA` of the same
+//! file therefore re-registers the image at the base it already occupies
+//! instead of failing on an already-mapped page -- the row is what comes and
+//! goes. That is a stated scope limit of the mapping layer, not a claim that a
+//! Windows unload has happened.
+//!
+//! What the table deliberately does not do: it holds [`MAX_MODULES`] rows --
+//! this process's own image, the two link-time providers, and ONE runtime
+//! module. A registration with no row left is a typed refusal
+//! ([`Win32Error::ModuleTableFull`]), not a silent overflow: a bigger table
+//! would be a claim about a loader this kernel does not have yet, and the boot
+//! proves the cap is reachable only while the dynamic row is live.
 //!
 //! # Why a refusal also returns something Windows-shaped
 //!
@@ -232,14 +273,17 @@ pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
 pub const SECOND_IMAGE_BASE: u64 = 0x1901_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
-/// `0x190000001000`, size `0x1b0` (twelve stubs, the startup pair and
-/// `GetProcAddress` last, so every earlier RVA stayed put).
+/// `0x190000001000`, size `0x1e8` (fourteen stubs: the twelve up to the
+/// startup pair, `GetProcAddress`, and the runtime pair `LoadLibraryA` and
+/// `FreeLibrary` appended last, so every earlier RVA stayed put -- the
+/// tranche that added the pair re-linked and re-checked that claim against
+/// the DLL's own EAT).
 /// Pinned, and re-checked against
 /// the loaded image's own export RVAs at boot (`win32_demo::start`): every
 /// export must fall inside this window, which is what lets [`dispatch`] accept
 /// a trap only from this DLL's code.
 pub const TEXT_RVA: u64 = 0x1000;
-pub const TEXT_SIZE: u64 = 0x1b0;
+pub const TEXT_SIZE: u64 = 0x1e8;
 
 /// `.data`, holding `nyr_call_block` (VMA `0x190000002000`, size `0x40`).
 pub const BLOCK_RVA: u64 = 0x2000;
@@ -271,6 +315,14 @@ pub const STDOUT_HANDLE: u64 = 0x0b;
 /// records [`ERROR_FILE_NOT_FOUND`]: that is the case `GetLastError` exists
 /// for, and the one the client in the boot proof actually asks about.
 pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
+
+/// Where the runtime-loaded module's OWN image goes. Its own `ImageBase`,
+/// one gigabyte past the second provider, and pinned by `build.sh` out of the
+/// linked file's section table -- the same discipline every other image here
+/// follows. The surface does not map it: the loader reports the base it used,
+/// and this constant exists so the boot can require that the loader used the
+/// address the file asked for rather than one it invented.
+pub const DYNAMIC_IMAGE_BASE: u64 = 0x1902_0000_0000;
 
 /// The value a REFUSED call returns for export `index`: the failure value of
 /// that export's own Windows return type, not of the condition that refused it.
@@ -310,6 +362,10 @@ pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
 /// code pointer, and Windows documents NULL as the failure every client tests
 /// for (`if (!pfn) ...`), so it answers 0 too -- and a client that checked
 /// `== INVALID_HANDLE_VALUE` on it would be testing the wrong prototype.
+/// `LoadLibraryA` is the fourth: `HMODULE` again, and NULL is again the
+/// documented failure (a client writes `if (!hmod)`), which is what makes a
+/// missing DLL a value to test rather than a refusal to explain. `FreeLibrary`
+/// is the fifth: `BOOL`, answering 0.
 ///
 /// This is a second table beside [`Win32Error::code`], and deliberately a
 /// different one: the code answers "why" and depends on the condition, the
@@ -338,24 +394,27 @@ pub const GENERIC_READ: u32 = 0x8000_0000;
 /// question a client asks.
 pub const MAX_MODULE_NAME: usize = 63;
 
-/// How many modules the table holds: this process's own image and the TWO
-/// providers whose exports it serves. Stated as a cap rather than "as many as
-/// asked" because a fixed static table has to be sized, and a FULL table is a
-/// typed refusal ([`Win32Error::ModuleTableFull`]) rather than an overflow --
-/// growing past this is a claim about a loader (search paths, dependency
-/// walking, refcounts) that this kernel does not have yet.
+/// How many modules the table holds: this process's own image, the TWO
+/// providers the loader registers before ring 3, and ONE module a program may
+/// load at runtime. Stated as a cap rather than "as many as asked" because a
+/// fixed static table has to be sized, and a FULL table is a typed refusal
+/// ([`Win32Error::ModuleTableFull`]) rather than an overflow -- growing past
+/// this is a claim about a loader (search paths, dependency walking, unloading)
+/// that this kernel does not have yet.
 ///
-/// # Why the cap is three and not two
+/// # Why the cap is four
 ///
-/// A second provider is what makes the per-module claim testable (see the
-/// module-table section above): with one provider, a lookup that ignored the
-/// handle would answer every question correctly. The extra row is the smallest
-/// table that can express "this name is in THAT module and not in this one",
-/// and the client image still occupies a row of its own so `GetProcAddress`
-/// against it answers `ERROR_PROC_NOT_FOUND` rather than `ERROR_MOD_NOT_FOUND`.
-/// It is a static array, so the cap is fixed at compile time and a fourth
-/// registration is refused rather than truncating a row.
-pub const MAX_MODULES: usize = 3;
+/// Three is the smallest table in which "this name is in THAT module and not
+/// in this one" is testable (the client image occupies a row of its own so
+/// `GetProcAddress` against it is `ERROR_PROC_NOT_FOUND`, not
+/// `ERROR_MOD_NOT_FOUND`; the two providers make the rows per-module). The
+/// fourth is `LoadLibraryA`'s: without a spare row the surface could only
+/// refuse a runtime load, and "the module table grows at runtime" would be a
+/// sentence rather than a boot fact. One spare row is enough for that claim
+/// and is deliberately not "a few": this table should be exactly as big as
+/// the loader's ability to fill it, and the loader can map one image on
+/// request.
+pub const MAX_MODULES: usize = 4;
 
 /// `GetProcAddress`'s documented ordinal form is `(LPCSTR)(ULONG_PTR)ordinal`,
 /// so an argument whose high word is zero names a number rather than a string.
@@ -398,6 +457,10 @@ pub const ERROR_NOT_READY: u32 = 21;
 pub const ERROR_NOT_SUPPORTED: u32 = 50;
 pub const ERROR_INVALID_PARAMETER: u32 = 87;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
+/// Windows' code for "the file was found and is not a loadable image". A
+/// `LoadLibraryA` that names a present file whose bytes are not a PE the
+/// loader can map reports this, which is deliberately not `ERROR_MOD_NOT_FOUND`.
+pub const ERROR_BAD_EXE_FORMAT: u32 = 193;
 /// Windows' code for "that name is not an export of that module" -- a
 /// different question from `ERROR_MOD_NOT_FOUND`, which is about the module.
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
@@ -414,7 +477,7 @@ pub const MAX_WRITE: usize = 96;
 /// Every way ring 3 can ask for something this surface will not do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Win32Error {
-    /// `+48` is not one of the twelve exports.
+    /// `+48` is not one of the fourteen exports.
     UnknownFunction,
     /// The trapping RIP is not inside kernel32.dll's `.text`.
     CallerOutsideKernel32,
@@ -481,6 +544,13 @@ pub enum Win32Error {
     /// address outside the client's mapped regions, or more bytes than a
     /// page holds. A kernel-side (loader) argument error, never a ring-3 one.
     CommandLineInvalid,
+    /// `LoadLibraryA` named a file the volume has, but the loader could not
+    /// turn its bytes into a mapped image (not a PE, an image that needs
+    /// rebasing, a section outside the file), or no loader hook has been
+    /// installed at all. Windows' `ERROR_BAD_EXE_FORMAT`: the name resolved
+    /// to a file that is not a loadable image, which is a different answer
+    /// from `ERROR_MOD_NOT_FOUND` (no such file).
+    ImageLoadFailed,
     /// The volume refused the request; which rule is inside.
     File(win32_fs::FsError),
 }
@@ -562,6 +632,7 @@ impl Win32Error {
             Win32Error::ProcNotFound => ERROR_PROC_NOT_FOUND,
             Win32Error::NameInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::CommandLineInvalid => ERROR_INVALID_PARAMETER,
+            Win32Error::ImageLoadFailed => ERROR_BAD_EXE_FORMAT,
             Win32Error::File(e) => match e {
                 win32_fs::FsError::PathNotAbsolute => ERROR_PATH_NOT_FOUND,
                 win32_fs::FsError::UnknownVolume => ERROR_INVALID_DRIVE,
@@ -588,6 +659,14 @@ struct Module {
     /// The base the loader mapped the module at -- the value `HMODULE` means.
     base: u64,
     exports: pe::DllExportTable,
+    /// How many `LoadLibraryA` calls are holding this module. A row installed
+    /// by this kernel's own loader starts at one, because the loader's
+    /// installation IS the first reference; a second `LoadLibraryA` of the
+    /// same file answers this row's base and increments, and `FreeLibrary`
+    /// drops the row only when the count reaches zero. Without the count a
+    /// program that loaded a module twice would have it disappear on the
+    /// first free, which is not what `FreeLibrary` means on Windows.
+    refs: u32,
 }
 
 /// The regions this kernel mapped for the client, and therefore the only
@@ -607,6 +686,46 @@ struct Surface {
     /// per-process loader state, exactly like the regions above it.
     modules: [Option<Module>; MAX_MODULES],
     module_count: usize,
+}
+
+/// What a loader hook reports after mapping one image: the base it used, the
+/// image's RVA footprint, and the export directory parsed out of the mapped
+/// bytes. Deliberately the same three facts [`install_module`] takes, so the
+/// surface never has to trust a name the hook chose or a size it guessed.
+pub struct LoadedModule {
+    pub base: u64,
+    pub image_size: u64,
+    pub exports: pe::DllExportTable,
+}
+
+/// The loader `LoadLibraryA` delegates to. The surface owns the module TABLE
+/// (names, bases, reference counts, the export answers) while the CALLER owns
+/// the address space and the frame allocator those pages come from -- exactly
+/// Windows' split between kernel32!LoadLibraryA and the loader behind it. A
+/// function pointer rather than a second global table because the loader state
+/// (`stage`'s address space, the boot's allocator) belongs to the caller.
+///
+/// # Safety
+/// The hook must map exactly the bytes it is handed, at the file's own
+/// `ImageBase` (this kernel's PE loader refuses to rebase), and report that
+/// base. It runs inside the `int $0x90` handler while ring 3 is suspended, so
+/// it may not block or take a lock the client's own trap could already hold.
+pub type DynamicLoader = unsafe fn(&[u8]) -> Result<LoadedModule, Win32Error>;
+
+/// The installed loader hook, or `None` before [`install_dynamic_loader`]. A
+/// `LoadLibraryA` with no hook is a typed refusal
+/// ([`Win32Error::ImageLoadFailed`]) rather than a NULL: the surface was asked
+/// to load a module and has no way to do it, which is a kernel-side setup bug
+/// and not a file that happens to be wrong.
+static mut DYNAMIC_LOADER: Option<DynamicLoader> = None;
+
+/// Installs the loader `LoadLibraryA` uses. Called by the boot proof next to
+/// [`install`], before any trap can arrive.
+///
+/// # Safety
+/// Single-threaded kernel; the hook lives for the whole process.
+pub unsafe fn install_dynamic_loader(loader: DynamicLoader) {
+    DYNAMIC_LOADER = Some(loader);
 }
 
 static mut SURFACE: Surface = Surface {
@@ -776,6 +895,10 @@ pub unsafe fn install_module(
         name_len: name.len() as u8,
         base,
         exports,
+        // The loader's own installation is the first reference: a module the
+        // process started with is loaded once, and a matching `FreeLibrary`
+        // must be able to drop it.
+        refs: 1,
     };
     row.name[..name.len()].copy_from_slice(name);
     surface.modules[surface.module_count] = Some(row);
@@ -891,6 +1014,44 @@ fn resolve_proc(
             resolve_proc(surface, next, ProcTarget::Name(symbol.as_slice()), depth + 1)
         }
     }
+}
+
+/// The base name of a path `LoadLibraryA` was given: the bytes after the last
+/// `\` or `/`. Windows registers a module under its FILE name, not under the
+/// path it was loaded from, so a later `GetModuleHandleA("nyrqis_dyn.dll")`
+/// and a second `LoadLibraryA("C:\\nyrqis\\nyrqis_dyn.dll")` must both name the
+/// same row. The result is checked against the table's own limits here, before
+/// any page is mapped, so a name a row could not hold is refused as an
+/// unusable ARGUMENT rather than after the loader has spent frames on it.
+fn module_name_from_path(path: &[u8]) -> Result<&[u8], Win32Error> {
+    let start = path
+        .iter()
+        .rposition(|b| *b == b'\\' || *b == b'/')
+        .map_or(0, |i| i + 1);
+    let name = path.get(start..).ok_or(Win32Error::NameInvalid)?;
+    if name.is_empty()
+        || name.len() > MAX_MODULE_NAME
+        || !name.iter().all(|b| (0x20..0x7f).contains(b))
+    {
+        return Err(Win32Error::NameInvalid);
+    }
+    Ok(name)
+}
+
+/// Drops the row at `index`, keeping rows `0..module_count` a prefix with no
+/// holes: every lookup walks that prefix, so a hole would either hide a live
+/// row or need a second representation of "live". Removal is what
+/// `FreeLibrary` does at reference count zero.
+fn remove_module_at(surface: &mut Surface, index: usize) {
+    let live = surface.module_count;
+    if index >= live {
+        return;
+    }
+    for i in index..live.saturating_sub(1) {
+        surface.modules[i] = surface.modules[i + 1];
+    }
+    surface.modules[live - 1] = None;
+    surface.module_count = live - 1;
 }
 
 /// The registered module whose base is exactly `base`, or `None` -- the lookup
@@ -1046,7 +1207,9 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
     if rip < IMAGE_BASE + TEXT_RVA || rip >= IMAGE_BASE + TEXT_RVA + TEXT_SIZE {
         return Err(Win32Error::CallerOutsideKernel32);
     }
-    let surface = &*&raw const SURFACE;
+    // The table is mutable here because `LoadLibraryA` and `FreeLibrary` change
+    // it; every other arm only reads it. Single-threaded, one trap at a time.
+    let surface = &mut *&raw mut SURFACE;
     match index {
         // GetStdHandle(nStdHandle): the only std handle this surface owns is
         // stdout, and it answers the same value Windows uses for it.
@@ -1254,6 +1417,91 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
             }
             let name = read_name(surface, args[1])?;
             resolve_proc(surface, args[0], ProcTarget::Name(name), 0)
+        }
+        // LoadLibraryA(lpLibFileName): load a module this process did not
+        // start with, and answer its HMODULE -- the base the loader mapped.
+        //
+        // The order is Windows': name the file, find it, load it, register it.
+        // A name already in the table answers THAT row's base and increments
+        // its reference count, because a second row for one image would make
+        // FreeLibrary's count meaningless. Everything that can fail before a
+        // page is spent does: the path is read through the same checked reader
+        // every other path goes through, the module name is derived and
+        // validated against the table's limits, and the cap is checked before
+        // the loader is asked for frames. Only then are the volume's bytes
+        // handed to the hook and the row installed.
+        //
+        // A file the volume does not have is Windows' failure VALUE (NULL plus
+        // ERROR_MOD_NOT_FOUND), not a refused call: a program that probes for
+        // an optional DLL must be able to read the answer without the surface
+        // calling it a violation. A file that IS there but cannot be mapped is
+        // a refusal (ImageLoadFailed / ERROR_BAD_EXE_FORMAT) -- that one is a
+        // property of the image, and the caller needs to be told.
+        12 => {
+            let path = read_path(surface, args[0])?;
+            let name = module_name_from_path(path)?;
+            let existing = surface.modules[..surface.module_count]
+                .iter()
+                .position(|m| m.as_ref().map_or(false, |row| module_name_equals(row, name)));
+            if let Some(i) = existing {
+                if let Some(row) = surface.modules[i].as_mut() {
+                    row.refs = row.refs.saturating_add(1);
+                    return Ok(row.base);
+                }
+            }
+            if surface.module_count == MAX_MODULES {
+                return Err(Win32Error::ModuleTableFull);
+            }
+            let bytes = match win32_fs::file_bytes(path) {
+                Ok(bytes) => bytes,
+                Err(win32_fs::FsError::FileNotFound) => {
+                    LAST_ERROR.store(ERROR_MOD_NOT_FOUND as u64, Ordering::Relaxed);
+                    return Ok(0);
+                }
+                Err(e) => return Err(Win32Error::File(e)),
+            };
+            let loader = match *&raw const DYNAMIC_LOADER {
+                Some(loader) => loader,
+                None => return Err(Win32Error::ImageLoadFailed),
+            };
+            // SAFETY: the hook was installed by this kernel's loader with the
+            // address space that owns the client, and it reads only the bytes
+            // it is handed (a static volume entry, not client memory).
+            let loaded = unsafe { loader(bytes) }?;
+            // A refused registration here means the loader reported something
+            // a row cannot honestly hold; the image stays mapped (there is no
+            // unmap to call) but no pointer to it can be obtained, which is
+            // the safe half of the failure.
+            install_module(name, loaded.base, loaded.image_size, loaded.exports)?;
+            Ok(loaded.base)
+        }
+        // FreeLibrary(hLibModule): release one reference to a loaded module,
+        // and drop the row at zero.
+        //
+        // The base must be a LIVE row: anything else is `ERROR_INVALID_HANDLE`,
+        // the code every other unissued handle answers. At zero the row is
+        // removed, so `GetModuleHandleA` stops answering the name and every
+        // forwarder that named this module goes back to ERROR_PROC_NOT_FOUND --
+        // which is the observable half of an unload in a kernel whose loader
+        // has no page unmap yet. The image's pages stay mapped; a later
+        // LoadLibraryA of the same file re-registers them (the loader hook
+        // states that), so the row is what comes and goes.
+        13 => {
+            let existing = surface.modules[..surface.module_count]
+                .iter()
+                .position(|m| m.as_ref().map_or(false, |row| row.base == args[0]));
+            let row_index = existing.ok_or(Win32Error::ModuleNotLoaded)?;
+            let drop_row = match surface.modules[row_index].as_mut() {
+                Some(row) => {
+                    row.refs = row.refs.saturating_sub(1);
+                    row.refs == 0
+                }
+                None => false,
+            };
+            if drop_row {
+                remove_module_at(surface, row_index);
+            }
+            Ok(1) // TRUE
         }
         _ => Err(Win32Error::UnknownFunction),
     }

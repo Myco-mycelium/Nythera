@@ -191,6 +191,13 @@ as --64 userprog/prog_win32_kernel32.s -o userprog/prog_win32_kernel32.o
 ld -m i386pep --shared --enable-auto-import --image-base=0x190000000000 -o userprog/kernel32.dll userprog/prog_win32_kernel32.o
 as --64 userprog/prog_win32_nyrqis.s -o userprog/prog_win32_nyrqis.o
 ld -m i386pep --shared --enable-auto-import --image-base=0x190100000000 -o userprog/nyrqis.dll userprog/prog_win32_nyrqis.o userprog/nyrqis.def
+# The RUNTIME provider: a fourth PE32+ image that the kernel never embeds.
+# Its bytes go into the read-only volume (`win32_fs` include_bytes!s this
+# file), so the only way it can ever become a module-table row is the ring-3
+# client's own LoadLibraryA. ImageBase 0x190200000000, one gigabyte past the
+# second provider, the same non-overlap rule the other two images follow.
+as --64 userprog/prog_win32_nyrqis_dyn.s -o userprog/prog_win32_nyrqis_dyn.o
+ld -m i386pep --shared --enable-auto-import --image-base=0x190200000000 -o userprog/nyrqis_dyn.dll userprog/prog_win32_nyrqis_dyn.o userprog/nyrqis_dyn.def
 as --64 userprog/prog_win32_app.s -o userprog/prog_win32_app.o
 ld -m i386pep --subsystem console -e _start --image-base=0x1A0000000000 -o userprog/win32_console.exe userprog/prog_win32_app.o userprog/kernel32.dll
 # The kernel pins these addresses (`experimental::win32`): the DLL's .text
@@ -202,13 +209,21 @@ _win32_data=$(objdump -h userprog/kernel32.dll | awk '$2==".data"{print $4" "$3}
 _win32_nyr=$(objdump -h userprog/nyrqis.dll | awk '$2==".text"{print $4" "$3}')
 _win32_nyr_ordbase=$(objdump -p userprog/nyrqis.dll | awk '/Export Address Table -- Ordinal Base/{print $NF}')
 _win32_nyr_fwd=$(objdump -p userprog/nyrqis.dll | awk '/Forwarder RVA/{print $NF}' | sort | tr '\n' ' ')
+_win32_dyn=$(objdump -h userprog/nyrqis_dyn.dll | awk '$2==".text"{print $4" "$3}')
 _win32_appbase=$(objdump -p userprog/win32_console.exe | awk '/ImageBase/{print $2}')
 _win32_appsize=$(objdump -p userprog/win32_console.exe | awk '/SizeOfImage/{print $2}')
-if [[ "$_win32_text" != "0000190000001000 000001b0" ]]; then
+if [[ "$_win32_text" != "0000190000001000 000001e8" ]]; then
     echo "FAIL: kernel32.dll .text drifted ($_win32_text); update experimental::win32's TEXT_RVA/TEXT_SIZE pins" >&2; exit 1
 fi
 if [[ "$_win32_data" != "0000190000002000 00000040" ]]; then
     echo "FAIL: kernel32.dll .data drifted ($_win32_data); update experimental::win32's BLOCK_RVA pin" >&2; exit 1
+fi
+# The runtime provider's window: `LoadLibraryA` maps this image at its own
+# ImageBase, and the boot parses its export table out of the mapped bytes --
+# so a linker change that moved `.text` (or the export it names) is caught
+# here, where the reason is obvious, rather than as a boot-time ProcNotFound.
+if [[ "$_win32_dyn" != "0000190200001000 00000028" ]]; then
+    echo "FAIL: nyrqis_dyn.dll .text drifted ($_win32_dyn); update experimental::win32_demo's DYNAMIC_IMAGE_BASE and expected dynamic export pins" >&2; exit 1
 fi
 # The second provider's window: its two exports must stay inside it, and its
 # ImageBase is pinned by `experimental::win32::SECOND_IMAGE_BASE`.
@@ -222,8 +237,10 @@ if [[ "$_win32_nyr_ordbase" != "10" ]]; then
     echo "FAIL: nyrqis.dll export OrdinalBase drifted ($_win32_nyr_ordbase); update userprog/nyrqis.def and experimental::win32_demo's EXPECTED_NYRQIS_ORDINAL_BASE" >&2; exit 1
 fi
 # The forwarder strings are pins too: the module table's chase proof is only
-# about a REAL forwarded export while ld writes these two strings into the EAT.
-if [[ "$_win32_nyr_fwd" != "kernel32.dll.GetTickCount kernel32.dll.NoSuchExport " ]]; then
+# about a REAL forwarded export while ld writes these strings into the EAT.
+# The third one names a module that is a volume file, so it is also the pin
+# that the runtime-load proof's target is an export of a file this build built.
+if [[ "$_win32_nyr_fwd" != "kernel32.dll.GetTickCount kernel32.dll.NoSuchExport nyrqis_dyn.dll.NyrqisDynValue " ]]; then
     echo "FAIL: nyrqis.dll's forwarded exports drifted ($_win32_nyr_fwd); update userprog/nyrqis.def and experimental::win32_demo's EXPECTED_NYRQIS_FORWARDERS" >&2; exit 1
 fi
 if [[ "$_win32_appbase" != "00001a0000000000" || "$_win32_appsize" != "00004000" ]]; then

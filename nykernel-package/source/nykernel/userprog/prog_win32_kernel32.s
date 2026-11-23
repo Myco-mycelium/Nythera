@@ -9,6 +9,7 @@
  *   tranche 3 (errors):   GetLastError, SetLastError
  *   tranche 4 (startup):  GetCommandLineA, GetModuleHandleA
  *   tranche 5 (binding):  GetProcAddress
+ *   tranche 9 (runtime):  LoadLibraryA, FreeLibrary
  *
  * Why GetProcAddress is the export that completes the startup pair: a CRT
  * (or any program that loads a library late) takes the HMODULE a name
@@ -215,6 +216,34 @@ GetProcAddress:
     mov %rcx, nyr_call_block+8(%rip)
     mov %rdx, nyr_call_block+16(%rip)
     movq $11, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl LoadLibraryA
+LoadLibraryA:
+    /* LPCSTR lpLibFileName in RCX. Windows answers an HMODULE (the base the
+       loader mapped) or NULL. The interesting half is what the kernel does
+       between those two: it reads the FILE named here out of the read-only
+       volume, asks the loader to map it, and only then adds a module-table
+       row -- which is what makes a forwarded export into that module
+       resolvable at all. A name the volume does not have is Windows' NULL
+       plus ERROR_MOD_NOT_FOUND, a failure value rather than a refused call. */
+    mov %rcx, nyr_call_block+8(%rip)
+    movq $12, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl FreeLibrary
+FreeLibrary:
+    /* HMODULE hLibModule in RCX. Decrements the row's reference count and
+       drops the row at zero, so a name that module exported stops resolving
+       through any other row's forwarder -- the observable half of an unload
+       in a kernel whose loader does not unmap pages yet. FALSE for a base
+       that is not a live row. */
+    mov %rcx, nyr_call_block+8(%rip)
+    movq $13, nyr_call_block+48(%rip)
     int $0x90
     mov nyr_call_block+40(%rip), %rax
     ret

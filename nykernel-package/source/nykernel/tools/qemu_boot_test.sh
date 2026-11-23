@@ -104,7 +104,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
         "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
         "experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase 0x190100000000" \
-        "experimental win32-demo: resolved 12 import(s) from the client's REAL .idata" \
+        "experimental win32-demo: resolved 14 import(s) from the client's REAL .idata" \
         "experimental win32-demo: negative control 6 -- the read-only volume refused a relative path" \
         "WriteFile returned 1 and wrote 33 byte(s)" \
         "bytes.bin read back byte-identically" \
@@ -120,13 +120,17 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "GetModuleHandleA(NULL) answered the client's own image base 0x1a0000000000" \
         "experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing" \
         "nyrqis.dll's declared OrdinalBase 10 made its first two exports ordinals 10 and 11 (both answered the addresses their NAMES did)" \
-        "ordinals 9 and 14 (below that base and past its last slot) answered ProcNotFound rather than an index guess" \
+        "ordinals 9 and 15 (below that base and past its last slot) answered ProcNotFound rather than an index guess" \
         "experimental win32-demo: forwarded exports -- nyrqis.dll's NyrqisTick (a forwarder to kernel32.dll.GetTickCount) answered 0x19000000104d" \
         "NyrqisGhost (a forwarder to kernel32.dll.NoSuchExport) answered ProcNotFound with ERROR_PROC_NOT_FOUND (127)" \
+        "experimental win32-demo: runtime modules -- nyrqis.dll's forwarder NyrqisDyn answered ProcNotFound with no nyrqis_dyn.dll row" \
+        "LoadLibraryA(\"C:\\nyrqis\\nyrqis_dyn.dll\") answered the image's own base 0x190200000000 and made it a fourth row, a SECOND load of the same file answered the same base with no new row, a fifth registration was refused as ModuleTableFull (4 rows)" \
+        "one FreeLibrary left it loaded with the forwarder still resolving, the second dropped the row so the name answered ERROR_MOD_NOT_FOUND (126) and the forwarder ERROR_PROC_NOT_FOUND (127)" \
+        "a DLL the volume does not have answered NULL with ERROR_MOD_NOT_FOUND (126) -- OK, the module table grows and shrinks while a program runs" \
         "kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows" \
-        "all 12 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (12+2)" \
+        "all 14 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (14+2)" \
         "kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module)" \
-        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true" \
         "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
         "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \
         "GetModuleHandleA(\"kernel32.dll\") answered the provider's own base 0x190000000000 in either case" \
@@ -135,9 +139,11 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "resolved there at 0x190100001000 and 0x190100001006, which the client CALLED through, reading 6 and 1" \
         "kernel32.dll asked for NyrqisBuild answered 0x0 with ERROR_PROC_NOT_FOUND (127) and nyrqis.dll asked for GetTickCount answered 0x0 the same (127)" \
         "asked in Windows' ordinal form, the second provider's base-11 ordinal 11 answered 0x190100001006 -- the same address its NAME did (1) -- which the client CALLED through, reading 1" \
-        "ordinals 9 and 14 (below the base, past the last slot) answered 0x0 and 0x0 with ERROR_PROC_NOT_FOUND (127) and (127)" \
+        "ordinals 9 and 15 (below the base, past the last slot) answered 0x0 and 0x0 with ERROR_PROC_NOT_FOUND (127) and (127)" \
         "its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered 0x19000000104d BY NAME and BY ORDINAL 12" \
         "a forwarder to an export kernel32.dll does not have answered 0x0 with ERROR_PROC_NOT_FOUND (127)" \
+        "BEFORE LoadLibraryA, nyrqis.dll's forwarder NyrqisDyn (naming nyrqis_dyn.dll.NyrqisDynValue) answered 0x0 with ERROR_PROC_NOT_FOUND (127), LoadLibraryA(\"C:\\nyrqis\\nyrqis_dyn.dll\") then answered the runtime image's own base 0x190200000000" \
+        "the SAME forwarder then answered 0x190200001000 -- the dynamic row's own export at +0x1000 -- which the client CALLED through, reading 42, FreeLibrary answered 1 and the forwarder went back to 0x0 with ERROR_PROC_NOT_FOUND (127), and a DLL the volume does not have answered 0x0 with ERROR_MOD_NOT_FOUND (126)" \
         "a module that is not loaded answered 0x0 with ERROR_MOD_NOT_FOUND (126) and a name that module does not export answered 0x0 with ERROR_PROC_NOT_FOUND (127)" \
         "-- OK, a real Windows-format console program started the way a CRT does" \
     ; do

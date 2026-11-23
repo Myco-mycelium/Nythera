@@ -81,9 +81,10 @@
  *     pfn()                                       // 1, called through it
  *     GetProcAddress(hnyr, (LPCSTR)9)             // 0, below the base:
  *                                                 // ERROR_PROC_NOT_FOUND
- *     GetProcAddress(hnyr, (LPCSTR)14)            // 0, past the last slot
- *                                                 // (four EAT slots now):
- *                                                 // ERROR_PROC_NOT_FOUND
+ *     GetProcAddress(hnyr, (LPCSTR)15)            // 0, past the last slot
+ *                                                 // (five EAT slots now --
+ *                                                 // two functions and three
+ *                                                 // forwarders): ERROR_PROC_NOT_FOUND
  *
  *   tranche 8 -- a FORWARDED export, chased to its real module:
  *     GetProcAddress(hnyr, "NyrqisTick")          // nyrqis.dll's EAT slot is
@@ -583,11 +584,11 @@ _start:
     movabs $SLOT_ORD_LOW_ERR, %rdi
     mov %rax, (%rdi)
 
-    /* ... and one past the last slot (the image exports four slots now,
-       two functions and two forwarders, so 14 is past end): the same answer
-       for the same reason. */
+    /* ... and one past the last slot (the image exports FIVE slots now --
+       two functions and three forwarders -- so 15 is past end): the same
+       answer for the same reason. */
     mov %rbp, %rcx
-    mov $14, %edx
+    mov $15, %edx
     call *__imp_GetProcAddress(%rip)
     movabs $SLOT_ORD_HIGH_NONE, %rdi
     mov %rax, (%rdi)
@@ -636,6 +637,94 @@ _start:
     mov %rax, (%rdi)
     call *__imp_GetLastError(%rip)
     movabs $SLOT_FWD_GHOST_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* ---- tranche 9: LoadLibraryA/FreeLibrary, rows at runtime ---- */
+
+    /* Before the load, this forwarder names a module NO ROW DESCRIBES:
+       nyrqis.dll's EAT slot is the string "nyrqis_dyn.dll.NyrqisDynValue",
+       and that image is not loaded yet. NULL and ERROR_PROC_NOT_FOUND --
+       the same answer a missing module must always give. */
+    mov %rbp, %rcx
+    lea proc_dyn(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_DYN_BEFORE_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_DYN_BEFORE_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* hdyn = LoadLibraryA("C:\nyrqis\nyrqis_dyn.dll"). The kernel finds the
+       file on the read-only volume, maps it, and adds a module row -- the
+       answer is that row's base, which is how a program not linked against
+       a DLL reaches its code at all. */
+    lea path_dyn(%rip), %rcx
+    call *__imp_LoadLibraryA(%rip)
+    mov %rax, %r13
+    movabs $SLOT_DYN_BASE, %rdi
+    mov %rax, (%rdi)
+
+    /* The module NAME now answers that base: Windows registers a module
+       under its file name, not under the path it was loaded from. */
+    lea name_dyn(%rip), %rcx
+    call *__imp_GetModuleHandleA(%rip)
+    movabs $SLOT_DYN_HANDLE, %rdi
+    mov %rax, (%rdi)
+
+    /* The SAME question as the first probe in this tranche, with the row
+       that was missing now present: the chase lands in the dynamic module's
+       own export directory. Two answers from one EAT slot, decided only by
+       what is loaded. */
+    mov %rbp, %rcx
+    lea proc_dyn(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_DYN_PROC, %rdi
+    mov %rax, (%rdi)
+
+    /* And it must be CALLABLE: the forwarder's target is ordinary ring-3
+       code in the dynamic image, so the call returns 42 with no trap at
+       all -- the module table handed out an address, and the address is a
+       real function. */
+    mov (%rdi), %rax
+    call *%rax
+    movabs $SLOT_DYN_PROC_VALUE, %rdi
+    mov %rax, (%rdi)
+
+    /* The dynamic row asked for the same export directly must answer the
+       very address the chase produced: two routes, one EAT entry. */
+    mov %r13, %rcx
+    lea proc_dyn_value(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_DYN_OWN, %rdi
+    mov %rax, (%rdi)
+
+    /* FreeLibrary(hdyn): the row is dropped (this was its only reference),
+       so the module is no longer loaded in this process. */
+    mov %r13, %rcx
+    call *__imp_FreeLibrary(%rip)
+    movabs $SLOT_DYN_FREED, %rdi
+    mov %rax, (%rdi)
+
+    /* ... and the forwarder goes back to failing, because its target is no
+       longer a row. Same name, same module, third answer. */
+    mov %rbp, %rcx
+    lea proc_dyn(%rip), %rdx
+    call *__imp_GetProcAddress(%rip)
+    movabs $SLOT_DYN_AFTER_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_DYN_AFTER_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* A DLL the volume does not have: Windows answers NULL and says which
+       module was not found. A failure VALUE, not a refused call -- a
+       program probing for an optional DLL is expected to test for NULL. */
+    lea path_dyn_missing(%rip), %rcx
+    call *__imp_LoadLibraryA(%rip)
+    movabs $SLOT_DYN_MISS_NONE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_DYN_MISS_ERR, %rdi
     mov %rax, (%rdi)
 
     /* ---- tranche 1 again: the clock, then exit ---- */
@@ -699,6 +788,19 @@ proc_fwd_tick:
     .asciz "NyrqisTick"
 proc_fwd_ghost:
     .asciz "NyrqisGhost"
+/* tranche 9's runtime module: the path handed to LoadLibraryA, the file
+   name Windows registers it under, the forwarder that names it and the
+   export that forwarder resolves to once the row exists. */
+path_dyn:
+    .asciz "C:\\nyrqis\\nyrqis_dyn.dll"
+path_dyn_missing:
+    .asciz "C:\\nyrqis\\missing.dll"
+name_dyn:
+    .asciz "nyrqis_dyn.dll"
+proc_dyn:
+    .asciz "NyrqisDyn"
+proc_dyn_value:
+    .asciz "NyrqisDynValue"
 /* The SizeOfImage the link gives this executable (build.sh pins the same
    0x4000 from objdump -p), used by the module-handle test above. */
     .set IMAGE_SIZE, 0x4000
@@ -793,7 +895,7 @@ proc_fwd_ghost:
     .set SLOT_ORD_MODE_VALUE,   SLOT_BASE + 0x758 /* called through: 1 */
     .set SLOT_ORD_LOW_NONE,     SLOT_BASE + 0x760 /* ordinal 9 -> 0 */
     .set SLOT_ORD_LOW_ERR,      SLOT_BASE + 0x768 /* ... 127 */
-    .set SLOT_ORD_HIGH_NONE,    SLOT_BASE + 0x770 /* ordinal 14 -> 0 */
+    .set SLOT_ORD_HIGH_NONE,    SLOT_BASE + 0x770 /* ordinal 15 -> 0 */
     .set SLOT_ORD_HIGH_ERR,     SLOT_BASE + 0x778 /* ... 127 */
 /* tranche 8: the forwarded export's answers. `NyrqisTick` is a forwarder to
    kernel32.dll.GetTickCount, so its address must equal the one kernel32's own
@@ -804,6 +906,20 @@ proc_fwd_ghost:
     .set SLOT_FWD_TICK_VALUE,   SLOT_BASE + 0x790 /* called through: a tick */
     .set SLOT_FWD_GHOST_NONE,   SLOT_BASE + 0x798 /* NyrqisGhost -> 0 */
     .set SLOT_FWD_GHOST_ERR,    SLOT_BASE + 0x7a0 /* ... 127 */
+/* tranche 9: the runtime-loaded module's lifecycle, above the forwarder
+   fields and below the 0x900 area the kernel's own controls write into. */
+    .set SLOT_DYN_BEFORE_NONE,  SLOT_BASE + 0x7a8 /* "NyrqisDyn" -> 0 */
+    .set SLOT_DYN_BEFORE_ERR,   SLOT_BASE + 0x7b0 /* ... 127 */
+    .set SLOT_DYN_BASE,         SLOT_BASE + 0x7b8 /* LoadLibraryA answer */
+    .set SLOT_DYN_HANDLE,       SLOT_BASE + 0x7c0 /* ... by name too */
+    .set SLOT_DYN_PROC,         SLOT_BASE + 0x7c8 /* the chase landed */
+    .set SLOT_DYN_PROC_VALUE,   SLOT_BASE + 0x7d0 /* called through: 42 */
+    .set SLOT_DYN_OWN,          SLOT_BASE + 0x7d8 /* its own row's answer */
+    .set SLOT_DYN_FREED,        SLOT_BASE + 0x7e0 /* FreeLibrary -> 1 */
+    .set SLOT_DYN_AFTER_NONE,   SLOT_BASE + 0x7e8 /* ... -> 0 again */
+    .set SLOT_DYN_AFTER_ERR,    SLOT_BASE + 0x7f0 /* ... 127 */
+    .set SLOT_DYN_MISS_NONE,    SLOT_BASE + 0x7f8 /* missing DLL -> 0 */
+    .set SLOT_DYN_MISS_ERR,     SLOT_BASE + 0x800 /* ... 126 */
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

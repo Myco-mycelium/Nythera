@@ -1,20 +1,20 @@
 //! The Win32 API surface proof: a genuine Windows-format PE32+ console
 //! program, linked against a genuine Windows-format PE32+ `kernel32.dll`,
-//! whose twelve exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
+//! whose fourteen exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
 //! `ExitProcess`, `CreateFileA`, `ReadFile`, `CloseHandle`, `GetLastError`,
-//! `SetLastError`, `GetCommandLineA`, `GetModuleHandleA`, `GetProcAddress` --
-//! are performed by this kernel.
+//! `SetLastError`, `GetCommandLineA`, `GetModuleHandleA`, `GetProcAddress`,
+//! `LoadLibraryA` and `FreeLibrary` -- are performed by this kernel.
 //!
 //! What is proven, end to end, every boot:
 //!
 //! 1. `userprog/kernel32.dll` loads at its own `ImageBase`, and its REAL
-//!    export directory (`GetProcAddress` semantics) names exactly the twelve
+//!    export directory (`GetProcAddress` semantics) names exactly the fourteen
 //!    functions; every export address is inside its own `.text` window, and
 //!    the call block the stubs use is where the kernel pins it (magic
 //!    checked) -- the layout-drift rule.
 //! 2. `userprog/win32_console.exe` is loaded, and its REAL
 //!    `IMAGE_DIRECTORY_ENTRY_IMPORT` -- synthesized by GNU ld itself from the
-//!    DLL -- resolves to those twelve export addresses. Every IAT slot is read
+//!    DLL -- resolves to those fourteen export addresses. Every IAT slot is read
 //!    back against the export table's own answer, per symbol.
 //! 3. The client's own code runs in ring 3 and uses the imports the ordinary
 //!    Windows way. Startup, in the order a CRT makes them: `GetCommandLineA`
@@ -37,7 +37,19 @@
 //!    are per-module, not one list consulted for any handle. It also asks for a
 //!    module that is not loaded and for an export
 //!    that module does not have, and reads back `ERROR_MOD_NOT_FOUND` /
-//!    `ERROR_PROC_NOT_FOUND` respectively. Console:
+//!    `ERROR_PROC_NOT_FOUND` respectively. Runtime loading: the client asks
+//!    `nyrqis.dll` for its `NyrqisDyn` forwarder, whose target
+//!    (`nyrqis_dyn.dll.NyrqisDynValue`) is a FILE on the volume nothing has
+//!    loaded -- so it fails with `ERROR_PROC_NOT_FOUND`; then it calls
+//!    `LoadLibraryA("C:\\nyrqis\\nyrqis_dyn.dll")`, the kernel maps that file
+//!    and adds a row, the module's own name answers its base, the SAME
+//!    forwarder now answers the dynamic image's own export, and the client
+//!    CALLS through it (42, from code it never linked against). `FreeLibrary`
+//!    drops the row, after which the name is `ERROR_MOD_NOT_FOUND` and the
+//!    forwarder is `ERROR_PROC_NOT_FOUND` again, and a DLL the volume does not
+//!    have answers NULL with `ERROR_MOD_NOT_FOUND`. So the module table grows
+//!    and shrinks WHILE the program runs, and one forwarder has three
+//!    different answers according to what is loaded. Console:
 //!    `GetStdHandle` then `WriteFile`. Files: it opens
 //!    `C:\nyrqis\hello.txt` with `CreateFileA`, reads it in two pieces (which
 //!    proves the handle's cursor advances), reads past the end (TRUE, zero
@@ -65,21 +77,27 @@
 //!    any loader placed one, naming a module before any was registered, asking
 //!    an unregistered base for an export, an export a module does not have,
 //!    an export name in the wrong case, an ordinal either below the provider's
-//!    declared `OrdinalBase` or past its last EAT slot, and
+//!    declared `OrdinalBase` or past its last EAT slot, a `LoadLibraryA` of a
+//!    relative path or of a present file that is not a loadable image,
+//!    `FreeLibrary` of a base that is not a live row, and
 //!    registering a module row that is unusable (empty name, non-text name,
 //!    zero base, zero image, duplicate name, an export outside the image) or a
-//!    third row -- each typed, each
+//!    row with no room -- each typed, each
 //!    exercised kernel-side before ring 3 runs (negative controls). Each control also
 //!    asserts the Win32 code that refusal reports, so the `GetLastError` table
 //!    is proved for every variant and not only for the three the client hits;
 //!    the client's own run must raise exactly the refusals it asks for.
 //!
-//! Deliberate scope, stated: twelve functions, no NT system-call layer beneath
+//! Deliberate scope, stated: fourteen functions, no NT system-call layer beneath
 //! them, no user32/gdi32, no Microsoft code, and `ExitProcess` records its code
 //! and returns (v0 has no task teardown to switch to) -- the client's next
 //! instruction is this link's completion trap, whose handler asserts the
-//! recorded code. The volume is three read-only files in the kernel image, not
-//! a file system: no directories, no writes, no current directory, no dates.
+//! recorded code. `FreeLibrary` drops the module ROW but does not unmap the
+//! image, because this kernel's PE loader has no unmap yet; a later
+//! `LoadLibraryA` of the same file re-registers the pages it already owns. The
+//! volume is four read-only files in the kernel image (the fourth is the
+//! runtime DLL itself), not a file system: no directories, no writes, no
+//! current directory, no dates.
 //! The last error is one cell for the whole kernel, because v0 has one ring-3
 //! client; Windows keeps it per thread in a TEB this kernel does not have.
 //! That is the difference between a real Win32 API surface and Windows
@@ -154,32 +172,38 @@ const CMDLINE_OFFSET: u64 = 0x2A0;
 /// `GetTickCount` (which IT does not export), so the per-module claim is made
 /// from ring 3 in both directions. This tranche adds two more: the client asks
 /// the second provider for ordinal 9 (below its declared `OrdinalBase` of 10)
-/// and ordinal 14 (past its four EAT slots, two of them forwarders), and both
+/// and ordinal 15 (past its five EAT slots, three of them forwarders), and both
 /// requests name no export, so both are `ProcNotFound`. This tranche adds one
 /// for the forwarded-export proof: `NyrqisGhost` is a real forwarder whose
 /// target export `kernel32.dll` does not have, so asking for it must end in
-/// `ProcNotFound` rather than an address. The surface must therefore have
-/// refused exactly those ten. A
+/// `ProcNotFound` rather than an address. This tranche adds two more, and they
+/// are the pair that brackets the runtime load: the client asks the SAME
+/// forwarder `NyrqisDyn` once before `LoadLibraryA` (no `nyrqis_dyn.dll` row,
+/// so `ProcNotFound`) and once after `FreeLibrary` has dropped that row (the
+/// same answer for the same reason). The surface must therefore have refused
+/// exactly those twelve. A
 /// different number means either an extra refusal (a bug in the surface) or a
 /// missing one (the client never reached the probe), and the per-field
 /// assertions below pin which.
-const EXPECTED_REFUSALS: u64 = 10;
+const EXPECTED_REFUSALS: u64 = 12;
 
-/// The twelve exports the client imports, and the RVAs they must resolve to
+/// The fourteen exports the client imports, and the RVAs they must resolve to
 /// (the DLL's own export table is the authority; these are the independent
 /// answer the boot checks it against, per symbol). Sorted by name, which is the
 /// order GNU ld writes its name table in -- so the stubs appended last in the
 /// source for a stable `.text` layout sort into the middle.
-const EXPECTED_EXPORTS: [(&[u8], u64); 12] = [
+const EXPECTED_EXPORTS: [(&[u8], u64); 14] = [
     (b"CloseHandle", 0x10F1),
     (b"CreateFileA", 0x1077),
     (b"ExitProcess", 0x1062),
+    (b"FreeLibrary", 0x11A7),
     (b"GetCommandLineA", 0x1137),
     (b"GetLastError", 0x110D),
     (b"GetModuleHandleA", 0x114C),
     (b"GetProcAddress", 0x1168),
     (b"GetStdHandle", 0x1000),
     (b"GetTickCount", 0x104D),
+    (b"LoadLibraryA", 0x118B),
     (b"ReadFile", 0x10B4),
     (b"SetLastError", 0x1122),
     (b"WriteFile", 0x101C),
@@ -211,10 +235,30 @@ const EXPECTED_NYRQIS_EXPORTS: [(&[u8], u64); 2] =
 /// is exactly the distinction this tranche's proof turns on. `NyrqisTick` must
 /// resolve to `kernel32.dll`'s own `GetTickCount`; `NyrqisGhost` names an
 /// export that module does not have and must resolve to nothing.
-const EXPECTED_NYRQIS_FORWARDERS: [(&[u8], &[u8], &[u8]); 2] = [
+const EXPECTED_NYRQIS_FORWARDERS: [(&[u8], &[u8], &[u8]); 3] = [
     (b"NyrqisTick", b"kernel32.dll", b"GetTickCount"),
     (b"NyrqisGhost", b"kernel32.dll", b"NoSuchExport"),
+    (b"NyrqisDyn", b"nyrqis_dyn.dll", b"NyrqisDynValue"),
 ];
+
+/// The volume path and module name of the RUNTIME provider -- a file the
+/// kernel never embeds, so `LoadLibraryA` is the only route to a row for it.
+/// The image base is [`win32::DYNAMIC_IMAGE_BASE`]: one constant, read by the
+/// surface, by the loader hook and by the assertions below, because two
+/// hand-typed copies of a load address is exactly the drift the layout pins
+/// exist to prevent.
+const DYNAMIC_PATH: &[u8] = b"C:\\nyrqis\\nyrqis_dyn.dll";
+const DYNAMIC_NAME: &[u8] = b"nyrqis_dyn.dll";
+/// The export name that `nyrqis.dll`'s `NyrqisDyn` forwarder names, and the
+/// RVA the runtime image's own export table must give it (`build.sh` pins the
+/// same window out of the linked file).
+const DYNAMIC_EXPORT: &[u8] = b"NyrqisDynValue";
+const DYNAMIC_EXPORT_RVA: u64 = 0x1000;
+/// The forwarder's name in `nyrqis.dll`; asked before the load, while loaded
+/// and after the free, so one name has three different answers.
+const DYNAMIC_FORWARDER: &[u8] = b"NyrqisDyn";
+/// What calling the runtime module's own code returns.
+const DYNAMIC_VALUE: u64 = 42;
 
 /// The RVA of one of the second provider's exports, from the same pin the
 /// kernel-side control used, so the ring-3 expectation is not a second
@@ -365,6 +409,24 @@ const SLOT_FWD_SAME: u64 = 0x788;
 const SLOT_FWD_TICK_VALUE: u64 = 0x790;
 const SLOT_FWD_GHOST_NONE: u64 = 0x798;
 const SLOT_FWD_GHOST_ERR: u64 = 0x7A0;
+/// Tranche 9's answers, the runtime-loaded module's whole lifecycle. The
+/// forwarder is asked BEFORE the load (no row to land in), the load answers its
+/// base, the name resolves, the forwarder lands on the dynamic row's own export
+/// and the client CALLS it, `FreeLibrary` drops the row, and the same forwarder
+/// fails again. The last pair is `LoadLibraryA` of a file the volume does not
+/// have -- Windows' NULL plus `ERROR_MOD_NOT_FOUND`, not a refusal.
+const SLOT_DYN_BEFORE_NONE: u64 = 0x7A8;
+const SLOT_DYN_BEFORE_ERR: u64 = 0x7B0;
+const SLOT_DYN_BASE: u64 = 0x7B8;
+const SLOT_DYN_HANDLE: u64 = 0x7C0;
+const SLOT_DYN_PROC: u64 = 0x7C8;
+const SLOT_DYN_PROC_VALUE: u64 = 0x7D0;
+const SLOT_DYN_OWN: u64 = 0x7D8;
+const SLOT_DYN_FREED: u64 = 0x7E0;
+const SLOT_DYN_AFTER_NONE: u64 = 0x7E8;
+const SLOT_DYN_AFTER_ERR: u64 = 0x7F0;
+const SLOT_DYN_MISS_NONE: u64 = 0x7F8;
+const SLOT_DYN_MISS_ERR: u64 = 0x800;
 // A compile-time check that the report fields do not overlap the client's read
 // buffers (which run up to SLOT_BIN + its eight bytes), the command-line string
 // the loader installs, the 0x300 region the kernel-side controls write their
@@ -379,7 +441,8 @@ const _: () = assert!(
         && SLOT_NAMED_SECOND >= 0x700
         && SLOT_CROSS_SEC_ERR + 8 <= SLOT_ORD_MODE
         && SLOT_ORD_HIGH_ERR + 8 <= SLOT_FWD_TICK
-        && SLOT_FWD_GHOST_ERR + 8 <= 0x800,
+        && SLOT_FWD_GHOST_ERR + 8 <= SLOT_DYN_BEFORE_NONE
+        && SLOT_DYN_MISS_ERR + 8 <= 0x820,
     "win32-demo report fields must sit between the read buffers and 0x300 (or above 0x700, past the kernel's control strings), must not overlap each other, and must not overlap the installed command line"
 );
 
@@ -401,18 +464,86 @@ const SLOT_BIN: u64 = 0x200;
 ///
 /// So this stage now follows the chain-partition rule every sibling follows
 /// (`chain::run_on_fresh_stack`, see `pe_reloc_demo`'s note): its kernel-side
-/// work runs on ITS OWN guarded RSP0 stack, and the budget is stated here. Eight
-/// pages is the same figure the accumulated-chain era needed and the figure
-/// `pe_reloc_demo` still states, because the failure shape is the same -- this
-/// stage plus the `on_trap` continuation that chains into `isolation_demo` with
-/// an ordinary call, not one stage in isolation. Borrowing a predecessor's
-/// stack is what made the overflow depend on unrelated demos' frame sizes.
-const WIN32_STACK_PAGES: u64 = 8;
+/// work runs on ITS OWN guarded RSP0 stack, and the budget is stated here.
+///
+/// # Why the budget is twelve pages and not eight
+///
+/// Eight pages was what this stage needed through v0.8. The runtime-load
+/// tranche made the client's `.idata` two descriptors larger (fourteen imports
+/// instead of twelve) and added this stage's own dynamic-load lifecycle block,
+/// and the first boot of that link ran the stack out at the REAL IMPORT
+/// RESOLUTION -- not in the new code, but one frame later: the guard page below
+/// the region took a write, `#PF`, and the fault handler's own frame turned it
+/// into the printed `#DF`. That is the guard page doing its job; the evidence
+/// is QEMU's exception log, whose first fault is a supervisor WRITE to the page
+/// just below the region. Twelve pages is eight plus the four this link
+/// measurably crossed, stated rather than grown one page at a time so the next
+/// reader knows how much headroom remains. This is a per-stage budget, not a
+/// shared one: no other stage's stack changes because of it.
+const WIN32_STACK_PAGES: u64 = 12;
 
 static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 /// This demo's address space, stashed for the stage-two continuation (the
 /// chain-partition rule: no caller frame survives the stack switch).
 static mut STAGE_SPACE: Option<AddressSpace> = None;
+/// Where the runtime-loaded image was mapped, once: `(base, image_size)`.
+///
+/// # Why this exists at all, when the loader could just map again
+///
+/// Because this kernel's PE loader has no unmap. `FreeLibrary` removes the
+/// module ROW at reference count zero, but the image's pages stay mapped for
+/// the life of the process, so a later `LoadLibraryA` of the same file would
+/// fail on an already-present page if it tried to map it again. Recording the
+/// mapping means the second load RE-REGISTERS the image at the base it already
+/// occupies -- the row is what comes and goes, and `win32`'s docs say so
+/// rather than implying a Windows unload happened. `None` means nothing has
+/// been mapped yet, which is also how the hook knows the first load is the
+/// real one.
+static mut DYNAMIC_MAPPED: Option<(u64, u64)> = None;
+
+/// `LoadLibraryA`'s loader half, installed into the surface by [`start`]'s
+/// stage. It maps the volume's bytes at the image's own `ImageBase` (the PE
+/// loader refuses to rebase), parses the export table out of the MAPPED bytes
+/// -- the same discipline every other row here follows -- and reports the base
+/// it used. Every failure is [`win32::Win32Error::ImageLoadFailed`]: the
+/// surface already knows the file was found, so what is left to say is that its
+/// bytes are not an image this loader can map.
+///
+/// # Safety
+/// Runs inside the `int $0x90` handler while ring 3 is suspended: the address
+/// space and the frame allocator are this demo's own statics, and the client's
+/// space is the active one. `bytes` is a static volume entry, never client
+/// memory.
+unsafe fn load_dynamic_module(bytes: &[u8]) -> Result<win32::LoadedModule, win32::Win32Error> {
+    if let Some((base, size)) = *(&raw const DYNAMIC_MAPPED) {
+        let exports = pe::DllExportTable::parse(base, size)
+            .map_err(|_| win32::Win32Error::ImageLoadFailed)?;
+        return Ok(win32::LoadedModule { base, image_size: size, exports });
+    }
+    let space = (*&raw mut STAGE_SPACE)
+        .as_mut()
+        .ok_or(win32::Win32Error::ImageLoadFailed)?;
+    let mut mapper = space.mapper();
+    let fa = (*&raw mut FRAME_ALLOCATOR)
+        .as_mut()
+        .ok_or(win32::Win32Error::ImageLoadFailed)?;
+    let image = pe::load(bytes, &mut mapper, fa, 0)
+        .map_err(|_| win32::Win32Error::ImageLoadFailed)?;
+    // The file's own ImageBase is a pinned address (`build.sh` checks the
+    // linked .text VMA); an image that landed anywhere else would make every
+    // assertion below about a base nobody chose.
+    if image.load_base != win32::DYNAMIC_IMAGE_BASE {
+        return Err(win32::Win32Error::ImageLoadFailed);
+    }
+    let exports = pe::DllExportTable::parse(image.load_base, image.image_max_rva)
+        .map_err(|_| win32::Win32Error::ImageLoadFailed)?;
+    DYNAMIC_MAPPED = Some((image.load_base, image.image_max_rva));
+    Ok(win32::LoadedModule {
+        base: image.load_base,
+        image_size: image.image_max_rva,
+        exports,
+    })
+}
 
 /// Reads one qword of the client's report page.
 ///
@@ -661,7 +792,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     assert_eq!(
         resolved.facts.len(),
         EXPECTED_EXPORTS.len(),
-        "exactly the twelve kernel32 imports must resolve"
+        "exactly the fourteen kernel32 imports must resolve"
     );
     for (name, rva) in EXPECTED_EXPORTS {
         let fact = resolved
@@ -677,12 +808,16 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         );
     }
     serial_println!(
-        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress), every slot reading back its export address -- OK",
+        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary), every slot reading back its export address -- OK",
         resolved.facts.len()
     );
 
     // --- the surface's own negative controls, kernel-side, before ring 3 ---
     win32::install(APP_IMAGE_BASE, APP_IMAGE_SIZE, SLOT_ADDR, 4096);
+    // The loader half `LoadLibraryA` delegates to: the mapping lives with this
+    // demo's address space and frame allocator, exactly where Windows keeps it
+    // (kernel32!LoadLibraryA calls the loader behind it).
+    win32::install_dynamic_loader(load_dynamic_module);
 
     // Private report page + the client's stack. Mapped BEFORE any negative
     // control runs, because the volume controls below hand the surface paths
@@ -716,9 +851,9 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         0,
         "the last error must start at ERROR_SUCCESS before any call"
     );
-    expect_refusal(12, [0; 5], from_text, win32::Win32Error::UnknownFunction);
+    expect_refusal(14, [0; 5], from_text, win32::Win32Error::UnknownFunction);
     serial_println!(
-        "  experimental win32-demo: negative control 3 -- index 12 refused with the typed UnknownFunction -- OK"
+        "  experimental win32-demo: negative control 3 -- index 14 refused with the typed UnknownFunction -- OK"
     );
     expect_refusal(
         0,
@@ -886,10 +1021,10 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // relative path's ERROR_PATH_NOT_FOUND, ...) cannot silently report a
     // made-up number. Pinned as literals rather than through `.code()` itself,
     // which would only prove the function is deterministic.
-    // Twenty-seven rows: twenty-one leaf variants plus the six volume rules.
+    // Twenty-eight rows: twenty-two leaf variants plus the six volume rules.
     // Adding a variant without its Windows code must therefore fail HERE, at
     // compile time, rather than at a call site the boot never reaches.
-    let codes: [(win32::Win32Error, u32); 27] = [
+    let codes: [(win32::Win32Error, u32); 28] = [
         (win32::Win32Error::UnknownFunction, 1),
         (win32::Win32Error::CallerOutsideKernel32, 487),
         (win32::Win32Error::InvalidHandle, 6),
@@ -911,6 +1046,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         (win32::Win32Error::ProcNotFound, 127),
         (win32::Win32Error::NameInvalid, 87),
         (win32::Win32Error::CommandLineInvalid, 87),
+        (win32::Win32Error::ImageLoadFailed, 193),
         (win32::Win32Error::File(win32_fs::FsError::PathNotAbsolute), 3),
         (win32::Win32Error::File(win32_fs::FsError::UnknownVolume), 15),
         (win32::Win32Error::File(win32_fs::FsError::FileNotFound), 2),
@@ -960,7 +1096,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         "the error-code controls must leave no file open either"
     );
     serial_println!(
-        "  experimental win32-demo: negative control 7 -- the last-error cell started at ERROR_SUCCESS (0), every one of the {} typed refusals answered its pinned Windows code (unknown function 1, trap outside .text 487, invalid handle 6, out-of-region buffer/out-parameter/path 998, oversized length 87, unterminated path 206, non-text path 123, write access 5, bad disposition 87, overlapped I/O 50, loader state missing 21, unloaded module 126, unregistered module handle 6, full module table 14, bad module row 87, absent export 127, unreadable name 87, bad loader install 87, relative path 3, unknown drive 15, missing file 2, exhausted table 4), a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK",
+        "  experimental win32-demo: negative control 7 -- the last-error cell started at ERROR_SUCCESS (0), every one of the {} typed refusals answered its pinned Windows code (unknown function 1, trap outside .text 487, invalid handle 6, out-of-region buffer/out-parameter/path 998, oversized length 87, unterminated path 206, non-text path 123, write access 5, bad disposition 87, overlapped I/O 50, loader state missing 21, unloaded module 126, unregistered module handle 6, full module table 14, bad module row 87, absent export 127, unreadable name 87, bad loader install 87, relative path 3, unknown drive 15, missing file 2, bad image format 193, exhausted table 4), a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK",
         codes.len()
     );
 
@@ -974,7 +1110,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // refuses: an export added with the wrong row must fail here. Pinned as
     // literals rather than through `failure_value` itself, which would only
     // prove the function is deterministic.
-    let failure_values: [(u64, u64); 12] = [
+    let failure_values: [(u64, u64); 14] = [
         (0, win32::INVALID_HANDLE_VALUE), // GetStdHandle      -> HANDLE
         (1, 0),                           // WriteFile         -> BOOL
         (2, 0),                           // GetTickCount      -> DWORD
@@ -989,6 +1125,8 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
                                           //   its documented failure is NULL
         (11, 0),                          // GetProcAddress    -> FARPROC, whose
                                           //   documented failure is also NULL
+        (12, 0),                          // LoadLibraryA      -> HMODULE, NULL
+        (13, 0),                          // FreeLibrary       -> BOOL
     ];
     for (index, value) in failure_values {
         assert_eq!(
@@ -1119,13 +1257,16 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     let tick_name = write_slot_string(0x480, b"GetTickCount");
     let build_name = write_slot_string(0x4A0, b"NyrqisBuild");
     let mode_name = write_slot_string(0x4C0, b"NyrqisMode");
-    // The second provider's two FORWARDED export names. They sit ABOVE the
-    // twelve kernel32 names the loop below writes at 0x500, 0x520, ... 0x660 --
-    // the first placement at 0x660 was exactly the twelfth slot, so the loop
-    // overwrote "NyrqisTick" with "WriteFile" before the probe ran and the
-    // surface correctly refused a name nyrqis.dll does not export.
-    let fwd_tick_name = write_slot_string(0x680, b"NyrqisTick");
-    let fwd_ghost_name = write_slot_string(0x6A0, b"NyrqisGhost");
+    // The second provider's three FORWARDED export names. They sit ABOVE the
+    // kernel32 names the loop below writes at 0x500, 0x520, ... 0x6A0 (FOURTEEN
+    // names now, so the last slot is 0x6A0) and BELOW the 0x700 area the
+    // client's own fields occupy. This placement is not cosmetic: at both
+    // twelve and fourteen names the first draft of this tranche's string
+    // offsets landed on a loop slot, so the loop overwrote "NyrqisTick" and the
+    // surface correctly refused a name nyrqis.dll does not export -- the same
+    // collision the previous tranche hit at 0x660, one slot later.
+    let fwd_tick_name = write_slot_string(0x6C0, b"NyrqisTick");
+    let fwd_ghost_name = write_slot_string(0x6E0, b"NyrqisGhost");
 
     assert_eq!(
         win32::module_count(),
@@ -1216,15 +1357,14 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         Err(win32::Win32Error::ModuleInstallInvalid),
         "a second row for a module already registered must be refused"
     );
-    assert_eq!(
-        win32::install_module(b"fourth.dll", win32::IMAGE_BASE, dll.image_max_rva, export),
-        Err(win32::Win32Error::ModuleTableFull),
-        "the table's cap must be a typed refusal, not an overflow"
-    );
+    // The cap is proved where it is REACHABLE: with the runtime module loaded
+    // (control 11 below), where a fifth registration has no row left. Here the
+    // table has one spare row on purpose -- the runtime slot -- so a fourth
+    // registration would be a live row rather than a refusal.
     assert_eq!(
         win32::module_count(),
         3,
-        "neither a duplicate nor a full table may change the live rows"
+        "a duplicate row must not change the live rows"
     );
     // Every export of the provider, BY NAME, answered from that provider's own
     // export directory -- the same address the import walk bound into the IAT.
@@ -1409,10 +1549,9 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         win32::ERROR_PROC_NOT_FOUND
     );
     serial_println!(
-        "  experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing and a named GetModuleHandleA as ModuleNotFound; five unusable rows (empty name, non-text name, zero base, zero image, an image too small for the exports it names) were refused as ModuleInstallInvalid and published nothing; kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows, both spellings of kernel32.dll's name answered {:#x} and nyrqis.dll answered its own {:#x}, a duplicate and a fourth row were refused (ModuleInstallInvalid, ModuleTableFull at {} rows), all {} kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories ({}+{}), a lowercase export name and the client's exportless image answered ProcNotFound, kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module), an unregistered base ModuleNotLoaded, a NULL name NameInvalid, and the ORDINAL form answered from the same directories -- nyrqis.dll's declared OrdinalBase {} made its first two exports ordinals {} and {} (both answered the addresses their NAMES did), kernel32.dll's first slot answered ordinal 1 under the ordinary base 1, and ordinals {} and {} (below that base and past its last slot) answered ProcNotFound rather than an index guess -- OK, GetProcAddress answers PER MODULE from a module table the loader built and then certified",
+        "  experimental win32-demo: negative control 10 -- with no module registered, GetProcAddress was refused as LoaderStateMissing and a named GetModuleHandleA as ModuleNotFound; five unusable rows (empty name, non-text name, zero base, zero image, an image too small for the exports it names) were refused as ModuleInstallInvalid and published nothing; kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows, both spellings of kernel32.dll's name answered {:#x} and nyrqis.dll answered its own {:#x}, a duplicate row was refused (ModuleInstallInvalid; the cap is proved in control 11, where the runtime row makes it reachable), all {} kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories ({}+{}), a lowercase export name and the client's exportless image answered ProcNotFound, kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module), an unregistered base ModuleNotLoaded, a NULL name NameInvalid, and the ORDINAL form answered from the same directories -- nyrqis.dll's declared OrdinalBase {} made its first two exports ordinals {} and {} (both answered the addresses their NAMES did), kernel32.dll's first slot answered ordinal 1 under the ordinary base 1, and ordinals {} and {} (below that base and past its last slot) answered ProcNotFound rather than an index guess -- OK, GetProcAddress answers PER MODULE from a module table the loader built and then certified",
         win32::IMAGE_BASE,
         win32::SECOND_IMAGE_BASE,
-        win32::MAX_MODULES,
         EXPECTED_EXPORTS.len(),
         named_resolved,
         second_resolved,
@@ -1420,7 +1559,153 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         EXPECTED_NYRQIS_ORDINAL_BASE,
         EXPECTED_NYRQIS_ORDINAL_BASE + 1,
         EXPECTED_NYRQIS_ORDINAL_BASE - 1,
-        EXPECTED_NYRQIS_ORDINAL_BASE + 4
+        EXPECTED_NYRQIS_ORDINAL_BASE + 5
+    );
+
+    // Negative control 11: LoadLibraryA/FreeLibrary, the pair that makes the
+    // module table GROW and SHRINK while a process runs.
+    //
+    // # Why this is the tranche's kernel-side half, and why it is ordered
+    //
+    // The module table so far was entirely loader-installed, so a table that
+    // could never change would answer every question identically. This control
+    // asks the same forwarder question three times around a real load and a
+    // real free, and pins the lifecycle in between: the file the volume has,
+    // the file it does not, the same file loaded twice (one row, two
+    // references), the table full while that row lives, one free leaving it
+    // loaded, the second free dropping it, and a free of the released base
+    // refused as an invalid handle. The client below repeats the load, the
+    // forwarder resolution, the call and the free from ring 3 -- so the
+    // surface's own controls and the client's run agree about a sequence that
+    // did not exist at boot time.
+    let dyn_path = write_slot_string(0x900, DYNAMIC_PATH);
+    let dyn_name = write_slot_string(0x940, DYNAMIC_NAME);
+    let dyn_forwarder = write_slot_string(0x960, DYNAMIC_FORWARDER);
+    let dyn_export = write_slot_string(0x980, DYNAMIC_EXPORT);
+    let missing_dll = write_slot_string(0x9C0, b"C:\\nyrqis\\missing.dll");
+    // Before the load: the forwarder names a module with no row.
+    expect_refusal(
+        11,
+        [win32::SECOND_IMAGE_BASE, dyn_forwarder, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ProcNotFound,
+    );
+    // A relative path is the volume's rule, not a missing module; a name the
+    // volume does not have is Windows' NULL plus ERROR_MOD_NOT_FOUND, because
+    // a program probing for an optional DLL is entitled to a value it can test.
+    expect_refusal(
+        12,
+        [relative, 0, 0, 0, 0],
+        from_text,
+        win32::Win32Error::File(win32_fs::FsError::PathNotAbsolute),
+    );
+    assert_eq!(
+        win32::dispatch(12, [missing_dll, 0, 0, 0, 0], from_text),
+        Ok(0),
+        "a DLL the volume does not have must answer NULL, as Windows does"
+    );
+    assert_eq!(
+        win32::last_error(),
+        win32::ERROR_MOD_NOT_FOUND,
+        "a missing DLL must leave ERROR_MOD_NOT_FOUND behind, not a refused call's code"
+    );
+    // The load itself: a real PE mapped out of the volume's bytes, registered
+    // under the file's base name.
+    let dyn_base = win32::dispatch(12, [dyn_path, 0, 0, 0, 0], from_text)
+        .unwrap_or_else(|e| panic!("LoadLibraryA of the runtime provider failed: {:?}", e));
+    assert_eq!(
+        dyn_base,
+        win32::DYNAMIC_IMAGE_BASE,
+        "the runtime image must map at its own ImageBase"
+    );
+    assert_eq!(win32::module_count(), 4, "LoadLibraryA must add exactly one row");
+    // Loading it again answers the SAME base and adds no row: HMODULE identity
+    // is per image, and the reference count is what a second load buys.
+    assert_eq!(
+        win32::dispatch(12, [dyn_path, 0, 0, 0, 0], from_text),
+        Ok(dyn_base),
+        "a second LoadLibraryA of one file must answer the same base"
+    );
+    assert_eq!(
+        win32::module_count(),
+        4,
+        "a second LoadLibraryA of one file must not add a row"
+    );
+    // The cap is reachable exactly now.
+    assert_eq!(
+        win32::install_module(b"full.dll", win32::IMAGE_BASE, dll.image_max_rva, export),
+        Err(win32::Win32Error::ModuleTableFull),
+        "with the runtime row live the table is full, and a fifth row is a typed refusal"
+    );
+    assert_eq!(win32::module_count(), 4, "a refused registration must not add a row");
+    // The row answers by NAME, and the forwarder now lands in it: the export
+    // comes from the dynamic image's OWN table, at the RVA its file states.
+    assert_eq!(
+        win32::dispatch(10, [dyn_name, 0, 0, 0, 0], from_text),
+        Ok(dyn_base),
+        "the runtime module's file name must resolve to its base"
+    );
+    assert_eq!(
+        win32::dispatch(11, [win32::SECOND_IMAGE_BASE, dyn_forwarder, 0, 0, 0], from_text),
+        Ok(dyn_base + DYNAMIC_EXPORT_RVA),
+        "a forwarder into the RUNTIME module must answer that module's real export"
+    );
+    assert_eq!(
+        win32::dispatch(11, [dyn_base, dyn_export, 0, 0, 0], from_text),
+        Ok(dyn_base + DYNAMIC_EXPORT_RVA),
+        "the dynamic row asked directly must answer the address the chase landed on"
+    );
+    // One FreeLibrary releases ONE reference: two loads were made, so the row
+    // stays and the forwarder still resolves.
+    assert_eq!(
+        win32::dispatch(13, [dyn_base, 0, 0, 0, 0], from_text),
+        Ok(1),
+        "FreeLibrary must answer TRUE for a live module"
+    );
+    assert_eq!(
+        win32::module_count(),
+        4,
+        "one FreeLibrary after two loads must leave the module loaded"
+    );
+    assert_eq!(
+        win32::dispatch(11, [win32::SECOND_IMAGE_BASE, dyn_forwarder, 0, 0, 0], from_text),
+        Ok(dyn_base + DYNAMIC_EXPORT_RVA),
+        "the forwarder must still resolve while the last reference is held"
+    );
+    // The second free drops the row: the name stops resolving, the forwarder
+    // goes back to ProcNotFound, and the released base is no longer a handle.
+    assert_eq!(
+        win32::dispatch(13, [dyn_base, 0, 0, 0, 0], from_text),
+        Ok(1),
+        "the last FreeLibrary must drop the row"
+    );
+    assert_eq!(win32::module_count(), 3, "the dropped row must leave three live rows");
+    expect_refusal(
+        10,
+        [dyn_name, 0, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ModuleNotFound,
+    );
+    expect_refusal(
+        11,
+        [win32::SECOND_IMAGE_BASE, dyn_forwarder, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ProcNotFound,
+    );
+    expect_refusal(
+        13,
+        [dyn_base, 0, 0, 0, 0],
+        from_text,
+        win32::Win32Error::ModuleNotLoaded,
+    );
+    serial_println!(
+        "  experimental win32-demo: runtime modules -- nyrqis.dll's forwarder NyrqisDyn answered ProcNotFound with no nyrqis_dyn.dll row; LoadLibraryA(\"C:\\nyrqis\\nyrqis_dyn.dll\") answered the image's own base {:#x} and made it a fourth row, a SECOND load of the same file answered the same base with no new row, a fifth registration was refused as ModuleTableFull ({} rows), the module's name and the forwarder both answered {:#x} (its own export, at the RVA its file states, and the client's own row answered the same), one FreeLibrary left it loaded with the forwarder still resolving, the second dropped the row so the name answered ERROR_MOD_NOT_FOUND ({}) and the forwarder ERROR_PROC_NOT_FOUND ({}), and FreeLibrary of the released base was refused as ModuleNotLoaded; a DLL the volume does not have answered NULL with ERROR_MOD_NOT_FOUND ({}) -- OK, the module table grows and shrinks while a program runs",
+        dyn_base,
+        win32::MAX_MODULES,
+        dyn_base + DYNAMIC_EXPORT_RVA,
+        win32::ERROR_MOD_NOT_FOUND,
+        win32::ERROR_PROC_NOT_FOUND,
+        win32::ERROR_MOD_NOT_FOUND
     );
 
     // No teardown for this demo (see teardown_demo): the space stays owned by
@@ -1490,6 +1775,17 @@ pub unsafe fn on_trap() -> ! {
     );
     let (fwd_ghost_none, fwd_ghost_err) =
         (slot(SLOT_FWD_GHOST_NONE), slot(SLOT_FWD_GHOST_ERR));
+    let (dyn_before_none, dyn_before_err) =
+        (slot(SLOT_DYN_BEFORE_NONE), slot(SLOT_DYN_BEFORE_ERR));
+    let (dyn_base, dyn_handle) = (slot(SLOT_DYN_BASE), slot(SLOT_DYN_HANDLE));
+    let (dyn_proc, dyn_proc_value, dyn_own) = (
+        slot(SLOT_DYN_PROC),
+        slot(SLOT_DYN_PROC_VALUE),
+        slot(SLOT_DYN_OWN),
+    );
+    let dyn_freed = slot(SLOT_DYN_FREED);
+    let (dyn_after_none, dyn_after_err) = (slot(SLOT_DYN_AFTER_NONE), slot(SLOT_DYN_AFTER_ERR));
+    let (dyn_miss_none, dyn_miss_err) = (slot(SLOT_DYN_MISS_NONE), slot(SLOT_DYN_MISS_ERR));
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -1600,7 +1896,29 @@ pub unsafe fn on_trap() -> ! {
         && fwd_tick_value >= tick1
         && fwd_ghost_none == 0
         && fwd_ghost_err == win32::ERROR_PROC_NOT_FOUND as u64;
+    // The runtime row, from ring 3: the SAME forwarder that failed before the
+    // load (NULL, ERROR_PROC_NOT_FOUND) answers the dynamic module's own
+    // export after it, the module's file name answers its base, the client
+    // CALLED the answered pointer (42, from code it never linked against),
+    // the dynamic row asked directly answered the very same address, and
+    // after the client's own FreeLibrary the name and the forwarder both fail
+    // again -- while a DLL the volume does not have is Windows' NULL plus
+    // ERROR_MOD_NOT_FOUND. The two forwarder failures before and after the
+    // load are why EXPECTED_REFUSALS rose from 10 to 12.
+    let dynamic_ok = dyn_before_none == 0
+        && dyn_before_err == win32::ERROR_PROC_NOT_FOUND as u64
+        && dyn_base == win32::DYNAMIC_IMAGE_BASE
+        && dyn_handle == dyn_base
+        && dyn_proc == dyn_base + DYNAMIC_EXPORT_RVA
+        && dyn_proc_value == DYNAMIC_VALUE
+        && dyn_own == dyn_proc
+        && dyn_freed == 1
+        && dyn_after_none == 0
+        && dyn_after_err == win32::ERROR_PROC_NOT_FOUND as u64
+        && dyn_miss_none == 0
+        && dyn_miss_err == win32::ERROR_MOD_NOT_FOUND as u64;
     let ok = startup_ok
+        && dynamic_ok
         && bindings_ok
         && modules_ok
         && ordinals_ok
@@ -1615,13 +1933,14 @@ pub unsafe fn on_trap() -> ! {
         && tick2 >= tick1
         && exit == Some(EXPECTED_EXIT_CODE)
         && win32_fs::open_count() == 0
+        && win32::module_count() == 3
         && win32::refusals() == EXPECTED_REFUSALS;
     // State every check and the raw values behind the ones that are not part of
     // the sentence below (each handle, each close result). A MISMATCH verdict
     // then names its own cause in the transcript instead of asking the next
     // reader to re-derive it from a passing-looking line.
     serial_println!(
-        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={} modules={} ordinals={} forwarders={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
+        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={} modules={} ordinals={} forwarders={} dynamic={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
         console_ok,
         hello_ok,
         bytes_ok,
@@ -1639,6 +1958,7 @@ pub unsafe fn on_trap() -> ! {
         modules_ok,
         ordinals_ok,
         forwarders_ok,
+        dynamic_ok,
         file1,
         file2,
         file3,
@@ -1657,7 +1977,7 @@ pub unsafe fn on_trap() -> ! {
         r6
     );
     serial_println!(
-        "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; GetModuleHandleA(\"kernel32.dll\") answered the provider's own base {:#x} in either case, and GetProcAddress named GetTickCount at {:#x} -- the very address the loader bound into the IAT ({}) -- which the client then CALLED through, reading {} (>= {}); a second provider, nyrqis.dll, answered its own row's base {:#x} (different from kernel32's), and its NyrqisBuild and NyrqisMode exports resolved there at {:#x} and {:#x}, which the client CALLED through, reading {} and {}; kernel32.dll asked for NyrqisBuild answered {:#x} with ERROR_PROC_NOT_FOUND ({}) and nyrqis.dll asked for GetTickCount answered {:#x} the same ({}); asked in Windows' ordinal form, the second provider's base-{} ordinal {} answered {:#x} -- the same address its NAME did ({}) -- which the client CALLED through, reading {}; ordinals {} and {} (below the base, past the last slot) answered {:#x} and {:#x} with ERROR_PROC_NOT_FOUND ({}) and ({}); its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered {:#x} BY NAME and BY ORDINAL 12 -- the same address kernel32.dll's own row gave GetTickCount ({}) -- which the client CALLED through, reading {}; a forwarder to an export kernel32.dll does not have answered {:#x} with ERROR_PROC_NOT_FOUND ({}); a module that is not loaded answered {:#x} with ERROR_MOD_NOT_FOUND ({}) and a name that module does not export answered {:#x} with ERROR_PROC_NOT_FOUND ({}); WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, its two cross-module probes, its two out-of-range ordinal probes, and its forwarder-to-an-absent-export probe) -- {}",
+        "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; GetModuleHandleA(\"kernel32.dll\") answered the provider's own base {:#x} in either case, and GetProcAddress named GetTickCount at {:#x} -- the very address the loader bound into the IAT ({}) -- which the client then CALLED through, reading {} (>= {}); a second provider, nyrqis.dll, answered its own row's base {:#x} (different from kernel32's), and its NyrqisBuild and NyrqisMode exports resolved there at {:#x} and {:#x}, which the client CALLED through, reading {} and {}; kernel32.dll asked for NyrqisBuild answered {:#x} with ERROR_PROC_NOT_FOUND ({}) and nyrqis.dll asked for GetTickCount answered {:#x} the same ({}); asked in Windows' ordinal form, the second provider's base-{} ordinal {} answered {:#x} -- the same address its NAME did ({}) -- which the client CALLED through, reading {}; ordinals {} and {} (below the base, past the last slot) answered {:#x} and {:#x} with ERROR_PROC_NOT_FOUND ({}) and ({}); its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered {:#x} BY NAME and BY ORDINAL 12 -- the same address kernel32.dll's own row gave GetTickCount ({}) -- which the client CALLED through, reading {}; a forwarder to an export kernel32.dll does not have answered {:#x} with ERROR_PROC_NOT_FOUND ({}); BEFORE LoadLibraryA, nyrqis.dll's forwarder NyrqisDyn (naming nyrqis_dyn.dll.NyrqisDynValue) answered {:#x} with ERROR_PROC_NOT_FOUND ({}), LoadLibraryA(\"C:\\nyrqis\\nyrqis_dyn.dll\") then answered the runtime image's own base {:#x}, the file name GetModuleHandleA(\"nyrqis_dyn.dll\") answered the same base {:#x} (a row for a module the client never linked against), the SAME forwarder then answered {:#x} -- the dynamic row's own export at +{:#x} -- which the client CALLED through, reading {}, FreeLibrary answered {} and the forwarder went back to {:#x} with ERROR_PROC_NOT_FOUND ({}), and a DLL the volume does not have answered {:#x} with ERROR_MOD_NOT_FOUND ({}); a module that is not loaded answered {:#x} with ERROR_MOD_NOT_FOUND ({}) and a name that module does not export answered {:#x} with ERROR_PROC_NOT_FOUND ({}); WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, its two cross-module probes, its two out-of-range ordinal probes, its forwarder-to-an-absent-export probe, and its two NyrqisDyn probes -- one before LoadLibraryA and one after FreeLibrary) -- {}",
         cmdline,
         cmdline_ok,
         module,
@@ -1682,7 +2002,7 @@ pub unsafe fn on_trap() -> ! {
         ord_same,
         ord_mode_value,
         EXPECTED_NYRQIS_ORDINAL_BASE - 1,
-        EXPECTED_NYRQIS_ORDINAL_BASE + 4,
+        EXPECTED_NYRQIS_ORDINAL_BASE + 5,
         ord_low_none,
         ord_high_none,
         ord_low_err,
@@ -1692,6 +2012,18 @@ pub unsafe fn on_trap() -> ! {
         fwd_tick_value,
         fwd_ghost_none,
         fwd_ghost_err,
+        dyn_before_none,
+        dyn_before_err,
+        dyn_base,
+        dyn_handle,
+        dyn_proc,
+        DYNAMIC_EXPORT_RVA,
+        dyn_proc_value,
+        dyn_freed,
+        dyn_after_none,
+        dyn_after_err,
+        dyn_miss_none,
+        dyn_miss_err,
         named_none,
         named_none_err,
         proc_none,
@@ -1721,7 +2053,7 @@ pub unsafe fn on_trap() -> ! {
         win32_fs::open_count(),
         win32::refusals(),
         if ok {
-            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll and a second provider, nyrqis.dll, by name AND by Windows' ordinal form (the second provider's declared OrdinalBase 10 making its exports ordinals 10 and 11, never bare indices), bound GetTickCount through GetProcAddress out of each module's own export directory (every name resolving only in the row that exports it), chased a forwarded export into the module it names (nyrqis.dll's NyrqisTick answering kernel32.dll's real GetTickCount, by name and by ordinal), and called twelve kernel32 exports plus two nyrqis exports through real PE32+ DLLs, which the kernel performed in ring 0 for the kernel32 half against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
+            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll and a second provider, nyrqis.dll, by name AND by Windows' ordinal form (the second provider's declared OrdinalBase 10 making its exports ordinals 10 and 11, never bare indices), bound GetTickCount through GetProcAddress out of each module's own export directory (every name resolving only in the row that exports it), chased a forwarded export into the module it names (nyrqis.dll's NyrqisTick answering kernel32.dll's real GetTickCount, by name and by ordinal), then LOADED A MODULE AT RUNTIME -- LoadLibraryA mapping nyrqis_dyn.dll out of the read-only volume into a new row, the same forwarder resolving into it (NyrqisDyn answering the dynamic image's own export, which the client called for 42), and FreeLibrary dropping that row so the name and the forwarder failed again -- and called fourteen kernel32 exports plus two nyrqis exports through real PE32+ DLLs, which the kernel performed in ring 0 for the kernel32 half against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
         } else {
             "MISMATCH"
         }

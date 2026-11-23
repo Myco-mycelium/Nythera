@@ -247,6 +247,13 @@ pub struct LoadedPe {
     /// The load-time RVA footprint (from the file bytes the loader
     /// mapped); the single authority every later bounds-check uses.
     pub image_max_rva: u64,
+    /// The address the image was actually mapped at -- the file's own
+    /// `ImageBase` when `load_bias` was 0, otherwise the bias. A caller
+    /// that has to record WHERE it put the image (the Win32 surface's
+    /// `LoadLibraryA`, whose answer is that address) reads it here
+    /// instead of re-parsing the header or re-deriving it from the
+    /// entry point, which would need the entry RVA to be known as well.
+    pub load_base: u64,
     /// The exception directory's parsed `.pdata` runtime functions (an
     /// absent directory answers an empty vec, not a refusal -- a real
     /// Windows image is allowed to carry no exception table). Each
@@ -562,6 +569,7 @@ fn load_callers(
         entry_point: VirtAddr::new(load_base.wrapping_add(address_of_entry_point as u64)),
         imports,
         image_max_rva: max_rva,
+        load_base,
         exception_table,
         resource_facts,
     })

@@ -7940,3 +7940,110 @@ not validated at install time -- `GetProcAddress` reports a malformed one as
 `MalformedForwarder`. The startup pair, the error table, the TEB limit and every
 v0/v0.1/v0.2/v0.3/v0.4/v0.5/v0.6/v0.7 limit stand unchanged.
 
+
+## The Win32 API surface v0.9: LoadLibraryA/FreeLibrary -- the module table grows at runtime (2026-11-23)
+
+Every module-table row before this increment was installed by this kernel's own
+loader before ring 3 started, so a table that could never change answered every
+question exactly like a table that could: the property "the module table is a
+LOADER's table" was untestable. This increment adds kernel32's 13th and 14th
+exports, `LoadLibraryA` and `FreeLibrary`, and with them the first rows a
+program creates and destroys itself.
+
+`LoadLibraryA(path)` reads the FILE the path names out of the read-only volume
+(`win32_fs::file_bytes` -- the same path rules `CreateFileA` applies), hands its
+bytes to a loader hook installed beside the surface (`win32::install_dynamic_loader`),
+and only then adds a row. The hook lives with the address space and frame
+allocator (`win32_demo::load_dynamic_module`) because those are the caller's,
+exactly where Windows draws the line between kernel32!LoadLibraryA and the
+loader behind it; it maps the image at its own `ImageBase`, refuses to return
+any other base, and parses the export table out of the MAPPED bytes -- the same
+discipline every other row follows. A name already in the table answers THAT
+row's base and increments a reference count (`Module::refs`), because `HMODULE`
+identity is per image and two rows for one file would make `FreeLibrary`'s
+count meaningless. `FreeLibrary` decrements, and at zero removes the row
+(`remove_module_at`, keeping rows a prefix with no holes). A base that is not a
+live row is `ERROR_INVALID_HANDLE`.
+
+The proof's target is a forwarder that only a runtime row can satisfy. The new
+`nyrqis_dyn.dll` is a real PE32+ file that lives on the volume as file content
+(`win32_fs::FILES[3]`, `include_bytes!`), never as a kernel symbol, and
+`nyrqis.def` gained a third forwarded export, `NyrqisDyn = nyrqis_dyn.dll.NyrqisDynValue @14`.
+So one `GetProcAddress(nyrqis.dll, "NyrqisDyn")` question has three answers,
+decided only by what is loaded: `ERROR_PROC_NOT_FOUND` before the load, the
+dynamic image's real export at `+0x1000` while the row exists (which the client
+calls, reading 42 from code it never linked against), and
+`ERROR_PROC_NOT_FOUND` again after `FreeLibrary` dropped the row.
+
+`MAX_MODULES` is now four -- the process image, the two link-time providers,
+and ONE runtime module -- and the cap is proved REACHABLE: the fourth row is
+live when a fifth registration is asked for, and it is `ERROR_OUTOFMEMORY`
+(`ModuleTableFull`). A DLL the volume does not have answers NULL with
+`ERROR_MOD_NOT_FOUND`, a failure VALUE rather than a refusal, because a program
+probing for an optional DLL is entitled to a value it can test; a file that is
+present and not a loadable image is the typed refusal `ImageLoadFailed`
+(`ERROR_BAD_EXE_FORMAT`, 193), the 28th row of the error table. `LoadLibraryA`
+and `FreeLibrary` answer 0 when refused, the documented failure of `HMODULE`
+(NULL) and `BOOL`.
+
+**What the unload does NOT do**, stated rather than implied: this kernel's PE
+loader has no unmap, so `FreeLibrary` removes the ROW and leaves the image's
+pages mapped. A later `LoadLibraryA` of the same file therefore re-registers the
+image at the base it already occupies instead of failing on a present page --
+the row is what comes and goes. That is a limit of the mapping layer, not a
+claim about a Windows unload.
+
+**Two bugs the first boots caught.** (1) A stack budget: with fourteen imports
+in the client's `.idata` and this stage's added lifecycle block, the stage's
+eight-page RSP0 stack ran out at the REAL import resolution -- one frame later
+than the new code. QEMU's `-d int` log named the first fault precisely: a
+supervisor WRITE to `CR2=0x140000affe0`, the guard page below the region, whose
+`#PF` the fault handler turned into the printed `#DF`. `WIN32_STACK_PAGES`'s budget
+is now twelve pages, stated with the measurement rather than grown one page at
+a time. (2) The same string-slot collision as v0.8, one slot later: the
+export-name loop now writes FOURTEEN names at `0x500 + i*0x20`, whose 13th slot
+is `0x680` -- where this tranche's first draft had put `"NyrqisTick"`. The
+surface then correctly refused a name `nyrqis.dll` does not export, and the
+forwarder names moved to `0x6C0`/`0x6E0`, above the loop and below the client's
+fields.
+
+**Last verified boot transcript** (`tools/qemu_boot_test.sh`, passing):
+
+```
+  experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000; export table declares "kernel32.dll" with 14 name(s), all inside .text (+0x1000..+0x11e8); call block magic 0x4e59525733325f31 at +0x2000 -- OK
+  experimental win32-demo: resolved 14 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary), every slot reading back its export address -- OK
+  experimental win32-demo: negative control 7 -- ... a successful open left the code alone, and SetLastError(0x1234) read back through GetLastError -- OK
+experimental win32-demo: runtime modules -- nyrqis.dll's forwarder NyrqisDyn answered ProcNotFound with no nyrqis_dyn.dll row; LoadLibraryA("C:\nyrqis\nyrqis_dyn.dll") answered the image's own base 0x190200000000 and made it a fourth row, a SECOND load of the same file answered the same base with no new row, a fifth registration was refused as ModuleTableFull (4 rows), the module's name and the forwarder both answered 0x190200001000 (its own export, at the RVA its file states, and the client's own row answered the same), one FreeLibrary left it loaded with the forwarder still resolving, the second dropped the row so the name answered ERROR_MOD_NOT_FOUND (126) and the forwarder ERROR_PROC_NOT_FOUND (127), and FreeLibrary of the released base was refused as ModuleNotLoaded; a DLL the volume does not have answered NULL with ERROR_MOD_NOT_FOUND (126) -- OK, the module table grows and shrinks while a program runs
+; BEFORE LoadLibraryA, nyrqis.dll's forwarder NyrqisDyn (naming nyrqis_dyn.dll.NyrqisDynValue) answered 0x0 with ERROR_PROC_NOT_FOUND (127), LoadLibraryA("C:\nyrqis\nyrqis_dyn.dll") then answered the runtime image's own base 0x190200000000, the file name GetModuleHandleA("nyrqis_dyn.dll") answered the same base 0x190200000000 (a row for a module the client never linked against), the SAME forwarder then answered 0x190200001000 -- the dynamic row's own export at +0x1000 -- which the client CALLED through, reading 42, FreeLibrary answered 1 and the forwarder went back to 0x0 with ERROR_PROC_NOT_FOUND (127), and a DLL the volume does not have answered 0x0 with ERROR_MOD_NOT_FOUND (126)
+-- OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll and a second provider, nyrqis.dll, by name AND by Windows' ordinal form (the second provider's declared OrdinalBase 10 making its exports ordinals 10 and 11, never bare indices), bound GetTickCount through GetProcAddress out of each module's own export directory (every name resolving only in the row that exports it), chased a forwarded export into the module it names (nyrqis.dll's NyrqisTick answering kernel32.dll's real GetTickCount, by name and by ordinal), then LOADED A MODULE AT RUNTIME -- LoadLibraryA mapping nyrqis_dyn.dll out of the read-only volume into a new row, the same forwarder resolving into it (NyrqisDyn answering the dynamic image's own export, which the client called for 42), and FreeLibrary dropping that row so the name and the forwarder failed again -- and called fourteen kernel32 exports plus two nyrqis exports through real PE32+ DLLs, which the kernel performed in ring 0 for the kernel32 half against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)
+experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true; handles f1=0x100 f2=0x100 f3=0x100 f4=0x100 f5=0xffffffffffffffff f6=0xffffffffffffffff; closes 1 1 1 1; reads 1/1/1/1/1/0
+```
+
+The gate pins the `14 name(s)` and `resolved 14 import(s)` load lines, the v0.8
+forwarder lines unchanged, the full `runtime modules` line above (the
+`ProcNotFound` before the load, the `0x190200000000` base and fourth row, the
+same base for a second load with no new row, `ModuleTableFull (4 rows)`, the
+freed row's `126`/`127` pair, the `NULL` + `126` missing-DLL answer), the
+client's own clauses for the same sequence, `dynamic=true` on the checks line,
+the 9/15 ordinal clause, and `refusals 12`. The client's run raises exactly
+twelve refusals: two `File(ClosedHandle)`, one `UnsupportedAccess`, one
+`ModuleNotFound`, and EIGHT `ProcNotFound` -- the absent-export probe, the two
+cross-module probes, the two out-of-range ordinal probes, the
+forwarder-to-an-absent-export probe, and the two `NyrqisDyn` probes that bracket
+the runtime load.
+
+**Measured.** Client `.text` `0x7e8 -> 0x908`, `.idata` `0x1fc -> 0x244`,
+`SizeOfImage 0x4000` (unchanged); `kernel32.dll` `.text` `0x1b0 -> 0x1e8` (the
+two stubs appended at the end, so all twelve earlier RVAs are unchanged --
+`GetProcAddress` is still `0x1168`); `nyrqis.dll` `.edata 0xbd` with three
+forwarder strings; new `nyrqis_dyn.dll` `.text` `0x1000..0x1028`, `ImageBase
+0x190200000000`, `SizeOfImage 0x4000`, one export `NyrqisDynValue @1`.
+
+**Limits.** One runtime slot (a second dynamic DLL is `ERROR_OUTOFMEMORY`); no
+unmap on `FreeLibrary` (the row goes, the pages stay); `LoadLibraryA` takes a
+fully qualified volume path rather than a bare name searched along a load path,
+and does not resolve the loaded image's own imports (the dynamic DLL has none);
+the loader hook is kernel-installed state, not a service ring 3 can point
+somewhere else. The v0.8 limit list stands otherwise: bare module names for the
+handle argument, eight forwarder hops, one code for every way a chase can fail,
+no forwarder-string validation at install time, one last-error cell and no TEB.
