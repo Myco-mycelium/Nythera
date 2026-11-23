@@ -144,6 +144,13 @@ awk '
         if ((getline nxt) > 0 && match(nxt, /--> [^:]+:[0-9]+/)) {
             loc = substr(nxt, RSTART + 4, RLENGTH - 4)
             split(loc, parts, ":")
+            # rustc prints the source path as the HOST spells it: forward
+            # slashes on Linux, backslashes on Windows. The baseline below is
+            # keyed on '/' and the vendored-tree exclusion below greps for
+            # '/porting/', so an unnormalised Windows path would both miss the
+            # exclusion and fail to match baseline lines recorded elsewhere.
+            # One separator in the key, whatever the host.
+            gsub(/\\/, "/", parts[1])
             if (name != "") print parts[1] "\t" name
         }
     }

@@ -55,6 +55,15 @@ pub mod svc84_proof;
 /// the crate root and not nested under `shell`.
 #[path = "../porting/release-1-71/shell/src/font_data.rs"]
 pub mod font_data;
+// The included renderer is vendored (the same policy tools/shadow_check.sh
+// and tools/lint_ratchet.py apply to everything under `porting/`: it is not
+// this crate's code and its style is not ours to police). It needs one
+// allowance stated here rather than edited into the vendored file: `fsin` is
+// DELIBERATELY Bhaskara's approximation, whose whole point is the literal
+// 3.141_592_7, and clippy's deny-by-default `approx_constant` would otherwise
+// turn that design choice into a hard error that aborts analysis of the WHOLE
+// crate -- which would hide every real site the ratchet is looking for.
+#[allow(clippy::approx_constant)]
 #[path = "../porting/release-1-71/shell/src/ui.rs"]
 pub mod shell;
 pub mod devices;

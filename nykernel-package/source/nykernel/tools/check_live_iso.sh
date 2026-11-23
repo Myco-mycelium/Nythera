@@ -55,6 +55,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# See tools/win_toolchain.sh: on Windows this supplies QEMU, xorriso and the
+# ELF/PE binutils dispatchers; on Linux it is not reached.
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    # shellcheck disable=SC1091
+    source tools/win_toolchain.sh || exit 1
+fi
+
 ISO="dist/nyrqis-live.iso"
 BOOT=0
 UEFI_BOOT=0

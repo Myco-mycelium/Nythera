@@ -30,10 +30,13 @@ export SOURCE_DATE_EPOCH=946684800
 # rust-lld already reachable on PATH (e.g. a distro lld); otherwise prepend
 # the active toolchain's sysroot bin directory. No-op when rust-lld is
 # already available.
-if ! command -v rust-lld >/dev/null 2>&1; then
+# Windows toolchains ship the linker as rust-lld.exe, so both the PATH probe
+# and the sysroot search accept the .exe spelling; on Linux the bare name is
+# all there is and this changes nothing.
+if ! command -v rust-lld >/dev/null 2>&1 && ! command -v rust-lld.exe >/dev/null 2>&1; then
     _sysroot="$(rustc --print sysroot 2>/dev/null || true)"
     if [[ -n "$_sysroot" ]]; then
-        _rust_lld="$(find "$_sysroot" -name rust-lld -type f 2>/dev/null | head -n1)"
+        _rust_lld="$(find "$_sysroot" \( -name rust-lld -o -name rust-lld.exe \) -type f 2>/dev/null | head -n1)"
         if [[ -n "$_rust_lld" ]]; then
             export PATH="$(dirname "$_rust_lld"):$PATH"
         fi
@@ -49,6 +52,15 @@ if [[ "${1:-}" == "--release" || "${2:-}" == "--release" ]]; then
 fi
 if [[ "${1:-}" == "--qemu-test" || "${2:-}" == "--qemu-test" ]]; then
     FEATURES+=(--features qemu_test)
+fi
+
+# A Windows host (Git Bash/MSYS2) has no distro binutils or boot tooling, and
+# no single GNU ld there supports both the ELF64 and the PE32+ links this
+# build performs. tools/win_toolchain.sh puts dispatchers for both emulations
+# plus GRUB/xorriso/QEMU on PATH; on Linux it is not reached at all.
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    # shellcheck disable=SC1091
+    source tools/win_toolchain.sh || exit 1
 fi
 
 mkdir -p target
@@ -212,7 +224,13 @@ _win32_nyr_fwd=$(objdump -p userprog/nyrqis.dll | awk '/Forwarder RVA/{print $NF
 _win32_dyn=$(objdump -h userprog/nyrqis_dyn.dll | awk '$2==".text"{print $4" "$3}')
 _win32_appbase=$(objdump -p userprog/win32_console.exe | awk '/ImageBase/{print $2}')
 _win32_appsize=$(objdump -p userprog/win32_console.exe | awk '/SizeOfImage/{print $2}')
-if [[ "$_win32_text" != "0000190000001000 00000210" ]]; then
+# `.text` ends at the last export's `ret` padded to 16 bytes: the Linux GNU ld
+# pads that tail to 0x1f0 and MinGW's ld to 0x210 (different amounts of
+# trailing NOPs, no code difference), while every export's RVA -- the only
+# thing the module table's RIP window is checked against -- is identical in
+# both. Both values are therefore accepted BY NAME; a third one is drift.
+if [[ "$_win32_text" != "0000190000001000 00000210" && \
+      "$_win32_text" != "0000190000001000 000001f0" ]]; then
     echo "FAIL: kernel32.dll .text drifted ($_win32_text); update experimental::win32's TEXT_RVA/TEXT_SIZE pins" >&2; exit 1
 fi
 if [[ "$_win32_data" != "0000190000002000 00000040" ]]; then
@@ -222,12 +240,19 @@ fi
 # ImageBase, and the boot parses its export table out of the mapped bytes --
 # so a linker change that moved `.text` (or the export it names) is caught
 # here, where the reason is obvious, rather than as a boot-time ProcNotFound.
-if [[ "$_win32_dyn" != "0000190200001000 00000028" ]]; then
+if [[ "$_win32_dyn" != "0000190200001000 00000028" && \
+      "$_win32_dyn" != "0000190200001000 00000010" ]]; then
     echo "FAIL: nyrqis_dyn.dll .text drifted ($_win32_dyn); update experimental::win32_demo's DYNAMIC_IMAGE_BASE and expected dynamic export pins" >&2; exit 1
 fi
 # The second provider's window: its two exports must stay inside it, and its
 # ImageBase is pinned by `experimental::win32::SECOND_IMAGE_BASE`.
-if [[ "$_win32_nyr" != "0000190100001000 00000030" ]]; then
+# Two linker layouts, named rather than bracketed: Linux GNU ld pads each
+# provider's `.text` tail and MinGW ld does not (0x28/0x30 vs 0x10 for the same
+# instructions), and MinGW ld gives the client's `.idata` its own page
+# (SizeOfImage 0x5000 vs 0x4000). No export RVA or `.data` address moves, so
+# the kernel's EAT/RIP pins see the same answers from either layout.
+if [[ "$_win32_nyr" != "0000190100001000 00000030" && \
+      "$_win32_nyr" != "0000190100001000 00000010" ]]; then
     echo "FAIL: nyrqis.dll .text drifted ($_win32_nyr); update experimental::win32's SECOND_IMAGE_BASE and win32_demo's export pins" >&2; exit 1
 fi
 # The declared ordinal base is a pin too: the boot's ordinal proof is only
@@ -243,7 +268,8 @@ fi
 if [[ "$_win32_nyr_fwd" != "kernel32.dll.GetTickCount kernel32.dll.NoSuchExport nyrqis_dyn.dll.NyrqisDynValue " ]]; then
     echo "FAIL: nyrqis.dll's forwarded exports drifted ($_win32_nyr_fwd); update userprog/nyrqis.def and experimental::win32_demo's EXPECTED_NYRQIS_FORWARDERS" >&2; exit 1
 fi
-if [[ "$_win32_appbase" != "00001a0000000000" || "$_win32_appsize" != "00004000" ]]; then
+if [[ "$_win32_appbase" != "00001a0000000000" ]] || \
+   [[ "$_win32_appsize" != "00004000" && "$_win32_appsize" != "00005000" ]]; then
     echo "FAIL: win32_console.exe layout drifted (base $_win32_appbase, image $_win32_appsize); update experimental::win32_demo's pins" >&2; exit 1
 fi
 

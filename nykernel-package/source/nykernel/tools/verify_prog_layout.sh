@@ -193,12 +193,23 @@ pafacts() {
     # entry here (this is the "catalogue the delta" path: extend the
     # block below with the observed pair) instead of failing
     # cryptically against another line's facts.
-    ld_ver="$(ld --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+    # The version asked for is the PE linker's, because these are PE
+    # directory positions: on a Linux host one ld serves both formats, but
+    # a Windows host links ELF with x86_64-elf-ld (2.45) and PE with
+    # MinGW's ld (2.47), and only the latter decides where Entry 0/1/b
+    # land. `-m i386pep` selects it through the same dispatcher build.sh
+    # uses; hosts whose ld lacks that emulation fall back to the plain
+    # version (nothing there would pass -m i386pep anyway).
+    ld_ver="$( { ld -m i386pep --version 2>/dev/null || ld --version 2>/dev/null; } \
+        | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
     ld_major="${ld_ver%.*}"    # "2.42" -> "2"
     ld_minor="${ld_ver#*.}"    # "2.42" -> "42"
     case "$ld_minor" in
         42|43) fact_rva=3000; fact_idir=2000; fact_bound=2100 ;;
-        46)    fact_rva=4000; fact_idir=3000; fact_bound=3100 ;;
+        # 2.47 (MinGW for Windows) reproduces the 2.46 block: export
+        # directory 0x4000 in the provider, import 0x3000 and bound
+        # 0x3100 in the composed client.
+        46|47) fact_rva=4000; fact_idir=3000; fact_bound=3100 ;;
         *)     # an uncatalogued binutils line: refuse LOUDLY with the
                # exact evidence to catalogue, per the gate rule.
                echo "FAIL: layout-gate has no PE-directory catalogue entry for binutils ${ld_major:-?}.${ld_minor:-?} -- extend tools/verify_prog_layout.sh's catalogue (the documented 'catalogue the delta' path), citing the actual objdump -p EAT/IDT block positions this toolchain produces" >&2

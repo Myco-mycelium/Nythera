@@ -32,6 +32,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Windows hosts carry no distro GRUB/xorriso/mtools/QEMU and no GCC binutils;
+# tools/win_toolchain.sh puts them (and the ELF/PE binutils dispatchers) on
+# PATH. On Linux this branch is not taken.
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    # shellcheck disable=SC1091
+    source tools/win_toolchain.sh || exit 1
+fi
+
 BUILD=1
 BIOS=1
 UEFI=1
@@ -47,7 +55,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-command -v grub-mkrescue >/dev/null 2>&1 || { echo "FAIL: grub-mkrescue not found (install grub-pc-bin / grub-common)" >&2; exit 1; }
+# Two ways to build the BIOS disc, because GRUB's Windows build ships
+# grub-mkimage but NOT grub-mkrescue (it is a shell wrapper around mkimage and
+# xorriso that only exists on Unix hosts). Both routes produce the same thing:
+# an El Torito image whose boot image is GRUB's i386-pc-eltorito core, holding
+# the modules and prefix needed to read grub.cfg and the kernel off the disc.
+GRUB_MKRESCUE=0
+GRUB_MKIMAGE=0
+command -v grub-mkrescue >/dev/null 2>&1 && GRUB_MKRESCUE=1
+command -v grub-mkimage  >/dev/null 2>&1 && GRUB_MKIMAGE=1
+if [[ "$GRUB_MKRESCUE" == "0" && "$GRUB_MKIMAGE" == "0" ]]; then
+    echo "FAIL: neither grub-mkrescue nor grub-mkimage found (install grub-pc-bin / grub-common, or the GRUB Windows build)" >&2
+    exit 1
+fi
 
 if [[ "$BUILD" == "1" ]]; then
     # The discs embed the kernel twice over (the stub `include_bytes!`es it,
@@ -154,8 +174,46 @@ submenu "Nyrqis platform identity (default: auto-detect)" {
 EOF
 
 mkdir -p "$(dirname "$OUT")"
-echo "==> packaging $OUT (GRUB El Torito, Multiboot2)"
-grub-mkrescue -o "$OUT" "$WORK" >/dev/null 2>&1
+if [[ "$GRUB_MKRESCUE" == "1" ]]; then
+    echo "==> packaging $OUT (GRUB El Torito, Multiboot2)"
+    grub-mkrescue -o "$OUT" "$WORK" >/dev/null 2>&1
+else
+    # The grub-mkrescue-free route. `-O i386-pc-eltorito` makes grub-mkimage
+    # prepend cdboot.img to the core and lay the result out for an El Torito
+    # no-emulation load; embedding the modules in that core is what lets it
+    # find /boot/grub/grub.cfg (prefix -p) on the ISO9660 medium without a
+    # separate module directory having to be probed first.
+    echo "==> packaging $OUT (GRUB El Torito via grub-mkimage + xorriso, Multiboot2)"
+    GRUB_MODDIR="${NYKERNEL_GRUB_MODULES:-$(dirname "$(command -v grub-mkimage)")/i386-pc}"
+    [[ -d "$GRUB_MODDIR" ]] || { echo "FAIL: GRUB module directory $GRUB_MODDIR not found" >&2; exit 1; }
+    command -v xorriso >/dev/null 2>&1 || { echo "FAIL: xorriso not found" >&2; exit 1; }
+    # biosdisk + iso9660 are the El Torito boot path: GRUB 2 has NO `cdrom`
+    # module -- a no-emulation El Torito CD is an int13 drive that biosdisk
+    # names, and iso9660 mounts it (naming one here made grub-mkimage die with
+    # "cannot open .../cdrom.mod", which the old `>/dev/null 2>&1` hid).
+    # search_fs_file backs the grub.cfg's own `search --file` guard;
+    # multiboot2 loads this kernel; the video/font set lets the menu and the
+    # console entry render.
+    GRUB_MODULES="biosdisk iso9660 normal search search_fs_file search_label \
+multiboot2 all_video font gfxterm gfxterm_background video video_fb png jpeg \
+terminal relocator boot echo test configfile ls cat sleep serial minicmd halt reboot \
+part_msdos part_gpt"
+    # Output NOT suppressed: both tools report the reason a core is
+    # unbootable (a missing module, an unreadable directory) on stderr, and
+    # swallowing it left a bare exit 1 with no diagnosis.
+    # The prefix carries its DEVICE. GRUB names a BIOS El Torito CD `(cd)`
+    # (an unnumbered device, unlike a disk's `(cd0)`), and a bare `-p
+    # /boot/grub` leaves grub.cfg's device to be resolved from a `root` the
+    # core has not set -- which is exactly how this disc first landed at the
+    # `grub>` rescue prompt with `ls` listing `(cd) (fd0)` and no config: the
+    # image is only ever booted as that CD, so name it.
+    grub-mkimage -O i386-pc-eltorito -d "$GRUB_MODDIR" -p '(cd)/boot/grub' \
+        -o "$WORK/boot/grub/eltorito.img" $GRUB_MODULES
+    [[ -s "$WORK/boot/grub/eltorito.img" ]] || { echo "FAIL: grub-mkimage produced no eltorito image" >&2; exit 1; }
+    xorriso -as mkisofs -o "$OUT" -V NYRQIS \
+        -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+        "$WORK"
+fi
 
 [[ -s "$OUT" ]] || { echo "FAIL: grub-mkrescue produced no image" >&2; exit 1; }
 

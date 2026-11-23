@@ -60,6 +60,18 @@ set -euo pipefail
 # always kernel-root-relative (target/kernel.elf, uefi/src/carrier.der).
 cd "$(dirname "$0")/.."
 
+# Git Bash and MSYS2 rewrite any argument that LOOKS like a POSIX path into a
+# Windows path before a native program sees it. openssl's distinguished name
+# (`-subj /CN=.../OU=...`) is exactly that shape and is NOT a path, so under
+# the default rewrite it arrives as `C:/Users/.../CN=Nyrqis dev trust anchor/...`
+# and openssl refuses with "subject name is expected to be in the format
+# /type0=value0/...". Both switches are set because Git Bash reads the first
+# and MSYS2 reads the second; neither is known to a Linux shell, where they are
+# simply inert, and every real path this script passes is already spelled the
+# way the receiving program needs it.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
 if [[ $# -ne 3 ]]; then
     echo "usage: $0 <kernel-elf> <carrier.der-out> <trusted-root.der-out>"
     exit 1
@@ -120,10 +132,16 @@ fi
 # digitalSignature); no pathLen, no CA contradiction.
 if [[ ! -s "$LEAF_CRT" ]] || [[ "$(mod_of_cert "$LEAF_CRT")" != "$(mod_of_key "$LEAF_KEY")" ]]; then
     echo "==> issuing the LEAF certificate signed by the ROOT"
+    # The extensions go through a REAL file: `-extfile <(printf ...)` hands a
+    # native openssl a /dev/fd/N path, which only the MSYS/Cygwin builds of
+    # openssl can open -- on Windows the command dies with
+    # "Error opening: /dev/fd/63" before any certificate exists.
+    printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nsubjectKeyIdentifier=hash\n' > "$LEAF_CRT.ext"
     openssl x509 -req -in "$LEAF_CSR" -CA "$ROOT_CRT" -CAkey "$ROOT_KEY" \
         -CAcreateserial -sha256 -days 3650 \
-        -extfile <(printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nsubjectKeyIdentifier=hash\n') \
+        -extfile "$LEAF_CRT.ext" \
         -out "$LEAF_CRT"
+    rm -f "$LEAF_CRT.ext"
 fi
 
 openssl x509 -in "$ROOT_CRT" -outform DER -out "$ROOT_OUT"
@@ -133,8 +151,15 @@ echo "==> signing the GOOD carrier with the LEAF (detached, noattr, sha256) over
 openssl cms -sign -binary -md sha256 -noattr \
     -in "$KERNEL" -signer "$LEAF_CRT" -inkey "$LEAF_KEY" \
     -outform DER -out "$CARRIER_OUT"
+# The verified payload goes to a real file and is dropped: `-out /dev/null`
+# makes a NATIVE openssl fail with "Can't open /dev/null for writing" (there is
+# no such device outside an MSYS/Cygwin runtime), and the shell's own
+# `>/dev/null` on the next line is bash's, which is fine.
+CARRIER_VERIFY_OUT=uefi/tools/trust/.carrier-verify.bin
 openssl cms -verify -noverify -binary \
-    -in "$CARRIER_OUT" -inform DER -content "$KERNEL" -out /dev/null >/dev/null
+    -in "$CARRIER_OUT" -inform DER -content "$KERNEL" \
+    -out "$CARRIER_VERIFY_OUT" >/dev/null
+rm -f "$CARRIER_VERIFY_OUT"
 
 # ---- the negative carriers ----
 # neg-anchor: a stray pair whose cert is a legal self-signed one --
@@ -213,15 +238,25 @@ NEGWIN_DB=uefi/tools/trust/negwin-db
 NEGWIN_CNF=uefi/tools/trust/negwin-ca.cnf
 NEGWIN_EXT=uefi/tools/trust/negwin-ext.cnf
 mkdir -p "$NEGWIN_DB"
+# The CA config names its files ABSOLUTELY, and MSYS translates only
+# command-line arguments -- a path INSIDE a config file reaches openssl
+# untouched. So the form written here has to be one openssl can open: plain
+# `pwd` gives /c/Users/... (an MSYS spelling a native Windows openssl cannot
+# resolve), while `pwd -W` gives C:/Users/... A Linux shell has no -W, so the
+# fallback keeps the Linux behaviour byte-identical.
+TREE_ABS="$(pwd)"
+if TREE_ABS_W="$(pwd -W 2>/dev/null)" && [[ -n "$TREE_ABS_W" ]]; then
+    TREE_ABS="$TREE_ABS_W"
+fi
 cat > "$NEGWIN_CNF" <<EOF
 [ca]
 default_ca = CA_default
 [CA_default]
-certificate = $(pwd)/$ROOT_CRT
-private_key = $(pwd)/$ROOT_KEY
-new_certs_dir = $(pwd)/$NEGWIN_DB
-database = $(pwd)/$NEGWIN_DB/index
-serial = $(pwd)/$NEGWIN_DB/serial
+certificate = $TREE_ABS/$ROOT_CRT
+private_key = $TREE_ABS/$ROOT_KEY
+new_certs_dir = $TREE_ABS/$NEGWIN_DB
+database = $TREE_ABS/$NEGWIN_DB/index
+serial = $TREE_ABS/$NEGWIN_DB/serial
 default_md = sha256
 default_days = 3650
 policy = policy_any
@@ -362,7 +397,9 @@ openssl cms -sign -binary -md sha256 -noattr \
     -in "$KERNEL" -signer uefi/tools/trust/mok-dev-leaf-cert.crt -inkey "$MOK_LEAF_KEY" \
     -outform DER -out uefi/src/mok-carrier.der
 openssl cms -verify -noverify -binary \
-    -in uefi/src/mok-carrier.der -inform DER -content "$KERNEL" -out /dev/null >/dev/null
+    -in uefi/src/mok-carrier.der -inform DER -content "$KERNEL" \
+    -out "$CARRIER_VERIFY_OUT" >/dev/null
+rm -f "$CARRIER_VERIFY_OUT"
 openssl x509 -in "$MOK_CA_CRT" -outform DER -out uefi/tools/trust/mok-dev-cert.der
 python3 tools/patch_carrier_negatives.py make-dbx-siglist \
     uefi/tools/trust/mok-dev-cert.der uefi/src/moklist-pos.der

@@ -336,6 +336,22 @@ pub fn self_test_time_registers() -> bool {
     );
 
     let t2 = unsafe { read_time() };
+    // The two reads are eight CMOS port accesses each and run with interrupts
+    // ENABLED, so they can complete well inside one 1024 Hz period (~976 us):
+    // a zero delta is then a measurement of "no measurable time passed", not
+    // evidence of a dead periodic line -- measured on an emulated (TCG) host,
+    // where the pair finished in a few microseconds and this assertion failed
+    // a boot that was otherwise entirely healthy. The evidence this line
+    // exists to provide is that the periodic line ADVANCES while the
+    // wall-clock registers are exercised, so a zero delta is given a bounded
+    // grace window in the same spin-bound style as the keyboard line below:
+    // the first tick that arrives inside it is counted, and a host that can
+    // never produce one still fails, because the bound is finite.
+    let mut spins = 0u32;
+    while ticks() == ticks_before && spins < 50_000_000 {
+        x86_64::instructions::hlt();
+        spins += 1;
+    }
     let ticks_between = ticks() - ticks_before;
     let t2_ok = matches!(t2, Ok(_));
     let t2_range_ok = t2.as_ref().map(in_range).unwrap_or(false);
