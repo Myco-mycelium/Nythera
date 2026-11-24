@@ -51,7 +51,9 @@
 #
 # Requires the toolchain the gate itself needs -- qemu-system-x86_64, xorriso,
 # mformat/mcopy/mmd and the OVMF blobs -- on PATH; ./tools/install_boot_tools.sh
-# installs the first five without root. Intermediates go to
+# installs the first five without root, and on Windows this script sources
+# tools/win_toolchain.sh itself (built by tools/setup_win_toolchain.sh) so a
+# plain shell works. Intermediates go to
 # target/live-selfcheck/ (gitignored), never into dist/.
 #
 # Exit: 0 the mutant was caught for the right reason and the restored discs
@@ -59,6 +61,15 @@
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+# See tools/win_toolchain.sh: on Windows this supplies QEMU, xorriso, mtools
+# and the ELF/PE binutils dispatchers the gate runs with; on Linux it is not
+# reached. Sourcing it here rather than asking the caller keeps this tool
+# runnable from a plain Windows shell, the same way the gate it drives is.
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    # shellcheck disable=SC1091
+    source tools/win_toolchain.sh || exit 1
+fi
 
 BIOS=dist/nyrqis-live.iso
 BIOS_SHA="$BIOS.sha256"
@@ -143,7 +154,9 @@ trap 'echo "  (interrupted -- discs and receipt restored from backup)"; exit 130
 echo "==> preconditions"
 for tool in qemu-system-x86_64 xorriso mformat mmd mcopy git; do
     command -v "$tool" >/dev/null 2>&1 \
-        || refuse "$tool is not on PATH -- run ./tools/install_boot_tools.sh and put its bin directory on PATH"
+        || refuse "$tool is not on PATH -- run ./tools/install_boot_tools.sh and put its bin
+        directory on PATH (on Windows, ./tools/setup_win_toolchain.sh builds the
+        toolchain this script sources at startup)"
 done
 [[ -x "$GATE" ]] || refuse "$GATE is not executable"
 for f in "$BIOS" "$BIOS_SHA" "$UEFI" "$UEFI_SHA" "$KERNEL_SHA_FILE" "$RECEIPT"; do
