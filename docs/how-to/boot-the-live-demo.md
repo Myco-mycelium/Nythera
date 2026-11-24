@@ -66,3 +66,6 @@ Re-run the banner + probe anytime with `nyrqis-demo`.
 
 - `packaging/live/README.md` — builder internals, prebuilt-rootfs path
 - `.github/workflows/live-iso.yml` — the CI build + artifact upload
+- `.github/workflows/ci.yml` — the `live-iso-messages` job runs
+  `packaging/live/messages_selfcheck.sh`, so a route message naming a
+  tool other than the one that ran fails on push and pull request

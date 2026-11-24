@@ -970,6 +970,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="live-iso-messages-gate",
+        pattern=r"live-iso-messages",
+        description="The live-ISO route messages are gated where pull requests reach them: `.github/workflows/ci.yml`'s `live-iso-messages` job runs `packaging/live/messages_selfcheck.sh` on every push and pull request (bash + coreutils only, no ISO built), so an edit that restores the old producer-naming defect in `packaging/live/build-live-iso.sh` fails CI before merge",
+        check="path_contains",
+        check_args={
+            "needle": "bash packaging/live/messages_selfcheck.sh",
+            "files": [".github/workflows/ci.yml"],
+        },
+    ),
+    Claim(
         claim_id="debug-attach-brief-registered",
         pattern=r"CAP-DEBUG-ATTACH",
         description="The debug-attach decision is registered on AG_AGENDA v1.9.0 as the Group's third standing item — briefed by AG_BRIEF_DEBUG_ATTACH v1.0.0 (three options, recommends launcher-mediated operator-only attach); Phase B is NOT implemented, it is decision-ready",
