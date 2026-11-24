@@ -101,7 +101,11 @@ copied to `uefi/tools/OVMF_{CODE,VARS}_4M.fd`. That script's header lists the
 exact layout, and it explains the three Windows-specific shapes the gates
 learned: two GNU ld emulations behind `as`/`ld` dispatchers, `pe_stamp`
 writing `SOURCE_DATE_EPOCH` over both PE timestamp copies because MinGW's
-linker ignores it, and the `rust-lld.exe` spelling.
+linker ignores it, the `rust-lld.exe` spelling, and the one argument MSYS
+does not translate: a path behind qemu's `file:` prefix. `-serial
+"file:/tmp/x.log"` reaches the native qemu as a Windows-root path and writes
+an empty transcript, so the gates pass repo-relative disc and serial paths
+(absolute temp paths would need `cygpath -m` at the call site).
 
 That cache is created by `./tools/setup_win_toolchain.sh`, one command on an
 empty tree: it downloads the pinned MSYS2 base, GRUB and OVMF archives, runs
@@ -120,7 +124,11 @@ a 108-byte unix socket (proot's monitor-socket trap), the QEMU/GRUB pair, the
 `/tmp/nybin` shims, clippy, and whether `/usr/bin/time` exists (on this image
 it does not) -- and names the broken assumption instead of leaving a 127 or a
 hang. All three boot gates run it first (`--quiet`), so a missing requirement
-fails at the top with a sentence rather than in the middle with a 127.
+fails at the top with a sentence rather than in the middle with a 127. A
+missing `grub-mkrescue` is the one case it reports instead of failing: the
+disc gates fall back to `grub-mkimage`, so the environment stays READY and a
+`blocked gates` line names the four gates that assemble their own test ISO,
+which cannot run on that host.
 
 `build.sh` runs two style gates on every build, so all four boot gates inherit
 them. Both skip cleanly when clippy is absent (install it with `rustup

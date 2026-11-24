@@ -34,6 +34,32 @@
 #            always the ELF tools: the only users are the kernel image and
 #            the ELF userprog artifacts.
 #
+# THE TRAP NO SHIM SOLVES: THE PATH BEHIND qemu's `file:` PREFIX
+#
+# MSYS2's runtime rewrites arguments that look like POSIX paths before a native
+# program sees them -- but only where the path IS the argument, or the value of
+# a `-drive key=value`. A path that carries its own `file:` prefix is handed
+# over VERBATIM, so these reach qemu.exe unchanged:
+#
+#   -serial "file:/tmp/t.log"     -cdrom "file:/tmp/d.iso"
+#   -debugcon "file:/tmp/t.log"
+#
+# Windows then reads "/tmp/t.log" as "<current drive>:\tmp\t.log", opens
+# nothing, and for -serial exits 0 having written an EMPTY transcript. The gate
+# downstream fails on a verdict it could never have seen, which reads like a
+# kernel bug and is not one. Measured on this toolchain, not assumed: a bare
+# path argument (`-cdrom /tmp/d.iso`) and `-drive if=pflash,format=raw,
+# file=/tmp/v.fd` both arrive as C:/..., while all three `file:`-prefixed forms
+# arrive as /tmp/....
+#
+# The rule for every call site in this tree: never put an MSYS path after
+# `file:`. A tree-relative path is fine -- qemu inherits the shell's cwd, so
+# `-serial "file:target/live-iso-check.log"` opens the right file -- and an
+# absolute temp path must be converted at the call site with `cygpath -m`
+# (xorriso needs the same, see live_iso_selfcheck.sh's el_torito_shape). The
+# live gates use repo-relative paths today, so the trap is latent rather than
+# armed; it is written down because its failure mode is silence.
+#
 # Layout it expects under $NYKERNEL_WIN_TOOLS (default
 # ~/.cache/nyrqis-win-tools), each fetched/prepared once, by hand:
 #

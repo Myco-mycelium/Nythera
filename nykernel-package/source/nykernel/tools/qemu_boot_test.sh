@@ -20,6 +20,18 @@ if ! ./tools/gate_env.sh --quiet; then
     exit 1
 fi
 
+# gate_env reports a missing grub-mkrescue as a blocked gate rather than an
+# unready host, because the disc gates can fall back to grub-mkimage. This gate
+# cannot: it assembles target/nyrqis-test.iso itself, so it says so here, before
+# ./build.sh -- otherwise a host with only grub-mkimage pays for a full build
+# and then dies on a 127 at the grub-mkrescue line with no verdict at all.
+command -v grub-mkrescue >/dev/null 2>&1 || {
+    echo "FAIL: grub-mkrescue missing (this gate builds target/nyrqis-test.iso with it;"
+    echo "      the live discs instead go through tools/make_live_iso.sh, which falls back"
+    echo "      to grub-mkimage)"
+    exit 1
+}
+
 ./build.sh --qemu-test
 
 ISO_DIR=target/isofiles-test
