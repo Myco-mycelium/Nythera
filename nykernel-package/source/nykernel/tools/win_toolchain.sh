@@ -36,27 +36,30 @@
 #
 # THE TRAP NO SHIM SOLVES: THE PATH BEHIND qemu's `file:` PREFIX
 #
-# MSYS2's runtime rewrites arguments that look like POSIX paths before a native
-# program sees them -- but only where the path IS the argument, or the value of
-# a `-drive key=value`. A path that carries its own `file:` prefix is handed
-# over VERBATIM, so these reach qemu.exe unchanged:
+# MSYS2 rewrites arguments that look like POSIX paths before a native program
+# sees them -- but only where the path IS the argument, or the value of a
+# `-drive key=value`. A path carrying its own `file:` prefix is handed over
+# VERBATIM, so these reach qemu.exe exactly as written:
 #
-#   -serial "file:/tmp/t.log"     -cdrom "file:/tmp/d.iso"
+#   -serial "file:/tmp/t.log"   -cdrom "file:/tmp/d.iso"
 #   -debugcon "file:/tmp/t.log"
 #
-# Windows then reads "/tmp/t.log" as "<current drive>:\tmp\t.log", opens
-# nothing, and for -serial exits 0 having written an EMPTY transcript. The gate
-# downstream fails on a verdict it could never have seen, which reads like a
-# kernel bug and is not one. Measured on this toolchain, not assumed: a bare
-# path argument (`-cdrom /tmp/d.iso`) and `-drive if=pflash,format=raw,
-# file=/tmp/v.fd` both arrive as C:/..., while all three `file:`-prefixed forms
-# arrive as /tmp/....
+# Windows resolves that against the CURRENT DRIVE's root, i.e. C:\tmp\t.log.
+# If C:\tmp exists (it does on this machine) the run looks healthy and the
+# transcript lands outside the tree, so a gate reading its own /tmp/... path
+# finds nothing and reports a verdict it never had; if it does not exist, qemu
+# prints `open /tmp/t.log failed` and gives up. Measured on this toolchain:
+# all three `file:` examples either fail loudly or land in C:\tmp\, while a
+# bare `-cdrom /tmp/d.iso` and
+# `-drive if=pflash,format=raw,file=/tmp/v.fd` arrive translated. (The
+# silent landing is why a gate must never read "no transcript" as "the
+# kernel died".)
 #
-# The rule for every call site in this tree: never put an MSYS path after
-# `file:`. A tree-relative path is fine -- qemu inherits the shell's cwd, so
+# Rule for every call site here: never put an MSYS path after `file:`. A
+# tree-relative path is fine -- qemu inherits the shell's cwd, so
 # `-serial "file:target/live-iso-check.log"` opens the right file -- and an
 # absolute temp path must be converted at the call site with `cygpath -m`
-# (xorriso needs the same, see live_iso_selfcheck.sh's el_torito_shape). The
+# (xorriso needs the same; see live_iso_selfcheck.sh's el_torito_shape). The
 # live gates use repo-relative paths today, so the trap is latent rather than
 # armed; it is written down because its failure mode is silence.
 #
