@@ -906,11 +906,8 @@ if $HYBRID; then
     grub-mkrescue -o "$OUTPUT" "$ISO_ROOT" \
         -- -volid "$VOLUME_ID" -joliet on
 else
-    # Name the part that actually disqualified the hybrid path, and the tool
-    # this branch is about to run. The old line said "xorriso or grub bins
-    # missing" even when xorriso WAS installed and only the grub module
-    # directory was absent, and it never mentioned genisoimage -- whose
-    # absence then surfaced as a bare command-not-found on the next line.
+    # The old line said "xorriso or grub bins missing" even when xorriso WAS
+    # installed, and never named genisoimage -- the tool this branch runs.
     ISO_GAP=""
     grub-mkrescue --version >/dev/null 2>&1 || ISO_GAP="$ISO_GAP grub-mkrescue"
     [[ -d /usr/lib/grub/i386-pc || -d /usr/lib/grub/x86_64-efi ]] \
@@ -919,7 +916,7 @@ else
     command -v genisoimage >/dev/null 2>&1 || ISO_GAP="$ISO_GAP genisoimage"
     log "hybrid path unavailable (missing:$ISO_GAP); building BIOS-only isolinux ISO with genisoimage"
     command -v genisoimage >/dev/null 2>&1 \
-        || die "the BIOS-only fallback runs genisoimage and it is not on PATH (hybrid path unavailable; missing:$ISO_GAP)"
+        || die "the BIOS-only fallback runs genisoimage, and it is not on PATH"
     genisoimage -rational-rock -joliet -volid "$VOLUME_ID" \
         -b isolinux/isolinux.bin -c isolinux/boot.cat \
         -no-emul-boot -boot-load-size 4 -boot-info-table \

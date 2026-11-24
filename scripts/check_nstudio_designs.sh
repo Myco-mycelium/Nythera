@@ -49,6 +49,14 @@ output="$(python3 "$VALIDATOR" "${files[@]}" 2>&1)"
 rc=$?
 set -e
 
+# 127 is the shell's "could not execute", i.e. python3 itself never ran the
+# validator; reporting that as nst_validate failing sends the reader after
+# the wrong file.
+if [[ $rc -eq 127 ]]; then
+    echo "::error::python3 could not run nst_validate.py (exit 127) — python3 is not on PATH, so nothing validated the designs"
+    echo "$output"
+    exit 1
+fi
 if [[ $rc -ne 0 && $rc -ne 1 ]]; then
     echo "::error::nst_validate failed unexpectedly (exit $rc) — treating as a gate failure"
     echo "$output"
