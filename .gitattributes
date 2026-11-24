@@ -1,0 +1,23 @@
+# Checksum lists are machine-read, byte-exact files, so git must never rewrite
+# their line endings.
+#
+# With the default `core.autocrlf=true` on Windows, a checkout turns the LF
+# blob into CRLF on disk. `sha256sum -c` then parses the recorded *file name*
+# as "nyrqis-live.iso\r", cannot open it, and reports
+#
+#     sha256sum: 'nyrqis-live.iso'$'\r': No such file or directory
+#
+# so `tools/live_iso_selfcheck.sh` -- the negative control that proves the
+# gate goes red on a broken disc -- fails on its own setup rather than on the
+# defect it is meant to inject. The digest is also read straight out of these
+# files by `tools/check_live_iso.sh`, so the bytes on disk have to be the
+# bytes the build wrote.
+#
+# `-text` disables conversion in both directions: the blob stays LF, the
+# worktree stays LF, and the digest a gate reads is the digest it recorded.
+*.sha256 -text
+
+# This file is a rule list, not prose: it has no reason to be platform-specific
+# either, and converting it would make these comments render with stray
+# carriage returns in every Windows editor that shows the file.
+.gitattributes -text

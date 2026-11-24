@@ -187,7 +187,7 @@ if command -v xorriso >/dev/null 2>&1; then
     xorriso -osirrox on -indev "$ISO" -extract /boot/kernel.elf "$EXTRACT" >/dev/null 2>&1
     if [[ -s "$EXTRACT" && -s "$KERNEL_SHA_FILE" ]]; then
         EMBEDDED="$(sha256sum "$EXTRACT" | cut -d' ' -f1)"
-        WANT="$(tr -d '\n' < "$KERNEL_SHA_FILE")"
+        WANT="$(tr -d '\n\r' < "$KERNEL_SHA_FILE")"
         if [[ "$EMBEDDED" == "$WANT" ]]; then
             ok "the image carries the recorded kernel build ($EMBEDDED)"
         else
