@@ -1,23 +1,28 @@
-# Checksum lists are machine-read, byte-exact files, so git must never rewrite
-# their line endings.
+# Checksum lists are machine-read, byte-exact files: git must write their line
+# endings as LF and nothing else.
 #
-# With the default `core.autocrlf=true` on Windows, a checkout turns the LF
-# blob into CRLF on disk. `sha256sum -c` then parses the recorded *file name*
+# With the default `core.autocrlf=true` on Windows, a plain checkout turns the
+# LF blob into CRLF on disk. `sha256sum -c` then parses the recorded *file name*
 # as "nyrqis-live.iso\r", cannot open it, and reports
 #
 #     sha256sum: 'nyrqis-live.iso'$'\r': No such file or directory
 #
-# so `tools/live_iso_selfcheck.sh` -- the negative control that proves the
-# gate goes red on a broken disc -- fails on its own setup rather than on the
-# defect it is meant to inject. The digest is also read straight out of these
-# files by `tools/check_live_iso.sh`, so the bytes on disk have to be the
-# bytes the build wrote.
+# so `tools/live_iso_selfcheck.sh` -- the negative control that proves the gate
+# goes red on a broken disc -- fails on its own setup rather than on the defect
+# it is meant to inject. The digest is also read straight out of these files by
+# `tools/check_live_iso.sh`, so the bytes on disk have to be the bytes the
+# build wrote.
 #
-# `-text` disables conversion in both directions: the blob stays LF, the
-# worktree stays LF, and the digest a gate reads is the digest it recorded.
-*.sha256 -text
-
-# This file is a rule list, not prose: it has no reason to be platform-specific
-# either, and converting it would make these comments render with stray
-# carriage returns in every Windows editor that shows the file.
-.gitattributes -text
+# `text eol=lf` rather than `-text`, which would also stop the conversion: the
+# two differ in what the repository sees. `-text` declares these files binary,
+# so `git diff` on a changed digest prints "Binary files a/... and b/... differ"
+# and a merge cannot show the conflicting lines -- and a one-line digest change
+# is exactly what a reviewer needs to read. `eol=lf` keeps them text with LF
+# line endings, and additionally normalises a CRLF blob if one is ever committed
+# by a tool that writes CRLF itself, where `-text` would preserve the mistake
+# and leave every future checkout wrong.
+#
+# This file gets the same rule: it is a rule list whose comments would otherwise
+# pick up carriage returns on Windows, and whose diffs someone will want to read.
+*.sha256 text eol=lf
+.gitattributes text eol=lf
