@@ -887,7 +887,10 @@ if [[ "$ARCH" == arm64 ]]; then
        && command -v xorriso >/dev/null 2>&1; then
         HYBRID=true
     else
-        die "arm64 image needs grub-efi-arm64-bin + xorriso (apt-get install grub-efi-arm64-bin xorriso mtools)"
+        # grub-mkrescue is the first thing the condition tests, so it belongs
+        # in the refusal: naming only the module tree and xorriso sent a
+        # reader missing grub-common after the wrong package.
+        die "arm64 image needs grub-mkrescue, grub-efi-arm64-bin and xorriso (apt-get install grub-efi-arm64-bin xorriso mtools)"
     fi
 elif grub-mkrescue --version >/dev/null 2>&1 && \
    [[ -d /usr/lib/grub/i386-pc || -d /usr/lib/grub/x86_64-efi ]] && \
@@ -903,7 +906,20 @@ if $HYBRID; then
     grub-mkrescue -o "$OUTPUT" "$ISO_ROOT" \
         -- -volid "$VOLUME_ID" -joliet on
 else
-    log "xorriso or grub bins missing; building BIOS-only isolinux ISO"
+    # Name the part that actually disqualified the hybrid path, and the tool
+    # this branch is about to run. The old line said "xorriso or grub bins
+    # missing" even when xorriso WAS installed and only the grub module
+    # directory was absent, and it never mentioned genisoimage -- whose
+    # absence then surfaced as a bare command-not-found on the next line.
+    ISO_GAP=""
+    grub-mkrescue --version >/dev/null 2>&1 || ISO_GAP="$ISO_GAP grub-mkrescue"
+    [[ -d /usr/lib/grub/i386-pc || -d /usr/lib/grub/x86_64-efi ]] \
+        || ISO_GAP="$ISO_GAP grub-bins(/usr/lib/grub)"
+    command -v xorriso >/dev/null 2>&1 || ISO_GAP="$ISO_GAP xorriso"
+    command -v genisoimage >/dev/null 2>&1 || ISO_GAP="$ISO_GAP genisoimage"
+    log "hybrid path unavailable (missing:$ISO_GAP); building BIOS-only isolinux ISO with genisoimage"
+    command -v genisoimage >/dev/null 2>&1 \
+        || die "the BIOS-only fallback runs genisoimage and it is not on PATH (hybrid path unavailable; missing:$ISO_GAP)"
     genisoimage -rational-rock -joliet -volid "$VOLUME_ID" \
         -b isolinux/isolinux.bin -c isolinux/boot.cat \
         -no-emul-boot -boot-load-size 4 -boot-info-table \
