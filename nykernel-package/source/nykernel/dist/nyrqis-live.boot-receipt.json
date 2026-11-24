@@ -1,6 +1,6 @@
 {
   "gate": "check_live_iso.sh",
-  "generated": "2026-11-23T16:30:26Z",
+  "generated": "2026-11-23T17:11:11Z",
   "kernel_sha256": "a412da17d96000a7c5f043150d268c5d69c157ff3b3a335303eb0f1e251735ab",
   "kernel_sha256_source": "dist/nyrqis-live.kernel.sha256, the build both discs come from",
   "legs": {
