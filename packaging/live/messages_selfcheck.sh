@@ -45,9 +45,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILDER="$SCRIPT_DIR/build-live-iso.sh"
-# Resolved before any PATH is narrowed, because the block is executed with the
-# test PATH and the shell must still be findable by absolute path.
-BASH_BIN="${BASH:-$(command -v bash)}"
+# $BASH is this shell's own absolute path (bash sets it), taken before any
+# PATH is narrowed: the block runs under a test PATH and the shell must still
+# be findable.
+BASH_BIN="$BASH"
 
 FAILS=0
 ok()  { echo "  OK: $*"; }
@@ -103,7 +104,7 @@ run_block() {      # $1 block file, $2 PATH dir -> stdout, block's exit status
 }
 
 verify_fallback() {   # $1 label, $2 block file, $3 PATH dir; 0 all held
-    local label="$1" file="$2" dir="$3" gap expected out rc genisoimage_missing=0
+    local label="$1" file="$2" dir="$3" gap expected out rc
     gap="$(observed_gap "$dir")"
     expected="LOG: hybrid path unavailable (missing:$gap); building BIOS-only isolinux ISO with genisoimage"
     out="$(run_block "$file" "$dir")"
@@ -111,13 +112,11 @@ verify_fallback() {   # $1 label, $2 block file, $3 PATH dir; 0 all held
     echo "  [$label] rc=$rc"
     printf '%s\n' "$out" | sed 's/^/        /'
     if ! printf '%s\n' "$out" | grep -qxF -- "$expected"; then
-        bad "$label: the logged gap list is not the set actually missing"
-        bad "  wanted: $expected"
+        bad "$label: the logged gap list is not the set actually missing (wanted: $expected)"
         return 1
     fi
     ok "$label: the logged gap list matches what is actually missing"
-    PATH="$dir" command -v genisoimage >/dev/null 2>&1 || genisoimage_missing=1
-    if [[ "$genisoimage_missing" -eq 1 ]]; then
+    if ! PATH="$dir" command -v genisoimage >/dev/null 2>&1; then
         if [[ "$rc" -eq 1 ]] \
            && printf '%s\n' "$out" | grep -qF -- "DIE: the BIOS-only fallback runs genisoimage, and it is not on PATH"; then
             ok "$label: refused with exit 1, naming genisoimage"
