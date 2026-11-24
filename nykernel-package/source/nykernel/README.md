@@ -93,7 +93,7 @@ and mtools into a user-space root (proot + an Ubuntu base rootfs) and puts
 shims on `PATH`, so the boot gates run unchanged.
 
 From Windows (Git Bash or MSYS2), `build.sh`, `tools/make_live_iso.sh` and
-`tools/check_live_iso.sh` source `tools/win_toolchain.sh`, which builds a
+`tools/check_live_iso.sh` source `tools/win_toolchain.sh`, which exposes a
 private userspace toolchain under `~/.cache/nyrqis-win-tools` (no admin
 rights): MSYS2 with `mingw-w64-ucrt-x86_64-{binutils,gcc,qemu,mtools}` plus
 `xorriso`, the ELF cross binutils, GRUB's Windows build, and the OVMF blobs
@@ -101,10 +101,19 @@ copied to `uefi/tools/OVMF_{CODE,VARS}_4M.fd`. That script's header lists the
 exact layout, and it explains the three Windows-specific shapes the gates
 learned: two GNU ld emulations behind `as`/`ld` dispatchers, `pe_stamp`
 writing `SOURCE_DATE_EPOCH` over both PE timestamp copies because MinGW's
-linker ignores it, and the `rust-lld.exe` spelling. Host-side build scripts
-link through the `x86_64-pc-windows-gnu` port of the same pinned rustc, since
-the MSVC port needs Visual Studio's `link.exe` and the Windows SDK, which a
-plain Windows box does not have.
+linker ignores it, and the `rust-lld.exe` spelling.
+
+That cache is created by `./tools/setup_win_toolchain.sh`, one command on an
+empty tree: it downloads the pinned MSYS2 base, GRUB and OVMF archives, runs
+`pacman` for the hosted packages, and verifies every resulting version against
+the numbers the gates expect. `--plan` prints the steps and URLs without
+fetching anything; `--verify` re-checks an existing cache and exits non-zero
+if any piece is missing. It is the first thing to run on a new Windows box,
+before `build.sh`.
+
+Host-side build scripts link through the `x86_64-pc-windows-gnu` port of the
+same pinned rustc, since the MSVC port needs Visual Studio's `link.exe` and
+the Windows SDK, which a plain Windows box does not have.
 
 `./tools/gate_env.sh` checks what the gates assume -- a path short enough for
 a 108-byte unix socket (proot's monitor-socket trap), the QEMU/GRUB pair, the
