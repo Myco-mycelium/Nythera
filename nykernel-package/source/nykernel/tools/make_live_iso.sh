@@ -176,6 +176,7 @@ EOF
 mkdir -p "$(dirname "$OUT")"
 if [[ "$GRUB_MKRESCUE" == "1" ]]; then
     echo "==> packaging $OUT (GRUB El Torito, Multiboot2)"
+    ISO_ROUTE=grub-mkrescue
     grub-mkrescue -o "$OUT" "$WORK" >/dev/null 2>&1
 else
     # The grub-mkrescue-free route. `-O i386-pc-eltorito` makes grub-mkimage
@@ -184,6 +185,7 @@ else
     # find /boot/grub/grub.cfg (prefix -p) on the ISO9660 medium without a
     # separate module directory having to be probed first.
     echo "==> packaging $OUT (GRUB El Torito via grub-mkimage + xorriso, Multiboot2)"
+    ISO_ROUTE="grub-mkimage + xorriso"
     GRUB_MODDIR="${NYKERNEL_GRUB_MODULES:-$(dirname "$(command -v grub-mkimage)")/i386-pc}"
     [[ -d "$GRUB_MODDIR" ]] || { echo "FAIL: GRUB module directory $GRUB_MODDIR not found" >&2; exit 1; }
     command -v xorriso >/dev/null 2>&1 || { echo "FAIL: xorriso not found" >&2; exit 1; }
@@ -215,7 +217,10 @@ part_msdos part_gpt"
         "$WORK"
 fi
 
-[[ -s "$OUT" ]] || { echo "FAIL: grub-mkrescue produced no image" >&2; exit 1; }
+# Named by the route that actually ran: with no grub-mkrescue on the host the
+# mkimage + xorriso fallback writes this file, and blaming grub-mkrescue for it
+# sent the reader looking for a tool that was never invoked.
+[[ -s "$OUT" ]] || { echo "FAIL: $ISO_ROUTE produced no image" >&2; exit 1; }
 
 ISO_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
 printf '%s  %s\n' "$ISO_SHA" "$(basename "$OUT")" > "$OUT.sha256"
