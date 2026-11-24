@@ -172,6 +172,10 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows" \
         "all 18 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (18+2)" \
         "kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module)" \
+        "experimental elf-dyn-demo: the same .so linked WITHOUT -z relro loaded at" \
+        "GNU_RELRO outcome absent (None), GLOB_DAT slot" \
+        "(resolved dyn_value), RELATIVE slot" \
+        "(base + addend) -- OK, relocations are not gated on a RELRO region" \
         "experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the 8192 byte region and read back zero; HeapFree answered TRUE for it" \
         "experimental win32-demo: the process heap -- GetProcessHeap answered 0x48" \
         "the next 16-byte allocation answered" \

@@ -8255,3 +8255,20 @@ already used); `gate_env.sh` already classed that as a usable fallback. With
 these, the real gate runs on this host and reaches the Win32 proof
 (`heap=true`), `PASS`.
 
+**A direct pin on the relocation rule.** The RELRO-less relocation path is
+now checked on its own artifact, not only as a side effect of other demos'
+providers: `build.sh` links `prog_dyn.s` a second time WITHOUT `-z relro`
+(`userprog/userprog_dyn_norelro.elf`, verified to carry no PT_GNU_RELRO),
+and `elf_dyn_demo` loads it at 0x64000080000 with no resolver and checks
+all three kinds it carries -- GLOB_DAT, R_X86_64_64 and the symbol-less
+R_X86_64_RELATIVE. Every boot prints:
+
+  experimental elf-dyn-demo: the same .so linked WITHOUT -z relro loaded at
+  0x64000080000: GNU_RELRO outcome absent (None), GLOB_DAT slot
+  0x64000081380 == 0x640000813a0 and R_X86_64_64 slot 0x640000813a8 ==
+  0x640000813a0 (resolved dyn_value), RELATIVE slot 0x640000813b0 ==
+  0x640000813b8 (base + addend) -- OK, relocations are not gated on a
+  RELRO region
+
+and `tools/qemu_boot_test.sh` requires that line.
+

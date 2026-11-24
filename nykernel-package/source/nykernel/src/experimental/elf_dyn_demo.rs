@@ -55,6 +55,12 @@ pub const TRAP_VECTOR: u8 = 0x86;
 /// exercises.
 static DYN_PROGRAM_ELF: &[u8] = include_bytes!("../../userprog/userprog_dyn.elf");
 
+/// The SAME object (`prog_dyn.s`) linked a second time WITHOUT `-z relro`,
+/// so the file carries no PT_GNU_RELRO at all. Its only job is the direct
+/// pin on the loader rule that relocations are not conditional on a RELRO
+/// region: both of its symbol-resolved entries must still be applied.
+static DYN_NORELRO_ELF: &[u8] = include_bytes!("../../userprog/userprog_dyn_norelro.elf");
+
 /// A deliberately large, distinctive base address — loader-chosen,
 /// not baked into the file.
 const LOAD_BASE: u64 = 0x_6400_0000_000;
@@ -64,6 +70,10 @@ const LOAD_BASE: u64 = 0x_6400_0000_000;
 /// demo (matched to the hardcoded immediate in that file).
 const PRIVATE_ADDR: u64 = 0x_6400_0010_000;
 const USER_STACK_ADDR: u64 = 0x_6400_0020_000;
+
+/// Where the relro-less second build is loaded: disjoint from this
+/// demo's own image, private data page and user stack.
+const NORELRO_LOAD_BASE: u64 = 0x_6400_0080_000;
 
 /// The value `dyn_payload` must read through its resolved GOT slot
 /// (matches `dyn_value` in prog_dyn.s).
@@ -111,6 +121,65 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     let space = unsafe { (*&raw mut STAGE_SPACE).as_mut().expect("stage space missing") };
     let mut mapper = space.mapper();
     let fa = unsafe { (*&raw mut FRAME_ALLOCATOR).as_mut().unwrap() };
+
+    // A direct pin on the relocation rule, before the main object: the same
+    // `prog_dyn.s` linked WITHOUT `-z relro` has no GNU_RELRO region, so the
+    // loader's grant/revoke cycle cannot run for it -- yet its GLOB_DAT and
+    // R_X86_64_64 entries must still be applied (its segments are mapped
+    // exactly as the file declares). Without this check the rule would only
+    // be exercised indirectly, by other demos' relro-less providers.
+    let loaded_plain = elf::load(
+        DYN_NORELRO_ELF,
+        &mut mapper,
+        fa,
+        NORELRO_LOAD_BASE,
+        &elf::LoadContext::none(),
+    )
+    .unwrap_or_else(|e| panic!("failed to load the relro-less .so build: {:?}", e));
+    let plain_relro_absent = loaded_plain.relro.is_none();
+    let (plain_dyn_vaddr, plain_dyn_filesz) = elf::pt_dynamic_range(DYN_NORELRO_ELF)
+        .expect("the relro-less build must still carry a PT_DYNAMIC segment");
+    let plain_dt = elf::parse_dyn_tables(NORELRO_LOAD_BASE, plain_dyn_vaddr, plain_dyn_filesz)
+        .expect("the relro-less build's dyn tables must parse");
+    let plain_value_addr = elf::lookup_symbol(&plain_dt, NORELRO_LOAD_BASE, b"dyn_value")
+        .expect("dyn_value must resolve in the relro-less build");
+    let plain_slots = unsafe { elf::find_symbol_slots(&plain_dt, NORELRO_LOAD_BASE, b"dyn_value") }
+        .expect("the relro-less build's relocation table must be readable");
+    let plain_glob = plain_slots
+        .0
+        .expect("the relro-less build must bind dyn_value with a GLOB_DAT entry");
+    let plain_flat = plain_slots
+        .1
+        .expect("the relro-less build must bind dyn_value with an R_X86_64_64 entry");
+    let plain_glob_val = unsafe { core::ptr::read_volatile(plain_glob as *const u64) };
+    let plain_flat_val = unsafe { core::ptr::read_volatile(plain_flat as *const u64) };
+    // The third kind, R_X86_64_RELATIVE: names no symbol, so the entry's own
+    // slot and addend are the whole expectation (base + addend).
+    let plain_relative =
+        unsafe { elf::first_rela_entry_of_type(&plain_dt, NORELRO_LOAD_BASE, elf::R_X86_64_RELATIVE) }
+            .expect("the relro-less build's relocation table must be readable")
+            .expect("the relro-less build must carry an R_X86_64_RELATIVE entry (its local pointer slot)");
+    let plain_relative_val = unsafe { core::ptr::read_volatile(plain_relative.0 as *const u64) };
+    let plain_relative_expected = NORELRO_LOAD_BASE.wrapping_add(plain_relative.1);
+    let relative_ok = plain_relative_val == plain_relative_expected;
+    let plain_ok = plain_relro_absent
+        && plain_glob_val == plain_value_addr
+        && plain_flat_val == plain_value_addr
+        && relative_ok;
+    serial_println!(
+        "  experimental elf-dyn-demo: the same .so linked WITHOUT -z relro loaded at {:#x}: GNU_RELRO outcome {}, GLOB_DAT slot {:#x} == {:#x} and R_X86_64_64 slot {:#x} == {:#x} (resolved dyn_value), RELATIVE slot {:#x} == {:#x} (base + addend) -- {}",
+        NORELRO_LOAD_BASE,
+        if plain_relro_absent { "absent (None)" } else { "UNEXPECTEDLY PRESENT" },
+        plain_glob, plain_glob_val, plain_flat, plain_flat_val,
+        plain_relative.0, plain_relative_val,
+        if plain_ok { "OK, relocations are not gated on a RELRO region" } else { "FAILED" }
+    );
+    assert!(
+        plain_ok,
+        "the relro-less build's relocations were not applied (relro_absent={}, glob={:#x}, flat={:#x}, relative={:#x}, expected {:#x}/{:#x}/{:#x})",
+        plain_relro_absent, plain_glob_val, plain_flat_val, plain_relative_val,
+        plain_value_addr, plain_value_addr, plain_relative_expected
+    );
 
     let loaded = elf::load(
         DYN_PROGRAM_ELF,

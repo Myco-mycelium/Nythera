@@ -55,6 +55,21 @@ dyn_value:
 dyn_value_ptr:
     .quad dyn_value
 
+/* A LOCAL pointer slot: its target is a non-preemptible local label, so
+ * the linker cannot emit a symbol-resolved relocation for it -- it emits
+ * the OTHER dynamic kind, R_X86_64_RELATIVE (`base + addend`), which names
+ * no symbol at all. The relro-less build's direct check reads this entry
+ * and the slot it targets straight out of DT_RELA, so the type is proved
+ * applied without any pinned offset. */
+.align 8
+.globl dyn_local_ptr
+dyn_local_ptr:
+    .quad .Ldyn_local_anchor
+
+.align 8
+.Ldyn_local_anchor:
+    .quad 0x4C4C4F52454C00   /* "NORELO" marker: never dereferenced */
+
 /* A .bss export: writable after load even though the same shard's
  * RELRO pages are not -- the pairing the demo checks. */
 .section .bss

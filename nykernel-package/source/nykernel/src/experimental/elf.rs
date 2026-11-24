@@ -98,7 +98,7 @@ const DT_VERNEED: i64 = 0x6fff_fffe; // version-requirement table (what provider
 const DT_VERNEEDNUM: i64 = 0x6fff_ffff; // verneed entry count
 const DT_GNU_HASH: i64 = 0x6fff_fef5; // GNU-style hash table (the DT_HASH ALTERNATIVE when present; never replaces DT_HASH's authority over the symbol count)
 
-const R_X86_64_RELATIVE: u32 = 8;
+pub const R_X86_64_RELATIVE: u32 = 8;
 const R_X86_64_64: u32 = 1; // S + A, 64-bit: symbol value plus addend
 const R_X86_64_GLOB_DAT: u32 = 6; // S, 64-bit: the raw symbol address into a GOT slot
 const R_X86_64_JUMP_SLOT: u32 = 7; // S, 64-bit: the PLT GOT slot (same shape as GLOB_DAT here)
@@ -2499,6 +2499,36 @@ unsafe fn find_slot_of_kind(
         if sym_name == name {
             return Ok(Some(load_bias.wrapping_add(r_offset)));
         }
+    }
+    Ok(None)
+}
+
+/// The first `DT_RELA` entry of `r_type` in this object, as `(slot runtime
+/// address, addend)`. A RELATIVE entry names no symbol, so both the slot and
+/// the value it must receive are in the entry itself -- a caller can check it
+/// without pinning any layout offset.
+///
+/// # Safety
+/// The dynamic relocation tables must be mapped (the load completed).
+pub unsafe fn first_rela_entry_of_type(
+    tables: &FatDynTables,
+    load_bias: u64,
+    r_type: u32,
+) -> Result<Option<(u64, u64)>, ElfError> {
+    let (Some(rela), Some(size)) = (tables.0.rela_vaddr, tables.0.rela_size) else {
+        return Ok(None);
+    };
+    let base = load_bias.wrapping_add(rela);
+    let count = (size as usize) / RELA_ENTRY_SIZE;
+    for i in 0..count {
+        let entry_addr = base + (i * RELA_ENTRY_SIZE) as u64;
+        let r_offset = core::ptr::read_unaligned(entry_addr as *const u64);
+        let r_info = core::ptr::read_unaligned((entry_addr + 8) as *const u64);
+        if (r_info & 0xffff_ffff) as u32 != r_type {
+            continue;
+        }
+        let r_addend = core::ptr::read_unaligned((entry_addr + 16) as *const i64);
+        return Ok(Some((load_bias.wrapping_add(r_offset), r_addend as u64)));
     }
     Ok(None)
 }

@@ -95,6 +95,11 @@ echo "==> link userprog/userprog_dyn.elf (a real shared object, `ld -shared`: DT
 # default. The demo locates the slots by SYMBOL now, so the offsets below are
 # free to differ between targets.
 ld -shared -z relro --hash-style=both -o userprog/userprog_dyn.elf userprog/prog_dyn.o
+# The SAME object linked WITHOUT `-z relro` -- a file with no PT_GNU_RELRO at
+# all. elf_dyn_demo loads it as a second, distinct fixture and asserts its
+# GLOB_DAT and R_X86_64_64 entries are still applied: the loader's relocation
+# pass must not be gated on a RELRO region existing.
+ld -shared --hash-style=both -o userprog/userprog_dyn_norelro.elf userprog/prog_dyn.o
 echo "==> link userprog/userprog_cross_{lib,app}.elf (real .so PAIR for cross-object resolution: lib exports cross_value/dup_symbol; app references cross_value UNDEF via GOTPCREL and re-exports dup_symbol as the interposition control)"
 as --64 userprog/prog_cross_lib.s -o userprog/prog_cross_lib.o
 # Same stated `-z relro` as the dyn demo: the cross demo's RELRO half is
