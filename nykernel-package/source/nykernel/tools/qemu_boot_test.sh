@@ -109,7 +109,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
         "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
         "experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase 0x190100000000" \
-        "experimental win32-demo: resolved 15 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA)" \
+        "experimental win32-demo: resolved 18 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA, GetProcessHeap, HeapAlloc, HeapFree)" \
         "experimental win32-demo: negative control 6 -- the read-only volume refused a relative path" \
         "WriteFile returned 1 and wrote 33 byte(s)" \
         "bytes.bin read back byte-identically" \
@@ -138,9 +138,16 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "GetModuleFileNameA asked of that row answered the very path LoadLibraryA was given" \
         "asked WHICH FILE each handle came from, GetModuleFileNameA answered 27 bytes for the client's own row (its own byte-and-NUL compare 1 it), 22 for kernel32.dll and 24 for the runtime row while it was loaded" \
         "kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows" \
-        "all 15 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (15+2)" \
+        "all 18 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (18+2)" \
         "kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module)" \
-        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true" \
+        "experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle" \
+        "HeapAlloc refused a foreign handle (InvalidHeap), HEAP_GENERATE_EXCEPTIONS (UnsupportedHeapFlags) and a request larger than the whole 8192 byte region (HeapExhausted)" \
+        "a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the region and read back zero" \
+        "HeapFree answered TRUE once and refused the second free and an address it never issued as HeapBlockNotLive" \
+        "experimental win32-demo: the process heap -- GetProcessHeap answered 0x48" \
+        "the next 16-byte allocation answered" \
+        "both remaining blocks freed (1 and 1) -- OK, a real Windows program can allocate and free its own memory through this kernel" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true" \
         "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
         "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \
         "GetModuleHandleA(\"kernel32.dll\") answered the provider's own base 0x190000000000 in either case" \

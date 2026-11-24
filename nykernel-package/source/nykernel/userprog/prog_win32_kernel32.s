@@ -11,6 +11,7 @@
  *   tranche 5 (binding):  GetProcAddress
  *   tranche 9 (runtime):  LoadLibraryA, FreeLibrary
  *   tranche 10 (provenance): GetModuleFileNameA
+ *   tranche 11 (memory):  GetProcessHeap, HeapAlloc, HeapFree
  *
  * Why GetProcAddress is the export that completes the startup pair: a CRT
  * (or any program that loads a library late) takes the HMODULE a name
@@ -264,6 +265,43 @@ GetModuleFileNameA:
     mov %rdx, nyr_call_block+16(%rip)
     mov %r8,  nyr_call_block+24(%rip)
     movq $14, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl GetProcessHeap
+GetProcessHeap:
+    /* No arguments. Answers the handle of this process's heap -- a value a
+       CRT caches and passes to every allocation, so it must be stable for
+       the life of the process. */
+    movq $15, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl HeapAlloc
+HeapAlloc:
+    /* HANDLE hHeap in RCX, DWORD dwFlags in RDX, SIZE_T dwBytes in R8. The
+       result is a pointer ring 3 WRITES through, so the kernel carves it out
+       of a region the client's own address space owns -- never out of the
+       kernel heap, which ring 3 could not touch. */
+    mov %rcx, nyr_call_block+8(%rip)
+    mov %rdx, nyr_call_block+16(%rip)
+    mov %r8,  nyr_call_block+24(%rip)
+    movq $16, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl HeapFree
+HeapFree:
+    /* HANDLE hHeap in RCX, DWORD dwFlags in RDX, LPVOID lpMem in R8. FALSE for
+       a pointer that is not a live block of this heap, so a double free is a
+       failure a client can see rather than a corrupted allocator. */
+    mov %rcx, nyr_call_block+8(%rip)
+    mov %rdx, nyr_call_block+16(%rip)
+    mov %r8,  nyr_call_block+24(%rip)
+    movq $17, nyr_call_block+48(%rip)
     int $0x90
     mov nyr_call_block+40(%rip), %rax
     ret

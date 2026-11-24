@@ -1,4 +1,4 @@
-//! The Win32 API surface, v0: fifteen `kernel32.dll` exports performed by this
+//! The Win32 API surface, v0: eighteen `kernel32.dll` exports performed by this
 //! kernel, reachable from ring 3 through a real Windows-format DLL whose
 //! bodies are trap stubs (`userprog/prog_win32_kernel32.s`) -- including
 //! `LoadLibraryA` and `FreeLibrary`, which let the module table below grow and
@@ -7,7 +7,7 @@
 //!
 //! # What this is, precisely
 //!
-//! The first actual Win32 API surface in this kernel -- and fifteen functions
+//! The first actual Win32 API surface in this kernel -- and eighteen functions
 //! out of the tens of thousands kernel32 exposes: the four a console program
 //! needs (`GetStdHandle`, `WriteFile`, `GetTickCount`, `ExitProcess`), the
 //! three that give it files (`CreateFileA`, `ReadFile`, `CloseHandle`) against
@@ -311,7 +311,7 @@ pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
 pub const SECOND_IMAGE_BASE: u64 = 0x1901_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
-/// `0x190000001000`, size `0x210` (fifteen stubs: the twelve up to the
+/// `0x190000001000`, size `0x260` (eighteen stubs: the twelve up to the
 /// startup pair, `GetProcAddress`, the runtime pair `LoadLibraryA` and
 /// `FreeLibrary`, and `GetModuleFileNameA` appended last, so every earlier
 /// RVA stayed put -- each tranche that appended a stub re-linked and
@@ -321,7 +321,7 @@ pub const SECOND_IMAGE_BASE: u64 = 0x1901_0000_0000;
 /// export must fall inside this window, which is what lets [`dispatch`] accept
 /// a trap only from this DLL's code.
 pub const TEXT_RVA: u64 = 0x1000;
-pub const TEXT_SIZE: u64 = 0x210;
+pub const TEXT_SIZE: u64 = 0x260;
 
 /// `.data`, holding `nyr_call_block` (VMA `0x190000002000`, size `0x40`).
 pub const BLOCK_RVA: u64 = 0x2000;
@@ -498,6 +498,9 @@ pub const ERROR_OUTOFMEMORY: u32 = 14;
 pub const ERROR_INVALID_DRIVE: u32 = 15;
 pub const ERROR_NOT_READY: u32 = 21;
 pub const ERROR_NOT_SUPPORTED: u32 = 50;
+/// Windows' code for "the allocator cannot satisfy the request". Used when a
+/// heap region is exhausted or its live-block table is full.
+pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 pub const ERROR_INVALID_PARAMETER: u32 = 87;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 /// Windows' code for "the file was found and is not a loadable image". A
@@ -521,10 +524,63 @@ pub const ERROR_NOACCESS: u32 = 998;
 /// static buffer and makes "too large" a typed refusal instead of a trap.
 pub const MAX_WRITE: usize = 96;
 
+/// The value `GetProcessHeap` answers with. Windows' process heap handle is an
+/// opaque value with no documented number, so this surface picks one that is
+/// stable for the life of the process -- a client may cache it, as real
+/// programs do -- and distinct from the console handle and the volume's file
+/// handles, so a heap call made with the wrong handle is a typed refusal rather
+/// than a coincidental success.
+pub const HEAP_HANDLE: u64 = 0x48;
+
+/// `HEAP_ZERO_MEMORY`: zero the block before returning it, as Windows does.
+pub const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
+/// `HEAP_NO_SERIALIZE`: accepted and ignored. Windows uses it to skip its own
+/// heap lock; this surface has one thread and no lock, so refusing the flag
+/// would refuse a perfectly ordinary CRT allocation.
+pub const HEAP_NO_SERIALIZE: u32 = 0x0000_0001;
+/// The flags `HeapAlloc` accepts. `HEAP_GENERATE_EXCEPTIONS` (0x4) is
+/// deliberately absent: this kernel has no Windows exception dispatcher to raise
+/// into, so a client that asks for an exception instead of a NULL gets a typed
+/// refusal rather than a silent promise.
+const HEAP_ALLOC_FLAGS: u32 = HEAP_ZERO_MEMORY | HEAP_NO_SERIALIZE;
+/// The flags `HeapFree` accepts. Windows documents no zeroing or exception flag
+/// for a free, only the lock-skip, so anything else is a bad argument.
+const HEAP_FREE_FLAGS: u32 = HEAP_NO_SERIALIZE;
+
+/// The alignment every `HeapAlloc` result has. Windows' x64 heap rounds every
+/// allocation to 16 bytes, which is also the strongest alignment a C `malloc`
+/// may assume, so a block this surface hands out is usable as any fundamental
+/// type without the client needing to over-allocate.
+pub const HEAP_ALIGN: u64 = 16;
+
+/// How many live blocks the heap tracks at once. The block table is what makes
+/// `HeapFree` a checked operation (a pointer that is not a live block is a typed
+/// refusal), and a fixed table has to be sized; a full table is
+/// [`Win32Error::HeapExhausted`], not an overflow. Eight is enough for the boot
+/// proof's two-live-blocks-at-a-time sequence with room for reuse, and growing
+/// it is a real allocator design rather than a number to raise quietly.
+pub const MAX_HEAP_BLOCKS: usize = 8;
+
+/// One region [`install_heap`] registered, and one block the surface handed out
+/// of it. `base == 0` means the slot has never held a block; `live == false`
+/// with a nonzero base means the block was freed and may be handed out again.
+#[derive(Clone, Copy)]
+struct HeapBlock {
+    base: u64,
+    size: u64,
+    live: bool,
+}
+
+const EMPTY_HEAP_BLOCK: HeapBlock = HeapBlock {
+    base: 0,
+    size: 0,
+    live: false,
+};
+
 /// Every way ring 3 can ask for something this surface will not do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Win32Error {
-    /// `+48` is not one of the fifteen exports.
+    /// `+48` is not one of the eighteen exports.
     UnknownFunction,
     /// The trapping RIP is not inside kernel32.dll's `.text`.
     CallerOutsideKernel32,
@@ -591,6 +647,36 @@ pub enum Win32Error {
     /// address outside the client's mapped regions, or more bytes than a
     /// page holds. A kernel-side (loader) argument error, never a ring-3 one.
     CommandLineInvalid,
+    /// `GetProcessHeap` (and therefore `HeapAlloc`/`HeapFree`) was asked for a
+    /// heap before [`install_heap`] registered a region. A kernel-side
+    /// (loader) setup bug: Windows' process heap always exists, so this state
+    /// is not one a client can cause.
+    HeapNotInstalled,
+    /// A heap call named a handle other than the one `GetProcessHeap` answers.
+    /// The handle is a claim like every other, and the surface has exactly one
+    /// heap.
+    InvalidHeap,
+    /// `HeapAlloc`/`HeapFree` was given a flag this surface cannot honour.
+    /// `HEAP_NO_SERIALIZE` is accepted (there is one thread), `HEAP_ZERO_MEMORY`
+    /// is performed by `HeapAlloc`, and `HEAP_GENERATE_EXCEPTIONS` is refused
+    /// because this kernel has no Windows exception dispatcher to raise into.
+    UnsupportedHeapFlags,
+    /// The heap has no room for the request: the region is exhausted, or all
+    /// [`MAX_HEAP_BLOCKS`] live-block slots are taken. Windows' own code for a
+    /// heap that cannot satisfy an allocation is `ERROR_NOT_ENOUGH_MEMORY`.
+    HeapExhausted,
+    /// [`install_heap`] was given a region a heap cannot honestly use: a zero
+    /// base or size, an address or size that is not a multiple of
+    /// [`HEAP_ALIGN`], or a range that overflows. A kernel-side (loader)
+    /// argument error, never a ring-3 one.
+    HeapInstallInvalid,
+    /// `HeapFree` was given an address that is not a live block of this heap --
+    /// never allocated, already freed, or a value the client invented. Windows
+    /// does not promise to diagnose this (it is undefined behaviour there);
+    /// this surface refuses it rather than corrupting the block table, and
+    /// reports `ERROR_INVALID_ADDRESS` -- its code for "that address is not
+    /// something you may free".
+    HeapBlockNotLive,
     /// `LoadLibraryA` named a file the volume has, but the loader could not
     /// turn its bytes into a mapped image (not a PE, an image that needs
     /// rebasing, a section outside the file), or no loader hook has been
@@ -679,6 +765,12 @@ impl Win32Error {
             Win32Error::ProcNotFound => ERROR_PROC_NOT_FOUND,
             Win32Error::NameInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::CommandLineInvalid => ERROR_INVALID_PARAMETER,
+            Win32Error::HeapNotInstalled => ERROR_NOT_READY,
+            Win32Error::InvalidHeap => ERROR_INVALID_HANDLE,
+            Win32Error::UnsupportedHeapFlags => ERROR_INVALID_PARAMETER,
+            Win32Error::HeapInstallInvalid => ERROR_INVALID_PARAMETER,
+            Win32Error::HeapExhausted => ERROR_NOT_ENOUGH_MEMORY,
+            Win32Error::HeapBlockNotLive => ERROR_INVALID_ADDRESS,
             Win32Error::ImageLoadFailed => ERROR_BAD_EXE_FORMAT,
             Win32Error::File(e) => match e {
                 win32_fs::FsError::PathNotAbsolute => ERROR_PATH_NOT_FOUND,
@@ -739,6 +831,14 @@ struct Surface {
     /// per-process loader state, exactly like the regions above it.
     modules: [Option<Module>; MAX_MODULES],
     module_count: usize,
+    /// The client-writable region `HeapAlloc` carves blocks out of, or zero
+    /// while [`install_heap`] has not registered one.
+    heap_base: u64,
+    heap_size: u64,
+    /// The first byte of the region never handed out. Reuse comes from the
+    /// block table below, so this only moves forward.
+    heap_used: u64,
+    heap_blocks: [HeapBlock; MAX_HEAP_BLOCKS],
 }
 
 /// What a loader hook reports after mapping one image: the base it used, the
@@ -789,6 +889,10 @@ static mut SURFACE: Surface = Surface {
     cmdline: 0,
     modules: [None; MAX_MODULES],
     module_count: 0,
+    heap_base: 0,
+    heap_size: 0,
+    heap_used: 0,
+    heap_blocks: [EMPTY_HEAP_BLOCK; MAX_HEAP_BLOCKS],
 };
 static mut STDOUT: [u8; MAX_WRITE] = [0; MAX_WRITE];
 static STDOUT_LEN: AtomicU64 = AtomicU64::new(0);
@@ -833,6 +937,41 @@ pub unsafe fn install(client_base: u64, client_size: u64, slot_base: u64, slot_s
     surface.client_size = client_size;
     surface.slot_base = slot_base;
     surface.slot_size = slot_size;
+}
+
+/// Registers the client-writable region the process heap carves blocks from.
+///
+/// # Why the heap is a registered REGION rather than a kernel allocation
+///
+/// `HeapAlloc`'s result is a pointer ring 3 writes through, so it has to be an
+/// address in the CLIENT's address space; the kernel's own heap is
+/// supervisor-only and would fault the moment a Windows program stored to the
+/// block it was given. The caller -- the boot proof, which owns the client's
+/// address space -- maps the pages and hands the range here; this surface only
+/// records it and carves aligned blocks out of it. That is the same split the
+/// loader hook uses for `LoadLibraryA`: the surface owns the bookkeeping, the
+/// caller owns the memory.
+///
+/// Every argument is checked ([`Win32Error::HeapInstallInvalid`]) because a
+/// misaligned base would hand out pointers a client could not use as any
+/// 16-byte-aligned type, and a region that overflows would put blocks outside
+/// the mapping.
+///
+/// # Safety
+/// Must run after [`install`], at most once. `base .. base + size` must be
+/// mapped writable and user-accessible for the life of the process; the kernel
+/// writes into it for `HEAP_ZERO_MEMORY`.
+pub unsafe fn install_heap(base: u64, size: u64) -> Result<(), Win32Error> {
+    let surface = &mut *&raw mut SURFACE;
+    let aligned = base % HEAP_ALIGN == 0 && size % HEAP_ALIGN == 0;
+    if base == 0 || size < HEAP_ALIGN || !aligned || base.checked_add(size).is_none() {
+        return Err(Win32Error::HeapInstallInvalid);
+    }
+    surface.heap_base = base;
+    surface.heap_size = size;
+    surface.heap_used = 0;
+    surface.heap_blocks = [EMPTY_HEAP_BLOCK; MAX_HEAP_BLOCKS];
+    Ok(())
 }
 
 /// The command line this surface will answer `GetCommandLineA` with.
@@ -1633,6 +1772,142 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
                 return Ok(size);
             }
             Ok(copied as u64)
+        }
+        // GetProcessHeap(): the handle of this process's heap.
+        //
+        // Windows' process heap always exists; here it exists once the loader
+        // has registered a region, and a call before that is
+        // [`Win32Error::HeapNotInstalled`] rather than a made-up handle. The
+        // answer is a stable constant because a CRT caches it and passes it to
+        // every allocation for the life of the process.
+        15 => {
+            if surface.heap_base == 0 {
+                return Err(Win32Error::HeapNotInstalled);
+            }
+            Ok(HEAP_HANDLE)
+        }
+        // HeapAlloc(hHeap, dwFlags, dwBytes): the first memory this surface
+        // gives a Windows program.
+        //
+        // # Why a zero-byte request allocates
+        //
+        // Windows documents that `HeapAlloc(h, 0, 0)` returns a valid pointer
+        // to a zero-length block, and a CRT's `malloc(0)` may reach it. A
+        // surface that refused or answered NULL would break a program for a
+        // request Windows accepts, so this one reserves one alignment unit and
+        // answers a distinct, freeable address whose usable size is zero.
+        //
+        // # Why the flags are a closed set
+        //
+        // Only [`HEAP_ZERO_MEMORY`] and [`HEAP_NO_SERIALIZE`] are accepted.
+        // `HEAP_GENERATE_EXCEPTIONS` promises a Windows exception this kernel
+        // cannot raise, and an unknown bit is an argument this surface does not
+        // understand; both are refused rather than silently ignored, because a
+        // client that asked for an exception and got a NULL would mishandle the
+        // failure in exactly the way the flag exists to prevent.
+        //
+        // # Why reuse comes before the bump pointer
+        //
+        // A freed block is offered to the next request that fits, so the boot
+        // can prove a `HeapFree` actually returned memory to the heap (the next
+        // allocation answers the freed address). The block keeps its ORIGINAL
+        // size: this allocator does not split a larger freed block, which is a
+        // stated scope limit rather than a hidden one -- the waste is bounded
+        // by [`MAX_HEAP_BLOCKS`] and disappears when the block is freed again.
+        16 => {
+            if surface.heap_base == 0 {
+                return Err(Win32Error::HeapNotInstalled);
+            }
+            if args[0] != HEAP_HANDLE {
+                return Err(Win32Error::InvalidHeap);
+            }
+            let flags = args[1] as u32;
+            if flags & !HEAP_ALLOC_FLAGS != 0 {
+                return Err(Win32Error::UnsupportedHeapFlags);
+            }
+            let bytes = args[2];
+            let need = if bytes == 0 {
+                HEAP_ALIGN
+            } else {
+                bytes
+                    .checked_add(HEAP_ALIGN - 1)
+                    .ok_or(Win32Error::HeapExhausted)?
+                    / HEAP_ALIGN
+                    * HEAP_ALIGN
+            };
+            if need > surface.heap_size {
+                return Err(Win32Error::HeapExhausted);
+            }
+            let mut chosen = None;
+            for i in 0..MAX_HEAP_BLOCKS {
+                let block = surface.heap_blocks[i];
+                if !block.live && block.base != 0 && block.size >= need {
+                    chosen = Some(i);
+                    break;
+                }
+            }
+            let address = match chosen {
+                Some(i) => {
+                    surface.heap_blocks[i].live = true;
+                    surface.heap_blocks[i].base
+                }
+                None => {
+                    let end = surface
+                        .heap_used
+                        .checked_add(need)
+                        .ok_or(Win32Error::HeapExhausted)?;
+                    if end > surface.heap_size {
+                        return Err(Win32Error::HeapExhausted);
+                    }
+                    let slot = (0..MAX_HEAP_BLOCKS)
+                        .find(|&i| surface.heap_blocks[i].base == 0)
+                        .ok_or(Win32Error::HeapExhausted)?;
+                    let address = surface.heap_base + surface.heap_used;
+                    surface.heap_blocks[slot] = HeapBlock {
+                        base: address,
+                        size: need,
+                        live: true,
+                    };
+                    surface.heap_used = end;
+                    address
+                }
+            };
+            if flags & HEAP_ZERO_MEMORY != 0 {
+                // SAFETY: `address .. address + need` lies inside the region
+                // `install_heap` was given, which the caller mapped writable.
+                core::ptr::write_bytes(address as *mut u8, 0, need as usize);
+            }
+            Ok(address)
+        }
+        // HeapFree(hHeap, dwFlags, lpMem): return a block to the heap.
+        //
+        // The block must be LIVE, and the lookup is by base, because that is
+        // all Windows' prototype gives this call. A pointer that is not a live
+        // block -- never allocated, already freed, or invented -- is refused as
+        // [`Win32Error::HeapBlockNotLive`] instead of corrupting the table, so a
+        // double free FAILS the way a client's own bug should and the boot can
+        // prove it from ring 3.
+        17 => {
+            if surface.heap_base == 0 {
+                return Err(Win32Error::HeapNotInstalled);
+            }
+            if args[0] != HEAP_HANDLE {
+                return Err(Win32Error::InvalidHeap);
+            }
+            if args[1] as u32 & !HEAP_FREE_FLAGS != 0 {
+                return Err(Win32Error::UnsupportedHeapFlags);
+            }
+            let live = surface
+                .heap_blocks
+                .iter_mut()
+                .find(|block| block.live && block.base == args[2]);
+            match live {
+                Some(block) => {
+                    block.live = false;
+                    Ok(1) // TRUE
+                }
+                None => Err(Win32Error::HeapBlockNotLive),
+            }
         }
         _ => Err(Win32Error::UnknownFunction),
     }

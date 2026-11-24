@@ -8134,3 +8134,99 @@ the v0.9 limit list says about the table itself still holds: one runtime slot,
 no unmap on `FreeLibrary`, bare names for the handle argument of
 `GetModuleHandleA`, eight forwarder hops, one code per failure family, no
 forwarder-string validation at install time, one last-error cell and no TEB.
+
+## The Win32 API surface v1.1: the process heap -- the first memory a Windows program owns (2026-11-24)
+
+Everything the surface had given a Windows console program until now was a
+handle to something the kernel owned: a console, a file, a module, a last-error
+cell. `HeapAlloc` is the first call whose result the PROGRAM owns -- a pointer
+ring 3 writes through -- and that changes what the surface has to know. The
+kernel's own heap is supervisor-only, so a block out of it would fault the
+moment a Windows program stored to it. So the heap here is a client-writable
+REGION: the boot proof maps two pages at `0x4D00_0010_0000`, `install_heap`
+records the range, and `HeapAlloc` carves 16-byte-aligned blocks out of it. That
+is the same split `LoadLibraryA` already uses -- the surface owns the
+bookkeeping, the loader owns the address space.
+
+Three exports, eighteen in all:
+
+- `GetProcessHeap()` answers one stable handle (`0x48`). A call before a region
+  is registered is the typed `HeapNotInstalled` (`ERROR_NOT_READY`), never an
+  invented handle.
+- `HeapAlloc(hHeap, dwFlags, dwBytes)` accepts `HEAP_ZERO_MEMORY` and
+  `HEAP_NO_SERIALIZE`; `HEAP_GENERATE_EXCEPTIONS` is REFUSED because this
+  kernel has no Windows exception dispatcher to raise into, and an unknown bit
+  is a bad argument. A zero-byte request gets a distinct, freeable address
+  (Windows documents that shape, and a CRT's `malloc(0)` can reach it), so one
+  alignment unit is reserved for it. A freed block is offered to the next
+  request that fits, which is what makes `HeapFree` a RETURN of memory rather
+  than a flag; a reused block keeps its original size (no splitting -- stated,
+  not hidden). A request larger than the region, a full block table, or an
+  overflowing size is `HeapExhausted` (`ERROR_NOT_ENOUGH_MEMORY`).
+- `HeapFree(hHeap, dwFlags, lpMem)` requires a LIVE block of this heap. A
+  double free, an address never issued, or a value the client invented is
+  `HeapBlockNotLive` (`ERROR_INVALID_ADDRESS`) instead of a corrupted table --
+  Windows leaves this undefined, so refusing it is the honest half of the
+  contract.
+
+`install_heap` is checked by name too (`HeapInstallInvalid`,
+`ERROR_INVALID_PARAMETER`): a zero or misaligned base/size, or a range that
+overflows, would hand out pointers a client could not use or that fall outside
+the mapping.
+
+**The ring-3 proof** (a real PE32+ console client, through real trap stubs):
+`GetProcessHeap` answered `0x48`; `HeapAlloc(h, 0, 64)` and
+`HeapAlloc(h, HEAP_ZERO_MEMORY, 32)` answered `0x4d0000100020` and
+`0x4d0000100000` -- 16-byte aligned, inside the region, disjoint, and the zeroed
+block read back zero; the client WROTE `0x41` through its own allocation and
+read it back (a kernel-heap-backed allocator would fault there); `HeapFree`
+answered 1 and the second free 0 with `ERROR_INVALID_ADDRESS` (487); the next
+16-byte allocation answered the freed address, so Free returned memory; a
+foreign handle answered 0 with `ERROR_INVALID_HANDLE` (6),
+`HEAP_GENERATE_EXCEPTIONS` 0 with `ERROR_INVALID_PARAMETER` (87), a 1 MiB
+request 0 with `ERROR_NOT_ENOUGH_MEMORY` (8), and a free of an address never
+issued 0 with 487 again. Both blocks still live were freed at the end. The
+kernel-side control (`3b`) exercises the same rules from the other side,
+including a live block that reads back zero, before ring 3 runs.
+
+**Last verified boot transcript** (a live BIOS ISO boot; the Win32 chain entered
+directly for this run because of the unrelated `elf_dyn_demo` limit below):
+
+```
+  experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000; export table declares "kernel32.dll" with 18 name(s), all inside .text (+0x1000..+0x1260); call block magic 0x4e59525733325f31 at +0x2000 -- OK
+  experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; HeapAlloc refused a foreign handle (InvalidHeap), HEAP_GENERATE_EXCEPTIONS (UnsupportedHeapFlags) and a request larger than the whole 8192 byte region (HeapExhausted); a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the region and read back zero; HeapFree answered TRUE once and refused the second free and an address it never issued as HeapBlockNotLive -- OK, the first memory a Windows program can allocate is this kernel's, checked block by block
+  experimental win32-demo: the process heap -- GetProcessHeap answered 0x48; HeapAlloc(0, 64) and HeapAlloc(HEAP_ZERO_MEMORY, 32) answered 0x4d0000100020 and 0x4d0000100000, both 16-byte aligned inside the region and disjoint (1), the zeroed block read back zero (1), and the client WRITING and reading a byte through its own allocation 1; HeapFree answered 1 then 0, with ERROR_INVALID_ADDRESS (487) on the double free; the next 16-byte allocation answered 0x4d0000100020 -- the freed address, so Free returned memory (1); a foreign handle answered 0x0 with ERROR_INVALID_HANDLE (6), HEAP_GENERATE_EXCEPTIONS answered 0x0 with ERROR_INVALID_PARAMETER (87), a 1 MiB request answered 0x0 with ERROR_NOT_ENOUGH_MEMORY (8), and a free of an address never issued answered 0x0 with ERROR_INVALID_ADDRESS (487); both remaining blocks freed (1 and 1) -- OK, a real Windows program can allocate and free its own memory through this kernel
+  experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true; ...
+```
+
+`tools/qemu_boot_test.sh` pins the control-3b line, the heap self-test line's
+opening and its "both remaining blocks freed (1 and 1)" clause, the new
+`heap=true` on the checks line, and the 18-name/18-import load lines.
+
+**Measured.** `kernel32.dll` `.text` `0x210 -> 0x260` (three stubs appended last:
+`GetProcessHeap` at RVA `0x11ED`, `HeapAlloc` `0x1202`, `HeapFree` `0x122C`, so
+every earlier RVA is unchanged); the client's `.idata`/`.text` grew to import
+all three; kernel32 declares 18 exports; the client imports all 18 and raises
+18 refusals (the previous 13 plus double free, foreign handle, exceptions flag,
+oversize request and unissued free).
+
+**Two build defects this increment exposed, both fixed:**
+
+1. binutils 2.45's PE linker emits the synthesized `.idata` as READONLY, so the
+   loader correctly refused the client with `ImportSectionNotWritable` (2.42 set
+   the flag). `tools/patch_pe_idata.py` restores `IMAGE_SCN_MEM_WRITE` -- the
+   section the loader writes at load time SHOULD declare it -- and the build
+   runs it after the client link, so the artifact is correct on either ld. The
+   loader's rule was not loosened.
+2. The PIE fixture's RELRO premise ("a default `ld -pie` build always has one")
+   is true of a Linux-targeted ld and false of the generic `x86_64-elf` target
+   on a Windows host; `build.sh` now states `-z relro` explicitly instead of
+   inheriting a host-dependent default.
+
+**Limits.** One heap, one handle, a bump allocator with an eight-entry live-block
+table, first-fit reuse without splitting, no coalescing, no `HeapReAlloc`,
+`HeapSize`, `HeapValidate` or `HeapCreate`, no low-fragmentation-heap API, and
+no per-thread last error (still one cell per kernel, as v0.2 stated). The region
+is mapped by the boot proof rather than requested by the program, so there is no
+growable heap yet. `HEAP_GENERATE_EXCEPTIONS` is refused by design; a client
+that needs it needs the exception dispatcher this kernel does not have.

@@ -117,6 +117,20 @@
  *     GetTickCount(); GetLastError()                // 5 still: success does
  *                                                   // NOT clear the code
  *
+ *   tranche 11 -- the process heap, the first memory this program owns:
+ *     h = GetProcessHeap()                        // a stable handle
+ *     p1 = HeapAlloc(h, 0, 64)                     // 16-aligned, in the
+ *                                                  // kernel-registered region
+ *     p2 = HeapAlloc(h, HEAP_ZERO_MEMORY, 32)      // distinct, zeroed
+ *     p1[0] = 0x41; p1[0] == 0x41                   // 1: writable
+ *     HeapFree(h, 0, p1)                            // 1
+ *     HeapFree(h, 0, p1)                            // 0, ERROR_INVALID_ADDRESS
+ *     HeapAlloc(h, 0, 16) == p1                     // 1: the block was reused
+ *     HeapAlloc(0x1234, 0, 16)                      // 0, ERROR_INVALID_HANDLE
+ *     HeapAlloc(h, 4, 16)                            // 0, ERROR_INVALID_PARAMETER
+ *     HeapAlloc(h, 0, 1<<20)                         // 0, ERROR_NOT_ENOUGH_MEMORY
+ *     HeapFree(h, 0, 0x1234)                         // 0, ERROR_INVALID_ADDRESS
+ *
  * Every result is written to the private slot page the kernel maps for
  * this demo (0x4d0000000000), which is zeroed before ring 3 runs, and the
  * completion trap (`int $0x91`) hands those bytes back to the kernel to
@@ -888,6 +902,179 @@ _start:
     movabs $SLOT_FILE_BAD_ERR, %rdi
     mov %rax, (%rdi)
 
+    /* ---- tranche 11: the process heap ---- */
+
+    /* h = GetProcessHeap(): the handle a CRT caches and hands to every
+       allocation. */
+    call *__imp_GetProcessHeap(%rip)
+    mov %rax, %r15
+    movabs $SLOT_HEAP_HANDLE, %rdi
+    mov %rax, (%rdi)
+
+    /* p1 = HeapAlloc(h, 0, 64). The answer must be a pointer this program
+       can WRITE through -- the kernel carves it out of a region this
+       process's own address space owns. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov $64, %r8d
+    call *__imp_HeapAlloc(%rip)
+    mov %rax, %r14
+    movabs $SLOT_HEAP_P1, %rdi
+    mov %rax, (%rdi)
+
+    /* p2 = HeapAlloc(h, HEAP_ZERO_MEMORY, 32): a second, disjoint block,
+       zeroed before it is handed over. Both facts are checked, because a
+       kernel that returned the same address twice would still satisfy a
+       "non-NULL" test. */
+    mov %r15, %rcx
+    mov $8, %edx
+    mov $32, %r8d
+    call *__imp_HeapAlloc(%rip)
+    movabs $SLOT_HEAP_P2, %rdi
+    mov %rax, (%rdi)
+    xor %ecx, %ecx
+    test %rax, %rax
+    jz 9f
+    cmpq $0, (%rax)
+    jne 9f
+    cmpq $0, 8(%rax)
+    jne 9f
+    mov $1, %ecx
+9:
+    movabs $SLOT_HEAP_ZERO, %rdi
+    mov %rcx, (%rdi)
+
+    /* Disjointness: p1 + 64 <= p2 or p2 + 32 <= p1. Two live allocations
+       that overlap would let a write through one corrupt the other. */
+    movabs $SLOT_HEAP_P2, %rdi
+    mov (%rdi), %rdx
+    xor %ecx, %ecx
+    test %r14, %r14
+    jz 8f
+    test %rdx, %rdx
+    jz 8f
+    lea 64(%r14), %rax
+    cmp %rdx, %rax
+    jbe 7f
+    lea 32(%rdx), %rax
+    cmp %r14, %rax
+    jbe 7f
+    jmp 8f
+7:
+    mov $1, %ecx
+8:
+    movabs $SLOT_HEAP_DISTINCT, %rdi
+    mov %rcx, (%rdi)
+
+    /* Write through the block, then read it back: a pointer into a page the
+       client cannot touch would fault here, which is exactly the bug a
+       kernel-heap-backed allocator would have. */
+    xor %ecx, %ecx
+    test %r14, %r14
+    jz 6f
+    movb $0x41, (%r14)
+    cmpb $0x41, (%r14)
+    sete %cl
+6:
+    movabs $SLOT_HEAP_RW, %rdi
+    mov %rcx, (%rdi)
+
+    /* HeapFree(p1), then Free it AGAIN: the first is TRUE, the second is
+       FALSE with ERROR_INVALID_ADDRESS -- a double free is a client bug, and
+       Windows' own allocator would corrupt its metadata rather than report it. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov %r14, %r8
+    call *__imp_HeapFree(%rip)
+    movabs $SLOT_HEAP_FREE, %rdi
+    mov %rax, (%rdi)
+
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov %r14, %r8
+    call *__imp_HeapFree(%rip)
+    movabs $SLOT_HEAP_FREE2, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_HEAP_FREE2_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* The NEXT allocation of a fitting size must answer the freed address:
+       that is what makes Free a return of memory rather than a flag. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov $16, %r8d
+    call *__imp_HeapAlloc(%rip)
+    xor %ecx, %ecx
+    cmp %r14, %rax
+    sete %cl
+    movabs $SLOT_HEAP_REUSE, %rdi
+    mov %rcx, (%rdi)
+    movabs $SLOT_HEAP_P3, %rdi
+    mov %rax, (%rdi)
+
+    /* A handle that is not this process's heap: NULL, ERROR_INVALID_HANDLE. */
+    mov $0x1234, %ecx
+    xor %edx, %edx
+    mov $16, %r8d
+    call *__imp_HeapAlloc(%rip)
+    movabs $SLOT_HEAP_BADH, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_HEAP_BADH_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* HEAP_GENERATE_EXCEPTIONS (0x4): a Windows exception this kernel has no
+       dispatcher for, so the flag is refused rather than silently dropped. */
+    mov %r15, %rcx
+    mov $4, %edx
+    mov $16, %r8d
+    call *__imp_HeapAlloc(%rip)
+    movabs $SLOT_HEAP_BADF, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_HEAP_BADF_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* Larger than the whole heap region: NULL, ERROR_NOT_ENOUGH_MEMORY. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov $0x100000, %r8d
+    call *__imp_HeapAlloc(%rip)
+    movabs $SLOT_HEAP_BIG, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_HEAP_BIG_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* Freeing an address this heap never issued: FALSE, ERROR_INVALID_ADDRESS. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov $0x1234, %r8
+    call *__imp_HeapFree(%rip)
+    movabs $SLOT_HEAP_BADFREE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_HEAP_BADFREE_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* Return the two blocks still live: p3 (the reused one) and p2. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    movabs $SLOT_HEAP_P3, %r8
+    mov (%r8), %r8
+    call *__imp_HeapFree(%rip)
+    movabs $SLOT_HEAP_FREE_P3, %rdi
+    mov %rax, (%rdi)
+
+    mov %r15, %rcx
+    xor %edx, %edx
+    movabs $SLOT_HEAP_P2, %r8
+    mov (%r8), %r8
+    call *__imp_HeapFree(%rip)
+    movabs $SLOT_HEAP_FREE_P2, %rdi
+    mov %rax, (%rdi)
+
     /* ---- tranche 1 again: the clock, then exit ---- */
 
     call *__imp_GetTickCount(%rip)
@@ -1114,6 +1301,31 @@ proc_dyn_value:
     .set SLOT_FILE_ZERO_ERR,    SLOT_BASE + 0x880 /* ... 122 */
     .set buf_trunc,             SLOT_BASE + 0x890
     .set buf_file,              SLOT_BASE + 0x8a0
+/* tranche 11: the process heap's answers, above the file-name buffers and
+   below the page end. `P1`/`P2`/`P3` are addresses the kernel chose, so every
+   assertion about them is relational (distinct, disjoint, reused) or about the
+   bytes written through them -- never a constant this program guessed. */
+    .set SLOT_HEAP_HANDLE,      SLOT_BASE + 0x900
+    .set SLOT_HEAP_P1,          SLOT_BASE + 0x908
+    .set SLOT_HEAP_P2,          SLOT_BASE + 0x910
+    .set SLOT_HEAP_ZERO,        SLOT_BASE + 0x918
+    .set SLOT_HEAP_DISTINCT,    SLOT_BASE + 0x920
+    .set SLOT_HEAP_RW,          SLOT_BASE + 0x928
+    .set SLOT_HEAP_FREE,        SLOT_BASE + 0x930
+    .set SLOT_HEAP_FREE2,       SLOT_BASE + 0x938
+    .set SLOT_HEAP_FREE2_ERR,   SLOT_BASE + 0x940
+    .set SLOT_HEAP_REUSE,       SLOT_BASE + 0x948
+    .set SLOT_HEAP_P3,          SLOT_BASE + 0x950
+    .set SLOT_HEAP_BADH,        SLOT_BASE + 0x958
+    .set SLOT_HEAP_BADH_ERR,    SLOT_BASE + 0x960
+    .set SLOT_HEAP_BADF,        SLOT_BASE + 0x968
+    .set SLOT_HEAP_BADF_ERR,    SLOT_BASE + 0x970
+    .set SLOT_HEAP_BIG,         SLOT_BASE + 0x978
+    .set SLOT_HEAP_BIG_ERR,     SLOT_BASE + 0x980
+    .set SLOT_HEAP_BADFREE,     SLOT_BASE + 0x988
+    .set SLOT_HEAP_BADFREE_ERR, SLOT_BASE + 0x990
+    .set SLOT_HEAP_FREE_P3,     SLOT_BASE + 0x998
+    .set SLOT_HEAP_FREE_P2,     SLOT_BASE + 0x9a0
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180
