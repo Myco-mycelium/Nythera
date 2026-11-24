@@ -61,6 +61,12 @@ static DYN_PROGRAM_ELF: &[u8] = include_bytes!("../../userprog/userprog_dyn.elf"
 /// region: both of its symbol-resolved entries must still be applied.
 static DYN_NORELRO_ELF: &[u8] = include_bytes!("../../userprog/userprog_dyn_norelro.elf");
 
+/// The no-RELRO NEGATIVE CONTROL: a relro-less `.so` (also linked without
+/// `-z relro`) whose only dynamic relocation is a GLOB_DAT against a symbol
+/// the file does not define, loaded with no resolver. The loader must refuse
+/// the load with the typed error rather than succeed with a zeroed slot.
+static DYN_NORELRO_BAD_ELF: &[u8] = include_bytes!("../../userprog/userprog_norelro_bad.elf");
+
 /// A deliberately large, distinctive base address — loader-chosen,
 /// not baked into the file.
 const LOAD_BASE: u64 = 0x_6400_0000_000;
@@ -74,6 +80,12 @@ const USER_STACK_ADDR: u64 = 0x_6400_0020_000;
 /// Where the relro-less second build is loaded: disjoint from this
 /// demo's own image, private data page and user stack.
 const NORELRO_LOAD_BASE: u64 = 0x_6400_0080_000;
+
+/// Where the negative-control object is offered: disjoint from every other
+/// mapping this demo makes. The refusal happens after the segments are
+/// mapped (relocation is the failing step), so those pages stay mapped for
+/// the rest of the boot -- this demo never reuses the base.
+const NORELRO_BAD_LOAD_BASE: u64 = 0x_6400_000C_0000;
 
 /// The value `dyn_payload` must read through its resolved GOT slot
 /// (matches `dyn_value` in prog_dyn.s).
@@ -179,6 +191,37 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         "the relro-less build's relocations were not applied (relro_absent={}, glob={:#x}, flat={:#x}, relative={:#x}, expected {:#x}/{:#x}/{:#x})",
         plain_relro_absent, plain_glob_val, plain_flat_val, plain_relative_val,
         plain_value_addr, plain_value_addr, plain_relative_expected
+    );
+
+    // The matching NEGATIVE control for the same arm: a relro-less object
+    // with an UNSATISFIABLE relocation (a GLOB_DAT against a symbol it does
+    // not define, no resolver) must fail the load with a typed error. A
+    // loader that skipped relocations whenever RELRO was absent -- the old
+    // shape -- would report success here with the slot still zero, which is
+    // exactly what this refuses to let pass.
+    let refused = elf::load(
+        DYN_NORELRO_BAD_ELF,
+        &mut mapper,
+        fa,
+        NORELRO_BAD_LOAD_BASE,
+        &elf::LoadContext::none(),
+    );
+    let refused_ok = matches!(refused, Err(elf::ElfError::UndefinedSymbol));
+    if let Err(e) = &refused {
+        serial_println!(
+            "  experimental elf-dyn-demo: the relro-less NEGATIVE CONTROL (one GLOB_DAT against an undefined symbol, loaded with no resolver) was refused with {:?} -- {}",
+            e,
+            if refused_ok {
+                "OK, an unsatisfiable relocation inside a relro-less object fails the load instead of leaving a zeroed slot"
+            } else {
+                "WRONG REFUSAL SHAPE"
+            }
+        );
+    }
+    assert!(
+        refused_ok,
+        "the relro-less negative control must be refused with UndefinedSymbol, not leave a zeroed slot (refused={})",
+        refused.is_ok()
     );
 
     let loaded = elf::load(

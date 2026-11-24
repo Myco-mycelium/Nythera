@@ -176,6 +176,9 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "GNU_RELRO outcome absent (None), GLOB_DAT slot" \
         "(resolved dyn_value), RELATIVE slot" \
         "(base + addend) -- OK, relocations are not gated on a RELRO region" \
+        "the relro-less NEGATIVE CONTROL" \
+        "was refused with UndefinedSymbol" \
+        "unsatisfiable relocation inside a relro-less object fails the load instead of leaving a zeroed slot" \
         "experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the 8192 byte region and read back zero; HeapFree answered TRUE for it" \
         "experimental win32-demo: the process heap -- GetProcessHeap answered 0x48" \
         "the next 16-byte allocation answered" \

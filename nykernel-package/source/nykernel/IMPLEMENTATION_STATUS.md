@@ -8272,3 +8272,18 @@ R_X86_64_RELATIVE. Every boot prints:
 
 and `tools/qemu_boot_test.sh` requires that line.
 
+**The matching negative control.** `build.sh` also links
+`userprog/prog_norelro_bad.s` WITHOUT `-z relro`: a relro-less object whose
+only dynamic relocation is a GLOB_DAT against a symbol it does not define.
+`elf_dyn_demo` offers it to `elf::load` with no resolver and requires the
+typed refusal -- a loader that skipped relocations whenever RELRO was absent
+(the old shape) would have returned success with the slot left zero. Every
+boot prints:
+
+  experimental elf-dyn-demo: the relro-less NEGATIVE CONTROL (one GLOB_DAT
+  against an undefined symbol, loaded with no resolver) was refused with
+  UndefinedSymbol -- OK, an unsatisfiable relocation inside a relro-less
+  object fails the load instead of leaving a zeroed slot
+
+and `tools/qemu_boot_test.sh` requires that line too.
+

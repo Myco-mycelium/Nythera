@@ -100,6 +100,11 @@ ld -shared -z relro --hash-style=both -o userprog/userprog_dyn.elf userprog/prog
 # GLOB_DAT and R_X86_64_64 entries are still applied: the loader's relocation
 # pass must not be gated on a RELRO region existing.
 ld -shared --hash-style=both -o userprog/userprog_dyn_norelro.elf userprog/prog_dyn.o
+# The no-RELRO negative control: a relro-less object whose ONE GLOB_DAT entry
+# names an undefined symbol, so the loader must REFUSE the load instead of
+# succeeding with a zeroed slot.
+as --64 userprog/prog_norelro_bad.s -o userprog/prog_norelro_bad.o
+ld -shared --hash-style=both -o userprog/userprog_norelro_bad.elf userprog/prog_norelro_bad.o
 echo "==> link userprog/userprog_cross_{lib,app}.elf (real .so PAIR for cross-object resolution: lib exports cross_value/dup_symbol; app references cross_value UNDEF via GOTPCREL and re-exports dup_symbol as the interposition control)"
 as --64 userprog/prog_cross_lib.s -o userprog/prog_cross_lib.o
 # Same stated `-z relro` as the dyn demo: the cross demo's RELRO half is
