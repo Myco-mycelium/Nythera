@@ -906,8 +906,7 @@ if $HYBRID; then
     grub-mkrescue -o "$OUTPUT" "$ISO_ROOT" \
         -- -volid "$VOLUME_ID" -joliet on
 else
-    # The old line said "xorriso or grub bins missing" even when xorriso WAS
-    # installed, and never named genisoimage -- the tool this branch runs.
+    # What actually disqualified the hybrid path: the old line guessed.
     ISO_GAP=""
     grub-mkrescue --version >/dev/null 2>&1 || ISO_GAP="$ISO_GAP grub-mkrescue"
     [[ -d /usr/lib/grub/i386-pc || -d /usr/lib/grub/x86_64-efi ]] \
