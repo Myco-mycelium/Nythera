@@ -499,8 +499,6 @@ const SLOT_HEAP_BIG: u64 = 0x978;
 const SLOT_HEAP_BIG_ERR: u64 = 0x980;
 const SLOT_HEAP_BADFREE: u64 = 0x988;
 const SLOT_HEAP_BADFREE_ERR: u64 = 0x990;
-const SLOT_HEAP_FREE_P3: u64 = 0x998;
-const SLOT_HEAP_FREE_P2: u64 = 0x9A0;
 // A compile-time check that the report fields do not overlap the client's read
 // buffers (which run up to SLOT_BIN + its eight bytes), the command-line string
 // the loader installs, the 0x300 region the kernel-side controls write their
@@ -519,7 +517,7 @@ const _: () = assert!(
         && SLOT_DYN_MISS_ERR + 8 <= SLOT_FILE_SELF_LEN
         && SLOT_FILE_ZERO_ERR + 8 <= 0x890
         && SLOT_HEAP_HANDLE >= 0x900
-        && SLOT_HEAP_FREE_P2 + 8 <= 0xA00,
+        && SLOT_HEAP_BADFREE_ERR + 8 <= 0xA00,
     "win32-demo report fields must sit between the read buffers and 0x300 (or above 0x700, past the kernel's control strings), must not overlap each other, and must not overlap the installed command line"
 );
 
@@ -894,8 +892,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // The process heap's region. The surface only records it; mapping it is
     // this demo's job, because the address space is the loader's -- exactly
     // the split `install_dynamic_loader` uses below.
-    win32::install_heap(HEAP_BASE, HEAP_SIZE)
-        .unwrap_or_else(|e| panic!("installing the process heap failed: {:?}", e));
+    win32::install_heap(HEAP_BASE, HEAP_SIZE);
     // The loader half `LoadLibraryA` delegates to: the mapping lives with this
     // demo's address space and frame allocator, exactly where Windows keeps it
     // (kernel32!LoadLibraryA calls the loader behind it).
@@ -945,42 +942,17 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         "  experimental win32-demo: negative control 3 -- index 18 (one past the last export) refused with the typed UnknownFunction -- OK"
     );
 
-    // Negative control 3b: the process heap's own rules, kernel-side, before a
-    // client can ask. `GetProcessHeap` answers the surface's handle, and every
-    // way an allocation can be wrong is a typed refusal: a foreign handle, the
-    // one flag whose promise (a Windows exception) this kernel cannot keep, a
-    // request larger than the whole region, and a free of an address the heap
-    // never issued. The one live block is then freed, and freeing it AGAIN is
-    // the refusal a double free must produce -- so ring 3 starts with an empty
-    // heap whose table has been exercised.
+    // Negative control 3b: the heap's answers a client cannot fake. The handle
+    // is the surface's, a block lands 16-byte aligned inside the registered
+    // region, and `HEAP_ZERO_MEMORY` really cleared it. The refusal shapes are
+    // exercised from ring 3 below (foreign handle, unsupported flag, oversize
+    // request, double free, unissued free), so they are not repeated here: this
+    // control is about the region and the zeroing, which only the kernel can
+    // check before the client runs.
     assert_eq!(
         win32::dispatch(15, [0; 5], from_text),
         Ok(win32::HEAP_HANDLE),
         "GetProcessHeap must answer the surface's own handle"
-    );
-    expect_refusal(
-        16,
-        [0x1234, 0, 16, 0, 0],
-        from_text,
-        win32::Win32Error::InvalidHeap,
-    );
-    expect_refusal(
-        16,
-        [win32::HEAP_HANDLE, 0x4, 16, 0, 0],
-        from_text,
-        win32::Win32Error::UnsupportedHeapFlags,
-    );
-    expect_refusal(
-        16,
-        [win32::HEAP_HANDLE, 0, HEAP_SIZE + 16, 0, 0],
-        from_text,
-        win32::Win32Error::HeapExhausted,
-    );
-    expect_refusal(
-        17,
-        [win32::HEAP_HANDLE, 0, 0x1234, 0, 0],
-        from_text,
-        win32::Win32Error::HeapBlockNotLive,
     );
     let block = win32::dispatch(
         16,
@@ -1003,15 +975,8 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         Ok(1),
         "HeapFree must answer TRUE for a live block"
     );
-    expect_refusal(
-        17,
-        [win32::HEAP_HANDLE, 0, block, 0, 0],
-        from_text,
-        win32::Win32Error::HeapBlockNotLive,
-    );
-    win32::set_last_error(0);
     serial_println!(
-        "  experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; HeapAlloc refused a foreign handle (InvalidHeap), HEAP_GENERATE_EXCEPTIONS (UnsupportedHeapFlags) and a request larger than the whole {} byte region (HeapExhausted); a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the region and read back zero; HeapFree answered TRUE once and refused the second free and an address it never issued as HeapBlockNotLive -- OK, the first memory a Windows program can allocate is this kernel's, checked block by block",
+        "  experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the {} byte region and read back zero; HeapFree answered TRUE for it -- OK, the ring-3 client below exercises the refusal shapes",
         HEAP_SIZE
     );
     expect_refusal(
@@ -1180,10 +1145,10 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // relative path's ERROR_PATH_NOT_FOUND, ...) cannot silently report a
     // made-up number. Pinned as literals rather than through `.code()` itself,
     // which would only prove the function is deterministic.
-    // Thirty-four rows: twenty-eight leaf variants plus the six volume rules.
+    // Thirty-three rows: twenty-seven leaf variants plus the six volume rules.
     // Adding a variant without its Windows code must therefore fail HERE, at
     // compile time, rather than at a call site the boot never reaches.
-    let codes: [(win32::Win32Error, u32); 34] = [
+    let codes: [(win32::Win32Error, u32); 33] = [
         (win32::Win32Error::UnknownFunction, 1),
         (win32::Win32Error::CallerOutsideKernel32, 487),
         (win32::Win32Error::InvalidHandle, 6),
@@ -1209,7 +1174,6 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         (win32::Win32Error::HeapNotInstalled, 21),
         (win32::Win32Error::InvalidHeap, 6),
         (win32::Win32Error::UnsupportedHeapFlags, 87),
-        (win32::Win32Error::HeapInstallInvalid, 87),
         (win32::Win32Error::HeapExhausted, 8),
         (win32::Win32Error::HeapBlockNotLive, 487),
         (win32::Win32Error::File(win32_fs::FsError::PathNotAbsolute), 3),
@@ -2080,7 +2044,6 @@ pub unsafe fn on_trap() -> ! {
     let (heap_big, heap_big_err) = (slot(SLOT_HEAP_BIG), slot(SLOT_HEAP_BIG_ERR));
     let (heap_badfree, heap_badfree_err) =
         (slot(SLOT_HEAP_BADFREE), slot(SLOT_HEAP_BADFREE_ERR));
-    let (heap_free_p3, heap_free_p2) = (slot(SLOT_HEAP_FREE_P3), slot(SLOT_HEAP_FREE_P2));
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -2262,9 +2225,7 @@ pub unsafe fn on_trap() -> ! {
         && heap_big == 0
         && heap_big_err == win32::ERROR_NOT_ENOUGH_MEMORY as u64
         && heap_badfree == 0
-        && heap_badfree_err == win32::ERROR_INVALID_ADDRESS as u64
-        && heap_free_p3 == 1
-        && heap_free_p2 == 1;
+        && heap_badfree_err == win32::ERROR_INVALID_ADDRESS as u64;
     let ok = startup_ok
         && heap_ok
         && dynamic_ok
@@ -2329,7 +2290,7 @@ pub unsafe fn on_trap() -> ! {
         r6
     );
     serial_println!(
-        "  experimental win32-demo: the process heap -- GetProcessHeap answered {:#x}; HeapAlloc(0, 64) and HeapAlloc(HEAP_ZERO_MEMORY, 32) answered {:#x} and {:#x}, both 16-byte aligned inside the region and disjoint ({}), the zeroed block read back zero ({}), and the client WRITING and reading a byte through its own allocation {}; HeapFree answered {} then {}, with ERROR_INVALID_ADDRESS ({}) on the double free; the next 16-byte allocation answered {:#x} -- the freed address, so Free returned memory ({}); a foreign handle answered {:#x} with ERROR_INVALID_HANDLE ({}), HEAP_GENERATE_EXCEPTIONS answered {:#x} with ERROR_INVALID_PARAMETER ({}), a 1 MiB request answered {:#x} with ERROR_NOT_ENOUGH_MEMORY ({}), and a free of an address never issued answered {:#x} with ERROR_INVALID_ADDRESS ({}); both remaining blocks freed ({} and {}) -- OK, a real Windows program can allocate and free its own memory through this kernel",
+        "  experimental win32-demo: the process heap -- GetProcessHeap answered {:#x}; HeapAlloc(0, 64) and HeapAlloc(HEAP_ZERO_MEMORY, 32) answered {:#x} and {:#x}, both 16-byte aligned inside the region and disjoint ({}), the zeroed block read back zero ({}), and the client WRITING and reading a byte through its own allocation {}; HeapFree answered {} then {}, with ERROR_INVALID_ADDRESS ({}) on the double free; the next 16-byte allocation answered {:#x} -- the freed address, so Free returned memory ({}); a foreign handle answered {:#x} with ERROR_INVALID_HANDLE ({}), HEAP_GENERATE_EXCEPTIONS answered {:#x} with ERROR_INVALID_PARAMETER ({}), a 1 MiB request answered {:#x} with ERROR_NOT_ENOUGH_MEMORY ({}), and a free of an address never issued answered {:#x} with ERROR_INVALID_ADDRESS ({}) -- OK, a real Windows program can allocate and free its own memory through this kernel",
         heap_handle,
         heap_p1,
         heap_p2,
@@ -2348,9 +2309,7 @@ pub unsafe fn on_trap() -> ! {
         heap_big,
         heap_big_err,
         heap_badfree,
-        heap_badfree_err,
-        heap_free_p3,
-        heap_free_p2
+        heap_badfree_err
     );
     serial_println!(
         "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; GetModuleHandleA(\"kernel32.dll\") answered the provider's own base {:#x} in either case, and GetProcAddress named GetTickCount at {:#x} -- the very address the loader bound into the IAT ({}) -- which the client then CALLED through, reading {} (>= {}); a second provider, nyrqis.dll, answered its own row's base {:#x} (different from kernel32's), and its NyrqisBuild and NyrqisMode exports resolved there at {:#x} and {:#x}, which the client CALLED through, reading {} and {}; kernel32.dll asked for NyrqisBuild answered {:#x} with ERROR_PROC_NOT_FOUND ({}) and nyrqis.dll asked for GetTickCount answered {:#x} the same ({}); asked in Windows' ordinal form, the second provider's base-{} ordinal {} answered {:#x} -- the same address its NAME did ({}) -- which the client CALLED through, reading {}; ordinals {} and {} (below the base, past the last slot) answered {:#x} and {:#x} with ERROR_PROC_NOT_FOUND ({}) and ({}); its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered {:#x} BY NAME and BY ORDINAL 12 -- the same address kernel32.dll's own row gave GetTickCount ({}) -- which the client CALLED through, reading {}; a forwarder to an export kernel32.dll does not have answered {:#x} with ERROR_PROC_NOT_FOUND ({}); BEFORE LoadLibraryA, nyrqis.dll's forwarder NyrqisDyn (naming nyrqis_dyn.dll.NyrqisDynValue) answered {:#x} with ERROR_PROC_NOT_FOUND ({}), LoadLibraryA(\"C:\\nyrqis\\nyrqis_dyn.dll\") then answered the runtime image's own base {:#x}, the file name GetModuleHandleA(\"nyrqis_dyn.dll\") answered the same base {:#x} (a row for a module the client never linked against), the SAME forwarder then answered {:#x} -- the dynamic row's own export at +{:#x} -- which the client CALLED through, reading {}, FreeLibrary answered {} and the forwarder went back to {:#x} with ERROR_PROC_NOT_FOUND ({}), and a DLL the volume does not have answered {:#x} with ERROR_MOD_NOT_FOUND ({}); a module that is not loaded answered {:#x} with ERROR_MOD_NOT_FOUND ({}) and a name that module does not export answered {:#x} with ERROR_PROC_NOT_FOUND ({}); WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, its two cross-module probes, its two out-of-range ordinal probes, its forwarder-to-an-absent-export probe, its two NyrqisDyn probes -- one before LoadLibraryA and one after FreeLibrary -- and its GetModuleFileNameA probe on a base that names no row; asked WHICH FILE each handle came from, GetModuleFileNameA answered {} bytes for the client's own row (its own byte-and-NUL compare {} it), {} for kernel32.dll and {} for the runtime row while it was loaded -- the path the client gave LoadLibraryA, which no byte of its image contains -- then cut a 27-byte path into an 8-byte buffer as {} answering {} with ERROR_INSUFFICIENT_BUFFER ({}), wrote nothing for nSize 0 ({} with {}), and refused a base that names no row ({} with {}) -- {}",

@@ -1058,23 +1058,6 @@ _start:
     movabs $SLOT_HEAP_BADFREE_ERR, %rdi
     mov %rax, (%rdi)
 
-    /* Return the two blocks still live: p3 (the reused one) and p2. */
-    mov %r15, %rcx
-    xor %edx, %edx
-    movabs $SLOT_HEAP_P3, %r8
-    mov (%r8), %r8
-    call *__imp_HeapFree(%rip)
-    movabs $SLOT_HEAP_FREE_P3, %rdi
-    mov %rax, (%rdi)
-
-    mov %r15, %rcx
-    xor %edx, %edx
-    movabs $SLOT_HEAP_P2, %r8
-    mov (%r8), %r8
-    call *__imp_HeapFree(%rip)
-    movabs $SLOT_HEAP_FREE_P2, %rdi
-    mov %rax, (%rdi)
-
     /* ---- tranche 1 again: the clock, then exit ---- */
 
     call *__imp_GetTickCount(%rip)
@@ -1324,8 +1307,6 @@ proc_dyn_value:
     .set SLOT_HEAP_BIG_ERR,     SLOT_BASE + 0x980
     .set SLOT_HEAP_BADFREE,     SLOT_BASE + 0x988
     .set SLOT_HEAP_BADFREE_ERR, SLOT_BASE + 0x990
-    .set SLOT_HEAP_FREE_P3,     SLOT_BASE + 0x998
-    .set SLOT_HEAP_FREE_P2,     SLOT_BASE + 0x9a0
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

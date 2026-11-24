@@ -98,9 +98,6 @@ const USER_STACK_ADDR: u64 = 0x_6D0_0073_0000;
 const PLTLESS_REFUSAL_BASE: u64 = 0x_6D0_007A_0000;
 const PLTLESS_REFUSAL_THUNK: u64 = 0x_6D0_007C_0000; // refused before any arming
 const PLTLESS_EAGER_BASE: u64 = 0x_6D0_007B_0000;
-/// readelf-pinned: the artifact's ONE .rela.dyn entry (GLOB_DAT
-/// cross_value@VERS_1.0) targets slot 0x2fe0.
-const PLTLESS_CROSS_SLOT: u64 = 0x2fe0;
 
 /// A link-map id NO registered object owns: the GNU-path typed
 /// refusal control (the twin of the trap-path unregistered-page
@@ -120,15 +117,12 @@ const EXPECTED_FN_B: u64 = 0xBB0B_5E11;
 const FN_RESULT_MASK: u64 = 0xFFFF_FFFF;
 const EXPECTED_PROV_MARKER: u64 = 0x0E11_CEDE_1E1E_1E1E;
 
-/// readelf-pinned facts (checked in the CI layout gate):
-///   DT_PLTGOT = 0x2fe8 in BOTH embedded GNU artifacts, the
-///   dependent's linker-baked initial JUMP_SLOT values are the
-///   matching .plt stub's `push` half (plt_stub+6), and
-///   userprog_multi.elf's `.rela.plt` carries exactly TWO entries
-///   (48 bytes / RELA = 24 each), index 0 = fn_b, index 1 = fn_a.
-const PLTGOT_VADDR: u64 = 0x2fe8;
-const GNU_INITIAL_SLOT: u64 = 0x1016;
-const GNU_INITIAL_MULTI: [u64; 2] = [0x1016, 0x1026];
+/// Facts about the embedded GNU artifacts: the dependent's linker-baked
+/// initial JUMP_SLOT values are the matching .plt stub's `push` half
+/// (plt_stub+6) read from the FILE's own PT_LOAD bytes at the slot's
+/// address (never a pinned offset), and userprog_multi.elf's
+/// `.rela.plt` carries exactly TWO entries (index 0 = fn_b,
+/// 1 = fn_a); userprog_plt_res.elf carries one.
 
 static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 /// The demo's address space, stashed for the stage-two continuation
@@ -284,7 +278,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         reg_static,
         0,
         3,
-        &[GNU_INITIAL_SLOT],
+        1,
     )
 }
 
@@ -310,7 +304,7 @@ unsafe fn arm_and_enter(
     reg_static: &'static elf::SymbolRegistry,
     slot_idx: usize,
     expected_objects: usize,
-    gnu_initial: &[u64],
+    gnu_entries: usize,
 ) -> ! {
     let load_ctx = elf::LoadContext {
         resolver: Some(reg_static),
@@ -330,15 +324,17 @@ unsafe fn arm_and_enter(
     };
     let got1 = unsafe { core::ptr::read_volatile((own_plt.pltgot + 8) as *const u64) };
     let got2 = unsafe { core::ptr::read_volatile((own_plt.pltgot + 16) as *const u64) };
-    let arming_ok =
-        got1 == own_plt.lm_id && got2 == thunk_page && own_plt.pltgot == dep_base + PLTGOT_VADDR;
+    // The .got.plt address is the object's own DT_PLTGOT (the loader
+    // resolved it from the dynamic table), so only the two resolver
+    // pointers are compared here.
+    let arming_ok = got1 == own_plt.lm_id && got2 == thunk_page;
     serial_println!(
         "  experimental plt-demo: instance {} own-.plt armed on THE OBJECT's own .got.plt ({:#x}): GOT[1] = link-map id {:#x}, GOT[2] = resolver thunk {:#x} ({} .rela.plt entries) -- {}",
         slot_idx + 1,
         own_plt.pltgot,
         got1,
         got2,
-        gnu_initial.len(),
+        gnu_entries,
         if arming_ok { "OK, the GNU resolver pointers are in place (JUMP_SLOT slots touched only by the GNU lazy bias relocation)" } else { "FAILED" }
     );
     assert!(arming_ok, "instance {} GNU arming facts failed", slot_idx + 1);
@@ -347,11 +343,13 @@ unsafe fn arm_and_enter(
     //      per-index resolution expectation computed up front ----
     let mut resolved_at = [0u64; 2];
     let mut slot_at = [0u64; 2];
-    for (i, _initial) in gnu_initial.iter().enumerate() {
+    for i in 0..gnu_entries {
         let slot_addr = unsafe { elf::lazy_slot_for(&dep_tables, dep_base, i) }
             .unwrap_or_else(|e| panic!("instance {}: lazy slot {} must compute: {:?}", slot_idx + 1, i, e));
         let slot_before = unsafe { core::ptr::read_volatile(slot_addr as *const u64) };
-        let initial_ok = slot_before == dep_base + gnu_initial[i] && slot_before != 0;
+        let file_initial = elf::read_file_u64_at_vaddr(file, slot_addr - dep_base)
+            .unwrap_or_else(|| panic!("instance {}: slot {} must lie in a PT_LOAD's file bytes", slot_idx + 1, i));
+        let initial_ok = slot_before == dep_base + file_initial && slot_before != 0;
         let expected = unsafe { elf::resolve_lazy_entry(&dep_tables, dep_base, i, Some(reg_static)) }
             .unwrap_or_else(|e| panic!("instance {}: probe resolution of idx {} must succeed: {:?}", slot_idx + 1, i, e));
         let differs = initial_ok && slot_before != expected;
@@ -531,7 +529,7 @@ pub unsafe fn on_trap() -> ! {
                 reg_static,
                 1,
                 4,
-                &[GNU_INITIAL_SLOT],
+                1,
             )
         }
         arm_and_enter(
@@ -543,7 +541,7 @@ pub unsafe fn on_trap() -> ! {
             reg_static,
             2,
             5,
-            &GNU_INITIAL_MULTI,
+            2,
         )
     }
 
@@ -653,8 +651,19 @@ pub unsafe fn on_trap() -> ! {
     let eager = elf::load(PLTLESS_ELF, &mut mapper, plt_fa, PLTLESS_EAGER_BASE, &eager_ctx)
         .unwrap_or_else(|e| panic!("the PLT-LESS artifact must load eagerly: {:?}", e));
     let relro_ok = matches!(eager.relro, Some(elf::RelroOutcome::MadeReadOnly { .. }));
-    let cross_slot =
-        unsafe { core::ptr::read_volatile((PLTLESS_EAGER_BASE + PLTLESS_CROSS_SLOT) as *const u64) };
+    // The artifact's ONE relocation names cross_value; find its slot by
+    // that symbol rather than by a pinned offset (the linker places it).
+    let (pltless_dyn_vaddr, pltless_dyn_filesz) = elf::pt_dynamic_range(PLTLESS_ELF)
+        .expect("the PLT-LESS artifact must carry a PT_DYNAMIC segment");
+    let pltless_tables =
+        elf::parse_dyn_tables(PLTLESS_EAGER_BASE, pltless_dyn_vaddr, pltless_dyn_filesz)
+            .expect("the PLT-LESS artifact's dyn tables must parse");
+    let pltless_cross_slot =
+        unsafe { elf::find_symbol_slots(&pltless_tables, PLTLESS_EAGER_BASE, b"cross_value") }
+            .expect("the PLT-LESS artifact's relocation table must be readable")
+            .0
+            .expect("the PLT-LESS artifact must bind cross_value with a GLOB_DAT entry");
+    let cross_slot = unsafe { core::ptr::read_volatile(pltless_cross_slot as *const u64) };
     let cross_addr = unsafe { EXPECTED_CROSS_ADDR };
     let eager_ok = cross_slot == cross_addr;
     let objects_after = crate::experimental::lazy_binder::registered_count();
@@ -662,7 +671,7 @@ pub unsafe fn on_trap() -> ! {
     let no_side_effects = objects_after == objects_before && total_after == total_before;
     serial_println!(
         "  experimental plt-demo: the SAME PLT-LESS artifact loads eagerly: its GLOB_DAT slot {:#x} == provider A's cross_value ({:#x}) resolved AT LOAD, relro revoked read-only, NO GNU arming side effects (registry {} -> {}, binds {} -> {}) -- {}",
-        PLTLESS_EAGER_BASE + PLTLESS_CROSS_SLOT,
+        pltless_cross_slot,
         cross_slot,
         objects_before,
         objects_after,

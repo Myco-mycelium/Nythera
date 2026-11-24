@@ -79,14 +79,7 @@ const EXPECTED_CROSS_VALUE: u64 = 0xACE5_F00D_D1CE_5EED;
 const EXPECTED_FN_RESULT: u64 = 0xFA571AE5;
 const FN_RESULT_MASK: u64 = 0xFFFF_FFFF;
 
-/// The dependent's own duplicate (self-priority control): its GOT
-/// slot must hold THIS address, not the provider's same-named
-/// export (readelf-pinned .dynsym entry 3, st_value 0x3008).
-const DEP_DUP_ADDR: u64 = DEP_BASE + 0x3008;
 
-const DEP_CROSS_SLOT: u64 = 0x2fe0; // readelf-pinned GLOB_DAT, in-RELRO
-const DEP_DUP_SLOT: u64 = 0x2fd8; // readelf-pinned GLOB_DAT, in-RELRO
-const DEP_PLT_SLOT: u64 = 0x3000; // readelf-pinned JUMP_SLOT, outside RELRO
 
 const REQUIRED_VERSION: &[u8] = b"VERS_1.0";
 const REQUIRED_FILE: &[u8] = b"crosslib.so.1";
@@ -214,27 +207,45 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         .expect("dependent must carry a PT_DYNAMIC segment (readelf-verified)");
     let dep_tables = elf::parse_dyn_tables(DEP_BASE, dep_dyn_vaddr, dep_dyn_filesz)
         .expect("dependent dyn tables must parse");
-    let cross_slot = core::ptr::read_volatile((DEP_BASE + DEP_CROSS_SLOT) as *const u64);
+    // The slots are the linker's layout choice; locate each by the symbol
+    // its relocation names (see elf::find_symbol_slots), never by offset.
+    let dep_cross_slots = unsafe { elf::find_symbol_slots(&dep_tables, DEP_BASE, b"cross_value") }
+        .expect("dependent dyn tables must parse");
+    let dep_cross_slot = dep_cross_slots
+        .0
+        .expect("the dependent must bind cross_value with a GLOB_DAT entry");
+    let dep_dup_slot = unsafe { elf::find_symbol_slots(&dep_tables, DEP_BASE, b"dup_symbol") }
+        .expect("dependent dyn tables must parse")
+        .0
+        .expect("the dependent must bind its own dup_symbol with a GLOB_DAT entry");
+    let dep_plt_slot = unsafe { elf::find_symbol_slots(&dep_tables, DEP_BASE, b"cross_fn") }
+        .expect("dependent dyn tables must parse")
+        .0
+        .expect("the dependent must bind cross_fn with a JUMP_SLOT entry");
+    let dep_dup_sym = elf::lookup_symbol(&dep_tables, DEP_BASE, b"dup_symbol")
+        .expect("the dependent must define dup_symbol (self-priority control)");
+
+    let cross_slot = core::ptr::read_volatile(dep_cross_slot as *const u64);
     let cross_ok = cross_slot == via_version;
     serial_println!(
         "  experimental full-demo: dependent's versioned GLOB_DAT slot {:#x} == {:#x} (provider's cross_value, version-checked) -- {}",
-        DEP_BASE + DEP_CROSS_SLOT,
+        dep_cross_slot,
         cross_slot,
         if cross_ok { "OK" } else { "MISMATCH" }
     );
-    let dup_slot = core::ptr::read_volatile((DEP_BASE + DEP_DUP_SLOT) as *const u64);
-    let dup_ok = dup_slot == DEP_DUP_ADDR;
+    let dup_slot = core::ptr::read_volatile(dep_dup_slot as *const u64);
+    let dup_ok = dup_slot == dep_dup_sym;
     serial_println!(
         "  experimental full-demo: dependent's duplicate-name slot {:#x} == {:#x} (its OWN dup_symbol) -- {}",
-        DEP_BASE + DEP_DUP_SLOT,
+        dep_dup_slot,
         dup_slot,
         if dup_ok { "OK, self-priority held under the versioned provider too" } else { "MISMATCH" }
     );
-    let plt_slot = core::ptr::read_volatile((DEP_BASE + DEP_PLT_SLOT) as *const u64);
+    let plt_slot = core::ptr::read_volatile(dep_plt_slot as *const u64);
     let plt_armed_ok = plt_slot == TRAMPOLINE_PAGE;
     serial_println!(
         "  experimental full-demo: lazy JUMP_SLOT slot {:#x} == {:#x} (trap stub armed; NOT eagerly resolved) -- {}",
-        DEP_BASE + DEP_PLT_SLOT,
+        dep_plt_slot,
         plt_slot,
         if plt_armed_ok { "OK" } else { "MISMATCH" }
     );

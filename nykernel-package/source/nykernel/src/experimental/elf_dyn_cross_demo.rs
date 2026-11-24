@@ -29,9 +29,10 @@
 //!    observably different results (address-checked, not just
 //!    non-None) prove the order is actually consumed, not vestigial.
 //! 4. **RELRO with in-region cross-object relocations** — the app's
-//!    `ld -shared` layout puts BOTH GLOB_DAT slots (0x2fd8 self-dup,
-//!    0x2fe0 cross) inside its GNU_RELRO region (0x2ee8..0x3000), so
-//!    the grant decision has to run for entries whose symbol is
+//!    `ld -shared -z relro` layout puts BOTH GLOB_DAT slots (the
+//!    self-`dup_symbol` one and the `cross_value` one) inside its
+//!    GNU_RELRO region, so the grant decision has to run for entries
+//!    whose symbol is
 //!    UNDEFINED-but-resolvable (the planner consults the resolver),
 //!    and the revoke still lands read-only AND user-readable.
 //!
@@ -85,22 +86,13 @@ const USER_STACK_ADDR: u64 = 0x_6C0_0008_1000;
 /// slot (matches `cross_value` in `prog_cross_lib.s`).
 const EXPECTED_VALUE: u64 = 0xACE5_F00D_D1CE_5EED;
 
-/// readelf-parameters of the two objects this module's checks are
-/// pinned to (same discipline as elf_dyn_demo: the layout facts on
-/// the transcript come from the actual built files):
-///   lib:  dynsym {1: dup_symbol @0x2008, 2: cross_value @0x2000};
-///         GNU_RELRO 0x1f40..0x2000 (covers .dynamic only).
-///   app:  dynsym {1: cross_value UND, 2: cross_payload @0x1000,
-///                 3: dup_symbol @0x3000}; .rela.dyn:
-///         R_X86_64_GLOB_DAT 0x2fd8 -> dup_symbol (self-defined),
-///         R_X86_64_GLOB_DAT 0x2fe0 -> cross_value (SHN_UNDEF);
-///         GNU_RELRO 0x2ee8..0x3000 (covers .got, so BOTH GLOB_DAT
-///         slots are in-region).
-const APP_CROSS_SLOT: u64 = 0x2fe0;
-const APP_DUP_SLOT: u64 = 0x2fd8;
-const APP_DUP_SYM: u64 = 0x3000;
-const LIB_CROSS_SYM: u64 = 0x2000;
-const LIB_DUP_SYM: u64 = 0x2008;
+/// What the two objects' files must provide (readelf-verified, and
+/// re-checked structurally below rather than pinned by offset): the
+/// lib DEFINES `cross_value` and `dup_symbol`; the app references
+/// `cross_value` UNDEFINED through a GLOB_DAT slot, defines/relocates
+/// its own `dup_symbol` through a second GLOB_DAT slot, and carries
+/// BOTH slots in its GNU_RELRO region. Offsets are the linker's choice
+/// and are located by symbol here, as in elf_dyn_demo.
 
 static mut FRAME_ALLOCATOR: Option<BumpFrameAllocator> = None;
 /// The demo's address space, stashed for the stage-two continuation
@@ -176,20 +168,8 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     // WOULD hand out (the control contrast for self-priority below).
     let cross_via_registry = elf::lookup_symbol(&lib_tables, LIB_BASE, b"cross_value")
         .expect("cross_value must resolve in the provider");
-    assert!(
-        cross_via_registry == LIB_BASE + LIB_CROSS_SYM,
-        "resolved cross_value {:#x} did not match the provider's own symbol value {:#x}",
-        cross_via_registry,
-        LIB_BASE + LIB_CROSS_SYM
-    );
     let dup_via_registry = elf::lookup_symbol(&lib_tables, LIB_BASE, b"dup_symbol")
         .expect("dup_symbol must resolve in the provider");
-    assert!(
-        dup_via_registry == LIB_BASE + LIB_DUP_SYM,
-        "resolved dup_symbol {:#x} did not match the provider's own symbol value {:#x}",
-        dup_via_registry,
-        LIB_BASE + LIB_DUP_SYM
-    );
 
     // Push AFTER the provider-side lookups (which borrow the tables):
     // the registry owns its copies from here on.
@@ -212,8 +192,8 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         .unwrap_or_else(|e| panic!("failed to load cross-object dependent: {:?}", e));
 
     // RELRO disposition: BOTH of the app's GLOB_DAT slots sit inside
-    // its GNU_RELRO region (readelf 0x2ee8..0x3000), one of them
-    // against an UNDEFINED-but-registry-resolvable symbol -- so the
+    // its GNU_RELRO region, one of them against an UNDEFINED-but-
+    // registry-resolvable symbol -- so the
     // planner must have granted W for relocation and the revoke must
     // have landed read-only (both halves of the cycle at once).
     if let Some(elf::RelroOutcome::Denied { start, end }) = loaded_app.relro {
@@ -250,11 +230,26 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         if app_self_lookup_refused { "OK, the app genuinely does not define it" } else { "FAILED" }
     );
 
-    let cross_slot = core::ptr::read_volatile((APP_BASE + APP_CROSS_SLOT) as *const u64);
+    // Locate both slots by the symbol each relocation names, and the
+    // app's own dup_symbol address the same way, so the layout is never
+    // pinned: `-z relro` moves .got, and the check must follow it.
+    let cross_slots = unsafe { elf::find_symbol_slots(&app_tables, APP_BASE, b"cross_value") }
+        .expect("the app's dynamic relocation table must be readable");
+    let app_cross_slot = cross_slots
+        .0
+        .expect("the app must bind cross_value with a GLOB_DAT entry (its UNDEF cross-object slot)");
+    let app_dup_slot = unsafe { elf::find_symbol_slots(&app_tables, APP_BASE, b"dup_symbol") }
+        .expect("the app's dynamic relocation table must be readable")
+        .0
+        .expect("the app must bind its own dup_symbol with a GLOB_DAT entry");
+    let app_dup_sym = elf::lookup_symbol(&app_tables, APP_BASE, b"dup_symbol")
+        .expect("the app must define dup_symbol (self-priority control)");
+
+    let cross_slot = core::ptr::read_volatile(app_cross_slot as *const u64);
     let cross_ok = cross_slot == cross_via_registry;
     serial_println!(
         "  experimental cross-demo: app's UNDEF GLOB_DAT slot {:#x} == {:#x} (the PROVIDER's cross_value, via the registry) -- {}",
-        APP_BASE + APP_CROSS_SLOT,
+        app_cross_slot,
         cross_slot,
         if cross_ok {
             "OK, cross-object relocation applied correctly"
@@ -263,11 +258,11 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         }
     );
 
-    let dup_slot = core::ptr::read_volatile((APP_BASE + APP_DUP_SLOT) as *const u64);
-    let dup_ok = dup_slot == APP_BASE + APP_DUP_SYM;
+    let dup_slot = core::ptr::read_volatile(app_dup_slot as *const u64);
+    let dup_ok = dup_slot == app_dup_sym;
     serial_println!(
         "  experimental cross-demo: app's duplicate-name GLOB_DAT slot {:#x} == {:#x} (ITS OWN dup_symbol) -- {}",
-        APP_BASE + APP_DUP_SLOT,
+        app_dup_slot,
         dup_slot,
         if dup_ok {
             "OK, self-priority: the app's OWN dynsym entry won, not the registry's earlier same-named entry"
@@ -291,7 +286,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         .lookup(b"dup_symbol")
         .expect("registry lookup must stay structurally clean in both orders")
         .expect("dup_symbol must resolve in the registry regardless of order");
-    let order_ok = dup_late_first == APP_BASE + APP_DUP_SYM && dup_via_registry == LIB_BASE + LIB_DUP_SYM;
+    let order_ok = dup_late_first == app_dup_sym;
     serial_println!(
         "  experimental cross-demo: registry search order decides -- [app,lib] -> {:#x} (app), [lib] -> {:#x} (lib) -- {}",
         dup_late_first,

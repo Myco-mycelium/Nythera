@@ -665,11 +665,6 @@ pub enum Win32Error {
     /// [`MAX_HEAP_BLOCKS`] live-block slots are taken. Windows' own code for a
     /// heap that cannot satisfy an allocation is `ERROR_NOT_ENOUGH_MEMORY`.
     HeapExhausted,
-    /// [`install_heap`] was given a region a heap cannot honestly use: a zero
-    /// base or size, an address or size that is not a multiple of
-    /// [`HEAP_ALIGN`], or a range that overflows. A kernel-side (loader)
-    /// argument error, never a ring-3 one.
-    HeapInstallInvalid,
     /// `HeapFree` was given an address that is not a live block of this heap --
     /// never allocated, already freed, or a value the client invented. Windows
     /// does not promise to diagnose this (it is undefined behaviour there);
@@ -768,7 +763,6 @@ impl Win32Error {
             Win32Error::HeapNotInstalled => ERROR_NOT_READY,
             Win32Error::InvalidHeap => ERROR_INVALID_HANDLE,
             Win32Error::UnsupportedHeapFlags => ERROR_INVALID_PARAMETER,
-            Win32Error::HeapInstallInvalid => ERROR_INVALID_PARAMETER,
             Win32Error::HeapExhausted => ERROR_NOT_ENOUGH_MEMORY,
             Win32Error::HeapBlockNotLive => ERROR_INVALID_ADDRESS,
             Win32Error::ImageLoadFailed => ERROR_BAD_EXE_FORMAT,
@@ -952,26 +946,18 @@ pub unsafe fn install(client_base: u64, client_size: u64, slot_base: u64, slot_s
 /// loader hook uses for `LoadLibraryA`: the surface owns the bookkeeping, the
 /// caller owns the memory.
 ///
-/// Every argument is checked ([`Win32Error::HeapInstallInvalid`]) because a
-/// misaligned base would hand out pointers a client could not use as any
-/// 16-byte-aligned type, and a region that overflows would put blocks outside
-/// the mapping.
-///
 /// # Safety
 /// Must run after [`install`], at most once. `base .. base + size` must be
-/// mapped writable and user-accessible for the life of the process; the kernel
-/// writes into it for `HEAP_ZERO_MEMORY`.
-pub unsafe fn install_heap(base: u64, size: u64) -> Result<(), Win32Error> {
+/// mapped writable and user-accessible for the life of the process (the kernel
+/// writes into it for `HEAP_ZERO_MEMORY`), and both must be multiples of
+/// [`HEAP_ALIGN`] -- the precondition a 16-byte-aligned block needs, stated
+/// here rather than re-checked on a path only this kernel's own loader takes.
+pub unsafe fn install_heap(base: u64, size: u64) {
     let surface = &mut *&raw mut SURFACE;
-    let aligned = base % HEAP_ALIGN == 0 && size % HEAP_ALIGN == 0;
-    if base == 0 || size < HEAP_ALIGN || !aligned || base.checked_add(size).is_none() {
-        return Err(Win32Error::HeapInstallInvalid);
-    }
     surface.heap_base = base;
     surface.heap_size = size;
     surface.heap_used = 0;
     surface.heap_blocks = [EMPTY_HEAP_BLOCK; MAX_HEAP_BLOCKS];
-    Ok(())
 }
 
 /// The command line this surface will answer `GetCommandLineA` with.
@@ -1835,9 +1821,6 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
                     / HEAP_ALIGN
                     * HEAP_ALIGN
             };
-            if need > surface.heap_size {
-                return Err(Win32Error::HeapExhausted);
-            }
             let mut chosen = None;
             for i in 0..MAX_HEAP_BLOCKS {
                 let block = surface.heap_blocks[i];

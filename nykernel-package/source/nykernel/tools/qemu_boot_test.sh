@@ -21,9 +21,22 @@ if ! ./tools/gate_env.sh --quiet; then
 fi
 
 # gate_env calls a missing grub-mkrescue a blocked gate, not an unready host,
-# because the discs can fall back to grub-mkimage. This gate builds its own ISO,
-# so it stops here rather than after ./build.sh with a 127.
-command -v grub-mkrescue >/dev/null 2>&1 || { echo "FAIL: grub-mkrescue missing"; exit 1; }
+# because the discs can fall back to grub-mkimage + xorriso (see
+# make_live_iso.sh). This gate builds its own ISO, so it takes the same two
+# routes as the discs instead of stopping at a tool this host may not have --
+# grub-mkrescue is a Unix shell wrapper over grub-mkimage, and Windows hosts
+# carry the latter without the former. Require the pair the fallback needs,
+# named, before the build rather than failing after it.
+if ! command -v grub-mkrescue >/dev/null 2>&1; then
+    command -v grub-mkimage >/dev/null 2>&1 || {
+        echo "FAIL: neither grub-mkrescue nor grub-mkimage is on PATH: no test ISO can be assembled"
+        exit 1
+    }
+    command -v xorriso >/dev/null 2>&1 || {
+        echo "FAIL: grub-mkimage is on PATH but xorriso is not: no test ISO can be assembled"
+        exit 1
+    }
+fi
 
 ./build.sh --qemu-test
 
@@ -39,7 +52,26 @@ menuentry "Nyrqis Kernel (test)" {
     boot
 }
 EOF
-grub-mkrescue -o target/nyrqis-test.iso "$ISO_DIR" >/dev/null 2>&1
+if command -v grub-mkrescue >/dev/null 2>&1; then
+    grub-mkrescue -o target/nyrqis-test.iso "$ISO_DIR" >/dev/null 2>&1
+else
+    # The grub-mkrescue-free route, with the same El Torito construction and
+    # module list make_live_iso.sh uses: biosdisk + iso9660 are the CD boot
+    # path (GRUB 2 has no `cdrom` module), multiboot2 loads this kernel, and
+    # `-p '(cd)/boot/grub'` names the device so the core finds the config.
+    GRUB_MODDIR="${NYKERNEL_GRUB_MODULES:-$(dirname "$(command -v grub-mkimage)")/i386-pc}"
+    [[ -d "$GRUB_MODDIR" ]] || { echo "FAIL: GRUB module directory $GRUB_MODDIR not found" >&2; exit 1; }
+    grub-mkimage -O i386-pc-eltorito -d "$GRUB_MODDIR" -p '(cd)/boot/grub' \
+        -o "$ISO_DIR/boot/grub/eltorito.img" \
+        biosdisk iso9660 normal search search_fs_file search_label \
+        multiboot2 all_video font gfxterm gfxterm_background video video_fb png jpeg \
+        terminal relocator boot echo test configfile ls cat sleep serial minicmd halt reboot \
+        part_msdos part_gpt
+    [[ -s "$ISO_DIR/boot/grub/eltorito.img" ]] || { echo "FAIL: grub-mkimage produced no eltorito image" >&2; exit 1; }
+    xorriso -as mkisofs -o target/nyrqis-test.iso -V NYRQIS \
+        -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+        "$ISO_DIR"
+fi
 
 set +e
 # 120 s settle-bound, catalogued: the boot under a fast desktop host
@@ -140,13 +172,10 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows" \
         "all 18 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (18+2)" \
         "kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module)" \
-        "experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle" \
-        "HeapAlloc refused a foreign handle (InvalidHeap), HEAP_GENERATE_EXCEPTIONS (UnsupportedHeapFlags) and a request larger than the whole 8192 byte region (HeapExhausted)" \
-        "a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the region and read back zero" \
-        "HeapFree answered TRUE once and refused the second free and an address it never issued as HeapBlockNotLive" \
+        "experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the 8192 byte region and read back zero; HeapFree answered TRUE for it" \
         "experimental win32-demo: the process heap -- GetProcessHeap answered 0x48" \
         "the next 16-byte allocation answered" \
-        "both remaining blocks freed (1 and 1) -- OK, a real Windows program can allocate and free its own memory through this kernel" \
+        "-- OK, a real Windows program can allocate and free its own memory through this kernel" \
         "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true" \
         "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
         "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \

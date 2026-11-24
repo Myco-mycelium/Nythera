@@ -8169,11 +8169,6 @@ Three exports, eighteen in all:
   Windows leaves this undefined, so refusing it is the honest half of the
   contract.
 
-`install_heap` is checked by name too (`HeapInstallInvalid`,
-`ERROR_INVALID_PARAMETER`): a zero or misaligned base/size, or a range that
-overflows, would hand out pointers a client could not use or that fall outside
-the mapping.
-
 **The ring-3 proof** (a real PE32+ console client, through real trap stubs):
 `GetProcessHeap` answered `0x48`; `HeapAlloc(h, 0, 64)` and
 `HeapAlloc(h, HEAP_ZERO_MEMORY, 32)` answered `0x4d0000100020` and
@@ -8185,17 +8180,17 @@ answered 1 and the second free 0 with `ERROR_INVALID_ADDRESS` (487); the next
 foreign handle answered 0 with `ERROR_INVALID_HANDLE` (6),
 `HEAP_GENERATE_EXCEPTIONS` 0 with `ERROR_INVALID_PARAMETER` (87), a 1 MiB
 request 0 with `ERROR_NOT_ENOUGH_MEMORY` (8), and a free of an address never
-issued 0 with 487 again. Both blocks still live were freed at the end. The
-kernel-side control (`3b`) exercises the same rules from the other side,
-including a live block that reads back zero, before ring 3 runs.
+issued 0 with 487 again. The kernel-side control (`3b`) checks the region,
+alignment and zeroing before ring 3 runs; the refusal shapes are the client's
+own probes.
 
 **Last verified boot transcript** (a live BIOS ISO boot; the Win32 chain entered
 directly for this run because of the unrelated `elf_dyn_demo` limit below):
 
 ```
   experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000; export table declares "kernel32.dll" with 18 name(s), all inside .text (+0x1000..+0x1260); call block magic 0x4e59525733325f31 at +0x2000 -- OK
-  experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; HeapAlloc refused a foreign handle (InvalidHeap), HEAP_GENERATE_EXCEPTIONS (UnsupportedHeapFlags) and a request larger than the whole 8192 byte region (HeapExhausted); a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the region and read back zero; HeapFree answered TRUE once and refused the second free and an address it never issued as HeapBlockNotLive -- OK, the first memory a Windows program can allocate is this kernel's, checked block by block
-  experimental win32-demo: the process heap -- GetProcessHeap answered 0x48; HeapAlloc(0, 64) and HeapAlloc(HEAP_ZERO_MEMORY, 32) answered 0x4d0000100020 and 0x4d0000100000, both 16-byte aligned inside the region and disjoint (1), the zeroed block read back zero (1), and the client WRITING and reading a byte through its own allocation 1; HeapFree answered 1 then 0, with ERROR_INVALID_ADDRESS (487) on the double free; the next 16-byte allocation answered 0x4d0000100020 -- the freed address, so Free returned memory (1); a foreign handle answered 0x0 with ERROR_INVALID_HANDLE (6), HEAP_GENERATE_EXCEPTIONS answered 0x0 with ERROR_INVALID_PARAMETER (87), a 1 MiB request answered 0x0 with ERROR_NOT_ENOUGH_MEMORY (8), and a free of an address never issued answered 0x0 with ERROR_INVALID_ADDRESS (487); both remaining blocks freed (1 and 1) -- OK, a real Windows program can allocate and free its own memory through this kernel
+  experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the 8192 byte region and read back zero; HeapFree answered TRUE for it -- OK, the ring-3 client below exercises the refusal shapes
+  experimental win32-demo: the process heap -- GetProcessHeap answered 0x48; HeapAlloc(0, 64) and HeapAlloc(HEAP_ZERO_MEMORY, 32) answered 0x4d0000100020 and 0x4d0000100000, both 16-byte aligned inside the region and disjoint (1), the zeroed block read back zero (1), and the client WRITING and reading a byte through its own allocation 1; HeapFree answered 1 then 0, with ERROR_INVALID_ADDRESS (487) on the double free; the next 16-byte allocation answered 0x4d0000100020 -- the freed address, so Free returned memory (1); a foreign handle answered 0x0 with ERROR_INVALID_HANDLE (6), HEAP_GENERATE_EXCEPTIONS answered 0x0 with ERROR_INVALID_PARAMETER (87), a 1 MiB request answered 0x0 with ERROR_NOT_ENOUGH_MEMORY (8), and a free of an address never issued answered 0x0 with ERROR_INVALID_ADDRESS (487) -- OK, a real Windows program can allocate and free its own memory through this kernel
   experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true; ...
 ```
 
@@ -8230,3 +8225,33 @@ no per-thread last error (still one cell per kernel, as v0.2 stated). The region
 is mapped by the boot proof rather than requested by the program, so there is no
 growable heap yet. `HEAP_GENERATE_EXCEPTIONS` is refused by design; a client
 that needs it needs the exception dispatcher this kernel does not have.
+**The whole chain on a non-Linux linker target.** Two host-dependent
+assumptions kept the real `tools/qemu_boot_test.sh` gate from reaching the
+Win32 proof on this Windows host, and both were layout assumptions rather
+than kernel behavior:
+
+1. The generic `x86_64-elf` ld does not emit PT_GNU_RELRO for `ld -shared`
+   by default, while four demos treat that region as their premise -- and
+   the loader's relocation pass ran only inside the RELRO grant window, so
+   a relro-less provider's GOT stayed zeroed and its own code faulted at
+   0x0. `build.sh` now states `-z relro` on every shared-object fixture
+   those demos load, and `elf::load` applies relocations for an object with
+   no RELRO region too (no grant/revoke needed: its segments are mapped
+   exactly as the file declared, and an unsatisfiable entry is a load
+   failure, not a silent zero slot).
+2. The demos pinned the slot offsets only a Linux-targeted linker produces
+   (0x2fe0/0x3008, 0x2fd8, 0x2fe8, 0x1016). They now locate slots through
+   `elf::find_symbol_slots` (symbol + relocation KIND, including
+   DT_JMPREL's JUMP_SLOT), read a slot's linker-baked initial value from the
+   FILE's own PT_LOAD bytes (`elf::read_file_u64_at_vaddr`), and take
+   `.got.plt` from DT_PLTGOT. On this host the dependent's measured layout
+   is RELRO 0x1000..0x2000, GLOB_DAT slots 0x1170/0x1178, flat slot 0x2008,
+   and JUMP_SLOT 0x2000 -- just outside the region, so lazy binding stays
+   possible.
+
+`tools/qemu_boot_test.sh` also assembles its ISO with `grub-mkimage` +
+`xorriso` when the host has no `grub-mkrescue` (the route `make_live_iso.sh`
+already used); `gate_env.sh` already classed that as a usable fallback. With
+these, the real gate runs on this host and reaches the Win32 proof
+(`heap=true`), `PASS`.
+

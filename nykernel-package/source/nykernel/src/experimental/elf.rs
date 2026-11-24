@@ -1539,7 +1539,23 @@ pub fn load(
                 },
             }
         }
-        None => None,
+        None => {
+            // No GNU_RELRO region, so there is no grant/revoke cycle -- but
+            // the object's relocations are NOT optional: a `.so` without
+            // RELRO still has GLOB_DAT/RELATIVE entries, and skipping them
+            // leaves its GOT zeroed (a loaded provider whose data reads
+            // through the GOT would fault at 0, not at the symbol). Its
+            // segments were mapped writable exactly as the file asked, so
+            // the pass needs no permission change here. The failure shapes
+            // are surfaced, not swallowed: an unsatisfiable entry in a
+            // relro-less object is a load failure, the same honesty the
+            // RELRO arm's `Denied` state provides for a region whose
+            // protection cannot be restored.
+            if dt.has_dynamic {
+                unsafe { apply_relocations(&dt, load_bias, ctx.resolver, lazy_plt_armed) }?;
+            }
+            None
+        }
     };
 
     // No GNU_RELRO region: the object's .got.plt lives in a simply-
@@ -2432,6 +2448,26 @@ pub unsafe fn find_slot_for_symbol(
     load_bias: u64,
     name: &[u8],
 ) -> Result<Option<u64>, ElfError> {
+    find_slot_of_kind(tables, load_bias, name, SlotKind::Any)
+}
+
+/// Which relocation kind a slot question is about. [`find_slot_for_symbol`]
+/// asks for any; [`find_symbol_slots`] asks for both kinds separately so a
+/// caller can test the GOT slot and the flat `.data` slot by what the file
+/// says they are, instead of by an offset a linker happened to choose.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SlotKind {
+    Any,
+    GlobDat,
+    R64,
+}
+
+unsafe fn find_slot_of_kind(
+    tables: &FatDynTables,
+    load_bias: u64,
+    name: &[u8],
+    kind: SlotKind,
+) -> Result<Option<u64>, ElfError> {
     let (Some(rela), Some(size)) = (tables.0.rela_vaddr, tables.0.rela_size) else {
         return Ok(None);
     };
@@ -2445,7 +2481,14 @@ pub unsafe fn find_slot_for_symbol(
             (r_offset, r_info)
         };
         let r_type = (r_info & 0xffff_ffff) as u32;
-        if r_type != R_X86_64_GLOB_DAT && r_type != R_X86_64_64 && r_type != R_X86_64_JUMP_SLOT {
+        let is_glob = r_type == R_X86_64_GLOB_DAT || r_type == R_X86_64_JUMP_SLOT;
+        let is_r64 = r_type == R_X86_64_64;
+        let wanted = match kind {
+            SlotKind::Any => is_glob || is_r64,
+            SlotKind::GlobDat => is_glob,
+            SlotKind::R64 => is_r64,
+        };
+        if !wanted {
             continue;
         }
         let sym_idx = (r_info >> 32) as usize;
@@ -2458,6 +2501,98 @@ pub unsafe fn find_slot_for_symbol(
         }
     }
     Ok(None)
+}
+
+/// Reads the little-endian u64 a FILE holds at virtual address `vaddr`
+/// (an unbiased `p_vaddr`-space address), by locating the PT_LOAD that
+/// covers it. `None` when no PT_LOAD's file contents cover the address or
+/// the header is malformed.
+///
+/// Used to read a linker-written initial value (a GNU lazy JUMP_SLOT's
+/// `.plt` stub pointer) out of the artifact itself, so a check need not
+/// pin a layout offset only one linker target produces.
+pub fn read_file_u64_at_vaddr(data: &[u8], vaddr: u64) -> Option<u64> {
+    let phoff = read_u64(data, 32)?;
+    let phentsize = read_u16(data, 54)? as usize;
+    let phnum = read_u16(data, 56)? as usize;
+    if phentsize < 56 {
+        return None;
+    }
+    for i in 0..phnum {
+        let ph = phoff as usize + i * phentsize;
+        if read_u32(data, ph)? != 1 {
+            continue; // not PT_LOAD
+        }
+        let p_offset = read_u64(data, ph + 8)?;
+        let p_vaddr = read_u64(data, ph + 16)?;
+        let p_filesz = read_u64(data, ph + 32)?;
+        if vaddr >= p_vaddr && vaddr < p_vaddr.checked_add(p_filesz)? {
+            let off = p_offset.checked_add(vaddr - p_vaddr)?;
+            return read_u64(data, off as usize);
+        }
+    }
+    None
+}
+
+/// A `JUMP_SLOT` slot for `name` in the object's OWN `.rela.plt`
+/// (`DT_JMPREL`), which is a separate table from `DT_RELA` -- the PLT half
+/// of an object's symbol-resolved slots lives here, not in `.rela.dyn`.
+///
+/// # Safety
+/// The dynamic relocation tables must be mapped (the load completed).
+unsafe fn find_plt_slot_for_symbol(
+    tables: &FatDynTables,
+    load_bias: u64,
+    name: &[u8],
+) -> Result<Option<u64>, ElfError> {
+    let (Some(jmprel), Some(size)) = (tables.0.jmprel_vaddr, tables.0.plt_relsz) else {
+        return Ok(None);
+    };
+    let base = load_bias.wrapping_add(jmprel);
+    let count = (size as usize) / RELA_ENTRY_SIZE;
+    for i in 0..count {
+        let entry_addr = base + (i * RELA_ENTRY_SIZE) as u64;
+        let (r_offset, r_info) = {
+            let r_offset = core::ptr::read_unaligned(entry_addr as *const u64);
+            let r_info = core::ptr::read_unaligned((entry_addr + 8) as *const u64);
+            (r_offset, r_info)
+        };
+        if (r_info & 0xffff_ffff) as u32 != R_X86_64_JUMP_SLOT {
+            continue;
+        }
+        let sym_idx = (r_info >> 32) as usize;
+        if sym_idx == 0 {
+            continue;
+        }
+        let (sym_name, _v, _s) = tables.0.symbol_at(load_bias, sym_idx)?;
+        if sym_name == name {
+            return Ok(Some(load_bias.wrapping_add(r_offset)));
+        }
+    }
+    Ok(None)
+}
+
+/// The two symbol-resolved slots that bind `name` in this object: the first
+/// `GLOB_DAT`, or `JUMP_SLOT` when the only slot is the PLT's, and the first
+/// `R_X86_64_64` slot, in that
+/// order. Returned by KIND so a check can say "the GOT slot is in RELRO and
+/// the flat slot is not" without pinning either offset -- the layout is the
+/// linker's choice, and it differs between the Linux-targeted ld the demos
+/// were written against and the generic ELF target used on other hosts.
+///
+/// # Safety
+/// The dynamic relocation tables must be mapped (the load completed).
+pub unsafe fn find_symbol_slots(
+    tables: &FatDynTables,
+    load_bias: u64,
+    name: &[u8],
+) -> Result<(Option<u64>, Option<u64>), ElfError> {
+    let mut glob = find_slot_of_kind(tables, load_bias, name, SlotKind::GlobDat)?;
+    if glob.is_none() {
+        glob = find_plt_slot_for_symbol(tables, load_bias, name)?;
+    }
+    let flat = find_slot_of_kind(tables, load_bias, name, SlotKind::R64)?;
+    Ok((glob, flat))
 }
 
 // ------------------------------------------------------------------

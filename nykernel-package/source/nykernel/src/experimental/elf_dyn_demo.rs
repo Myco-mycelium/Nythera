@@ -174,19 +174,22 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     );
 
     // Structural half: the file carries TWO symbol-resolved relocations
-    // (verified with readelf against this exact userprog_dyn.elf build):
-    //   - an R_X86_64_GLOB_DAT entry with r_offset 0x2fe0 (in .got,
-    //     INSIDE the GNU_RELRO region 0x2ef0..0x3000 `ld -shared` laid
-    //     out -- the GOT page is read-only after the loader's revoke,
-    //     and ring-3 READS of it are legal) whose resolved S is
-    //     dyn_value; its slot content must equal &dyn_value, and the
-    //     program in ring 3 reads exactly this slot (the literal
-    //     meaning of dereferencing its own resolved GOT slot);
-    //   - an R_X86_64_64 entry with r_offset 0x3008 (in .data, OUTSIDE
-    //     the RELRO region, in a page that stays writable) whose
-    //     resolved S + A must also equal &dyn_value.
-    // Both slots' post-relocation contents are checked here exactly.
-    let glob_dat_slot = LOAD_BASE + 0x2fe0;
+    // binding dyn_value -- a GLOB_DAT entry in .got (inside the
+    // GNU_RELRO region, so the loader's grant half ran for it) and an
+    // R_X86_64_64 entry in .data (outside it, in a page that stays
+    // writable). Their OFFSETS are the linker's choice and differ
+    // between targets, so both are located by symbol and KIND through
+    // the file's own DT_RELA table (elf::find_symbol_slots), never by a
+    // pinned offset. The ring-3 program dereferences its own GOT slot,
+    // so a wrong slot would produce a wrong value there as well.
+    let (glob_dat_slot, flat_slot) = unsafe {
+        elf::find_symbol_slots(&dt, LOAD_BASE, b"dyn_value")
+    }
+    .expect("the .so's dynamic relocation table must be readable");
+    let glob_dat_slot = glob_dat_slot
+        .expect("userprog_dyn.elf must bind dyn_value with a GLOB_DAT/JUMP_SLOT entry");
+    let flat_slot =
+        flat_slot.expect("userprog_dyn.elf must bind dyn_value with an R_X86_64_64 entry");
     let got_slot_1 = core::ptr::read_volatile(glob_dat_slot as *const u64);
     let reloc_ok = got_slot_1 == value_addr;
     serial_println!(
@@ -194,7 +197,6 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         glob_dat_slot, got_slot_1,
         if reloc_ok { "OK, symbol-resolved relocation applied correctly" } else { "MISMATCH" }
     );
-    let flat_slot = LOAD_BASE + 0x3008;
     let got_slot_2 = core::ptr::read_volatile(flat_slot as *const u64);
     let reloc_64_ok = got_slot_2 == value_addr;
     serial_println!(
@@ -203,10 +205,10 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         if reloc_64_ok { "OK, symbol-resolved relocation applied correctly" } else { "MISMATCH" }
     );
 
-    // RELRO structural half: the GLOB_DAT slot's page (page 0x2000;
-    // `ld -shared` laid the region out as 0x2ef0..0x3000, covering
-    // .dynamic, .got, and .got.plt) must be read-only AGAIN after the
-    // grant/revoke cycle -- and USER_ACCESSIBLE must still be set, so
+    // RELRO structural half: the GLOB_DAT slot's page (whatever page
+    // the linker placed the RELRO region on) must be read-only AGAIN
+    // after the grant/revoke cycle -- and USER_ACCESSIBLE must still be
+    // set, so
     // the ring-3 program's legal READ of its own resolved GOT slot
     // does not fault (writes would, and that's the point). The
     // residency fact recorded in the transcript: the slot sits inside
@@ -233,12 +235,10 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         page_base,
         if relro_ok { "OK" } else { "FAILED" }
     );
-    // The GLOB_DAT slot's residency: inside the RELRO region here
-    // (.got under `ld -shared`'s default layout). Explicitly checked
-    // so a future relayout of the .so that moves the slot OUT of
-    // RELRO would be caught loudly too -- the residency fact is
-    // pinned either way, and the ring-3 consumer stays read-only on
-    // the slot.
+    // The GLOB_DAT slot's residency: the .got must be inside RELRO
+    // for the grant half to have run at all. Checked explicitly so a
+    // relayout that moved the slot OUT of RELRO is caught loudly rather
+    // than quietly weakening this demo.
     let slot_in_relro = glob_dat_slot >= relro_start && glob_dat_slot < relro_end;
     let residency_ok = slot_in_relro;
     serial_println!(
