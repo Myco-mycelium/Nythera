@@ -189,7 +189,17 @@ cp "$BIOS" "$TMP/bios.iso" && cp "$UEFI" "$TMP/uefi.iso" \
 # is compared against the real disc below, which is how a drifted repack gets
 # caught instead of quietly proving nothing.
 el_torito_shape() {
-    xorriso -indev "$1" -report_el_torito plain 2>/dev/null \
+    local img="$1"
+    # xorriso here is the native Windows build (see tools/win_toolchain.sh), and
+    # it cannot open an MSYS path such as /tmp/tmp.xxxx/disc.iso: it answers by
+    # treating that name as a blank stdio drive, so the image tree is never loaded
+    # and the El Torito report is empty. An empty "real" shape reads exactly like
+    # "the mutant does not reproduce the real layout", which is a false accusation
+    # about the mutation rather than about the path. Hand it the native form.
+    if command -v cygpath >/dev/null 2>&1; then
+        img="$(cygpath -m "$img")"
+    fi
+    xorriso -indev "$img" -report_el_torito plain 2>/dev/null \
         | sed -n -e 's/^El Torito boot img :   1  \([A-Za-z]*\)  \([yn]\)  \([a-z]*\).*/img \1 \2 \3/p' \
                  -e 's/^El Torito img path :   1  \(.*\)$/path \1/p'
 }
