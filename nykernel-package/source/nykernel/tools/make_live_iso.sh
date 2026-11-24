@@ -234,7 +234,13 @@ fi
 # ---------------------------------------------------------------------
 if [[ "$UEFI" == "1" ]]; then
     command -v cargo >/dev/null 2>&1 || { echo "FAIL: cargo not found (needed for the UEFI stub)" >&2; exit 1; }
-    command -v mformat >/dev/null 2>&1 || { echo "FAIL: mtools not found (needed to build the ESP)" >&2; exit 1; }
+    # Each mtool named as it is probed: "mtools not found" was printed when
+    # only mformat had been looked for, and a missing mmd/mcopy then died as a
+    # bare 127 further down with no sentence at all.
+    for _t in mformat mmd mcopy; do
+        command -v "$_t" >/dev/null 2>&1 \
+            || { echo "FAIL: $_t not found (mtools is needed to build the ESP)" >&2; exit 1; }
+    done
     command -v xorriso >/dev/null 2>&1 || { echo "FAIL: xorriso not found" >&2; exit 1; }
 
     # rust-lld is the UEFI target's linker and cargo will not find it on

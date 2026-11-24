@@ -258,7 +258,11 @@ else
 fi
 GOOD_SHAPE="$(el_torito_shape "$TMP/uefi.iso")"
 MUTANT_SHAPE="$(el_torito_shape "$UEFI")"
-if [[ -n "$GOOD_SHAPE" && "$GOOD_SHAPE" == "$MUTANT_SHAPE" ]]; then
+if [[ -z "$GOOD_SHAPE" || -z "$MUTANT_SHAPE" ]]; then
+    # An empty report is xorriso failing to read a disc, not the mutation
+    # changing the layout; the difference decides who gets fixed.
+    bad "xorriso reported no El Torito shape for a disc (real: '$(printf '%s' "$GOOD_SHAPE" | tr '\n' ' ')' mutant: '$(printf '%s' "$MUTANT_SHAPE" | tr '\n' ' ')'), so nothing was compared and this is not a verdict about the mutation"
+elif [[ "$GOOD_SHAPE" == "$MUTANT_SHAPE" ]]; then
     ok "the mutant reproduces the real disc's El Torito layout ($(printf '%s' "$MUTANT_SHAPE" | tr '\n' ' '))"
 else
     bad "the mutant disc's El Torito layout differs from the real one, so a failure would not be attributable to the stub:

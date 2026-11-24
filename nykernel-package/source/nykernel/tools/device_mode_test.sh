@@ -98,8 +98,8 @@ EOF
     # The monitor socket lives at a SHORT path on purpose: a unix socket's
     # path is capped at 108 bytes (sun_path), and a run from a deep workspace
     # directory would otherwise fail to CREATE it -- qemu is silent about it,
-    # and the failure surfaces later as "QEMU produced no screendump", which
-    # says nothing about the kernel under test. Ported: 2026-11-16, a
+    # and the failure surfaces later as the missing PPM below, which says
+    # nothing about the kernel under test. Ported: 2026-11-16, a
     # /workspace/chats/<id>/... checkout is 120 bytes to target/.
     local serial="$dir/serial.log" ppm="$dir/screen.ppm"
     local mon="/tmp/nyrqis-mon-$$-${label}.sock"
@@ -153,7 +153,10 @@ time.sleep(0.2)
 s.close()
 PY
     kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
-    [[ -s "$ppm" ]] || { bad "$label: QEMU produced no screendump"; return 1; }
+    # The request comes from python3's monitor client, not from QEMU on its
+    # own: a failed connect or a refused `screendump` leaves no PPM, so
+    # blaming QEMU sent the reader after the wrong process.
+    [[ -s "$ppm" ]] || { bad "$label: the monitor screendump request left no PPM (a connect or command failure, not a kernel verdict; see $dir/qemu.log)"; return 1; }
 
     # The mode verdict must name the mode AND where it came from.
     if ! grep -q "device-mode: $want_mode (source: $want_source)" "$serial"; then
