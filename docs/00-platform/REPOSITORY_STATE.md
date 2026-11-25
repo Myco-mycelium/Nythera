@@ -5,6 +5,21 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-25 -- **the DEX method tables: a class's methods and signatures are now
+readable.**
+
+`experimental::dex` gained `proto_id`, `method_id`, `type_list` and
+`class_data`, so a caller can read a class's direct and virtual methods, their
+names, access flags and full signatures. The shorty string is checked against the
+parameter list (one character per return value plus one per parameter) and a
+class_data whose counts overrun the bytes left is refused as truncated rather
+than trusted. A third real fixture, `userprog/classes_methods.dex` (436 bytes,
+`main([Ljava/lang/String;)V`), carries one declared method, and nine malformed
+method-table shapes are permanent boot controls. The gate's first run caught a
+fixture/proof disagreement (a parameter declared `Ljava/lang/String;` while the
+proof claimed `[Ljava/lang/String;`), fixed at cause; the gate now passes with
+every new needle matched. Field names and bytecode remain explicitly absent.
+
 2026-11-25 -- **the Android and Windows tracks each gained their next
 increment, and the boot gate is green.**
 

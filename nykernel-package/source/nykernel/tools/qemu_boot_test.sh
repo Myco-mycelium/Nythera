@@ -202,7 +202,14 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "experimental dex-demo: table refusals -- a string_data offset past EOF refused StringDataOutOfBounds" \
         "a declared UTF-16 length of 19 for 20 units refused StringLengthMismatch" \
         "a class descriptor that does not start with L refused BadTypeDescriptor -- OK" \
-        "experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK -- OK" \
+        "experimental dex-demo: method tables -- a 436 byte DEX with 1 proto(s) and 1 method(s)" \
+        "proto 0's shorty \"VL\" matches return type V and 1 parameter [Ljava/lang/String;" \
+        "signature main([Ljava/lang/String;)V (flags 0x109, ACC_PUBLIC|ACC_STATIC|ACC_NATIVE)" \
+        "experimental dex-demo: method refusals -- a proto index past the table refused ProtoIndexOutOfBounds" \
+        "a class_data whose counts overrun the file refused ClassDataTruncated" \
+        "a shorty disagreeing with its parameter count refused ShortyLengthMismatch" \
+        "a class_data field index past field_ids refused FieldIndexOutOfBounds, and a class_data method index past method_ids refused MethodIndexOutOfBounds -- OK" \
+        "experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK -- OK" \
         "the next 16-byte allocation answered" \
         "-- OK, a real Windows program can allocate and free its own memory through this kernel" \
         "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true realloc=true" \

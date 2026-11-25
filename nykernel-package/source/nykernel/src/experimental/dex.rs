@@ -27,10 +27,18 @@
 //! first point at which the parser answers something about the app
 //! instead of about the container.
 //!
-//! Still absent, and named rather than implied: proto/field/method
-//! ids, class_data (methods, fields, code items), annotations,
-//! encoded arrays, the string *pool* de-duplication rules, and every
-//! byte of bytecode. Those are the next tables, not a hidden part of
+//! On top of that, `proto_id` / `method_id` / `type_list` / `class_data`
+//! answer a class's METHODS and their signatures: a method's name, its
+//! declaring class, its return type and its parameter types, plus the
+//! direct/virtual grouping and access flags the class_data encodes. The
+//! shorty string is checked against the parameter list, so a proto whose
+//! string and types disagree is refused rather than reported.
+//!
+//! Still absent, and named rather than implied: field_ids (class_data
+//! carries field indices and refuses an out-of-range one, but does not
+//! resolve field names), `code_item` and therefore every byte of bytecode,
+//! annotations, encoded arrays, static values, and the string *pool*
+//! de-duplication rules. Those are the next tables, not a hidden part of
 //! these ones.
 //!
 //! Like every other `experimental` parser, stays paranoid about
@@ -55,7 +63,14 @@ const NO_INDEX: u32 = 0xffff_ffff;
 /// re-derived at each read.
 const STRING_ID_SIZE: u32 = 4;
 const TYPE_ID_SIZE: u32 = 4;
+const PROTO_ID_SIZE: u32 = 12;
+const METHOD_ID_SIZE: u32 = 8;
+const FIELD_ID_SIZE: u32 = 8;
 const CLASS_DEF_SIZE: u32 = 32;
+const TYPE_LIST_HEADER: u32 = 4;
+const TYPE_LIST_ENTRY: u32 = 2;
+
+use alloc::vec::Vec;
 
 #[derive(Debug)]
 pub enum DexError {
@@ -101,6 +116,32 @@ pub enum DexError {
     /// A class's `class_idx` resolved to a string that is not a class
     /// descriptor (DEX class descriptors start with `L` and end with `;`).
     BadTypeDescriptor,
+    /// A `proto_ids` index past `proto_ids_size`.
+    ProtoIndexOutOfBounds,
+    /// A `method_ids` index past `method_ids_size`. Raised both by a direct
+    /// [`method_id`] call and by a `class_data` member that names a method.
+    MethodIndexOutOfBounds,
+    /// A `field_ids` index past `field_ids_size`. `class_data` carries field
+    /// indices; this module does not resolve field NAMES (field_ids), but it
+    /// does refuse an index the table could not answer.
+    FieldIndexOutOfBounds,
+    /// A `parameters_off` (or other `type_list`) whose size and entries do not
+    /// fit inside the file.
+    TypeListOutOfBounds,
+    /// A `class_data_off` outside the file.
+    ClassDataOutOfBounds,
+    /// A `class_data` whose four member counts claim more entries than the
+    /// bytes remaining could hold. Each entry needs at least two bytes (index
+    /// and flags), so a count past that bound is a truncated file, not a long
+    /// class.
+    ClassDataTruncated,
+    /// A proto's shorty string does not have one character per return value
+    /// plus one per parameter -- the format's own definition of a shorty, and
+    /// the check that ties a proto's string to its type list.
+    ShortyLengthMismatch,
+    /// A shorty string containing a byte that is not a shorty descriptor
+    /// (`V Z B S C I J F D L`, where arrays also shorten to `L`).
+    BadShortyDescriptor,
 }
 
 #[derive(Debug)]
@@ -128,6 +169,10 @@ pub struct ClassDef {
     /// The source file's STRING index, or `None` when the file does not name
     /// one. Resolved by the caller through [`string`].
     pub source_file_idx: Option<u32>,
+    /// The class's `class_data_off`: 0 when the class declares no fields or
+    /// methods (a legal, empty class), otherwise the offset [`class_data`]
+    /// parses.
+    pub class_data_off: u32,
 }
 
 fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
@@ -463,6 +508,7 @@ pub fn class_def(data: &[u8], index: u32) -> Result<ClassDef, DexError> {
     let access_flags = read_u32(data, item_off + 4).ok_or(DexError::ClassIndexOutOfBounds)?;
     let superclass = read_u32(data, item_off + 8).ok_or(DexError::ClassIndexOutOfBounds)?;
     let source_file = read_u32(data, item_off + 16).ok_or(DexError::ClassIndexOutOfBounds)?;
+    let class_data_off = read_u32(data, item_off + 24).ok_or(DexError::ClassIndexOutOfBounds)?;
 
     // Resolve both type indices now: the struct then only ever carries indices
     // that the file's own type table answered for.
@@ -482,11 +528,17 @@ pub fn class_def(data: &[u8], index: u32) -> Result<ClassDef, DexError> {
         string(data, source_file)?;
         Some(source_file)
     };
+    // A non-zero class_data_off is dereferenced by `class_data`, so it is
+    // checked here, where the class itself is already being validated.
+    if class_data_off != 0 && class_data_off as usize >= data.len() {
+        return Err(DexError::ClassDataOutOfBounds);
+    }
     Ok(ClassDef {
         class_idx,
         access_flags,
         superclass_idx,
         source_file_idx,
+        class_data_off,
     })
 }
 
@@ -509,4 +561,221 @@ pub fn class_descriptor<'a>(data: &'a [u8], index: u32) -> Result<&'a [u8], DexE
         return Err(DexError::BadTypeDescriptor);
     }
     Ok(descriptor)
+}
+
+/// One resolved `proto_id_item`: the shape of a method's signature.
+///
+/// The indices are already checked when this is returned -- the shorty through
+/// [`string`], the return type through [`type_descriptor`], and every parameter
+/// through the `type_list` [`type_list`] parses -- so a `ProtoId` never names a
+/// type the file's own table did not answer for.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ProtoId {
+    pub shorty_idx: u32,
+    pub return_type_idx: u32,
+    pub parameters_off: u32,
+}
+
+/// One resolved `method_id_item`: which class declares a method, its signature,
+/// and its name.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MethodId {
+    pub class_idx: u32,
+    pub proto_idx: u32,
+    pub name_idx: u32,
+}
+
+/// One encoded field or method entry inside a `class_data_item`: the table
+/// index and the access flags. Field indices are not resolved to names (that is
+/// `field_ids`, still absent); method indices are validated as methods.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ClassMember {
+    pub index: u32,
+    pub access_flags: u32,
+}
+
+/// A class's parsed `class_data_item`: its fields and methods, in the format's
+/// four groups. Empty groups are empty vectors, not `None` -- a class with no
+/// fields is a fact, and [`class_data`] returns `None` only for a class that has
+/// no `class_data_item` at all (`class_data_off == 0`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct ClassData {
+    pub static_fields: Vec<ClassMember>,
+    pub instance_fields: Vec<ClassMember>,
+    pub direct_methods: Vec<ClassMember>,
+    pub virtual_methods: Vec<ClassMember>,
+}
+
+/// Whether a byte is one of the DEX shorty descriptors (`L` also stands for
+/// arrays, whose real descriptor starts with `[`).
+fn is_shorty_descriptor(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'V' | b'Z' | b'B' | b'S' | b'C' | b'I' | b'J' | b'F' | b'D' | b'L'
+    )
+}
+
+/// Reads a `type_list` at `off` into the type indices it names, resolving each
+/// through [`type_descriptor`].
+///
+/// `off == 0` is the format's "no list" and answers an empty vector; any other
+/// offset must land in the file together with its declared size and entries.
+/// The size is bounded against the file BEFORE the vector is allocated, so a
+/// malformed count cannot make the parser reserve memory it cannot fill.
+pub fn type_list(data: &[u8], off: u32) -> Result<Vec<u32>, DexError> {
+    if off == 0 {
+        return Ok(Vec::new());
+    }
+    let off = off as usize;
+    let size = read_u32(data, off).ok_or(DexError::TypeListOutOfBounds)?;
+    let entries_end = (off as u64)
+        .checked_add(TYPE_LIST_HEADER as u64)
+        .and_then(|v| v.checked_add(size as u64 * TYPE_LIST_ENTRY as u64))
+        .ok_or(DexError::TypeListOutOfBounds)?;
+    if entries_end > data.len() as u64 {
+        return Err(DexError::TypeListOutOfBounds);
+    }
+    let mut types = Vec::with_capacity(size as usize);
+    for i in 0..size {
+        let entry = off + TYPE_LIST_HEADER as usize + i as usize * TYPE_LIST_ENTRY as usize;
+        let type_idx = read_u16(data, entry).ok_or(DexError::TypeListOutOfBounds)? as u32;
+        type_descriptor(data, type_idx)?;
+        types.push(type_idx);
+    }
+    Ok(types)
+}
+
+/// Reads one `proto_id_item` and validates all three of its claims.
+///
+/// Besides the table index, this checks the two things a caller would otherwise
+/// have to remember: the shorty string resolves AND has exactly one character
+/// per return value plus one per parameter (so the string and the type list
+/// agree), and every parameter type exists. That makes "a method's signature"
+/// an answer the file has been made to vouch for, not a tuple of numbers.
+pub fn proto_id(data: &[u8], index: u32) -> Result<ProtoId, DexError> {
+    if data.len() < HEADER_SIZE as usize {
+        return Err(DexError::TooShort);
+    }
+    let count = header_u32(data, 72)?;
+    let table_off = header_u32(data, 76)?;
+    if index >= count {
+        return Err(DexError::ProtoIndexOutOfBounds);
+    }
+    let item_off = (table_off as usize)
+        .checked_add(index as usize * PROTO_ID_SIZE as usize)
+        .ok_or(DexError::ProtoIndexOutOfBounds)?;
+    let shorty_idx = read_u32(data, item_off).ok_or(DexError::ProtoIndexOutOfBounds)?;
+    let return_type_idx = read_u32(data, item_off + 4).ok_or(DexError::ProtoIndexOutOfBounds)?;
+    let parameters_off = read_u32(data, item_off + 8).ok_or(DexError::ProtoIndexOutOfBounds)?;
+
+    let shorty = string(data, shorty_idx)?;
+    type_descriptor(data, return_type_idx)?;
+    let parameters = type_list(data, parameters_off)?;
+
+    if shorty.len() != parameters.len() + 1 {
+        return Err(DexError::ShortyLengthMismatch);
+    }
+    for &byte in shorty {
+        if !is_shorty_descriptor(byte) {
+            return Err(DexError::BadShortyDescriptor);
+        }
+    }
+    Ok(ProtoId {
+        shorty_idx,
+        return_type_idx,
+        parameters_off,
+    })
+}
+
+/// Reads one `method_id_item`, resolving its class, signature and name.
+///
+/// The record is `u2 class_idx, u2 proto_idx, u4 name_idx` -- 8 bytes, and the
+/// mixed widths are the part a hand-written reader gets wrong first, so each
+/// field is read at its own width rather than as three words.
+pub fn method_id(data: &[u8], index: u32) -> Result<MethodId, DexError> {
+    if data.len() < HEADER_SIZE as usize {
+        return Err(DexError::TooShort);
+    }
+    let count = header_u32(data, 88)?;
+    let table_off = header_u32(data, 92)?;
+    if index >= count {
+        return Err(DexError::MethodIndexOutOfBounds);
+    }
+    let item_off = (table_off as usize)
+        .checked_add(index as usize * METHOD_ID_SIZE as usize)
+        .ok_or(DexError::MethodIndexOutOfBounds)?;
+    let class_idx = read_u16(data, item_off).ok_or(DexError::MethodIndexOutOfBounds)? as u32;
+    let proto_idx = read_u16(data, item_off + 2).ok_or(DexError::MethodIndexOutOfBounds)? as u32;
+    let name_idx = read_u32(data, item_off + 4).ok_or(DexError::MethodIndexOutOfBounds)?;
+
+    type_descriptor(data, class_idx)?;
+    proto_id(data, proto_idx)?;
+    string(data, name_idx)?;
+    Ok(MethodId {
+        class_idx,
+        proto_idx,
+        name_idx,
+    })
+}
+
+/// Parses one `class_data_item`, in the format's order: static fields, instance
+/// fields, direct methods, virtual methods.
+///
+/// Returns `None` when the class has no `class_data_item` (`class_data_off` is
+/// 0) and `Some` with empty vectors when it has one that declares nothing. Each
+/// method index is resolved through [`method_id`]; each field index is checked
+/// against `field_ids_size` (field names are not resolved yet).
+pub fn class_data(data: &[u8], class_index: u32) -> Result<Option<ClassData>, DexError> {
+    let def = class_def(data, class_index)?;
+    if def.class_data_off == 0 {
+        return Ok(None);
+    }
+    let mut cursor = def.class_data_off as usize;
+    if cursor >= data.len() {
+        return Err(DexError::ClassDataOutOfBounds);
+    }
+    let static_count = read_uleb128(data, &mut cursor)?;
+    let instance_count = read_uleb128(data, &mut cursor)?;
+    let direct_count = read_uleb128(data, &mut cursor)?;
+    let virtual_count = read_uleb128(data, &mut cursor)?;
+    Ok(Some(ClassData {
+        static_fields: class_members(data, &mut cursor, static_count, false)?,
+        instance_fields: class_members(data, &mut cursor, instance_count, false)?,
+        direct_methods: class_members(data, &mut cursor, direct_count, true)?,
+        virtual_methods: class_members(data, &mut cursor, virtual_count, true)?,
+    }))
+}
+
+/// Reads `count` encoded members from `*cursor`, validating each index.
+///
+/// The count is checked against the bytes actually left (two per member) BEFORE
+/// the vector is allocated: a `class_data` whose counts claim more entries than
+/// the file holds is refused as truncated rather than trusted and then run out
+/// of bytes.
+fn class_members(
+    data: &[u8],
+    cursor: &mut usize,
+    count: u32,
+    methods: bool,
+) -> Result<Vec<ClassMember>, DexError> {
+    let remaining = data.len().saturating_sub(*cursor);
+    if count as u64 * 2 > remaining as u64 {
+        return Err(DexError::ClassDataTruncated);
+    }
+    let field_count = header_u32(data, 80)?;
+    let mut members = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let index = read_uleb128(data, cursor)?;
+        let access_flags = read_uleb128(data, cursor)?;
+        if methods {
+            method_id(data, index)?;
+        } else if index >= field_count {
+            return Err(DexError::FieldIndexOutOfBounds);
+        }
+        members.push(ClassMember {
+            index,
+            access_flags,
+        });
+    }
+    Ok(members)
 }

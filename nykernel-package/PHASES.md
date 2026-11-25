@@ -1187,6 +1187,20 @@ string, type/class index past its table, non-class descriptor). Scope is
 unchanged: these are the tables' CONTENTS; no class_data, no methods, no
 bytecode.
 
+**2026-11-25: the method tables, so a class's methods and signatures are
+readable.** `proto_ids` (shorty, return type, parameter list), `method_ids`
+(u2 class_idx, u2 proto_idx, u4 name_idx) and `class_data` (static and instance
+fields, direct and virtual methods, access flags) now resolve, with `type_list`
+for the parameters. The shorty string is checked against the parameter list --
+one character per return value plus one per parameter -- so a proto whose string
+and types disagree is refused rather than reported, and a `class_data` whose
+counts overrun the bytes left in the file is refused as truncated rather than
+trusted. A third real fixture (`userprog/classes_methods.dex`, 436 bytes)
+carries one declared method, `main([Ljava/lang/String;)V`, and nine malformed
+method-table shapes are permanent boot controls. Field indices are range-checked
+but not name-resolved (that is `field_ids`, still absent), and no `code_item` is
+parsed: this answers signatures, not bytecode.
+
 ## Phase 7 -- GPU / graphics kernel path ⬜
 
 NPS-001 §3 names the GPU command submission path as the one deliberate

@@ -80,6 +80,185 @@ def uleb128(value: int) -> bytes:
             return bytes(out)
 
 
+def write_integrity(body: bytearray) -> None:
+    """Write the signature then the checksum, in the order the format forces.
+
+    The SHA-1 covers bytes[32:] and the Adler-32 covers bytes[12:], i.e. the
+    signature field is INSIDE the checksum's range, so the signature is written
+    first and the checksum computed over the finished bytes. Doing it the other
+    way round leaves a checksum no reader (this kernel's included) accepts.
+    """
+    body[12:32] = hashlib.sha1(bytes(body[32:])).digest()
+    checksum = zlib.adler32(bytes(body[12:])) & 0xFFFFFFFF
+    struct.pack_into("<I", body, 8, checksum)
+    assert struct.unpack_from("<I", body, 8)[0] == checksum
+
+
+# ---------------------------------------------------------------------------
+# `classes_methods.dex` -- the same class, with one real method.
+#
+# The class-table fixture above can only prove that a class NAME resolves: its
+# class_data_off is 0, so it declares no methods at all. This fixture is the
+# next table: one direct method, `main([Ljava/lang/String;)V`, whose proto_id,
+# method_id and class_data are all non-empty, so the kernel's resolvers answer
+# a signature rather than a count.
+#
+# The method is declared ACC_PUBLIC|ACC_STATIC|ACC_NATIVE (0x109) so that its
+# code_off is legitimately 0: a native method has no code_item, and this
+# fixture is deliberately about the SIGNATURE tables, not about code. Claiming a
+# normal method with no code_item would make the file malformed rather than
+# small.
+# ---------------------------------------------------------------------------
+
+METHOD_STRINGS = [CLASS, SUPER, SOURCE, b"main", b"VL", b"V", b"[Ljava/lang/String;"]
+
+# type_ids name strings: the class, its superclass, the parameter type, and the
+# void return type. `proto_id.return_type_idx` and the type_list entries below
+# both index this table.
+METHOD_TYPES = [0, 1, 6, 5]
+
+CLASS_TYPE = 0
+VOID_TYPE = 3
+PARAM_TYPE = 2
+SHORTY_STRING = 4
+RETURN_STRING = 5
+
+TYPE_PROTO_ID_ITEM = 0x0003
+TYPE_FIELD_ID_ITEM = 0x0004
+TYPE_METHOD_ID_ITEM = 0x0005
+TYPE_TYPE_LIST = 0x1001
+TYPE_CLASS_DATA_ITEM = 0x2000
+
+
+def align4(value: int) -> int:
+    return (value + 3) & ~3
+
+
+def write_methods_fixture() -> int:
+    for s in METHOD_STRINGS:
+        assert all(0x20 <= b < 0x7F for b in s), s
+
+    strings_blob = bytearray()
+    string_offsets = []
+    for s in METHOD_STRINGS:
+        string_offsets.append(0)  # patched below once the blob's base is known
+        strings_blob += uleb128(len(s)) + s + b"\x00"
+
+    string_ids_off = HEADER_SIZE
+    type_ids_off = string_ids_off + 4 * len(METHOD_STRINGS)
+    proto_ids_off = type_ids_off + 4 * len(METHOD_TYPES)
+    method_ids_off = proto_ids_off + 12  # one proto_id_item
+    class_defs_off = method_ids_off + 8  # one method_id_item
+    string_data_off = class_defs_off + 32
+    base = string_data_off
+    string_offsets = []
+    for s in METHOD_STRINGS:
+        string_offsets.append(base)
+        base += 1 + len(s) + 1
+
+    type_list_off = align4(base)
+    # size (u4) + one u2 type index, padded to the format's 4-byte alignment.
+    class_data_off = type_list_off + align4(4 + 2 * 1)
+    class_data = bytes(
+        [0, 0, 1, 0]  # static fields, instance fields, direct methods, virtual
+        + [0]  # method_idx -> METHOD_IDS[0]
+        + list(uleb128(0x109))  # ACC_PUBLIC | ACC_STATIC | ACC_NATIVE
+    )
+    assert class_data_off + len(class_data) == class_data_off + 7
+    map_off = align4(class_data_off + len(class_data))
+    file_size = map_off + 4 + 12 * 10
+
+    header = bytearray(HEADER_SIZE)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 32, file_size)
+    struct.pack_into("<I", header, 36, HEADER_SIZE)
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 44, 0)  # link_size
+    struct.pack_into("<I", header, 48, 0)  # link_off
+    struct.pack_into("<I", header, 52, map_off)
+    struct.pack_into("<I", header, 56, len(METHOD_STRINGS))
+    struct.pack_into("<I", header, 60, string_ids_off)
+    struct.pack_into("<I", header, 64, len(METHOD_TYPES))
+    struct.pack_into("<I", header, 68, type_ids_off)
+    struct.pack_into("<I", header, 72, 1)  # proto_ids_size
+    struct.pack_into("<I", header, 76, proto_ids_off)
+    struct.pack_into("<I", header, 80, 0)  # field_ids_size
+    struct.pack_into("<I", header, 84, 0)  # field_ids_off
+    struct.pack_into("<I", header, 88, 1)  # method_ids_size
+    struct.pack_into("<I", header, 92, method_ids_off)
+    struct.pack_into("<I", header, 96, 1)  # class_defs_size
+    struct.pack_into("<I", header, 100, class_defs_off)
+    struct.pack_into("<I", header, 104, file_size - string_data_off)
+    struct.pack_into("<I", header, 108, string_data_off)
+
+    string_ids = b"".join(struct.pack("<I", off) for off in string_offsets)
+    type_ids = b"".join(struct.pack("<I", idx) for idx in METHOD_TYPES)
+    # shorty_idx, return_type_idx, parameters_off
+    proto_id = struct.pack("<3I", SHORTY_STRING, VOID_TYPE, type_list_off)
+    # class_idx (u2), proto_idx (u2), name_idx (u4) -- 8 bytes, not three u32.
+    method_id = struct.pack("<HHI", CLASS_TYPE, 0, 3)
+    assert len(method_id) == 8
+    class_def = struct.pack(
+        "<8I",
+        CLASS_TYPE,  # class_idx
+        0x1,  # ACC_PUBLIC
+        1,  # superclass_idx
+        0,  # interfaces_off
+        2,  # source_file_idx
+        0,  # annotations_off
+        class_data_off,
+        0,  # static_values_off
+    )
+    type_list = struct.pack("<I", 1) + struct.pack("<H", PARAM_TYPE) + b"\x00\x00"
+    assert len(type_list) == 8 and type_list_off % 4 == 0
+
+    body = bytearray()
+    body += header + string_ids + type_ids + proto_id + method_id + class_def
+    assert len(body) == string_data_off, (len(body), string_data_off)
+    body += strings_blob
+    assert len(body) == type_list_off or len(body) <= type_list_off
+    body += b"\x00" * (type_list_off - len(body))
+    body += type_list
+    assert len(body) == class_data_off
+    body += class_data
+    body += b"\x00" * (map_off - len(body))
+
+    map_items = [
+        (TYPE_HEADER_ITEM, 1, 0),
+        (TYPE_STRING_ID_ITEM, len(METHOD_STRINGS), string_ids_off),
+        (TYPE_TYPE_ID_ITEM, len(METHOD_TYPES), type_ids_off),
+        (TYPE_PROTO_ID_ITEM, 1, proto_ids_off),
+        (TYPE_METHOD_ID_ITEM, 1, method_ids_off),
+        (TYPE_CLASS_DEF_ITEM, 1, class_defs_off),
+        (TYPE_STRING_DATA_ITEM, len(METHOD_STRINGS), string_data_off),
+        (TYPE_TYPE_LIST, 1, type_list_off),
+        (TYPE_CLASS_DATA_ITEM, 1, class_data_off),
+        (TYPE_MAP_LIST, 1, map_off),
+    ]
+    assert map_items == sorted(map_items, key=lambda item: item[2])
+    map_list = struct.pack("<I", len(map_items))
+    for item_type, size, off in map_items:
+        assert off % 4 == 0, (item_type, off)
+        map_list += struct.pack("<HHI I", item_type, 0, size, off)
+    body += map_list
+    assert len(body) == file_size, (len(body), file_size)
+
+    write_integrity(body)
+
+    out = pathlib.Path(__file__).resolve().parent.parent / "userprog" / "classes_methods.dex"
+    out.write_bytes(bytes(body))
+    print(f"wrote {out} ({len(body)} bytes)")
+    print(f"  checksum 0x{struct.unpack_from('<I', body, 8)[0]:08x}")
+    print(f"  sha1     {hashlib.sha1(bytes(body[32:])).hexdigest()}")
+    print(f"  method   main([Ljava/lang/String;)V (ACC_PUBLIC|ACC_STATIC|ACC_NATIVE)")
+    print(f"  layout   string_ids=0x{string_ids_off:x} type_ids=0x{type_ids_off:x} "
+          f"proto_ids=0x{proto_ids_off:x} method_ids=0x{method_ids_off:x} "
+          f"class_defs=0x{class_defs_off:x} string_data=0x{string_data_off:x} "
+          f"type_list=0x{type_list_off:x} class_data=0x{class_data_off:x} "
+          f"map=0x{map_off:x}")
+    return 0
+
+
 def main() -> int:
     for s in STRINGS:
         # ASCII descriptors: one byte, one UTF-16 code unit (the premise the
@@ -157,6 +336,7 @@ def main() -> int:
     print(f"  checksum 0x{checksum:08x}")
     print(f"  sha1     {hashlib.sha1(bytes(body[32:])).hexdigest()}")
     print(f"  class    {CLASS.decode()} : {SUPER.decode()}")
+    write_methods_fixture()
     return 0
 
 
