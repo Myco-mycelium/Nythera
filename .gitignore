@@ -25,3 +25,6 @@ __pycache__/
 target/
 Cargo.lock
 .venv-docs/
+
+# Progress snapshots from tools/make_progress_zip.py (built, never source)
+/Nythera-progress-*.zip
