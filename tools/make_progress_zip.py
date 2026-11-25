@@ -45,9 +45,11 @@ which must not change with host mtimes.
 Reproducibility: the same tree and the same two logs produce the same zip
 bytes on the same machine. Entry names are sorted, every entry carries the
 1980 epoch and its source file mode, no host names or absolute paths are
-stored, and nothing reads the clock. The compressed bytes still depend on
-the zlib build, and `git bundle --all` depends on which refs the clone
-carries, so treat byte-identity as a same-machine, same-refs property.
+stored, nothing reads the clock, and the history bundle is pinned: it packs
+branches and tags only (not `--all`, whose extra refs/freebuff/landing/* refs
+move without a commit) with `pack.threads=1`, because pack-objects' threaded
+delta search is not reproducible -- one bundle in 25 came out 3 bytes larger
+than the other 24. The compressed bytes still depend on the zlib build.
 
 The proof logs are inputs, not checks: this script does not run the gate or
 the build, and a `FAIL:` verdict in the transcript is copied and reported
@@ -267,11 +269,13 @@ def main():
     entries = tree_files(output_rel)
 
     # The history bundle is built in a temp file: `git bundle create` wants a
-    # new file, and the zip only needs its bytes.
+    # new file, and the zip only needs its bytes. Branches and tags only, with
+    # one pack thread: see the module docstring for why both are pinned.
     with tempfile.TemporaryDirectory() as tmp:
         bundle = Path(tmp) / "nythera-history.bundle"
         subprocess.run(
-            ["git", "bundle", "create", str(bundle), "--all"],
+            ["git", "-c", "pack.threads=1", "bundle", "create", str(bundle),
+             "--branches", "--tags"],
             cwd=ROOT,
             check=True,
             capture_output=True,
