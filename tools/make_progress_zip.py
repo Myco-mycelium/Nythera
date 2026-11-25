@@ -33,13 +33,14 @@ Usage (in nykernel-package/source/nykernel):
 On a Windows host, source tools/win_toolchain.sh first so QEMU and the
 cross binutils are on PATH, as IMPLEMENTATION_STATUS.md describes.
 
-Staleness: a log proves only the sources that existed when it ran, so the
-script compares both logs' mtimes with the newest file under
-nykernel-package/source/nykernel that git tracks (or leaves untracked but
-not ignored), logs excluded, and prints a WARN naming the newer source when
-a log predates it. It warns rather than fails: mtimes carry no history, so a
-fresh checkout makes every source look newer than a copied-in log. The
-warning stays off PROGRESS.txt, which must not change with host mtimes.
+Staleness: a log proves only the sources that existed when it ran, so both
+logs' mtimes are compared with the newest file under
+nykernel-package/source/nykernel that git tracks (or leaves untracked but not
+ignored), logs excluded; a newer source prints a WARN naming it. It warns
+rather than fails because mtimes carry no history: a fresh checkout makes
+every source look newer than a copied-in log, and a source restored with an
+older mtime escapes the check entirely. The warning stays off PROGRESS.txt,
+which must not change with host mtimes.
 
 Reproducibility: the same tree and the same two logs produce the same zip
 bytes on the same machine. Entry names are sorted, every entry carries the
@@ -134,37 +135,29 @@ def newest_source():
     freshly written gate log is not a source, and counting them would make
     every snapshot look stale the moment it is made.
     """
-    listing = git("ls-files", "-z") + git("ls-files", "-o", "--exclude-standard", "-z")
-    newest_path, newest_mtime = None, 0.0
+    listing = git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    newest = ("", 0.0)
     for rel in listing.split("\0"):
-        if not rel.startswith(KERNEL_REL) or rel.endswith(".log"):
-            continue
-        path = ROOT / rel
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue  # listed but gone: deletion is a source change anyway
-        if mtime > newest_mtime:
-            newest_path, newest_mtime = rel, mtime
-    return newest_path, newest_mtime
+        if rel.startswith(KERNEL_REL) and not rel.endswith(".log"):
+            try:
+                mtime = (ROOT / rel).stat().st_mtime
+            except OSError:
+                continue  # listed but gone: the tree moved under us
+            if mtime > newest[1]:
+                newest = (rel, mtime)
+    return newest
 
 
 def staleness_warnings(gate_log_path, build_log_path):
     """WARN lines for each proof log older than the newest kernel source."""
     source, source_mtime = newest_source()
-    if source is None:
-        return []
     warnings = []
-    for label, path in (
-        ("gate log", gate_log_path),
-        ("build log", build_log_path),
-    ):
-        lag = int(source_mtime - path.stat().st_mtime)
-        if lag > 0:
+    for label, path in (("gate log", gate_log_path), ("build log", build_log_path)):
+        if path.stat().st_mtime < source_mtime:
             warnings.append(
                 f"WARN: the {label} {path.relative_to(ROOT).as_posix()} predates "
-                f"{source} by {lag} s -- that run never saw this source, so it "
-                f"cannot prove it; re-run it before handing the snapshot out"
+                f"{source} -- that run cannot prove this source; re-run it before "
+                f"handing the snapshot out"
             )
     return warnings
 
