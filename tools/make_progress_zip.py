@@ -33,6 +33,14 @@ Usage (in nykernel-package/source/nykernel):
 On a Windows host, source tools/win_toolchain.sh first so QEMU and the
 cross binutils are on PATH, as IMPLEMENTATION_STATUS.md describes.
 
+Staleness: a log proves only the sources that existed when it ran, so the
+script compares both logs' mtimes with the newest file under
+nykernel-package/source/nykernel that git tracks (or leaves untracked but
+not ignored), logs excluded, and prints a WARN naming the newer source when
+a log predates it. It warns rather than fails: mtimes carry no history, so a
+fresh checkout makes every source look newer than a copied-in log. The
+warning stays off PROGRESS.txt, which must not change with host mtimes.
+
 Reproducibility: the same tree and the same two logs produce the same zip
 bytes on the same machine. Entry names are sorted, every entry carries the
 1980 epoch and its source file mode, no host names or absolute paths are
@@ -58,6 +66,9 @@ ROOT = Path(__file__).resolve().parent.parent
 KERNEL = ROOT / "nykernel-package" / "source" / "nykernel"
 DEFAULT_GATE_LOG = KERNEL / "target" / "gate.log"
 DEFAULT_BUILD_LOG = KERNEL / "target" / "build.log"
+
+# The kernel whose sources a gate or build log is supposed to describe.
+KERNEL_REL = "nykernel-package/source/nykernel/"
 
 # Build output, generated discs and caches: reproducible from the sources in
 # the archive, and together several hundred megabytes larger than they are
@@ -112,6 +123,50 @@ def tree_files(output_rel):
             entries.append((f"Nythera/{rel}", path, path.stat().st_mode & 0o777))
     entries.sort(key=lambda entry: entry[0])
     return entries
+
+
+def newest_source():
+    """(path, mtime) of the newest kernel file git considers part of the tree.
+
+    Tracked and untracked-but-not-ignored files count, so an uncommitted
+    source edit makes the logs stale the same way a commit would. Ignored
+    files (target/, build output, logs) do not count -- a rebuilt .elf or the
+    freshly written gate log is not a source, and counting them would make
+    every snapshot look stale the moment it is made.
+    """
+    listing = git("ls-files", "-z") + git("ls-files", "-o", "--exclude-standard", "-z")
+    newest_path, newest_mtime = None, 0.0
+    for rel in listing.split("\0"):
+        if not rel.startswith(KERNEL_REL) or rel.endswith(".log"):
+            continue
+        path = ROOT / rel
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue  # listed but gone: deletion is a source change anyway
+        if mtime > newest_mtime:
+            newest_path, newest_mtime = rel, mtime
+    return newest_path, newest_mtime
+
+
+def staleness_warnings(gate_log_path, build_log_path):
+    """WARN lines for each proof log older than the newest kernel source."""
+    source, source_mtime = newest_source()
+    if source is None:
+        return []
+    warnings = []
+    for label, path in (
+        ("gate log", gate_log_path),
+        ("build log", build_log_path),
+    ):
+        lag = int(source_mtime - path.stat().st_mtime)
+        if lag > 0:
+            warnings.append(
+                f"WARN: the {label} {path.relative_to(ROOT).as_posix()} predates "
+                f"{source} by {lag} s -- that run never saw this source, so it "
+                f"cannot prove it; re-run it before handing the snapshot out"
+            )
+    return warnings
 
 
 def progress_text(head, branch, subject, committed, gate_log, build_log, verdict):
@@ -196,6 +251,9 @@ def main():
     ):
         if not path.is_file():
             raise SystemExit(f"FAIL: no proof at {path} -- {why}")
+
+    for warning in staleness_warnings(args.gate_log, args.build_log):
+        print(warning)
 
     gate_log = args.gate_log.read_bytes()
     build_log = args.build_log.read_bytes()
