@@ -33,14 +33,15 @@ Usage (in nykernel-package/source/nykernel):
 On a Windows host, source tools/win_toolchain.sh first so QEMU and the
 cross binutils are on PATH, as IMPLEMENTATION_STATUS.md describes.
 
-Staleness: a log proves only the sources that existed when it ran, so both
-logs' mtimes are compared with the newest file under
-nykernel-package/source/nykernel that git tracks (or leaves untracked but not
-ignored), logs excluded; a newer source prints a WARN naming it. It warns
-rather than fails because mtimes carry no history: a fresh checkout makes
-every source look newer than a copied-in log, and a source restored with an
-older mtime escapes the check entirely. The warning stays off PROGRESS.txt,
-which must not change with host mtimes.
+Staleness: a log proves only the sources it actually saw, so the gate and the
+build each print a SOURCE_STATE line into their log (see tools/source_state.py)
+carrying the commit, the repo's dirty count and a digest of the kernel source
+set. This script recomputes that digest and warns for any log whose line names
+a different one, or that has no line at all. Content answers the question
+mtimes cannot: a fresh checkout, a restored file and an untouched file carry
+mtimes that say nothing about what a run saw. What the digest still cannot
+show is whether the run exercised those sources -- only that the tree it ran
+against is the tree in the archive.
 
 Reproducibility: the same tree and the same two logs produce the same zip
 bytes on the same machine. Entry names are sorted, every entry carries the
@@ -59,19 +60,25 @@ rather than hidden.
 import argparse
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import zipfile
 from pathlib import Path
 
+import source_state
+
 ROOT = Path(__file__).resolve().parent.parent
 KERNEL = ROOT / "nykernel-package" / "source" / "nykernel"
 DEFAULT_GATE_LOG = KERNEL / "target" / "gate.log"
 DEFAULT_BUILD_LOG = KERNEL / "target" / "build.log"
 
-# The kernel whose sources a gate or build log is supposed to describe.
-KERNEL_REL = "nykernel-package/source/nykernel/"
+# tools/source_state.py's line, as it appears in a log. Last match wins: a log
+# that prints it twice is still described by what it last said.
+STATE_RE = re.compile(
+    r"^SOURCE_STATE commit=(\S+) dirty=(\d+) kernel=([0-9a-f]{64})$", re.MULTILINE
+)
 
 # Build output, generated discs and caches: reproducible from the sources in
 # the archive, and together several hundred megabytes larger than they are
@@ -128,38 +135,25 @@ def tree_files(output_rel):
     return entries
 
 
-def newest_source():
-    """(path, mtime) of the newest kernel file git considers part of the tree.
-
-    Tracked and untracked-but-not-ignored files count, so an uncommitted
-    source edit makes the logs stale the same way a commit would. Ignored
-    files (target/, build output, logs) do not count -- a rebuilt .elf or the
-    freshly written gate log is not a source, and counting them would make
-    every snapshot look stale the moment it is made.
-    """
-    listing = git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
-    newest = ("", 0.0)
-    for rel in listing.split("\0"):
-        if rel.startswith(KERNEL_REL) and not rel.endswith(".log"):
-            try:
-                mtime = (ROOT / rel).stat().st_mtime
-            except OSError:
-                continue  # listed but gone: the tree moved under us
-            if mtime > newest[1]:
-                newest = (rel, mtime)
-    return newest
-
-
 def staleness_warnings(gate_log_path, build_log_path):
-    """WARN lines for each proof log older than the newest kernel source."""
-    source, source_mtime = newest_source()
+    """WARN lines for each proof log whose recorded kernel digest is not this tree's."""
+    current = source_state.kernel_digest()
     warnings = []
     for label, path in (("gate log", gate_log_path), ("build log", build_log_path)):
-        if path.stat().st_mtime < source_mtime:
+        log = path.relative_to(ROOT).as_posix()
+        states = STATE_RE.findall(path.read_text(encoding="utf-8", errors="replace"))
+        if not states:
             warnings.append(
-                f"WARN: the {label} {path.relative_to(ROOT).as_posix()} predates "
-                f"{source} -- that run cannot prove this source; re-run it before "
-                f"handing the snapshot out"
+                f"WARN: the {label} {log} carries no SOURCE_STATE line, so the "
+                f"sources it ran against cannot be compared with this tree; "
+                f"re-run it before handing the snapshot out"
+            )
+        elif states[-1][2] != current:
+            warnings.append(
+                f"WARN: the {label} {log} ran against kernel {states[-1][2][:12]} "
+                f"(dirty={states[-1][1]}) but this tree hashes {current[:12]} -- "
+                f"the run never saw these sources; re-run it before handing the "
+                f"snapshot out"
             )
     return warnings
 

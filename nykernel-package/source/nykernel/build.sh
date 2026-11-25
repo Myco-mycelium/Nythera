@@ -23,6 +23,17 @@ cd "$(dirname "$0")"
 # links two seconds apart produce identical stamps.
 export SOURCE_DATE_EPOCH=946684800
 
+# Say what this build is building, in the log itself: tools/source_state.py
+# hashes the kernel source set (tracked or untracked-but-not-ignored, logs
+# excluded) and names the commit, so tools/make_progress_zip.py can decide
+# whether a log still describes the tree by comparing content instead of
+# file mtimes. Missing python is not a build failure -- the line is
+# provenance, and a run that cannot state it says so in one sentence.
+_state_py="$(command -v python3 || command -v python || true)"
+if [[ -n "$_state_py" ]]; then
+    "$_state_py" "$(cd ../../.. && pwd)/tools/source_state.py" || true
+fi
+
 # The freestanding target spec asks for `rust-lld` by name (linker-flavor
 # gnu-lld). A rustup toolchain ships rust-lld inside its sysroot bin
 # directory, which is NOT on PATH by default, so a bare `./build.sh` would

@@ -11,6 +11,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Record what this run is testing before it tests anything: the commit, the
+# repo's dirty count and a digest of the kernel source set, so
+# tools/make_progress_zip.py can compare content rather than mtimes when it
+# asks whether this transcript still describes the tree (tools/source_state.py).
+_state_py="$(command -v python3 || command -v python || true)"
+if [[ -n "$_state_py" ]]; then
+    "$_state_py" "$(cd ../../.. && pwd)/tools/source_state.py" || true
+fi
+
 # The environment this gate assumes, named before it is assumed: a missing
 # qemu, a path too long for proot's monitor socket, or a clippy-less host now
 # fails HERE with a sentence instead of later with a 127 or a hang. --quiet
