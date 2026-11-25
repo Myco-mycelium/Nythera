@@ -2,7 +2,7 @@
  * prog_win32_kernel32.s -- the PROVIDER half of the Win32 API surface
  * proof: a genuine Windows-format PE32+ DLL (`ld -m i386pep --shared
  * --enable-auto-import --image-base=0x190000000000`) named
- * `kernel32.dll`, exporting seven ordinary Win32 names:
+ * `kernel32.dll`, exporting twenty ordinary Win32 names:
  *
  *   tranche 1 (console):  GetStdHandle, WriteFile, GetTickCount, ExitProcess
  *   tranche 2 (files):    CreateFileA, ReadFile, CloseHandle
@@ -12,6 +12,7 @@
  *   tranche 9 (runtime):  LoadLibraryA, FreeLibrary
  *   tranche 10 (provenance): GetModuleFileNameA
  *   tranche 11 (memory):  GetProcessHeap, HeapAlloc, HeapFree
+ *   tranche 12 (memory):  HeapSize, HeapReAlloc
  *
  * Why GetProcAddress is the export that completes the startup pair: a CRT
  * (or any program that loads a library late) takes the HMODULE a name
@@ -302,6 +303,35 @@ HeapFree:
     mov %rdx, nyr_call_block+16(%rip)
     mov %r8,  nyr_call_block+24(%rip)
     movq $17, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl HeapSize
+HeapSize:
+    /* HANDLE hHeap in RCX, DWORD dwFlags in RDX, LPCVOID lpMem in R8. Answers
+       the size of the BLOCK (rounded to the heap's alignment), which may be
+       larger than the request that produced it -- Windows' own contract. A
+       freed or never-issued address is a refusal, not a stale size. */
+    mov %rcx, nyr_call_block+8(%rip)
+    mov %rdx, nyr_call_block+16(%rip)
+    mov %r8,  nyr_call_block+24(%rip)
+    movq $18, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl HeapReAlloc
+HeapReAlloc:
+    /* HANDLE hHeap in RCX, DWORD dwFlags in RDX, LPVOID lpMem in R8, SIZE_T
+       dwBytes in R9. Same pointer for a request that fits the block; a new,
+       content-preserving block when it does not; and with
+       HEAP_REALLOC_IN_PLACE_ONLY, a refusal rather than a move. */
+    mov %rcx, nyr_call_block+8(%rip)
+    mov %rdx, nyr_call_block+16(%rip)
+    mov %r8,  nyr_call_block+24(%rip)
+    mov %r9,  nyr_call_block+32(%rip)
+    movq $19, nyr_call_block+48(%rip)
     int $0x90
     mov nyr_call_block+40(%rip), %rax
     ret

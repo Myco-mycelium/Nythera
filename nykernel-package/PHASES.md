@@ -28,8 +28,8 @@ yet -- noted here so it's not lost by the time Phase 9 starts.
 | 2 | Memory management | ✅ Done & verified | NPS-001 (Accepted) |
 | 3 | Scheduling / processes | ✅ Pre-normative proof done & verified; ✅ Policy increments landed 2026-10-11 (enforcing §5 lifecycle; §5.5/§5.6 termination walked live by task J) — conformance track open | NPS-002 (**Accepted** 2026-10-11, AG row I1) |
 | 4 | Kernel IPC | ✅ Pre-normative proof done & verified; ✅ Policy increments landed 2026-10-11 (§5.4 arbiter + §4.3 revocation + §3 blocking receive) — conformance track open | NPS-003 (**Accepted** 2026-10-11, AG row I2) |
-| 5 | Windows compatibility | 🚧 Prerequisites done; first real capability (PE32+ loader) landed | NPS-007 (Accepted; scope confirmation needed — see below) |
-| 6 | Android compatibility | 🚧 First real capability (DEX format parser) landed | NPS-008 (Accepted) |
+| 5 | Windows compatibility | 🚧 Prerequisites done; PE32+ loader + a 20-export Win32 API surface (files, modules, runtime loading, heap size/reallocation) landed | NPS-007 (Accepted; scope confirmation needed — see below) |
+| 6 | Android compatibility | 🚧 DEX format parser landed: header + map_list + Adler-32/SHA-1 integrity + the string/type/class tables | NPS-008 (Accepted) |
 | 7 | GPU / graphics kernel path | ⬜ Not started | NPS-001 §3, NPS-013 (Accepted) |
 | 8 | Storage integration | ⬜ Not started | NPS-004 (Accepted), NyVault (source/nyhal-linux-backend precedent) |
 | 9 | Gaming subsystem / multi-device | ⬜ Not started | NPS-006, NPS-012, NPS-014 (Accepted) |
@@ -1172,6 +1172,20 @@ every reported value) against the pre-reset run. A second, independent
 reset happened during the *documentation* pass for this very phase;
 recovered from a surviving build artifact in `/mnt/user-data/outputs/`
 rather than needing to ask again. Recorded here, not smoothed over.
+
+**Later increment (2026-11-25): the tables, not just the container.** A
+second fixture (`userprog/classes_hello.dex`, built deterministically by
+`tools/make_dex_fixture.py`) carries three strings, two types and one class
+definition, and `dex.rs` now resolves them: `string` reads a
+`string_data_item` (ULEB128 UTF-16 length, MUTF-8 bytes validated, terminator
+required, declared length matched against the decoded code units),
+`type_descriptor` follows a `type_ids` entry into that string pool, and
+`class_def`/`class_descriptor` resolve a class's own descriptor, superclass and
+source-file string. Seven malformed-table shapes are permanent negative
+controls (offset past EOF, over-long ULEB128, length mismatch, unterminated
+string, type/class index past its table, non-class descriptor). Scope is
+unchanged: these are the tables' CONTENTS; no class_data, no methods, no
+bytecode.
 
 ## Phase 7 -- GPU / graphics kernel path ⬜
 

@@ -150,7 +150,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
         "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
         "experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase 0x190100000000" \
-        "experimental win32-demo: resolved 18 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA, GetProcessHeap, HeapAlloc, HeapFree)" \
+        "experimental win32-demo: resolved 20 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA, GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc, HeapSize)" \
         "experimental win32-demo: negative control 6 -- the read-only volume refused a relative path" \
         "WriteFile returned 1 and wrote 33 byte(s)" \
         "bytes.bin read back byte-identically" \
@@ -179,7 +179,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "GetModuleFileNameA asked of that row answered the very path LoadLibraryA was given" \
         "asked WHICH FILE each handle came from, GetModuleFileNameA answered 27 bytes for the client's own row (its own byte-and-NUL compare 1 it), 22 for kernel32.dll and 24 for the runtime row while it was loaded" \
         "kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows" \
-        "all 18 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (18+2)" \
+        "all 20 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (20+2)" \
         "kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module)" \
         "experimental elf-dyn-demo: the same .so linked WITHOUT -z relro loaded at" \
         "GNU_RELRO outcome absent (None), GLOB_DAT slot" \
@@ -190,9 +190,22 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "unsatisfiable relocation inside a relro-less object fails the load instead of leaving a zeroed slot" \
         "experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the 8192 byte region and read back zero; HeapFree answered TRUE for it" \
         "experimental win32-demo: the process heap -- GetProcessHeap answered 0x48" \
+        "experimental win32-demo: negative control 3c -- a 64-byte block's HeapSize answered 64, HeapReAlloc(128) moved it and kept the byte written through it, the new block's HeapSize answered 128, an in-place-only grow was refused as HeapExhausted with ERROR_NOT_ENOUGH_MEMORY (8) leaving the block at 128, and HeapSize of the moved-from address was refused as HeapBlockNotLive" \
+        "experimental win32-demo: the heap's size and reallocation -- HeapSize of the live 32-byte block answered 32" \
+        "HeapReAlloc(48) answered a DIFFERENT block" \
+        "whose HeapSize answered the REUSED block's own size 128 rather than 48, the stated no-split limit (1)" \
+        "a shrink to 16 answered the same pointer (1)" \
+        "an in-place-only grow to 4096 answered 0x0 with ERROR_NOT_ENOUGH_MEMORY (8)" \
+        "a CRT's malloc/realloc/free triple now runs through this kernel" \
+        "experimental dex-demo: class tables -- a 294 byte DEX with 3 string(s), 2 type(s), 1 class(es)" \
+        "string 0/1/2 answer \"Lnyrqis/hello/Hello;\"/\"Ljava/lang/Object;\"/\"Hello.java\"" \
+        "experimental dex-demo: table refusals -- a string_data offset past EOF refused StringDataOutOfBounds" \
+        "a declared UTF-16 length of 19 for 20 units refused StringLengthMismatch" \
+        "a class descriptor that does not start with L refused BadTypeDescriptor -- OK" \
+        "experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK -- OK" \
         "the next 16-byte allocation answered" \
         "-- OK, a real Windows program can allocate and free its own memory through this kernel" \
-        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true realloc=true" \
         "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
         "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \
         "GetModuleHandleA(\"kernel32.dll\") answered the provider's own base 0x190000000000 in either case" \

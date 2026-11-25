@@ -232,7 +232,7 @@ as --64 userprog/prog_pe_bound_ref2stale.s -o userprog/prog_pe_bound_ref2stale.o
 ld -m i386pep --subsystem native -e _start --image-base=0x600000000000 -o userprog/userprog_pe_bound_ref2stale.exe userprog/prog_pe_bound_ref2stale.o userprog/userprog_pe_import_fwdprov.dll
 python3 tools/patch_pe_bound.py userprog/userprog_pe_import_dll.dll userprog/userprog_pe_import_fwdprov.dll userprog/userprog_pe_import_app.exe userprog/userprog_pe_bound_bad.exe userprog/userprog_pe_bound_refstale.exe userprog/userprog_pe_bound_ref2bad.exe userprog/userprog_pe_bound_ref2stale.exe
 
-echo "==> link userprog/kernel32.dll, userprog/nyrqis.dll and userprog/win32_console.exe (the Win32 API surface v0 carriers: a real PE32+ DLL whose eighteen exports are ring-3 trap stubs, a SECOND provider DLL whose two exports are ordinary ring-3 code so the module table's rows are per-module and whose export table declares OrdinalBase 10 so the ordinal form of GetProcAddress is not an index guess, and a real PE32+ console client that imports the first)"
+echo "==> link userprog/kernel32.dll, userprog/nyrqis.dll and userprog/win32_console.exe (the Win32 API surface v0 carriers: a real PE32+ DLL whose twenty exports are ring-3 trap stubs, a SECOND provider DLL whose two exports are ordinary ring-3 code so the module table's rows are per-module and whose export table declares OrdinalBase 10 so the ordinal form of GetProcAddress is not an index guess, and a real PE32+ console client that imports the first)"
 as --64 userprog/prog_win32_kernel32.s -o userprog/prog_win32_kernel32.o
 ld -m i386pep --shared --enable-auto-import --image-base=0x190000000000 -o userprog/kernel32.dll userprog/prog_win32_kernel32.o
 as --64 userprog/prog_win32_nyrqis.s -o userprog/prog_win32_nyrqis.o
@@ -269,9 +269,10 @@ _win32_appsize=$(objdump -p userprog/win32_console.exe | awk '/SizeOfImage/{prin
 # module table's RIP window is checked against -- is identical in both. The
 # two values are therefore accepted BY NAME; a third one is drift. Tranche 11
 # (GetProcessHeap, HeapAlloc, HeapFree) moved both by 0x50: same three stubs,
-# same 32-byte tail difference.
-if [[ "$_win32_text" != "0000190000001000 00000260" && \
-      "$_win32_text" != "0000190000001000 00000240" ]]; then
+# same 32-byte tail difference. Tranche 12 (HeapSize, HeapReAlloc) moved them
+# again by 0x60: two stubs appended last, so every earlier RVA is unchanged.
+if [[ "$_win32_text" != "0000190000001000 000002c0" && \
+      "$_win32_text" != "0000190000001000 000002a0" ]]; then
     echo "FAIL: kernel32.dll .text drifted ($_win32_text); update experimental::win32's TEXT_RVA/TEXT_SIZE pins" >&2; exit 1
 fi
 if [[ "$_win32_data" != "0000190000002000 00000040" ]]; then

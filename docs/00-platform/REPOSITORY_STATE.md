@@ -5,6 +5,31 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-25 -- **the Android and Windows tracks each gained their next
+increment, and the boot gate is green.**
+
+Android: `experimental::dex` now resolves the string, type and class tables, not
+just the container. `string` reads a `string_data_item` (bounded ULEB128 UTF-16
+length, validated MUTF-8 including the two-byte NUL and three-byte surrogates,
+required terminator, declared length matched against decoded code units);
+`type_descriptor` follows a `type_ids` entry into that pool; `class_def` and
+`class_descriptor` resolve a class's own descriptor, superclass and source-file
+string. A new deterministic fixture (`userprog/classes_hello.dex`, 294 bytes,
+built by `tools/make_dex_fixture.py`) carries one real class,
+`Lnyrqis/hello/Hello;` extending `Ljava/lang/Object;`, and seven malformed-table
+shapes are permanent negative controls. Still explicitly not bytecode execution.
+
+Windows: kernel32's 19th and 20th exports, `HeapSize` and `HeapReAlloc`, complete
+the CRT's malloc/realloc/free triple. `HeapSize` answers the block's size (which
+a reused block keeps, per the no-split limit); `HeapReAlloc` answers the same
+pointer for a request that fits, moves and copies otherwise, zeroes the bytes
+beyond the old block under `HEAP_ZERO_MEMORY`, and refuses an in-place-only grow
+with `ERROR_NOT_ENOUGH_MEMORY`. The gate's first run caught a wrong EXPECTATION
+(new block sized 128, not 48, because it reused a freed 128-byte block) and one
+DEX control aimed at the wrong byte (an "unterminated" string that ran into the
+map_list); both were fixed at cause and the gate now passes with 20 imports,
+`realloc=true`, 21 refusals and every new needle matched.
+
 2026-11-02 (sixth entry) — **a real RTC decode bug the day exposed**: running
 the gates at 12:31 failed the wall-clock self-test on every boot, and the
 cause was ours, not the clock's. `read_time` decoded the hour register's

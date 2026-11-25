@@ -8287,3 +8287,120 @@ boot prints:
 
 and `tools/qemu_boot_test.sh` requires that line too.
 
+## The DEX string/type/class tables: what a class is called, and seven refusals (2026-11-25)
+
+The parser could describe a DEX file's SHAPE -- the header's section counts and a
+`map_list` that names itself -- but not read anything the file contained: every
+fixture had to have zero strings, zero types and zero classes for the proof to
+pass. This increment adds the three tables an app's identity lives in, and a
+fixture that actually has them.
+
+`userprog/classes_hello.dex` (294 bytes, sha256 `6e44ca8d...28ac4`, regenerated
+byte-identically by `tools/make_dex_fixture.py`): three strings
+(`Lnyrqis/hello/Hello;`, `Ljava/lang/Object;`, `Hello.java`), two type ids, one
+class def (public, superclass type 1, source-file string 2), the required
+`map_list` with six entries, and correct Adler-32 + SHA-1. The generator writes
+the signature BEFORE the checksum because the checksum's range (`bytes[12..]`)
+contains the signature field; the first run computed them the other way round and
+produced a file whose checksum no reader would accept. That is the same order the
+kernel's `verify` checks, and it is why the fixture script asserts both fields
+before it writes.
+
+`dex::string` reads one `string_data_item`: a ULEB128 UTF-16 length (bounded to
+five bytes and to `u32`, with the accumulator in `u64` so an over-range value is
+detected rather than truncated), MUTF-8 bytes validated against the format's
+actual shapes (one-byte ASCII, the two-byte NUL, two-byte `C2..DF`, three-byte
+`E0..EF` including surrogates), a NUL terminator required inside the file, and
+the decoded code-unit count matched against the declared length.
+`type_descriptor` resolves a `type_ids` entry through the string pool (checking
+the string index before it uses it), `class_def` resolves a class's own type,
+superclass and source-file string (`NO_INDEX` is the only "none"), and
+`class_descriptor` requires the class's descriptor to be shaped like one
+(`L...;`).
+
+Every malformed-table shape is a permanent boot check on a copy of the real
+fixture with exactly one field broken, so a rejection cannot be explained by any
+other check. The first gate run caught that one of them was aimed at the wrong
+byte: overwriting the LAST string's terminator does not leave the string
+unterminated, because the scan runs on into the `map_list` and finds a NUL there
+(refusing with `StringLengthMismatch`, not `StringNotTerminated`). The control
+now truncates the file at the terminator, which is the case it claims to test.
+Verified boot transcript (`tools/qemu_boot_test.sh`, passing):
+
+```
+  experimental dex-demo: class tables -- a 294 byte DEX with 3 string(s), 2 type(s), 1 class(es): string 0/1/2 answer "Lnyrqis/hello/Hello;"/"Ljava/lang/Object;"/"Hello.java", type 0/1 resolve them as descriptors, and class 0 is Lnyrqis/hello/Hello; (public, flags 0x1) extending Ljava/lang/Object; with source file Hello.java -- OK
+  experimental dex-demo: table refusals -- a string_data offset past EOF refused StringDataOutOfBounds, an over-long ULEB128 refused BadUleb128, a declared UTF-16 length of 19 for 20 units refused StringLengthMismatch, an unterminated string refused StringNotTerminated, a type index past the table refused TypeIndexOutOfBounds, a class index past the table refused ClassIndexOutOfBounds, and a class descriptor that does not start with L refused BadTypeDescriptor -- OK
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK -- OK
+```
+
+The gate pins those three lines. **Scope is unchanged and stated rather than
+implied:** these are the tables' CONTENTS. There is still no `class_data`, no
+proto/field/method table, no annotation, no APK (ZIP) unwrapping and no
+bytecode execution of any kind -- each of those is the next table, not a hidden
+part of these.
+
+## The Win32 API surface v1.2: HeapSize and HeapReAlloc -- a CRT's realloc (2026-11-25)
+
+The heap could allocate and free, but a C runtime's `realloc` had no path: a
+program could not ask how large a block was, nor change one's size while keeping
+its bytes. kernel32's 19th and 20th exports close that gap, and the interesting
+part is not the two stubs but what the allocator honestly does.
+
+- `HeapSize(hHeap, dwFlags, lpMem)` answers the BLOCK's size, not the requested
+  size. This allocator rounds to 16 bytes and does not split a reused block, so
+  the answer can be larger than the request that produced it -- Windows
+  documents the same ("may be larger than requested"). A freed or never-issued
+  address is `ERROR_INVALID_ADDRESS`, by the same evidence rule `HeapFree`
+  applies: a returned block is no longer a block.
+- `HeapReAlloc(hHeap, dwFlags, lpMem, dwBytes)` has the two shapes Windows has.
+  A request that fits the block answers the SAME pointer (no split, no move);
+  a request that needs more takes a new block (a freed one that fits, else the
+  bump pointer), copies the old block's bytes, frees the old block, and -- with
+  `HEAP_ZERO_MEMORY` -- clears the bytes beyond it, the part the caller has
+  never seen. `HEAP_REALLOC_IN_PLACE_ONLY` refuses the move instead of making
+  it, which is the one thing that flag exists to prevent, and reports
+  `ERROR_NOT_ENOUGH_MEMORY`. `HEAP_GENERATE_EXCEPTIONS` stays refused for the
+  same reason `HeapAlloc` refuses it. The shared `heap_take`/`heap_live_block`
+  helpers keep `HeapAlloc`, `HeapReAlloc` and `HeapSize` from drifting apart
+  about the block table and the region.
+
+**A wrong expectation the gate caught, and why the allocator was right.** The
+first ring-3 proof asked for 48 bytes from a 32-byte block and asserted the new
+block's `HeapSize` was 48. It is 128: the reallocation reused a freed 128-byte
+block left by the kernel-side control, and a reused block keeps its own size --
+the allocator's stated no-split limit. The transcript's prose said "answered 48"
+while the boolean was false, so the checks line read `realloc=false` and the gate
+failed on the needle. The fix was to the EXPECTATION and the prose, not to the
+allocator: the client now asserts 128, and the line says why. This is the
+failure mode the checks-line boolean exists to expose.
+
+**Verified from both sides in the same boot.** Kernel-side control 3c checks the
+region, the copy and the refusal without ring 3; the ring-3 client repeats the
+sequence with its own addresses, writes a byte through the old block and reads it
+back through the new one, proves a shrink answers the same pointer, and asks for
+every refusal shape.
+
+```
+  experimental win32-demo: negative control 3c -- a 64-byte block's HeapSize answered 64, HeapReAlloc(128) moved it and kept the byte written through it, the new block's HeapSize answered 128, an in-place-only grow was refused as HeapExhausted with ERROR_NOT_ENOUGH_MEMORY (8) leaving the block at 128, and HeapSize of the moved-from address was refused as HeapBlockNotLive -- OK, size and reallocation are the heap's own bookkeeping
+  experimental win32-demo: the heap's size and reallocation -- HeapSize of the live 32-byte block answered 32 (1); the client wrote 0x5a through it and HeapReAlloc(48) answered a DIFFERENT block 0x4d0000100060 with the byte kept (1), whose HeapSize answered the REUSED block's own size 128 rather than 48, the stated no-split limit (1); a shrink to 16 answered the same pointer (1); an in-place-only grow to 4096 answered 0x0 with ERROR_NOT_ENOUGH_MEMORY (8), HEAP_GENERATE_EXCEPTIONS answered 0x0 with ERROR_INVALID_PARAMETER (87), and HeapSize of the moved-from block answered 0x0 with ERROR_INVALID_ADDRESS (487) -- OK, a CRT's malloc/realloc/free triple now runs through this kernel
+  experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true realloc=true; ...
+```
+
+`tools/qemu_boot_test.sh` pins the control-3c line, the heap line's new clauses,
+`realloc=true`, and the 20-name/20-import load lines; the client's run raises 21
+refusals (the previous 18 plus the in-place grow, the exceptions flag and the
+moved-from `HeapSize`).
+
+**Measured.** `kernel32.dll` `.text` `0x260 -> 0x2c0` (two stubs appended last:
+`HeapSize` at RVA `0x1256`, `HeapReAlloc` at `0x1280`, so every earlier RVA is
+unchanged); `.edata` `0x1fb` with 20 names; client `.text` `0xef0`, `.idata`
+`0x31c`, 20 imports, `SizeOfImage 0x4000` and ImageBase unchanged;
+`build.sh` pins the new `.text` window in both linker layouts.
+
+**Limits, unchanged and extended by one.** One heap, one handle, a bump allocator
+with an eight-entry live-block table, first-fit reuse WITHOUT splitting or
+coalescing (so a reused block keeps its size and a shrink does not release
+anything), no `HeapCreate`/`HeapValidate`/`HeapSize` for a foreign heap, no
+growable heap, and a single process-wide last-error cell. `HeapReAlloc`'s grow
+path copies and frees rather than extending in place -- which is why
+`HEAP_REALLOC_IN_PLACE_ONLY` is a real refusal here instead of a promise.

@@ -1,20 +1,22 @@
 //! The Win32 API surface proof: a genuine Windows-format PE32+ console
 //! program, linked against a genuine Windows-format PE32+ `kernel32.dll`,
-//! whose eighteen exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
+//! whose twenty exports -- `GetStdHandle`, `WriteFile`, `GetTickCount`,
 //! `ExitProcess`, `CreateFileA`, `ReadFile`, `CloseHandle`, `GetLastError`,
 //! `SetLastError`, `GetCommandLineA`, `GetModuleHandleA`, `GetProcAddress`,
-//! `LoadLibraryA` and `FreeLibrary` -- are performed by this kernel.
+//! `LoadLibraryA`, `FreeLibrary`, `GetModuleFileNameA`, `GetProcessHeap`,
+//! `HeapAlloc`, `HeapFree`, `HeapSize` and `HeapReAlloc` -- are performed by
+//! this kernel.
 //!
 //! What is proven, end to end, every boot:
 //!
 //! 1. `userprog/kernel32.dll` loads at its own `ImageBase`, and its REAL
-//!    export directory (`GetProcAddress` semantics) names exactly the eighteen
+//!    export directory (`GetProcAddress` semantics) names exactly the twenty
 //!    functions; every export address is inside its own `.text` window, and
 //!    the call block the stubs use is where the kernel pins it (magic
 //!    checked) -- the layout-drift rule.
 //! 2. `userprog/win32_console.exe` is loaded, and its REAL
 //!    `IMAGE_DIRECTORY_ENTRY_IMPORT` -- synthesized by GNU ld itself from the
-//!    DLL -- resolves to those eighteen export addresses. Every IAT slot is read
+//!    DLL -- resolves to those twenty export addresses. Every IAT slot is read
 //!    back against the export table's own answer, per symbol.
 //! 3. The client's own code runs in ring 3 and uses the imports the ordinary
 //!    Windows way. Startup, in the order a CRT makes them: `GetCommandLineA`
@@ -200,14 +202,14 @@ const CMDLINE_OFFSET: u64 = 0x2A0;
 /// allocation naming a handle that is not the process heap, a
 /// `HEAP_GENERATE_EXCEPTIONS` request, an allocation larger than the whole
 /// region, and a free of an address the heap never issued.
-const EXPECTED_REFUSALS: u64 = 18;
+const EXPECTED_REFUSALS: u64 = 21;
 
 /// The eighteen exports the client imports, and the RVAs they must resolve to
 /// (the DLL's own export table is the authority; these are the independent
 /// answer the boot checks it against, per symbol). Sorted by name, which is the
 /// order GNU ld writes its name table in -- so the stubs appended last in the
 /// source for a stable `.text` layout sort into the middle.
-const EXPECTED_EXPORTS: [(&[u8], u64); 18] = [
+const EXPECTED_EXPORTS: [(&[u8], u64); 20] = [
     (b"CloseHandle", 0x10F1),
     (b"CreateFileA", 0x1077),
     (b"ExitProcess", 0x1062),
@@ -222,6 +224,8 @@ const EXPECTED_EXPORTS: [(&[u8], u64); 18] = [
     (b"GetTickCount", 0x104D),
     (b"HeapAlloc", 0x1202),
     (b"HeapFree", 0x122C),
+    (b"HeapReAlloc", 0x1280),
+    (b"HeapSize", 0x1256),
     (b"LoadLibraryA", 0x118B),
     (b"ReadFile", 0x10B4),
     (b"SetLastError", 0x1122),
@@ -499,6 +503,20 @@ const SLOT_HEAP_BIG: u64 = 0x978;
 const SLOT_HEAP_BIG_ERR: u64 = 0x980;
 const SLOT_HEAP_BADFREE: u64 = 0x988;
 const SLOT_HEAP_BADFREE_ERR: u64 = 0x990;
+// Tranche 12: the heap's size and reallocation. `SLOT_HEAP_REALLOC_PTR` must
+// differ from P2 (48 does not fit a 32-byte block); `SAME` is the client's own
+// compare of the shrink's answer with P4, so "same pointer" is a measurement.
+const SLOT_HEAP_SIZE_OK: u64 = 0xA00;
+const SLOT_HEAP_REALLOC_PTR: u64 = 0xA08;
+const SLOT_HEAP_REALLOC_OK: u64 = 0xA10;
+const SLOT_HEAP_REALLOC_SIZE: u64 = 0xA18;
+const SLOT_HEAP_REALLOC_SAME: u64 = 0xA20;
+const SLOT_HEAP_INPLACE: u64 = 0xA28;
+const SLOT_HEAP_INPLACE_ERR: u64 = 0xA30;
+const SLOT_HEAP_REALLOC_BADF: u64 = 0xA38;
+const SLOT_HEAP_REALLOC_BADF_ERR: u64 = 0xA40;
+const SLOT_HEAP_SIZE_BAD: u64 = 0xA48;
+const SLOT_HEAP_SIZE_BAD_ERR: u64 = 0xA50;
 // A compile-time check that the report fields do not overlap the client's read
 // buffers (which run up to SLOT_BIN + its eight bytes), the command-line string
 // the loader installs, the 0x300 region the kernel-side controls write their
@@ -517,7 +535,9 @@ const _: () = assert!(
         && SLOT_DYN_MISS_ERR + 8 <= SLOT_FILE_SELF_LEN
         && SLOT_FILE_ZERO_ERR + 8 <= 0x890
         && SLOT_HEAP_HANDLE >= 0x900
-        && SLOT_HEAP_BADFREE_ERR + 8 <= 0xA00,
+        && SLOT_HEAP_BADFREE_ERR + 8 <= 0xA00
+        && SLOT_HEAP_SIZE_OK >= 0xA00
+        && SLOT_HEAP_SIZE_BAD_ERR + 8 <= 0xB00,
     "win32-demo report fields must sit between the read buffers and 0x300 (or above 0x700, past the kernel's control strings), must not overlap each other, and must not overlap the installed command line"
 );
 
@@ -883,7 +903,7 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         );
     }
     serial_println!(
-        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA, GetProcessHeap, HeapAlloc, HeapFree), every slot reading back its export address -- OK",
+        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA, GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc, HeapSize), every slot reading back its export address -- OK",
         resolved.facts.len()
     );
 
@@ -937,9 +957,9 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         0,
         "the last error must start at ERROR_SUCCESS before any call"
     );
-    expect_refusal(18, [0; 5], from_text, win32::Win32Error::UnknownFunction);
+    expect_refusal(20, [0; 5], from_text, win32::Win32Error::UnknownFunction);
     serial_println!(
-        "  experimental win32-demo: negative control 3 -- index 18 (one past the last export) refused with the typed UnknownFunction -- OK"
+        "  experimental win32-demo: negative control 3 -- index 20 (one past the last export) refused with the typed UnknownFunction -- OK"
     );
 
     // Negative control 3b: the heap's answers a client cannot fake. The handle
@@ -978,6 +998,60 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
     serial_println!(
         "  experimental win32-demo: negative control 3b -- GetProcessHeap answered the surface's handle; a 32-byte HEAP_ZERO_MEMORY block landed 16-byte aligned inside the {} byte region and read back zero; HeapFree answered TRUE for it -- OK, the ring-3 client below exercises the refusal shapes",
         HEAP_SIZE
+    );
+
+    // Negative control 3c: the size/reallocation pair, checked kernel-side
+    // before ring 3 runs. A block's size is the size the heap gave it
+    // (rounded); a grow that cannot fit COPIES into a new block and frees the
+    // old one; and an in-place-only grow is refused without moving or
+    // resizing anything. The ring-3 client below repeats the sequence with its
+    // own addresses and adds the client-side refusal shapes.
+    let sized = win32::dispatch(16, [win32::HEAP_HANDLE, 0, 64, 0, 0], from_text)
+        .unwrap_or_else(|e| panic!("a 64-byte heap allocation failed: {:?}", e));
+    assert_eq!(
+        win32::dispatch(18, [win32::HEAP_HANDLE, 0, sized, 0, 0], from_text),
+        Ok(64),
+        "HeapSize must answer the block's own size"
+    );
+    core::ptr::write_volatile(sized as *mut u8, 0x5a);
+    let grown = win32::dispatch(19, [win32::HEAP_HANDLE, 0, sized, 128, 0], from_text)
+        .unwrap_or_else(|e| panic!("a 128-byte heap reallocation failed: {:?}", e));
+    assert_ne!(grown, sized, "a growing reallocation must move this block");
+    assert_eq!(
+        core::ptr::read_volatile(grown as *const u8),
+        0x5a,
+        "HeapReAlloc must copy the old bytes into the new block"
+    );
+    assert_eq!(
+        win32::dispatch(18, [win32::HEAP_HANDLE, 0, grown, 0, 0], from_text),
+        Ok(128),
+        "HeapSize must answer the grown block's size"
+    );
+    expect_refusal(
+        19,
+        [win32::HEAP_HANDLE, win32::HEAP_REALLOC_IN_PLACE_ONLY as u64, grown, 4096, 0],
+        from_text,
+        win32::Win32Error::HeapExhausted,
+    );
+    assert_eq!(
+        win32::dispatch(18, [win32::HEAP_HANDLE, 0, grown, 0, 0], from_text),
+        Ok(128),
+        "a refused in-place grow must leave the block's size unchanged"
+    );
+    expect_refusal(
+        18,
+        [win32::HEAP_HANDLE, 0, sized, 0, 0],
+        from_text,
+        win32::Win32Error::HeapBlockNotLive,
+    );
+    assert_eq!(
+        win32::dispatch(17, [win32::HEAP_HANDLE, 0, grown, 0, 0], from_text),
+        Ok(1),
+        "HeapFree must answer TRUE for the grown block"
+    );
+    serial_println!(
+        "  experimental win32-demo: negative control 3c -- a 64-byte block's HeapSize answered 64, HeapReAlloc(128) moved it and kept the byte written through it, the new block's HeapSize answered 128, an in-place-only grow was refused as HeapExhausted with ERROR_NOT_ENOUGH_MEMORY ({}) leaving the block at 128, and HeapSize of the moved-from address was refused as HeapBlockNotLive -- OK, size and reallocation are the heap's own bookkeeping",
+        win32::ERROR_NOT_ENOUGH_MEMORY
     );
     expect_refusal(
         0,
@@ -2044,6 +2118,17 @@ pub unsafe fn on_trap() -> ! {
     let (heap_big, heap_big_err) = (slot(SLOT_HEAP_BIG), slot(SLOT_HEAP_BIG_ERR));
     let (heap_badfree, heap_badfree_err) =
         (slot(SLOT_HEAP_BADFREE), slot(SLOT_HEAP_BADFREE_ERR));
+    let heap_size_ok = slot(SLOT_HEAP_SIZE_OK);
+    let heap_realloc_ptr = slot(SLOT_HEAP_REALLOC_PTR);
+    let heap_move_ok = slot(SLOT_HEAP_REALLOC_OK);
+    let heap_realloc_size = slot(SLOT_HEAP_REALLOC_SIZE);
+    let heap_realloc_same = slot(SLOT_HEAP_REALLOC_SAME);
+    let (heap_inplace, heap_inplace_err) = (slot(SLOT_HEAP_INPLACE), slot(SLOT_HEAP_INPLACE_ERR));
+    let (heap_realloc_badf, heap_realloc_badf_err) = (
+        slot(SLOT_HEAP_REALLOC_BADF),
+        slot(SLOT_HEAP_REALLOC_BADF_ERR),
+    );
+    let (heap_size_bad, heap_size_bad_err) = (slot(SLOT_HEAP_SIZE_BAD), slot(SLOT_HEAP_SIZE_BAD_ERR));
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -2226,7 +2311,32 @@ pub unsafe fn on_trap() -> ! {
         && heap_big_err == win32::ERROR_NOT_ENOUGH_MEMORY as u64
         && heap_badfree == 0
         && heap_badfree_err == win32::ERROR_INVALID_ADDRESS as u64;
+    // Size and reallocation, from ring 3: the live block's size is the size the
+    // allocator gave it; a grow that does not fit answers a DIFFERENT,
+    // 16-byte-aligned block inside the region and keeps the byte the client
+    // wrote through the old one; the new block's size is the size of the block
+    // it reused (a freed 128-byte block here -- reuse keeps a block's size, a
+    // stated allocator limit, so the answer is 128 rather than the 48 asked
+    // for); a shrink answers the SAME pointer (no split); the in-place-only
+    // grow is NULL with
+    // ERROR_NOT_ENOUGH_MEMORY; the exceptions flag is NULL with
+    // ERROR_INVALID_PARAMETER; and the moved-from address is no longer a
+    // block, so its HeapSize is NULL with ERROR_INVALID_ADDRESS.
+    let realloc_ok = heap_size_ok == 1
+        && heap_realloc_ptr != heap_p2
+        && heap_realloc_ptr % win32::HEAP_ALIGN == 0
+        && (HEAP_BASE..HEAP_BASE + HEAP_SIZE).contains(&heap_realloc_ptr)
+        && heap_move_ok == 1
+        && heap_realloc_size == 1
+        && heap_realloc_same == 1
+        && heap_inplace == 0
+        && heap_inplace_err == win32::ERROR_NOT_ENOUGH_MEMORY as u64
+        && heap_realloc_badf == 0
+        && heap_realloc_badf_err == win32::ERROR_INVALID_PARAMETER as u64
+        && heap_size_bad == 0
+        && heap_size_bad_err == win32::ERROR_INVALID_ADDRESS as u64;
     let ok = startup_ok
+        && realloc_ok
         && heap_ok
         && dynamic_ok
         && files_ok
@@ -2251,7 +2361,7 @@ pub unsafe fn on_trap() -> ! {
     // then names its own cause in the transcript instead of asking the next
     // reader to re-derive it from a passing-looking line.
     serial_println!(
-        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={} modules={} ordinals={} forwarders={} dynamic={} files={} heap={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
+        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={} modules={} ordinals={} forwarders={} dynamic={} files={} heap={} realloc={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
         console_ok,
         hello_ok,
         bytes_ok,
@@ -2272,6 +2382,7 @@ pub unsafe fn on_trap() -> ! {
         dynamic_ok,
         files_ok,
         heap_ok,
+        realloc_ok,
         file1,
         file2,
         file3,
@@ -2310,6 +2421,17 @@ pub unsafe fn on_trap() -> ! {
         heap_big_err,
         heap_badfree,
         heap_badfree_err
+    );
+    serial_println!(
+        "  experimental win32-demo: the heap's size and reallocation -- HeapSize of the live 32-byte block answered 32 ({}); the client wrote 0x5a through it and HeapReAlloc(48) answered a DIFFERENT block {:#x} with the byte kept ({}), whose HeapSize answered the REUSED block's own size 128 rather than 48, the stated no-split limit ({}); a shrink to 16 answered the same pointer ({}); an in-place-only grow to 4096 answered 0x0 with ERROR_NOT_ENOUGH_MEMORY ({}), HEAP_GENERATE_EXCEPTIONS answered 0x0 with ERROR_INVALID_PARAMETER ({}), and HeapSize of the moved-from block answered 0x0 with ERROR_INVALID_ADDRESS ({}) -- OK, a CRT's malloc/realloc/free triple now runs through this kernel",
+        heap_size_ok,
+        heap_realloc_ptr,
+        heap_move_ok,
+        heap_realloc_size,
+        heap_realloc_same,
+        heap_inplace_err,
+        heap_realloc_badf_err,
+        heap_size_bad_err
     );
     serial_println!(
         "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; GetModuleHandleA(\"kernel32.dll\") answered the provider's own base {:#x} in either case, and GetProcAddress named GetTickCount at {:#x} -- the very address the loader bound into the IAT ({}) -- which the client then CALLED through, reading {} (>= {}); a second provider, nyrqis.dll, answered its own row's base {:#x} (different from kernel32's), and its NyrqisBuild and NyrqisMode exports resolved there at {:#x} and {:#x}, which the client CALLED through, reading {} and {}; kernel32.dll asked for NyrqisBuild answered {:#x} with ERROR_PROC_NOT_FOUND ({}) and nyrqis.dll asked for GetTickCount answered {:#x} the same ({}); asked in Windows' ordinal form, the second provider's base-{} ordinal {} answered {:#x} -- the same address its NAME did ({}) -- which the client CALLED through, reading {}; ordinals {} and {} (below the base, past the last slot) answered {:#x} and {:#x} with ERROR_PROC_NOT_FOUND ({}) and ({}); its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered {:#x} BY NAME and BY ORDINAL 12 -- the same address kernel32.dll's own row gave GetTickCount ({}) -- which the client CALLED through, reading {}; a forwarder to an export kernel32.dll does not have answered {:#x} with ERROR_PROC_NOT_FOUND ({}); BEFORE LoadLibraryA, nyrqis.dll's forwarder NyrqisDyn (naming nyrqis_dyn.dll.NyrqisDynValue) answered {:#x} with ERROR_PROC_NOT_FOUND ({}), LoadLibraryA(\"C:\\nyrqis\\nyrqis_dyn.dll\") then answered the runtime image's own base {:#x}, the file name GetModuleHandleA(\"nyrqis_dyn.dll\") answered the same base {:#x} (a row for a module the client never linked against), the SAME forwarder then answered {:#x} -- the dynamic row's own export at +{:#x} -- which the client CALLED through, reading {}, FreeLibrary answered {} and the forwarder went back to {:#x} with ERROR_PROC_NOT_FOUND ({}), and a DLL the volume does not have answered {:#x} with ERROR_MOD_NOT_FOUND ({}); a module that is not loaded answered {:#x} with ERROR_MOD_NOT_FOUND ({}) and a name that module does not export answered {:#x} with ERROR_PROC_NOT_FOUND ({}); WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, its two cross-module probes, its two out-of-range ordinal probes, its forwarder-to-an-absent-export probe, its two NyrqisDyn probes -- one before LoadLibraryA and one after FreeLibrary -- and its GetModuleFileNameA probe on a base that names no row; asked WHICH FILE each handle came from, GetModuleFileNameA answered {} bytes for the client's own row (its own byte-and-NUL compare {} it), {} for kernel32.dll and {} for the runtime row while it was loaded -- the path the client gave LoadLibraryA, which no byte of its image contains -- then cut a 27-byte path into an 8-byte buffer as {} answering {} with ERROR_INSUFFICIENT_BUFFER ({}), wrote nothing for nSize 0 ({} with {}), and refused a base that names no row ({} with {}) -- {}",
@@ -2399,7 +2521,7 @@ pub unsafe fn on_trap() -> ! {
         file_bad_ret,
         file_bad_err,
         if ok {
-            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll and a second provider, nyrqis.dll, by name AND by Windows' ordinal form (the second provider's declared OrdinalBase 10 making its exports ordinals 10 and 11, never bare indices), bound GetTickCount through GetProcAddress out of each module's own export directory (every name resolving only in the row that exports it), chased a forwarded export into the module it names (nyrqis.dll's NyrqisTick answering kernel32.dll's real GetTickCount, by name and by ordinal), then LOADED A MODULE AT RUNTIME -- LoadLibraryA mapping nyrqis_dyn.dll out of the read-only volume into a new row, the same forwarder resolving into it (NyrqisDyn answering the dynamic image's own export, which the client called for 42), and FreeLibrary dropping that row so the name and the forwarder failed again -- and called eighteen kernel32 exports plus two nyrqis exports through real PE32+ DLLs, which the kernel performed in ring 0 for the kernel32 half against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
+            "OK, a real Windows-format console program started the way a CRT does -- its command line and its own image base, both read from loader state -- then resolved kernel32.dll and a second provider, nyrqis.dll, by name AND by Windows' ordinal form (the second provider's declared OrdinalBase 10 making its exports ordinals 10 and 11, never bare indices), bound GetTickCount through GetProcAddress out of each module's own export directory (every name resolving only in the row that exports it), chased a forwarded export into the module it names (nyrqis.dll's NyrqisTick answering kernel32.dll's real GetTickCount, by name and by ordinal), then LOADED A MODULE AT RUNTIME -- LoadLibraryA mapping nyrqis_dyn.dll out of the read-only volume into a new row, the same forwarder resolving into it (NyrqisDyn answering the dynamic image's own export, which the client called for 42), and FreeLibrary dropping that row so the name and the forwarder failed again -- and called twenty kernel32 exports plus two nyrqis exports through real PE32+ DLLs, which the kernel performed in ring 0 for the kernel32 half against a read-only in-memory volume, explaining every failure through GetLastError -- a real Win32 API surface, not Windows compatibility (no NT syscall layer, no directories or writes, ExitProcess records and returns)"
         } else {
             "MISMATCH"
         }

@@ -130,6 +130,13 @@
  *     HeapAlloc(h, 4, 16)                            // 0, ERROR_INVALID_PARAMETER
  *     HeapAlloc(h, 0, 1<<20)                         // 0, ERROR_NOT_ENOUGH_MEMORY
  *     HeapFree(h, 0, 0x1234)                         // 0, ERROR_INVALID_ADDRESS
+ *   tranche 12 -- the heap's size and reallocation:
+ *     HeapSize(h, 0, p2) == 32                       // the block's size
+ *     HeapReAlloc(h, 0, p2, 48) -> p4 != p2           // moved, byte kept
+ *     HeapSize(h, 0, p4) == 128                      // the reused block's size
+ *     HeapReAlloc(h, 0, p4, 16) == p4                 // shrink: same pointer
+ *     HeapReAlloc(h, IN_PLACE_ONLY, p4, 4096)         // 0, NOT_ENOUGH_MEMORY
+ *     HeapSize(h, 0, p2)                              // 0, INVALID_ADDRESS
  *
  * Every result is written to the private slot page the kernel maps for
  * this demo (0x4d0000000000), which is zeroed before ring 3 runs, and the
@@ -1058,6 +1065,121 @@ _start:
     movabs $SLOT_HEAP_BADFREE_ERR, %rdi
     mov %rax, (%rdi)
 
+    /* ---- tranche 12: the heap's size and reallocation ---- */
+
+    /* HeapSize(h, 0, p2) == 32. p2 is the live 32-byte block, and Windows
+       answers the BLOCK's size (which this allocator rounds to 16 bytes). */
+    mov %r15, %rcx
+    xor %edx, %edx
+    movabs $SLOT_HEAP_P2, %rdi
+    mov (%rdi), %r8
+    call *__imp_HeapSize(%rip)
+    xor %ecx, %ecx
+    cmp $32, %rax
+    sete %cl
+    movabs $SLOT_HEAP_SIZE_OK, %rdi
+    mov %rcx, (%rdi)
+
+    /* p4 = HeapReAlloc(h, 0, p2, 48): 48 does not fit the 32-byte block, so
+       the block must MOVE. The byte written through p2 below must arrive in
+       the new block -- that is the copy, not a fresh zeroed allocation. */
+    movabs $SLOT_HEAP_P2, %rdi
+    mov (%rdi), %rax
+    movb $0x5a, (%rax)
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov %rax, %r8
+    mov $48, %r9d
+    call *__imp_HeapReAlloc(%rip)
+    mov %rax, %r12
+    movabs $SLOT_HEAP_REALLOC_PTR, %rdi
+    mov %rax, (%rdi)
+    xor %ecx, %ecx
+    test %rax, %rax
+    jz 5f
+    cmpb $0x5a, (%rax)           /* the old block's byte, in the new block */
+    jne 5f
+    test $15, %al                /* 16-byte aligned */
+    jnz 5f
+    mov $1, %ecx
+5:
+    movabs $SLOT_HEAP_REALLOC_OK, %rdi
+    mov %rcx, (%rdi)
+
+    /* HeapSize(h, 0, p4) == 128: the 48-byte request reused a FREED 128-byte
+       block, and a reused block keeps its own size (the stated allocator
+       limit), so the answer is the block's size rather than the request's. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov %r12, %r8
+    call *__imp_HeapSize(%rip)
+    xor %ecx, %ecx
+    cmp $128, %rax
+    sete %cl
+    movabs $SLOT_HEAP_REALLOC_SIZE, %rdi
+    mov %rcx, (%rdi)
+
+    /* A shrink that fits the block answers the SAME pointer: no split is made
+       and the block keeps its size. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov %r12, %r8
+    mov $16, %r9d
+    call *__imp_HeapReAlloc(%rip)
+    xor %ecx, %ecx
+    cmp %r12, %rax
+    sete %cl
+    movabs $SLOT_HEAP_REALLOC_SAME, %rdi
+    mov %rcx, (%rdi)
+
+    /* A grow that cannot happen in place, with HEAP_REALLOC_IN_PLACE_ONLY:
+       NULL plus ERROR_NOT_ENOUGH_MEMORY, and the block is unchanged. */
+    mov %r15, %rcx
+    mov $0x10, %edx
+    mov %r12, %r8
+    mov $4096, %r9d
+    call *__imp_HeapReAlloc(%rip)
+    movabs $SLOT_HEAP_INPLACE, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_HEAP_INPLACE_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* HEAP_GENERATE_EXCEPTIONS is not a heap flag this kernel can honour. */
+    mov %r15, %rcx
+    mov $4, %edx
+    mov %r12, %r8
+    mov $64, %r9d
+    call *__imp_HeapReAlloc(%rip)
+    movabs $SLOT_HEAP_REALLOC_BADF, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_HEAP_REALLOC_BADF_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* HeapSize of the moved-from block: its address is no longer a block. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    movabs $SLOT_HEAP_P2, %rdi
+    mov (%rdi), %r8
+    call *__imp_HeapSize(%rip)
+    movabs $SLOT_HEAP_SIZE_BAD, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_HEAP_SIZE_BAD_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* Return the two survivors: the reallocated block and p3. */
+    mov %r15, %rcx
+    xor %edx, %edx
+    mov %r12, %r8
+    call *__imp_HeapFree(%rip)
+    mov %r15, %rcx
+    xor %edx, %edx
+    movabs $SLOT_HEAP_P3, %rdi
+    mov (%rdi), %r8
+    call *__imp_HeapFree(%rip)
+
     /* ---- tranche 1 again: the clock, then exit ---- */
 
     call *__imp_GetTickCount(%rip)
@@ -1307,6 +1429,17 @@ proc_dyn_value:
     .set SLOT_HEAP_BIG_ERR,     SLOT_BASE + 0x980
     .set SLOT_HEAP_BADFREE,     SLOT_BASE + 0x988
     .set SLOT_HEAP_BADFREE_ERR, SLOT_BASE + 0x990
+    .set SLOT_HEAP_SIZE_OK,          SLOT_BASE + 0xA00
+    .set SLOT_HEAP_REALLOC_PTR,      SLOT_BASE + 0xA08
+    .set SLOT_HEAP_REALLOC_OK,       SLOT_BASE + 0xA10
+    .set SLOT_HEAP_REALLOC_SIZE,     SLOT_BASE + 0xA18
+    .set SLOT_HEAP_REALLOC_SAME,     SLOT_BASE + 0xA20
+    .set SLOT_HEAP_INPLACE,          SLOT_BASE + 0xA28
+    .set SLOT_HEAP_INPLACE_ERR,      SLOT_BASE + 0xA30
+    .set SLOT_HEAP_REALLOC_BADF,     SLOT_BASE + 0xA38
+    .set SLOT_HEAP_REALLOC_BADF_ERR, SLOT_BASE + 0xA40
+    .set SLOT_HEAP_SIZE_BAD,         SLOT_BASE + 0xA48
+    .set SLOT_HEAP_SIZE_BAD_ERR,     SLOT_BASE + 0xA50
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180
