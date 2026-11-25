@@ -158,7 +158,7 @@ def staleness_warnings(gate_log_path, build_log_path):
     return warnings
 
 
-def progress_text(head, branch, subject, committed, gate_log, build_log, verdict):
+def progress_text(head, branch, subject, committed, kernel_digest, gate_log, build_log, verdict):
     return f"""Nythera progress snapshot
 =========================
 commit:    {head}
@@ -168,6 +168,12 @@ committed: {committed}
 
 Proof carried in this archive
 -----------------------------
+kernel sources: {kernel_digest}
+  (the SOURCE_STATE kernel= the proof logs were taken under; it hashes the
+  kernel source set's git-normalised content, so a Windows CRLF checkout and
+  a Linux LF checkout of these sources agree. Compare it with
+  `python3 tools/source_state.py` before trusting either log.)
+
 gate output: proof/gate.log
   source:  nykernel-package/source/nykernel/target/gate.log
   bytes:   {len(gate_log)}
@@ -280,7 +286,14 @@ def main():
         (
             "Nythera/PROGRESS.txt",
             progress_text(
-                head, branch, subject, committed, gate_log, build_log, verdict
+                head,
+                branch,
+                subject,
+                committed,
+                source_state.kernel_digest(),
+                gate_log,
+                build_log,
+                verdict,
             ).encode("utf-8"),
             0o644,
         ),

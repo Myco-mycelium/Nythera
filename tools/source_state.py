@@ -14,10 +14,13 @@ Format (one line, fixed key order, no timestamp):
 
 `kernel` covers every file under nykernel-package/source/nykernel that git
 tracks or leaves untracked-but-not-ignored, minus *.log: each file's path and
-the SHA-256 of its bytes, in sorted path order. An uncommitted source edit
-moves it exactly like a commit would. `dirty` counts all porcelain entries in
-the repo, so a docs edit shows as dirty=1 while `kernel` stays put -- which is
-the right answer: the proof covers the kernel, not the docs.
+its git blob hash, in sorted path order. The blob hash is `git hash-object`
+with the repository's own clean filters, so the digest is line-ending
+independent: a Windows checkout writes CRLF, a Linux checkout writes LF, and
+both hash the same committed content. An uncommitted source edit still moves
+it exactly like a commit would. `dirty` counts all porcelain entries in the
+repo, so a docs edit shows as dirty=1 while `kernel` stays put -- which is the
+right answer: the proof covers the kernel, not the docs.
 
 Usage:
     python3 tools/source_state.py
@@ -49,11 +52,27 @@ def kernel_sources():
 
 
 def kernel_digest():
+    """SHA-256 over (path, git blob hash) of the kernel source set, sorted.
+
+    `git hash-object --stdin-paths` applies the repository's clean filters, so
+    the worktree's CRLF (Windows) or LF (Linux) is hashed as the committed
+    content: the same sources digest equally on either checkout. Binary files
+    have no text conversion, so their bytes still count exactly.
+    """
+    rels = kernel_sources()
+    blobs = subprocess.run(
+        ["git", "hash-object", "--stdin-paths"],
+        cwd=ROOT,
+        input="\n".join(rels) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
     digest = hashlib.sha256()
-    for rel in kernel_sources():
+    for rel, blob in zip(rels, blobs):
         digest.update(rel.encode("utf-8", "surrogateescape"))
         digest.update(b"\0")
-        digest.update(hashlib.sha256((ROOT / rel).read_bytes()).digest())
+        digest.update(bytes.fromhex(blob))
     return digest.hexdigest()
 
 
