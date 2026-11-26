@@ -20,8 +20,19 @@ with a body, an ordinary one without), and parses every non-zero `code_off`
 immediately. A fourth real fixture, `userprog/classes_fields.dex` (604 bytes,
 sha256 `e13618a9...`), carries three fields and three methods, two with
 hand-checkable bodies; `classes_methods.dex` stayed byte-identical and
-`classes_hello.dex` kept its pinned digest. Eleven new malformed-member controls
-run every boot. Instruction semantics remain explicitly out of scope.
+`classes_hello.dex` kept its pinned digest. Twelve new malformed-member controls
+run every boot, and the rule they rest on is now one of them: a variant's
+`class_data` is built by a helper that REFUSES an encoding grown past the
+fixture's 22-byte span instead of cutting it, and spliced by one that accepts
+only exactly that length, so no control can pass on a file that is malformed for
+a second, unstated reason. That rule caught two of the eleven immediately -- the
+native and `ACC_ABSTRACT` "carries code" controls each needed 23 bytes and had
+been running on a 22-byte cut -- and they now carry a one-byte non-zero
+`code_off`, which breaks the same rule at the fixture's own width and pins that
+the flags are read before the offset is resolved (offset 1 is inside the file but
+is not a `code_item`, so a reordering would answer `CodeItemTruncated`). A
+clause that does not refuse prints "NOT refused" rather than "ACCEPTED".
+Instruction semantics remain explicitly out of scope.
 
 Windows: kernel32's 21st and 22nd exports, `GetFileSize` and `SetFilePointer`,
 make the file cursor readable and settable. The size comes from the volume's own

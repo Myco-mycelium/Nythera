@@ -8577,7 +8577,7 @@ Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
 
 ```
   experimental dex-demo: field and code tables -- a 604 byte DEX with 3 field(s), 3 method(s) and 2 code_item(s): field 2 composes to Lnyrqis/hello/Fields;.name:Ljava/lang/String;, class_data answers static field indices [0, 1], instance [2] (its own delta, not the static list's accumulator) and direct method indices [0, 1, 2], size()I carries a 2-word code_item at 0x194 reading [0x0012, 0x000f] (const/4 v0, #0; return v0) and run()V one at 0x1a8 writing and returning void, while make()V is ACC_NATIVE with code_off 0 -- OK
-  experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds, a static delta landing past it refused FieldIndexOutOfBounds, a native method carrying a code_item refused MethodCodeMismatch, an ordinary method with none refused MethodCodeMismatch, an ABSTRACT method carrying one refused MethodCodeMismatch (while a native method without one is accepted OK), a code_off past EOF refused CodeItemOutOfBounds, a method delta landing past method_ids refused MethodIndexOutOfBounds, a code_item whose words run past EOF refused CodeItemTruncated, one whose ins_size exceeds its registers refused CodeItemRegisterMismatch, an entry that stops before its code_off refused ClassDataTruncated, and code_item(0) refused CodeItemOutOfBounds -- OK
+  experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds, a static delta landing past it refused FieldIndexOutOfBounds, a native method carrying a non-zero code_off refused MethodCodeMismatch before the offset was resolved, an ordinary method with none refused MethodCodeMismatch, an ABSTRACT method carrying one refused MethodCodeMismatch (while a native method without one is accepted OK), a code_off past EOF refused CodeItemOutOfBounds, a method delta landing past method_ids refused MethodIndexOutOfBounds, a code_item whose words run past EOF refused CodeItemTruncated, one whose ins_size exceeds its registers refused CodeItemRegisterMismatch, an entry that stops before its code_off refused ClassDataTruncated, a class_data replacement one byte short, one byte long or an encoding grown past the span refused by the span rule, and code_item(0) refused CodeItemOutOfBounds -- OK
   experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK -- OK
 ```
 
@@ -8588,6 +8588,31 @@ instead of `MethodIndexOutOfBounds`. The index is the more fundamental question
 -- an entry that names no method is malformed whatever its flags say -- so
 `method_id` is now resolved BEFORE the flags/code rule, and the old control
 passes again for the reason it names.
+
+**The controls now state their own width.** `fields_class_data` returns
+`Option<Vec<u8>>`: it refuses an encoding that grew past the fixture's 22-byte
+`class_data` span and otherwise pads to exactly that length, and
+`with_class_data` refuses any replacement that is not exactly the span. Before
+this, the splice cut a longer encoding with `min()` and padded a shorter one, so
+a control whose variant did not fit was still tested -- against a file that was
+malformed for a second, unstated reason. Two of them were in that state: "a
+native method carrying a code_item" and its `ACC_ABSTRACT` twin each put a
+two-byte body offset on top of two-byte flags and a one-byte delta, which is 23
+bytes, and both were running on a 22-byte cut. They now carry a one-byte
+non-zero `code_off` (1): the same rule, at the fixture's own width, and it pins
+the ORDER of that rule -- offset 1 is inside the file but is not a `code_item`,
+so a reader that resolved the offset before the flags would answer
+`CodeItemTruncated` instead of `MethodCodeMismatch`. The span rule is itself a
+boot control (a replacement one byte short, one byte long, or an encoding grown
+past the span is refused), and a clause that does not refuse now prints "NOT
+refused" rather than "ACCEPTED", since with the span rule in place "the file
+was never built" and "the parser took it" are both `false` and the word must not
+claim the second.
+
+The gate caught exactly the state this rule exists to make audible: the first
+run with it printed "a native method carrying a code_item NOT refused" and
+FAILED the line (and the DEX self-test with it), before either control had been
+re-expressed at the right width.
 
 **Still absent, and named:** the MEANING of the code units `code_item` returns
 (decoding, verification and execution are an interpreter or an AOT compiler -- a

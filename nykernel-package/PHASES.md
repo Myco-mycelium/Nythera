@@ -1213,11 +1213,29 @@ than from the static list's last index), and an `encoded_method` is THREE
 ULEB128s -- the third being `code_off` -- while an `encoded_field` is two, which
 is also what makes a method's body reachable at all. A native or abstract method
 must have no body and an ordinary method must have one, refused in both
-directions; eleven malformed member/code shapes join the permanent controls. A
+directions; twelve malformed member/code shapes join the permanent controls. A
 fourth real fixture (`userprog/classes_fields.dex`, 604 bytes) carries three
 fields and three methods, two with hand-checkable bodies (`const/4 v0, #0` then
 `return v0`/`return-void`). Instruction SEMANTICS remain out of scope -- this is
 still a parser, not an interpreter.
+
+**2026-11-26: the controls state their own width.** A negative control is only
+worth what its file is: each one is the real fixture with one claim broken, and
+the helper that spliced a variant's `class_data` into the fixture's 22-byte span
+was cutting anything longer with `min()` and padding anything shorter -- so a
+variant that did not fit was still tested, against a file malformed for a
+second, unstated reason. Two of them were in exactly that state: a native method
+carrying a real body offset (`0x194`), and its `ACC_ABSTRACT` twin, each write
+two-byte flags, a one-byte delta and a two-byte `code_off` -- 23 bytes for a 22-byte span -- and
+both were passing on a cut file. The builder now refuses an encoding that grew
+past the span and pads to exactly it, the splicer refuses any replacement that is
+not exactly the span, and both methods carry a one-byte non-zero `code_off`
+instead: the same rule at the fixture's own width, which additionally pins the
+rule's ORDER, since offset 1 is inside the file but is not a `code_item` -- a
+reader that resolved the offset first would answer `CodeItemTruncated` rather
+than `MethodCodeMismatch`. The span rule is a boot control itself (one byte
+short, one byte long, or an encoding grown past the span is refused), and a
+clause that does not refuse now prints "NOT refused" rather than "ACCEPTED".
 
 **2026-11-26: the Windows surface's file cursor.** `GetFileSize` answers an open
 file's own byte count (writing the optional high dword), and `SetFilePointer`

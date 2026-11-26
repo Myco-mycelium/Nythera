@@ -214,9 +214,10 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "size()I carries a 2-word code_item at 0x194 reading [0x0012, 0x000f] (const/4 v0, #0; return v0)" \
         "while make()V is ACC_NATIVE with code_off 0" \
         "experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds" \
-        "a native method carrying a code_item refused MethodCodeMismatch" \
+        "a native method carrying a non-zero code_off refused MethodCodeMismatch before the offset was resolved" \
         "a code_item whose words run past EOF refused CodeItemTruncated" \
         "one whose ins_size exceeds its registers refused CodeItemRegisterMismatch" \
+        "a class_data replacement one byte short, one byte long or an encoding grown past the span refused by the span rule" \
         "and code_item(0) refused CodeItemOutOfBounds -- OK" \
         "experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK -- OK" \
         "the next 16-byte allocation answered" \

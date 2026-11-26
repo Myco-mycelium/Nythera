@@ -653,11 +653,18 @@ fn push_uleb(out: &mut Vec<u8>, mut value: u32) {
 /// The canonical call is `fields_class_data([0, 1], 2, [(0, 0x9, 0x194),
 /// (1, 0x109, 0), (1, 0x9, 0x1a8)])` -- the fixture's own bytes. Each control
 /// changes exactly one of those numbers.
+///
+/// The result is exactly [`FIELD_CLASS_DATA_LEN`] bytes, or `None` when the
+/// encoding would not fit. Both halves matter: a control exists to break one
+/// claim in an otherwise real file, so a variant whose ULEB128s grew past the
+/// span is refused here rather than overflowing it or being cut in half -- a
+/// cut would leave a file whose map_list no longer sits where the header says,
+/// and the map rule would then explain the refusal instead of the claim tested.
 fn fields_class_data(
     static_deltas: [u32; 2],
     instance_delta: u32,
     methods: [(u32, u32, u32); 3],
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     for count in [2u32, 1, 3, 0] {
         push_uleb(&mut out, count);
@@ -673,121 +680,173 @@ fn fields_class_data(
         push_uleb(&mut out, flags);
         push_uleb(&mut out, code_off);
     }
-    out
+    if out.len() > FIELD_CLASS_DATA_LEN {
+        return None;
+    }
+    // Trailing zeros are the span's unreachable tail: the four counts and the
+    // deltas just written already stop the parse inside the item, so stating
+    // the whole span here cannot hide a byte a control forgot to write.
+    out.resize(FIELD_CLASS_DATA_LEN, 0);
+    Some(out)
 }
 
-/// The fixture with its class_data replaced by `data`.
+/// The fixture with its class_data replaced by `data`, or `None` unless `data`
+/// is exactly the span the fixture reserves.
 ///
 /// The fixture reserves [`FIELD_CLASS_DATA_LEN`] bytes for the item and the map
-/// follows immediately, so the span is zeroed and the replacement laid at its
-/// start rather than the file being resized -- moving the map would make every
-/// control test a different file. A variant whose ULEB128s are shorter than the
-/// canonical ones leaves trailing zeros, which the parser never reads because
-/// the four counts are already satisfied; a longer one would be a control this
-/// helper cannot express, and is truncated here so the control fails visibly
-/// instead of panicking in the boot.
-fn with_class_data(data: &[u8]) -> Vec<u8> {
+/// follows immediately, so the replacement is laid at its start rather than the
+/// file being resized -- moving the map would make every control test a
+/// different file.
+///
+/// Any other length is refused instead of fitted. Cutting a longer slice would
+/// leave a file whose map_list no longer sits where the header says, so a
+/// refusal about the map could explain the control and let it pass for the wrong
+/// reason; padding a shorter one here would hide a control that never stated its
+/// own trailing bytes. `fields_class_data` pads to the span, so every variant
+/// arrives at exactly this length, and `None` reaches each caller as a clause
+/// that printed NOT refused under a FAILED verdict -- never as a silent fit.
+fn with_class_data(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() != FIELD_CLASS_DATA_LEN {
+        return None;
+    }
     let mut corrupted = FIELD_DEX.to_vec();
-    corrupted[FIELD_CLASS_DATA_OFF..FIELD_CLASS_DATA_OFF + FIELD_CLASS_DATA_LEN].fill(0);
-    let span = core::cmp::min(data.len(), FIELD_CLASS_DATA_LEN);
-    corrupted[FIELD_CLASS_DATA_OFF..FIELD_CLASS_DATA_OFF + span]
-        .copy_from_slice(&data[..span]);
-    corrupted
+    corrupted[FIELD_CLASS_DATA_OFF..FIELD_CLASS_DATA_OFF + FIELD_CLASS_DATA_LEN]
+        .copy_from_slice(data);
+    Some(corrupted)
+}
+
+/// The fixture with a control's class_data spliced in, or `None` when the
+/// control's variant could not be built at all: an encoding that grew past the
+/// span, or a slice of the wrong length.
+fn fields_variant(
+    static_deltas: [u32; 2],
+    instance_delta: u32,
+    methods: [(u32, u32, u32); 3],
+) -> Option<Vec<u8>> {
+    with_class_data(&fields_class_data(static_deltas, instance_delta, methods)?)
 }
 
 /// Every malformed member/code shape the new tables must refuse, each on a copy
 /// of the real fixture with one claim broken: a field index past its table, a
-/// static delta that lands past it, a native method carrying code, an ordinary
-/// method without any, a code_off past EOF, a method delta that lands past
+/// static delta that lands past it, a native method carrying a non-zero code_off,
+/// an ordinary method without any, a code_off past EOF, a method delta that lands past
 /// method_ids, a code_item whose words run past EOF, one whose argument window
-/// exceeds its frame, and one whose entry stops before its code_off.
+/// exceeds its frame, one whose entry stops before its code_off, and the span
+/// rule those copies rest on: a class_data that is not exactly the length the
+/// fixture reserves is refused, never fitted or cut.
 fn run_negative_member_refusals() -> bool {
+    // A clause that did not refuse prints NOT refused, never ACCEPTED: with the
+    // span rule above, "the control's file was never built" and "the parser
+    // accepted it" are both `false`, so the word must not claim the second.
+    const NOT_REFUSED: &str = "NOT refused";
+
     let field_past = matches!(
         dex::field_id(FIELD_DEX, 3),
         Err(DexError::FieldIndexOutOfBounds)
     );
 
-    let delta_past = {
-        let corrupted = with_class_data(&fields_class_data(
-            [0, 4],
-            2,
-            [(0, 0x9, FIELD_SIZE_CODE_OFF as u32), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
-        ));
-        matches!(dex::class_data(&corrupted, 0), Err(DexError::FieldIndexOutOfBounds))
+    let delta_past = match fields_variant(
+        [0, 4],
+        2,
+        [(0, 0x9, FIELD_SIZE_CODE_OFF as u32), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+    ) {
+        Some(corrupted) => {
+            matches!(dex::class_data(&corrupted, 0), Err(DexError::FieldIndexOutOfBounds))
+        }
+        None => false,
     };
 
-    let native_with_code = {
-        let corrupted = with_class_data(&fields_class_data(
-            [0, 1],
-            2,
-            [
-                (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-                (1, 0x1 | 0x8 | ACC_NATIVE, FIELD_SIZE_CODE_OFF as u32),
-                (1, 0x9, FIELD_RUN_CODE_OFF as u32),
-            ],
-        ));
-        matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
+    // ACC_NATIVE is 0x100, so the flags alone take two ULEB128 bytes; a native
+    // method carrying a real body offset (0x194, also two bytes) would make this
+    // entry five bytes and the item 23 -- one past the span. The control carries
+    // a ONE-byte non-zero code_off instead: same rule, same item width, and only
+    // one claim broken. It also pins the order of the rule: offset 1 is inside
+    // the file but not a code_item, so a version that resolved the offset before
+    // reading the flags would answer CodeItemTruncated, not MethodCodeMismatch.
+    let native_with_code = match fields_variant(
+        [0, 1],
+        2,
+        [
+            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+            (1, 0x1 | 0x8 | ACC_NATIVE, 1),
+            (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+        ],
+    ) {
+        Some(corrupted) => {
+            matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
+        }
+        None => false,
     };
 
-    let ordinary_without_code = {
-        let corrupted = with_class_data(&fields_class_data(
-            [0, 1],
-            2,
-            [(0, 0x9, 0), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
-        ));
-        matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
+    let ordinary_without_code = match fields_variant(
+        [0, 1],
+        2,
+        [(0, 0x9, 0), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+    ) {
+        Some(corrupted) => {
+            matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
+        }
+        None => false,
     };
 
     // ACC_ABSTRACT is the rule's other flag, and a body-less abstract method is
     // the legal case: accepted, so the check is not just "is this native".
-    let abstract_without_code_ok = {
-        let corrupted = with_class_data(&fields_class_data(
-            [0, 1],
-            2,
-            [
-                (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-                (1, 0x1 | ACC_ABSTRACT, 0),
-                (1, 0x9, FIELD_RUN_CODE_OFF as u32),
-            ],
-        ));
-        matches!(dex::class_data(&corrupted, 0), Ok(Some(_)))
+    let abstract_without_code_ok = match fields_variant(
+        [0, 1],
+        2,
+        [
+            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+            (1, 0x1 | ACC_ABSTRACT, 0),
+            (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+        ],
+    ) {
+        Some(corrupted) => matches!(dex::class_data(&corrupted, 0), Ok(Some(_))),
+        None => false,
     };
-    let abstract_with_code = {
-        let corrupted = with_class_data(&fields_class_data(
-            [0, 1],
-            2,
-            [
-                (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-                (1, 0x1 | 0x8 | ACC_ABSTRACT, FIELD_RUN_CODE_OFF as u32),
-                (1, 0x9, FIELD_RUN_CODE_OFF as u32),
-            ],
-        ));
-        matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
-    };
-
-    let code_past_eof = {
-        // 4080 is past the 604-byte file by any margin, and its ULEB128 is two
-        // bytes like the offsets it replaces -- so this control breaks the
-        // OFFSET and nothing about the item's shape.
-        let corrupted = with_class_data(&fields_class_data(
-            [0, 1],
-            2,
-            [(0, 0x9, 4080), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
-        ));
-        matches!(dex::class_data(&corrupted, 0), Err(DexError::CodeItemOutOfBounds))
+    // ACC_ABSTRACT is the rule's other flag: same width budget as above, so this
+    // one also carries a one-byte non-zero code_off.
+    let abstract_with_code = match fields_variant(
+        [0, 1],
+        2,
+        [
+            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+            (1, 0x1 | 0x8 | ACC_ABSTRACT, 1),
+            (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+        ],
+    ) {
+        Some(corrupted) => {
+            matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
+        }
+        None => false,
     };
 
-    let method_delta_past = {
-        let corrupted = with_class_data(&fields_class_data(
-            [0, 1],
-            2,
-            [
-                (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-                (5, 0x109, 0),
-                (1, 0x9, FIELD_RUN_CODE_OFF as u32),
-            ],
-        ));
-        matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodIndexOutOfBounds))
+    // 4080 is past the 604-byte file by any margin, and its ULEB128 is two
+    // bytes like the offsets it replaces -- so this control breaks the OFFSET
+    // and nothing about the item's shape.
+    let code_past_eof = match fields_variant(
+        [0, 1],
+        2,
+        [(0, 0x9, 4080), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+    ) {
+        Some(corrupted) => {
+            matches!(dex::class_data(&corrupted, 0), Err(DexError::CodeItemOutOfBounds))
+        }
+        None => false,
+    };
+
+    let method_delta_past = match fields_variant(
+        [0, 1],
+        2,
+        [
+            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+            (5, 0x109, 0),
+            (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+        ],
+    ) {
+        Some(corrupted) => {
+            matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodIndexOutOfBounds))
+        }
+        None => false,
     };
 
     let insns_past_eof = {
@@ -817,6 +876,30 @@ fn run_negative_member_refusals() -> bool {
         matches!(dex::class_data(cut, 0), Err(DexError::ClassDataTruncated))
     };
 
+    // The span rule the copies above rest on, as a control of its own: the
+    // canonical encoding pads to exactly the reserved span, a variant whose
+    // code_off grew to a five-byte ULEB128 is refused by the builder instead of
+    // overflowing it, and a replacement one byte either side of the span is
+    // refused instead of being cut or padded into a plausible file.
+    let canonical_fits = matches!(
+        fields_class_data(
+            [0, 1],
+            2,
+            [(0, 0x9, FIELD_SIZE_CODE_OFF as u32), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+        ),
+        Some(bytes) if bytes.len() == FIELD_CLASS_DATA_LEN
+    );
+    let grown_past_span = fields_class_data(
+        [0, 1],
+        2,
+        [(0, 0x9, u32::MAX), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+    )
+    .is_none();
+    let span_guard = canonical_fits
+        && grown_past_span
+        && with_class_data(&[0u8; FIELD_CLASS_DATA_LEN - 1]).is_none()
+        && with_class_data(&[0u8; FIELD_CLASS_DATA_LEN + 1]).is_none();
+
     let code_at_zero = matches!(
         dex::code_item(FIELD_DEX, 0),
         Err(DexError::CodeItemOutOfBounds)
@@ -833,21 +916,23 @@ fn run_negative_member_refusals() -> bool {
         && insns_past_eof
         && args_beyond_frame
         && entry_truncated
+        && span_guard
         && code_at_zero;
     serial_println!(
-        "  experimental dex-demo: member refusals -- a field index past field_ids {}, a static delta landing past it {}, a native method carrying a code_item {}, an ordinary method with none {}, an ABSTRACT method carrying one {} (while a native method without one is accepted {}), a code_off past EOF {}, a method delta landing past method_ids {}, a code_item whose words run past EOF {}, one whose ins_size exceeds its registers {}, an entry that stops before its code_off {}, and code_item(0) {} -- {}",
-        if field_past { "refused FieldIndexOutOfBounds" } else { "ACCEPTED" },
-        if delta_past { "refused FieldIndexOutOfBounds" } else { "ACCEPTED" },
-        if native_with_code { "refused MethodCodeMismatch" } else { "ACCEPTED" },
-        if ordinary_without_code { "refused MethodCodeMismatch" } else { "ACCEPTED" },
-        if abstract_with_code { "refused MethodCodeMismatch" } else { "ACCEPTED" },
+        "  experimental dex-demo: member refusals -- a field index past field_ids {}, a static delta landing past it {}, a native method carrying a non-zero code_off {}, an ordinary method with none {}, an ABSTRACT method carrying one {} (while a native method without one is accepted {}), a code_off past EOF {}, a method delta landing past method_ids {}, a code_item whose words run past EOF {}, one whose ins_size exceeds its registers {}, an entry that stops before its code_off {}, a class_data replacement one byte short, one byte long or an encoding grown past the span {}, and code_item(0) {} -- {}",
+        if field_past { "refused FieldIndexOutOfBounds" } else { NOT_REFUSED },
+        if delta_past { "refused FieldIndexOutOfBounds" } else { NOT_REFUSED },
+        if native_with_code { "refused MethodCodeMismatch before the offset was resolved" } else { NOT_REFUSED },
+        if ordinary_without_code { "refused MethodCodeMismatch" } else { NOT_REFUSED },
+        if abstract_with_code { "refused MethodCodeMismatch" } else { NOT_REFUSED },
         if abstract_without_code_ok { "OK" } else { "refused" },
-        if code_past_eof { "refused CodeItemOutOfBounds" } else { "ACCEPTED" },
-        if method_delta_past { "refused MethodIndexOutOfBounds" } else { "ACCEPTED" },
-        if insns_past_eof { "refused CodeItemTruncated" } else { "ACCEPTED" },
-        if args_beyond_frame { "refused CodeItemRegisterMismatch" } else { "ACCEPTED" },
-        if entry_truncated { "refused ClassDataTruncated" } else { "ACCEPTED" },
-        if code_at_zero { "refused CodeItemOutOfBounds" } else { "ACCEPTED" },
+        if code_past_eof { "refused CodeItemOutOfBounds" } else { NOT_REFUSED },
+        if method_delta_past { "refused MethodIndexOutOfBounds" } else { NOT_REFUSED },
+        if insns_past_eof { "refused CodeItemTruncated" } else { NOT_REFUSED },
+        if args_beyond_frame { "refused CodeItemRegisterMismatch" } else { NOT_REFUSED },
+        if entry_truncated { "refused ClassDataTruncated" } else { NOT_REFUSED },
+        if span_guard { "refused by the span rule" } else { "FITTED" },
+        if code_at_zero { "refused CodeItemOutOfBounds" } else { NOT_REFUSED },
         verdict(ok)
     );
     ok
