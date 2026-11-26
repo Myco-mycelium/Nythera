@@ -5,6 +5,44 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-26 -- **DEX resolves fields and code, and the Win32 surface can size and
+seek a file.**
+
+Android: `experimental::dex` gained `field_id` (declaring class, type, name) and
+`code_item` (register frame plus raw 16-bit code units, bounded against the file
+with `ins_size <= registers_size` checked). Getting there meant fixing two format
+rules the earlier fixture was too small to expose: `class_data` member indices are
+DELTAS accumulated within each list (and each list restarts from its own), and an
+`encoded_method` is three ULEB128s -- `method_idx_diff`, `access_flags`,
+`code_off` -- while an `encoded_field` is two. The reader now refuses a method
+whose flags and `code_off` disagree in either direction (a native/abstract method
+with a body, an ordinary one without), and parses every non-zero `code_off`
+immediately. A fourth real fixture, `userprog/classes_fields.dex` (604 bytes,
+sha256 `e13618a9...`), carries three fields and three methods, two with
+hand-checkable bodies; `classes_methods.dex` stayed byte-identical and
+`classes_hello.dex` kept its pinned digest. Eleven new malformed-member controls
+run every boot. Instruction semantics remain explicitly out of scope.
+
+Windows: kernel32's 21st and 22nd exports, `GetFileSize` and `SetFilePointer`,
+make the file cursor readable and settable. The size comes from the volume's own
+entry (the optional high dword written), and the seek is SIGNED from the file's
+start, the current position or its end -- the client reads `lo f` at position 3,
+reads back the 7 its read left the cursor at, reads the last four bytes via `-4`
+from `FILE_END`, and proves a seek before the first byte fails with
+`ERROR_NEGATIVE_SEEK` while leaving the cursor at 33. Two latent bugs died: `read`
+would have faulted for a cursor past EOF, and the transcript's import list had
+been hard-coded in usage order while the client's `.idata` is alphabetical (it is
+now built from the walk). Refusals rose 21 -> 23, imports 20 -> 22, the
+provider's `.text` 0x2c0 -> 0x310 and the client's image 0x4000 -> 0x6000, each
+re-pinned from `objdump` rather than guessed.
+
+The gate caught three things this session, all fixed at cause: a `class_data`
+control that corrupted an index and the flags together (the new flag rule then
+answered first -- the index is now resolved before the rule), the "index 20 is
+not an export" control becoming false when export 21 was added (it now derives
+the index from the export table), and a DEX control whose expected error depended
+on check order. Final gate: `GATE_RC=0`, 106 needles matched.
+
 2026-11-25 -- **the DEX method tables: a class's methods and signatures are now
 readable.**
 

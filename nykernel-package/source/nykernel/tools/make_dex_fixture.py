@@ -159,12 +159,19 @@ def write_methods_fixture() -> int:
     type_list_off = align4(base)
     # size (u4) + one u2 type index, padded to the format's 4-byte alignment.
     class_data_off = type_list_off + align4(4 + 2 * 1)
+    # An `encoded_method` is THREE ULEB128s -- method_idx_diff, access_flags,
+    # code_off -- while an `encoded_field` is two. Reading only two happens to
+    # work for a single method at index 0 (nothing follows it to misalign), which
+    # is exactly why this fixture now writes the third field: a native method has
+    # code_off 0, so the byte is a legal, meaningful zero here. The file stays the
+    # same size because the trailing zero replaces padding the map needed anyway.
     class_data = bytes(
         [0, 0, 1, 0]  # static fields, instance fields, direct methods, virtual
-        + [0]  # method_idx -> METHOD_IDS[0]
+        + [0]  # method_idx_diff -> METHOD_IDS[0]
         + list(uleb128(0x109))  # ACC_PUBLIC | ACC_STATIC | ACC_NATIVE
+        + [0]  # code_off: a native method has no code_item
     )
-    assert class_data_off + len(class_data) == class_data_off + 7
+    assert class_data_off + len(class_data) == class_data_off + 8
     map_off = align4(class_data_off + len(class_data))
     file_size = map_off + 4 + 12 * 10
 
@@ -250,11 +257,252 @@ def write_methods_fixture() -> int:
     print(f"wrote {out} ({len(body)} bytes)")
     print(f"  checksum 0x{struct.unpack_from('<I', body, 8)[0]:08x}")
     print(f"  sha1     {hashlib.sha1(bytes(body[32:])).hexdigest()}")
-    print(f"  method   main([Ljava/lang/String;)V (ACC_PUBLIC|ACC_STATIC|ACC_NATIVE)")
+    print(f"  method   main([Ljava/lang/String;)V (ACC_PUBLIC|ACC_STATIC|ACC_NATIVE, code_off 0)")
     print(f"  layout   string_ids=0x{string_ids_off:x} type_ids=0x{type_ids_off:x} "
           f"proto_ids=0x{proto_ids_off:x} method_ids=0x{method_ids_off:x} "
           f"class_defs=0x{class_defs_off:x} string_data=0x{string_data_off:x} "
           f"type_list=0x{type_list_off:x} class_data=0x{class_data_off:x} "
+          f"map=0x{map_off:x}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `classes_fields.dex` -- fields, a code_item, and class_data that only parses
+# if its indices are read as DIFFERENTIALS.
+#
+# The method fixture above proves the signature tables. It cannot prove three
+# things this one exists for, each of them a rule of the format rather than a
+# count:
+#
+#   1. `field_ids` resolve to a name and a type (`COUNT:I`, `DEPTH:I`,
+#      `name:Ljava/lang/String;`), so a field entry in class_data answers
+#      something about the app instead of a number.
+#   2. `class_data` indices are DELTAS from the previous entry in the same
+#      list, and each list restarts from its own first delta. The static field
+#      list here is [0, 1] (indices 0 and 1) and the instance list is [2] -- a
+#      parser that treated a delta as an absolute index would read the instance
+#      field as 2 and be right by accident, while one that forgot to reset the
+#      accumulator between lists would read it as 1 + 2 = 3 and be REFUSED. The
+#      direct method list is [0,1,1] = indices 0, 1, 2 for the same reason.
+#   3. `encoded_method` is (method_idx_diff, access_flags, code_off) -- three
+#      ULEB128s, not the two the earlier fixture could get away with. The third
+#      is what makes a method's code reachable.
+#
+# So: two code_items with real Dalvik words (`const/4 v0, #0` then `return v0`
+# for `size()I`; the same constant then `return-void` for `run()V`), and one
+# ACC_NATIVE method with code_off 0 -- which is the format's own way of saying
+# "no code", and the contrast that makes the code_off columns mean something.
+# The kernel parses those words and checks their count and bounds; it does not
+# decode or execute them, and the fixture is not run.
+# ---------------------------------------------------------------------------
+
+FIELD_STRINGS = [
+    b"Lnyrqis/hello/Fields;",
+    b"Ljava/lang/Object;",
+    b"Fields.java",
+    b"COUNT",
+    b"DEPTH",
+    b"name",
+    b"I",
+    b"Ljava/lang/String;",
+    b"size",
+    b"make",
+    b"run",
+    b"V",
+]
+
+# type_ids name strings: class, superclass, int, String, void.
+FIELD_TYPES = [0, 1, 6, 7, 11]
+F_CLASS = 0
+F_INT = 2
+F_STRING = 3
+F_VOID = 4
+F_SHORTY_I = 6
+F_SHORTY_V = 11
+
+# field_ids are (class_idx u2, type_idx u2, name_idx u4), sorted by name index
+# as the format requires: COUNT (3), DEPTH (4), name (5).
+FIELD_FIELDS = [(F_CLASS, F_INT, 3), (F_CLASS, F_INT, 4), (F_CLASS, F_STRING, 5)]
+
+# method_ids are (class_idx u2, proto_idx u2, name_idx u4), sorted by name
+# index: size (8), make (9), run (10).
+FIELD_METHODS = [(F_CLASS, 0, 8), (F_CLASS, 1, 9), (F_CLASS, 1, 10)]
+
+TYPE_CODE_ITEM = 0x2001
+
+ACC_PUBLIC = 0x1
+ACC_PRIVATE = 0x2
+ACC_STATIC = 0x8
+ACC_FINAL = 0x10
+ACC_NATIVE = 0x100
+
+
+def dalvik_const4_zero_return_v0() -> bytes:
+    """`const/4 v0, #0` then `return v0` -- two real 16-bit code units.
+
+    0x12 is const/4 (format 11n): the value word is op | A<<8 | B<<12, so
+    v0/#0 is exactly 0x0012. 0x0f is return (11x): op | A<<8, so v0 is 0x000f.
+    These are the format's encodings, written down here so the kernel's
+    insns proof compares against bytes a reader can check by hand.
+    """
+    return struct.pack("<HH", 0x0012, 0x000F)
+
+
+def dalvik_const4_zero_return_void() -> bytes:
+    """`const/4 v0, #0` then `return-void` (0x0e, format 10x)."""
+    return struct.pack("<HH", 0x0012, 0x000E)
+
+
+def code_item(insns: bytes) -> bytes:
+    """A code_item with no tries and no debug info: 16-byte header + insns."""
+    assert len(insns) % 2 == 0
+    insns_size = len(insns) // 2
+    return struct.pack(
+        "<HHHHII",
+        1,  # registers_size: one register, v0
+        0,  # ins_size: no parameters
+        0,  # outs_size: this code calls nothing
+        0,  # tries_size
+        0,  # debug_info_off
+        insns_size,
+    ) + insns
+
+
+def write_fields_fixture() -> int:
+    for s in FIELD_STRINGS:
+        assert all(0x20 <= b < 0x7F for b in s), s
+
+    strings_blob = bytearray()
+    for s in FIELD_STRINGS:
+        strings_blob += uleb128(len(s)) + s + b"\x00"
+
+    string_ids_off = HEADER_SIZE
+    type_ids_off = string_ids_off + 4 * len(FIELD_STRINGS)
+    proto_ids_off = type_ids_off + 4 * len(FIELD_TYPES)
+    field_ids_off = proto_ids_off + 12 * 2
+    method_ids_off = field_ids_off + 8 * len(FIELD_FIELDS)
+    class_defs_off = method_ids_off + 8 * len(FIELD_METHODS)
+    string_data_off = class_defs_off + 32
+
+    string_offsets = []
+    base = string_data_off
+    for s in FIELD_STRINGS:
+        string_offsets.append(base)
+        base += 1 + len(s) + 1
+
+    size_code_off = align4(base)
+    size_code = code_item(dalvik_const4_zero_return_v0())
+    run_code_off = align4(size_code_off + len(size_code))
+    run_code = code_item(dalvik_const4_zero_return_void())
+    class_data_off = align4(run_code_off + len(run_code))
+
+    # counts, then (static, instance, direct) member lists. The deltas below are
+    # the format's: within a list each index is the previous index plus the
+    # delta, and each list starts from its own first delta.
+    class_data = bytearray([2, 1, 3, 0])
+    class_data += uleb128(0) + uleb128(ACC_PUBLIC | ACC_STATIC | ACC_FINAL)  # COUNT, index 0
+    class_data += uleb128(1) + uleb128(ACC_PRIVATE | ACC_STATIC | ACC_FINAL)  # DEPTH, index 1
+    # The instance list restarts at its own delta, so this is index 2 -- not
+    # 1 + 2, which is what an accumulator that was not reset would read.
+    class_data += uleb128(2) + uleb128(ACC_PRIVATE)  # name, index 2
+    class_data += uleb128(0) + uleb128(ACC_PUBLIC | ACC_STATIC) + uleb128(size_code_off)
+    class_data += uleb128(1) + uleb128(ACC_PUBLIC | ACC_STATIC | ACC_NATIVE) + uleb128(0)
+    class_data += uleb128(1) + uleb128(ACC_PUBLIC | ACC_STATIC) + uleb128(run_code_off)
+    assert class_data_off + len(class_data) <= align4(class_data_off + len(class_data))
+
+    map_off = align4(class_data_off + len(class_data))
+    map_entry_count = 11
+    file_size = map_off + 4 + 12 * map_entry_count
+
+    header = bytearray(HEADER_SIZE)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 32, file_size)
+    struct.pack_into("<I", header, 36, HEADER_SIZE)
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 44, 0)
+    struct.pack_into("<I", header, 48, 0)
+    struct.pack_into("<I", header, 52, map_off)
+    struct.pack_into("<I", header, 56, len(FIELD_STRINGS))
+    struct.pack_into("<I", header, 60, string_ids_off)
+    struct.pack_into("<I", header, 64, len(FIELD_TYPES))
+    struct.pack_into("<I", header, 68, type_ids_off)
+    struct.pack_into("<I", header, 72, 2)  # proto_ids_size
+    struct.pack_into("<I", header, 76, proto_ids_off)
+    struct.pack_into("<I", header, 80, len(FIELD_FIELDS))
+    struct.pack_into("<I", header, 84, field_ids_off)
+    struct.pack_into("<I", header, 88, len(FIELD_METHODS))
+    struct.pack_into("<I", header, 92, method_ids_off)
+    struct.pack_into("<I", header, 96, 1)
+    struct.pack_into("<I", header, 100, class_defs_off)
+    struct.pack_into("<I", header, 104, file_size - string_data_off)
+    struct.pack_into("<I", header, 108, string_data_off)
+
+    string_ids = b"".join(struct.pack("<I", off) for off in string_offsets)
+    type_ids = b"".join(struct.pack("<I", idx) for idx in FIELD_TYPES)
+    proto_ids = struct.pack("<3I", F_SHORTY_I, F_INT, 0) + struct.pack("<3I", F_SHORTY_V, F_VOID, 0)
+    field_ids = b"".join(struct.pack("<HHI", c, t, n) for c, t, n in FIELD_FIELDS)
+    method_ids = b"".join(struct.pack("<HHI", c, p, n) for c, p, n in FIELD_METHODS)
+    assert len(field_ids) == 24 and len(method_ids) == 24
+    class_def = struct.pack(
+        "<8I",
+        F_CLASS,
+        ACC_PUBLIC,
+        1,  # superclass_idx
+        0,  # interfaces_off
+        2,  # source_file_idx
+        0,  # annotations_off
+        class_data_off,
+        0,  # static_values_off
+    )
+
+    body = bytearray()
+    body += header + string_ids + type_ids + proto_ids + field_ids + method_ids + class_def
+    assert len(body) == string_data_off, (len(body), string_data_off)
+    body += strings_blob
+    body += b"\x00" * (size_code_off - len(body))
+    body += size_code
+    body += b"\x00" * (run_code_off - len(body))
+    body += run_code
+    body += b"\x00" * (class_data_off - len(body))
+    body += class_data
+    body += b"\x00" * (map_off - len(body))
+
+    map_items = [
+        (TYPE_HEADER_ITEM, 1, 0),
+        (TYPE_STRING_ID_ITEM, len(FIELD_STRINGS), string_ids_off),
+        (TYPE_TYPE_ID_ITEM, len(FIELD_TYPES), type_ids_off),
+        (TYPE_PROTO_ID_ITEM, 2, proto_ids_off),
+        (TYPE_FIELD_ID_ITEM, len(FIELD_FIELDS), field_ids_off),
+        (TYPE_METHOD_ID_ITEM, len(FIELD_METHODS), method_ids_off),
+        (TYPE_CLASS_DEF_ITEM, 1, class_defs_off),
+        (TYPE_STRING_DATA_ITEM, len(FIELD_STRINGS), string_data_off),
+        (TYPE_CODE_ITEM, 2, size_code_off),
+        (TYPE_CLASS_DATA_ITEM, 1, class_data_off),
+        (TYPE_MAP_LIST, 1, map_off),
+    ]
+    assert map_items == sorted(map_items, key=lambda item: item[2])
+    map_list = struct.pack("<I", len(map_items))
+    for item_type, size, off in map_items:
+        assert off % 4 == 0, (item_type, off)
+        map_list += struct.pack("<HHI I", item_type, 0, size, off)
+    body += map_list
+    assert len(body) == file_size, (len(body), file_size)
+
+    write_integrity(body)
+
+    out = pathlib.Path(__file__).resolve().parent.parent / "userprog" / "classes_fields.dex"
+    out.write_bytes(bytes(body))
+    print(f"wrote {out} ({len(body)} bytes)")
+    print(f"  checksum 0x{struct.unpack_from('<I', body, 8)[0]:08x}")
+    print(f"  sha1     {hashlib.sha1(bytes(body[32:])).hexdigest()}")
+    print(f"  sha256   {hashlib.sha256(bytes(body)).hexdigest()}")
+    print("  members  COUNT:I, DEPTH:I (static); name:Ljava/lang/String; (instance)")
+    print("           size()I [code], make()V [native], run()V [code]")
+    print(f"  layout   string_ids=0x{string_ids_off:x} type_ids=0x{type_ids_off:x} "
+          f"proto_ids=0x{proto_ids_off:x} field_ids=0x{field_ids_off:x} "
+          f"method_ids=0x{method_ids_off:x} class_defs=0x{class_defs_off:x} "
+          f"string_data=0x{string_data_off:x} size_code=0x{size_code_off:x} "
+          f"run_code=0x{run_code_off:x} class_data=0x{class_data_off:x} "
           f"map=0x{map_off:x}")
     return 0
 
@@ -337,6 +585,7 @@ def main() -> int:
     print(f"  sha1     {hashlib.sha1(bytes(body[32:])).hexdigest()}")
     print(f"  class    {CLASS.decode()} : {SUPER.decode()}")
     write_methods_fixture()
+    write_fields_fixture()
     return 0
 
 

@@ -108,6 +108,8 @@
 //! The chain: `pe_resource_demo` chains here instead of straight into
 //! `isolation_demo`, and this link chains into `isolation_demo` in turn.
 
+use alloc::vec::Vec;
+
 use crate::serial_println;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::VirtAddr;
@@ -129,10 +131,12 @@ const NYRQIS_DLL: &[u8] = include_bytes!("../../userprog/nyrqis.dll");
 const APP_EXE: &[u8] = include_bytes!("../../userprog/win32_console.exe");
 
 /// The client's own load address and `SizeOfImage` (`objdump -p` reports
-/// `ImageBase 0x1a0000000000`, `SizeOfImage 0x4000`). The size is the region
+/// `ImageBase 0x1a0000000000`, `SizeOfImage 0x6000` -- it grew from `0x4000`
+/// when the size/seek tranche added two imports and their call sites, which
+/// `build.sh` pins from the same `objdump` line). The size is the region
 /// the surface will accept argument pointers in.
 const APP_IMAGE_BASE: u64 = 0x1A00_0000_0000;
-const APP_IMAGE_SIZE: u64 = 0x4000;
+const APP_IMAGE_SIZE: u64 = 0x6000;
 
 /// The private report page the client writes its results to, and its stack.
 const SLOT_ADDR: u64 = 0x4D00_0000_0000;
@@ -202,19 +206,20 @@ const CMDLINE_OFFSET: u64 = 0x2A0;
 /// allocation naming a handle that is not the process heap, a
 /// `HEAP_GENERATE_EXCEPTIONS` request, an allocation larger than the whole
 /// region, and a free of an address the heap never issued.
-const EXPECTED_REFUSALS: u64 = 21;
+const EXPECTED_REFUSALS: u64 = 23;
 
 /// The eighteen exports the client imports, and the RVAs they must resolve to
 /// (the DLL's own export table is the authority; these are the independent
 /// answer the boot checks it against, per symbol). Sorted by name, which is the
 /// order GNU ld writes its name table in -- so the stubs appended last in the
 /// source for a stable `.text` layout sort into the middle.
-const EXPECTED_EXPORTS: [(&[u8], u64); 20] = [
+const EXPECTED_EXPORTS: [(&[u8], u64); 22] = [
     (b"CloseHandle", 0x10F1),
     (b"CreateFileA", 0x1077),
     (b"ExitProcess", 0x1062),
     (b"FreeLibrary", 0x11A7),
     (b"GetCommandLineA", 0x1137),
+    (b"GetFileSize", 0x12B1),
     (b"GetLastError", 0x110D),
     (b"GetModuleFileNameA", 0x11C3),
     (b"GetModuleHandleA", 0x114C),
@@ -228,6 +233,7 @@ const EXPECTED_EXPORTS: [(&[u8], u64); 20] = [
     (b"HeapSize", 0x1256),
     (b"LoadLibraryA", 0x118B),
     (b"ReadFile", 0x10B4),
+    (b"SetFilePointer", 0x12D4),
     (b"SetLastError", 0x1122),
     (b"WriteFile", 0x101C),
 ];
@@ -517,6 +523,27 @@ const SLOT_HEAP_REALLOC_BADF: u64 = 0xA38;
 const SLOT_HEAP_REALLOC_BADF_ERR: u64 = 0xA40;
 const SLOT_HEAP_SIZE_BAD: u64 = 0xA48;
 const SLOT_HEAP_SIZE_BAD_ERR: u64 = 0xA50;
+// Tranche 13: the file's size and its cursor. `SLOT_SIZE_HIGH` is written by
+// the KERNEL through GetFileSize's out-parameter, and the two buffers hold the
+// four bytes read at two different positions of ONE file.
+const SLOT_FILE7: u64 = 0xB00;
+const SLOT_FILE_SIZE: u64 = 0xB08;
+const SLOT_SIZE_HIGH: u64 = 0xB10;
+const SLOT_SIZE_BAD: u64 = 0xB18;
+const SLOT_SIZE_BAD_ERR: u64 = 0xB20;
+const SLOT_SEEK_ABS: u64 = 0xB28;
+const SLOT_SEEK_CUR: u64 = 0xB30;
+const SLOT_SEEK_END: u64 = 0xB38;
+const SLOT_SEEK_NEG: u64 = 0xB40;
+const SLOT_SEEK_NEG_ERR: u64 = 0xB48;
+const SLOT_SEEK_CUR_AFTER: u64 = 0xB50;
+const SLOT_SEEK_BAD: u64 = 0xB58;
+const SLOT_SEEK_BAD_ERR: u64 = 0xB60;
+const SLOT_CLOSE7: u64 = 0xB68;
+const SLOT_N7: u64 = 0xB70;
+const SLOT_N8: u64 = 0xB78;
+const BUF_SEEK_A: u64 = 0xB90;
+const BUF_SEEK_B: u64 = 0xB98;
 // A compile-time check that the report fields do not overlap the client's read
 // buffers (which run up to SLOT_BIN + its eight bytes), the command-line string
 // the loader installs, the 0x300 region the kernel-side controls write their
@@ -537,7 +564,10 @@ const _: () = assert!(
         && SLOT_HEAP_HANDLE >= 0x900
         && SLOT_HEAP_BADFREE_ERR + 8 <= 0xA00
         && SLOT_HEAP_SIZE_OK >= 0xA00
-        && SLOT_HEAP_SIZE_BAD_ERR + 8 <= 0xB00,
+        && SLOT_HEAP_SIZE_BAD_ERR + 8 <= 0xB00
+        && SLOT_FILE7 >= 0xB00
+        && SLOT_CLOSE7 + 8 <= BUF_SEEK_A
+        && BUF_SEEK_B + 4 <= 0xC00,
     "win32-demo report fields must sit between the read buffers and 0x300 (or above 0x700, past the kernel's control strings), must not overlap each other, and must not overlap the installed command line"
 );
 
@@ -902,9 +932,20 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
             NameOf(name)
         );
     }
+    // The names are printed in the CLIENT'S OWN .idata order, read out of the
+    // walk rather than written down here: a hand-kept list could disagree with
+    // the file (and this line's whole value is that it names what resolved).
+    let mut listing: Vec<u8> = Vec::new();
+    for (i, fact) in resolved.facts.iter().enumerate() {
+        if i > 0 {
+            listing.extend_from_slice(b", ");
+        }
+        listing.extend_from_slice(fact.symbol.as_slice());
+    }
     serial_println!(
-        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA, GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc, HeapSize), every slot reading back its export address -- OK",
-        resolved.facts.len()
+        "  experimental win32-demo: resolved {} import(s) from the client's REAL .idata against kernel32.dll's REAL export directory ({}), every slot reading back its export address -- OK",
+        resolved.facts.len(),
+        core::str::from_utf8(&listing).unwrap_or("<unreadable>")
     );
 
     // --- the surface's own negative controls, kernel-side, before ring 3 ---
@@ -957,9 +998,21 @@ unsafe extern "C" fn stage_two_after_stack_switch() -> ! {
         0,
         "the last error must start at ERROR_SUCCESS before any call"
     );
-    expect_refusal(20, [0; 5], from_text, win32::Win32Error::UnknownFunction);
+    // The index is derived from the export table the boot already parsed, not
+    // written down here: the first index past the LAST export is what this
+    // control is about, and a literal would silently become a real export's
+    // index the next time a tranche appends a stub (which is exactly how this
+    // control failed the boot that added GetFileSize and SetFilePointer).
+    let past_last_export = EXPECTED_EXPORTS.len() as u64;
+    expect_refusal(
+        past_last_export,
+        [0; 5],
+        from_text,
+        win32::Win32Error::UnknownFunction,
+    );
     serial_println!(
-        "  experimental win32-demo: negative control 3 -- index 20 (one past the last export) refused with the typed UnknownFunction -- OK"
+        "  experimental win32-demo: negative control 3 -- index {} (one past the last export) refused with the typed UnknownFunction -- OK",
+        past_last_export
     );
 
     // Negative control 3b: the heap's answers a client cannot fake. The handle
@@ -2129,6 +2182,15 @@ pub unsafe fn on_trap() -> ! {
         slot(SLOT_HEAP_REALLOC_BADF_ERR),
     );
     let (heap_size_bad, heap_size_bad_err) = (slot(SLOT_HEAP_SIZE_BAD), slot(SLOT_HEAP_SIZE_BAD_ERR));
+    let (file7, file_size, size_high) = (slot(SLOT_FILE7), slot(SLOT_FILE_SIZE), slot(SLOT_SIZE_HIGH));
+    let (size_bad, size_bad_err) = (slot(SLOT_SIZE_BAD), slot(SLOT_SIZE_BAD_ERR));
+    let (seek_abs, seek_cur, seek_end) = (slot(SLOT_SEEK_ABS), slot(SLOT_SEEK_CUR), slot(SLOT_SEEK_END));
+    let (seek_neg, seek_neg_err) = (slot(SLOT_SEEK_NEG), slot(SLOT_SEEK_NEG_ERR));
+    let (seek_cur_after, seek_bad) = (slot(SLOT_SEEK_CUR_AFTER), slot(SLOT_SEEK_BAD));
+    let (seek_bad_err, close7) = (slot(SLOT_SEEK_BAD_ERR), slot(SLOT_CLOSE7));
+    let (n7, n8) = (slot(SLOT_N7), slot(SLOT_N8));
+    let seek_a = slot_bytes(BUF_SEEK_A, 4);
+    let seek_b = slot_bytes(BUF_SEEK_B, 4);
     let stdout = win32::received();
     let exit = win32::exit_code();
     let readback = slot_bytes(SLOT_BUF, EXPECTED_STDOUT.len());
@@ -2335,9 +2397,37 @@ pub unsafe fn on_trap() -> ! {
         && heap_realloc_badf_err == win32::ERROR_INVALID_PARAMETER as u64
         && heap_size_bad == 0
         && heap_size_bad_err == win32::ERROR_INVALID_ADDRESS as u64;
+    // A file's SIZE and CURSOR, from ring 3. The size is the volume's own answer
+    // for the file (and the optional high dword was written, as a caller reads
+    // it); three seeks then place the cursor ABSOLUTELY (3), relatively from the
+    // current position (where the preceding read left it: 7), and BACKWARDS from
+    // the end (-4 = 29) -- and each read answers the file's bytes AT that
+    // position, which is what a cursor that only pretended to move could not do.
+    // A seek before the first byte is Windows' failure VALUE with
+    // ERROR_NEGATIVE_SEEK and leaves the cursor at 33; an unknown move method and
+    // a GetFileSize on the console handle are refusals with their own codes.
+    let cursor_ok = file7 == h0
+        && file_size == win32_fs::FILES[0].data.len() as u64
+        && size_high == 0
+        && seek_abs == 3
+        && n7 == 4
+        && seek_a == &win32_fs::FILES[0].data[3..7]
+        && seek_cur == 7
+        && seek_end == 29
+        && n8 == 4
+        && seek_b == &win32_fs::FILES[0].data[29..33]
+        && seek_neg == win32::INVALID_SET_FILE_POINTER
+        && seek_neg_err == win32::ERROR_NEGATIVE_SEEK as u64
+        && seek_cur_after == 33
+        && seek_bad == win32::INVALID_SET_FILE_POINTER
+        && seek_bad_err == win32::ERROR_INVALID_PARAMETER as u64
+        && size_bad == win32::INVALID_FILE_SIZE
+        && size_bad_err == win32::ERROR_INVALID_HANDLE as u64
+        && close7 == 1;
     let ok = startup_ok
         && realloc_ok
         && heap_ok
+        && cursor_ok
         && dynamic_ok
         && files_ok
         && bindings_ok
@@ -2361,7 +2451,7 @@ pub unsafe fn on_trap() -> ! {
     // then names its own cause in the transcript instead of asking the next
     // reader to re-derive it from a passing-looking line.
     serial_println!(
-        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={} modules={} ordinals={} forwarders={} dynamic={} files={} heap={} realloc={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
+        "  experimental win32-demo self-test checks: console={} hello={} bytes={} empty={} closed={} miss={} errors={} monotonic={} exit={} handles={} refusals={} handle_test={} startup={} bindings={} modules={} ordinals={} forwarders={} dynamic={} files={} heap={} realloc={} cursor={}; handles f1={:#x} f2={:#x} f3={:#x} f4={:#x} f5={:#x} f6={:#x} f7={:#x}; closes {} {} {} {}; reads {}/{}/{}/{}/{}/{}",
         console_ok,
         hello_ok,
         bytes_ok,
@@ -2383,12 +2473,14 @@ pub unsafe fn on_trap() -> ! {
         files_ok,
         heap_ok,
         realloc_ok,
+        cursor_ok,
         file1,
         file2,
         file3,
         file4,
         file5,
         file6,
+        file7,
         close1,
         close2,
         close3,
@@ -2432,6 +2524,29 @@ pub unsafe fn on_trap() -> ! {
         heap_inplace_err,
         heap_realloc_badf_err,
         heap_size_bad_err
+    );
+    serial_println!(
+        "  experimental win32-demo: a file's size and cursor -- GetFileSize(hello.txt) answered {} byte(s) with the high dword written as {} ({}), SetFilePointer(3, FILE_BEGIN) answered {} and the read there answered {} byte(s) reading \"{}\" ({}), a zero move from FILE_CURRENT answered {} -- where the read left it ({}), a MOVE OF -4 FROM FILE_END answered {} and the read there answered \"{}\" ({}), a seek to -100 answered 0x{:x} with ERROR_NEGATIVE_SEEK ({}) leaving the cursor at {} ({}), an unknown move method answered 0x{:x} with ERROR_INVALID_PARAMETER ({}), and GetFileSize of the console handle answered 0x{:x} with ERROR_INVALID_HANDLE ({}) -- OK, a program can ask a file how big it is and read from a position it chose",
+        file_size,
+        size_high,
+        size_high == 0,
+        seek_abs,
+        n7,
+        core::str::from_utf8(seek_a).unwrap_or("?"),
+        n7 == 4,
+        seek_cur,
+        seek_cur == 7,
+        seek_end,
+        core::str::from_utf8(seek_b).unwrap_or("?"),
+        n8 == 4,
+        seek_neg,
+        seek_neg_err,
+        seek_cur_after,
+        seek_cur_after == 33,
+        seek_bad,
+        seek_bad_err,
+        size_bad,
+        size_bad_err
     );
     serial_println!(
         "  experimental win32-demo self-test: GetCommandLineA answered {:#x} on both calls with the client's own byte-and-NUL compare {} it, and GetModuleHandleA(NULL) answered the client's image base {:#x} with the client's _start-inside-image test {} it; GetModuleHandleA(\"kernel32.dll\") answered the provider's own base {:#x} in either case, and GetProcAddress named GetTickCount at {:#x} -- the very address the loader bound into the IAT ({}) -- which the client then CALLED through, reading {} (>= {}); a second provider, nyrqis.dll, answered its own row's base {:#x} (different from kernel32's), and its NyrqisBuild and NyrqisMode exports resolved there at {:#x} and {:#x}, which the client CALLED through, reading {} and {}; kernel32.dll asked for NyrqisBuild answered {:#x} with ERROR_PROC_NOT_FOUND ({}) and nyrqis.dll asked for GetTickCount answered {:#x} the same ({}); asked in Windows' ordinal form, the second provider's base-{} ordinal {} answered {:#x} -- the same address its NAME did ({}) -- which the client CALLED through, reading {}; ordinals {} and {} (below the base, past the last slot) answered {:#x} and {:#x} with ERROR_PROC_NOT_FOUND ({}) and ({}); its forwarded export NyrqisTick (kernel32.dll.GetTickCount) answered {:#x} BY NAME and BY ORDINAL 12 -- the same address kernel32.dll's own row gave GetTickCount ({}) -- which the client CALLED through, reading {}; a forwarder to an export kernel32.dll does not have answered {:#x} with ERROR_PROC_NOT_FOUND ({}); BEFORE LoadLibraryA, nyrqis.dll's forwarder NyrqisDyn (naming nyrqis_dyn.dll.NyrqisDynValue) answered {:#x} with ERROR_PROC_NOT_FOUND ({}), LoadLibraryA(\"C:\\nyrqis\\nyrqis_dyn.dll\") then answered the runtime image's own base {:#x}, the file name GetModuleHandleA(\"nyrqis_dyn.dll\") answered the same base {:#x} (a row for a module the client never linked against), the SAME forwarder then answered {:#x} -- the dynamic row's own export at +{:#x} -- which the client CALLED through, reading {}, FreeLibrary answered {} and the forwarder went back to {:#x} with ERROR_PROC_NOT_FOUND ({}), and a DLL the volume does not have answered {:#x} with ERROR_MOD_NOT_FOUND ({}); a module that is not loaded answered {:#x} with ERROR_MOD_NOT_FOUND ({}) and a name that module does not export answered {:#x} with ERROR_PROC_NOT_FOUND ({}); WriteFile returned {} and wrote {} byte(s); the console received {:?}; hello.txt opened as handle {:#x}, read {}+{} byte(s) then {} more at EOF, closed -> {} and the client's own copy of the bytes matches; bytes.bin read back byte-identically (not text: 0x00/0x80/0xfe), empty.txt read TRUE with 0 byte(s); a closed handle was refused by ReadFile ({}) and by a second CloseHandle ({}); a missing file returned {:#x} and GetLastError answered ERROR_FILE_NOT_FOUND ({}), the closed handle answered ERROR_INVALID_HANDLE ({} then {}),         GENERIC_WRITE was refused with ERROR_ACCESS_DENIED ({}), returned {:#x} rather than 0 and passed the client's own INVALID_HANDLE_VALUE handle test ({}), SetLastError(0x1234) read back as {:#x}, and a successful GetTickCount left the code at {}; GetTickCount read {} then {} (monotonic); ExitProcess recorded {:?}; {} file handle(s) still open; refusals {} (the program's closed-handle pair, its refused write-access open, its absent-module and absent-export probes, its two cross-module probes, its two out-of-range ordinal probes, its forwarder-to-an-absent-export probe, its two NyrqisDyn probes -- one before LoadLibraryA and one after FreeLibrary -- and its GetModuleFileNameA probe on a base that names no row; asked WHICH FILE each handle came from, GetModuleFileNameA answered {} bytes for the client's own row (its own byte-and-NUL compare {} it), {} for kernel32.dll and {} for the runtime row while it was loaded -- the path the client gave LoadLibraryA, which no byte of its image contains -- then cut a 27-byte path into an 8-byte buffer as {} answering {} with ERROR_INSUFFICIENT_BUFFER ({}), wrote nothing for nSize 0 ({} with {}), and refused a base that names no row ({} with {}) -- {}",

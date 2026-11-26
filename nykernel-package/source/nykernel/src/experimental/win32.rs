@@ -1,9 +1,10 @@
-//! The Win32 API surface, v0: twenty `kernel32.dll` exports performed by this
-//! kernel, reachable from ring 3 through a real Windows-format DLL whose
+//! The Win32 API surface, v0: twenty-two `kernel32.dll` exports performed by
+//! this kernel, reachable from ring 3 through a real Windows-format DLL whose
 //! bodies are trap stubs (`userprog/prog_win32_kernel32.s`) -- including
 //! `LoadLibraryA` and `FreeLibrary`, which let the module table below grow and
-//! shrink while a program runs, and `GetModuleFileNameA`, which answers which
-//! FILE a module handle came from.
+//! shrink while a program runs, `GetModuleFileNameA`, which answers which
+//! FILE a module handle came from, and `GetFileSize`/`SetFilePointer`, which
+//! expose the size of an open file and the cursor `ReadFile` advances.
 //!
 //! # What this is, precisely
 //!
@@ -266,6 +267,28 @@
 //!
 //! # Why a refusal also returns something Windows-shaped
 //!
+//! # Why the file cursor is its own tranche
+//!
+//! `ReadFile` alone can only stream a file: the cursor [`win32_fs::read`]
+//! advances is real state, but nothing a client can ask about or set. Two calls
+//! make that state observable and addressable, and they are the pair a C
+//! library's `fstat`/`fseek` are built on: `GetFileSize` reads the size from the
+//! volume's own entry (not a number remembered per handle, which could disagree
+//! with the file), and `SetFilePointer` moves the cursor by a SIGNED distance
+//! from the beginning, the current position, or the END of the file.
+//!
+//! What makes the pair a proof rather than two more arms: the client seeks, then
+//! reads, and the bytes it reads are the file's bytes at that position -- so a
+//! cursor that was not really moved, or a size that was guessed, changes what
+//! the program sees. The two Windows-shaped failure paths are pinned as well: a
+//! seek before the first byte answers `INVALID_SET_FILE_POINTER` with
+//! `ERROR_NEGATIVE_SEEK` and leaves the cursor where it was, and a move method
+//! this volume does not implement is a typed refusal. A successful seek whose
+//! position happens to be `0xFFFFFFFF` is indistinguishable from that sentinel
+//! ON WINDOWS TOO (which is why `SetFilePointer` is always followed by a
+//! `GetLastError` check); this volume's files are far too small to reach it, and
+//! the limit is stated here rather than discovered later.
+//!
 //! A code alone is not enough to make a refusal read like Windows, because the
 //! client looks at the RESULT before it looks at the code. So a refused call
 //! returns that export's own Windows failure value ([`failure_value`]) rather
@@ -311,17 +334,16 @@ pub const IMAGE_BASE: u64 = 0x1900_0000_0000;
 pub const SECOND_IMAGE_BASE: u64 = 0x1901_0000_0000;
 
 /// `.text` in `userprog/kernel32.dll` -- `objdump -h` reports VMA
-/// `0x190000001000`, size `0x260` (eighteen stubs: the twelve up to the
-/// startup pair, `GetProcAddress`, the runtime pair `LoadLibraryA` and
-/// `FreeLibrary`, and `GetModuleFileNameA` appended last, so every earlier
-/// RVA stayed put -- each tranche that appended a stub re-linked and
-/// re-checked that claim against the DLL's own EAT).
+/// `0x190000001000`, size `0x310` (twenty-two stubs, appended one tranche at a
+/// time so every earlier RVA stayed put -- each tranche that appended a stub
+/// re-linked and re-checked that claim against the DLL's own EAT; the last
+/// pair, `GetFileSize` and `SetFilePointer`, took the size from `0x2c0`).
 /// Pinned, and re-checked against
 /// the loaded image's own export RVAs at boot (`win32_demo::start`): every
 /// export must fall inside this window, which is what lets [`dispatch`] accept
 /// a trap only from this DLL's code.
 pub const TEXT_RVA: u64 = 0x1000;
-pub const TEXT_SIZE: u64 = 0x2c0;
+pub const TEXT_SIZE: u64 = 0x310;
 
 /// `.data`, holding `nyr_call_block` (VMA `0x190000002000`, size `0x40`).
 pub const BLOCK_RVA: u64 = 0x2000;
@@ -353,6 +375,17 @@ pub const STDOUT_HANDLE: u64 = 0x0b;
 /// records [`ERROR_FILE_NOT_FOUND`]: that is the case `GetLastError` exists
 /// for, and the one the client in the boot proof actually asks about.
 pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
+
+/// What `SetFilePointer` returns when it fails. It is 32 bits wide, not a
+/// `HANDLE`, because the prototype returns `DWORD` -- and a legitimate position
+/// of `0xFFFFFFFF` is indistinguishable from it on Windows, which is the
+/// documented reason a caller must consult `GetLastError`.
+pub const INVALID_SET_FILE_POINTER: u64 = 0xffff_ffff;
+
+/// What `GetFileSize` returns when it fails: the same 32-bit sentinel under its
+/// own Windows name (`INVALID_FILE_SIZE`). A size is only unambiguous up to
+/// `0xFFFFFFFE`, which is why the high dword exists at all.
+pub const INVALID_FILE_SIZE: u64 = INVALID_SET_FILE_POINTER;
 
 /// Where the runtime-loaded module's OWN image goes. Its own `ImageBase`,
 /// one gigabyte past the second provider, and pinned by `build.sh` out of the
@@ -414,6 +447,11 @@ pub const fn failure_value(index: u64) -> u64 {
         // HANDLE, documented to fail with the all-ones sentinel: GetStdHandle,
         // CreateFileA.
         0 | 4 => INVALID_HANDLE_VALUE,
+        // DWORD-returning file calls whose documented failure is the 32-bit
+        // all-ones sentinel, NOT a 64-bit one: GetFileSize
+        // (INVALID_FILE_SIZE) and SetFilePointer (INVALID_SET_FILE_POINTER).
+        // Both are 0xFFFFFFFF, which is why they are one arm.
+        20 | 21 => INVALID_SET_FILE_POINTER,
         // BOOL, DWORD, void, LPSTR-whose-failure-is-NULL (GetCommandLineA),
         // HMODULE-whose-failure-is-NULL (GetModuleHandleA), FARPROC whose
         // failure is also NULL (GetProcAddress), and "no such export".
@@ -518,6 +556,10 @@ pub const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 pub const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 pub const ERROR_INVALID_ADDRESS: u32 = 487;
 pub const ERROR_NOACCESS: u32 = 998;
+/// Windows' code for a seek that would move the cursor before the first byte.
+/// `SetFilePointer` reports it beside `INVALID_SET_FILE_POINTER`, because the
+/// sentinel alone does not say why the call failed.
+pub const ERROR_NEGATIVE_SEEK: u32 = 131;
 
 /// The largest WriteFile this surface will perform, in bytes. A cap rather
 /// than a length limit from Windows: it keeps the copy in this module's own
@@ -698,6 +740,10 @@ pub enum Win32Error {
     /// to a file that is not a loadable image, which is a different answer
     /// from `ERROR_MOD_NOT_FOUND` (no such file).
     ImageLoadFailed,
+    /// `SetFilePointer`'s `dwMoveMethod` is not one of Windows'
+    /// `FILE_BEGIN`/`FILE_CURRENT`/`FILE_END`. A fourth method has no meaning
+    /// on this volume, so it is refused rather than treated as one of the three.
+    UnsupportedSeekOrigin,
     /// The volume refused the request; which rule is inside.
     File(win32_fs::FsError),
 }
@@ -785,6 +831,7 @@ impl Win32Error {
             Win32Error::HeapExhausted => ERROR_NOT_ENOUGH_MEMORY,
             Win32Error::HeapBlockNotLive => ERROR_INVALID_ADDRESS,
             Win32Error::ImageLoadFailed => ERROR_BAD_EXE_FORMAT,
+            Win32Error::UnsupportedSeekOrigin => ERROR_INVALID_PARAMETER,
             Win32Error::File(e) => match e {
                 win32_fs::FsError::PathNotAbsolute => ERROR_PATH_NOT_FOUND,
                 win32_fs::FsError::UnknownVolume => ERROR_INVALID_DRIVE,
@@ -792,6 +839,11 @@ impl Win32Error {
                 win32_fs::FsError::OutOfHandles => ERROR_TOO_MANY_OPEN_FILES,
                 win32_fs::FsError::NotAFileHandle => ERROR_INVALID_HANDLE,
                 win32_fs::FsError::ClosedHandle => ERROR_INVALID_HANDLE,
+                // A seek before the file's first byte has its own Windows code;
+                // the other two are argument errors with no more specific one.
+                win32_fs::FsError::NegativeSeek => ERROR_NEGATIVE_SEEK,
+                win32_fs::FsError::SeekOutOfRange => ERROR_INVALID_PARAMETER,
+                win32_fs::FsError::UnsupportedSeekOrigin => ERROR_INVALID_PARAMETER,
             },
         }
     }
@@ -2053,6 +2105,89 @@ unsafe fn call(index: u64, args: [u64; 5], rip: u64) -> Result<u64, Win32Error> 
                 );
             }
             Ok(new_base)
+        }
+        // GetFileSize(hFile, lpFileSizeHigh): the size of the open file.
+        //
+        // The answer is the VOLUME's, read from the file's own entry: a size
+        // cached per handle would be a second copy that could disagree with the
+        // bytes `ReadFile` copies, and the pair disagreeing is exactly the bug a
+        // caller cannot see. `lpFileSizeHigh` is optional on Windows and is
+        // WRITTEN when given (this volume's files are far below 4 GiB, so it is
+        // always zero) -- writing it rather than leaving a caller's variable
+        // stale, which is the failure mode of a surface that only has 32-bit
+        // files.
+        //
+        // The handle is a file handle, so anything else is refused: the console
+        // handle included, because it names the console and not a file, and
+        // `win32_fs` is the table that decides which values it ever issued.
+        20 => {
+            let size = win32_fs::file_size(args[0]).map_err(Win32Error::File)?;
+            if args[1] != 0 {
+                if !allowed(surface, args[1], 4) {
+                    return Err(Win32Error::OutPointerOutsideClient);
+                }
+                // SAFETY: the range was just checked against the client's own
+                // region, and the type is `LPDWORD` -- four bytes, not eight.
+                core::ptr::write_volatile(args[1] as *mut u32, (size >> 32) as u32);
+            }
+            Ok(size & 0xffff_ffff)
+        }
+        // SetFilePointer(hFile, lDistanceToMove, lpDistanceToMoveHigh,
+        //                dwMoveMethod): move the cursor, and answer where it is.
+        //
+        // Windows has two argument shapes and both are here, because a program
+        // may use either: with `lpDistanceToMoveHigh == NULL` the distance is
+        // the SIGNED 32-bit low dword (`lDistanceToMove` is a `LONG`), and with
+        // a pointer it is a signed 64-bit value split across the two, whose new
+        // high dword is written back on success. Reading the low half as signed
+        // in the first form is what makes `SetFilePointer(f, -4, NULL,
+        // FILE_END)` seek backwards four bytes instead of to 4294967292.
+        //
+        // A negative RESULT is a failure VALUE, not a refusal: Windows answers
+        // `INVALID_SET_FILE_POINTER` and sets `ERROR_NEGATIVE_SEEK`, and the
+        // cursor is unchanged -- the volume is what enforces that, so a refused
+        // seek cannot half-happen. A `dwMoveMethod` outside the three is this
+        // surface's typed refusal, because it is an argument no Windows program
+        // passes and one this volume could only guess at.
+        21 => {
+            let origin = args[3] as u32;
+            if origin != win32_fs::FILE_BEGIN
+                && origin != win32_fs::FILE_CURRENT
+                && origin != win32_fs::FILE_END
+            {
+                return Err(Win32Error::UnsupportedSeekOrigin);
+            }
+            let distance: i64 = if args[2] == 0 {
+                // `LONG lDistanceToMove`: a signed DWORD, so the low half is
+                // read as `i32` before it is widened.
+                args[1] as u32 as i32 as i64
+            } else {
+                if !allowed(surface, args[2], 4) {
+                    return Err(Win32Error::OutPointerOutsideClient);
+                }
+                // SAFETY: the high half was just checked against the client's
+                // own region; it is a `LONG` there, and the pointer is also an
+                // OUT parameter the success path below writes.
+                let high = core::ptr::read_volatile(args[2] as *const u32) as u64;
+                // Reassembled as an unsigned bit pattern and reinterpreted as
+                // signed: the high half is a LONG, so its top bit is the sign of
+                // the 64-bit distance, not an overflow.
+                (((high << 32) | (args[1] as u32 as u64)) as i64)
+            };
+            match win32_fs::seek(args[0], distance, origin) {
+                Ok(position) => {
+                    if args[2] != 0 {
+                        // SAFETY: same out-parameter range as the read above.
+                        core::ptr::write_volatile(args[2] as *mut u32, (position >> 32) as u32);
+                    }
+                    Ok(position & 0xffff_ffff)
+                }
+                Err(win32_fs::FsError::NegativeSeek) => {
+                    LAST_ERROR.store(ERROR_NEGATIVE_SEEK as u64, Ordering::Relaxed);
+                    Ok(INVALID_SET_FILE_POINTER)
+                }
+                Err(e) => Err(Win32Error::File(e)),
+            }
         }
         _ => Err(Win32Error::UnknownFunction),
     }

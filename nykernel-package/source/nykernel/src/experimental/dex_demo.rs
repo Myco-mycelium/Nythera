@@ -68,6 +68,34 @@ const METHOD_PARAMETER_TYPE: u32 = 2;
 const ACC_NATIVE: u32 = 0x100;
 const EXPECTED_PARAM: &[u8] = b"[Ljava/lang/String;";
 
+/// The fourth real fixture (`userprog/classes_fields.dex`, built by the same
+/// script): a class with THREE fields and THREE methods, two of the methods
+/// carrying real `code_item`s and one declared native. It exists for the three
+/// format rules the earlier fixtures cannot show: `field_ids` resolve to names,
+/// `class_data` indices are deltas accumulated per list, and `encoded_method` is
+/// three ULEB128s -- the last being the method's `code_off`.
+static FIELD_DEX: &[u8] = include_bytes!("../../userprog/classes_fields.dex");
+
+/// `classes_fields.dex`'s fixed layout, repeated so each negative control
+/// patches a byte this file names rather than an offset it guessed.
+const FIELD_FIELD_IDS_OFF: usize = 0xcc;
+const FIELD_CLASS_DEFS_OFF: usize = 0xfc;
+const FIELD_SIZE_CODE_OFF: usize = 0x194;
+const FIELD_RUN_CODE_OFF: usize = 0x1a8;
+const FIELD_CLASS_DATA_OFF: usize = 0x1bc;
+/// The fixture's class_data is this long; the controls below replace exactly
+/// this span, so a replacement cannot silently move the map_list after it.
+const FIELD_CLASS_DATA_LEN: usize = 22;
+const FIELD_INT_TYPE: u32 = 2;
+const FIELD_STRING_TYPE: u32 = 3;
+const FIELD_COUNT_STRING: u32 = 3;
+const FIELD_DEPTH_STRING: u32 = 4;
+const FIELD_NAME_STRING: u32 = 5;
+const ACC_ABSTRACT: u32 = 0x400;
+const EXPECTED_FIELD_CLASS: &[u8] = b"Lnyrqis/hello/Fields;";
+const EXPECTED_FIELD_INT: &[u8] = b"I";
+const EXPECTED_FIELD_STRING: &[u8] = b"Ljava/lang/String;";
+
 /// Runs the header proof, the table proof and every permanent negative check.
 /// Returns `true` iff every part of the proof held.
 pub fn run() -> bool {
@@ -80,9 +108,11 @@ pub fn run() -> bool {
     let refusals_ok = run_negative_table_refusals();
     let methods_ok = run_method_tables();
     let method_refusals_ok = run_negative_method_refusals();
+    let members_ok = run_field_and_code_tables();
+    let member_refusals_ok = run_negative_member_refusals();
 
     serial_println!(
-        "  experimental dex-demo self-test: crypto known-answer {}, valid parse+integrity {}, bad-magic rejection {}, map-self-reference rejection {}, checksum rejection {}, class tables {}, table refusals {}, method tables {}, method refusals {} -- {}",
+        "  experimental dex-demo self-test: crypto known-answer {}, valid parse+integrity {}, bad-magic rejection {}, map-self-reference rejection {}, checksum rejection {}, class tables {}, table refusals {}, method tables {}, method refusals {}, field and code tables {}, member refusals {} -- {}",
         verdict(kats_ok),
         verdict(positive_ok),
         verdict(magic_check_ok),
@@ -92,7 +122,9 @@ pub fn run() -> bool {
         verdict(refusals_ok),
         verdict(methods_ok),
         verdict(method_refusals_ok),
-        verdict(kats_ok && positive_ok && magic_check_ok && map_check_ok && checksum_check_ok && tables_ok && refusals_ok && methods_ok && method_refusals_ok)
+        verdict(members_ok),
+        verdict(member_refusals_ok),
+        verdict(kats_ok && positive_ok && magic_check_ok && map_check_ok && checksum_check_ok && tables_ok && refusals_ok && methods_ok && method_refusals_ok && members_ok && member_refusals_ok)
     );
 
     kats_ok
@@ -104,6 +136,8 @@ pub fn run() -> bool {
         && refusals_ok
         && methods_ok
         && method_refusals_ok
+        && members_ok
+        && member_refusals_ok
 }
 
 fn verdict(ok: bool) -> &'static str {
@@ -402,7 +436,7 @@ fn run_method_tables() -> bool {
         Err(_) => false,
     };
 
-    let signature = compose_method_signature(0);
+    let signature = compose_method_signature(METHOD_DEX, 0);
     let method_ok = match dex::method_id(METHOD_DEX, 0) {
         Ok(method) => {
             method.class_idx == 0
@@ -460,18 +494,363 @@ fn run_method_tables() -> bool {
 /// parameter descriptor in order, then the return descriptor. `None` when any
 /// table refuses, so the caller compares one byte string rather than a set of
 /// partly-resolved fields.
-fn compose_method_signature(index: u32) -> Option<Vec<u8>> {
-    let method = dex::method_id(METHOD_DEX, index).ok()?;
-    let proto = dex::proto_id(METHOD_DEX, method.proto_idx).ok()?;
+fn compose_method_signature(data: &[u8], index: u32) -> Option<Vec<u8>> {
+    let method = dex::method_id(data, index).ok()?;
+    let proto = dex::proto_id(data, method.proto_idx).ok()?;
     let mut signature = Vec::new();
-    signature.extend_from_slice(dex::string(METHOD_DEX, method.name_idx).ok()?);
+    signature.extend_from_slice(dex::string(data, method.name_idx).ok()?);
     signature.push(b'(');
-    for type_idx in dex::type_list(METHOD_DEX, proto.parameters_off).ok()? {
-        signature.extend_from_slice(dex::type_descriptor(METHOD_DEX, type_idx).ok()?);
+    for type_idx in dex::type_list(data, proto.parameters_off).ok()? {
+        signature.extend_from_slice(dex::type_descriptor(data, type_idx).ok()?);
     }
     signature.push(b')');
-    signature.extend_from_slice(dex::type_descriptor(METHOD_DEX, proto.return_type_idx).ok()?);
+    signature.extend_from_slice(dex::type_descriptor(data, proto.return_type_idx).ok()?);
     Some(signature)
+}
+
+/// Composes a field's qualified name the way the JVM/Dalvik name a field:
+/// `<declaring class>.<name>:<type descriptor>`. Like the method composer this
+/// is the answer a caller actually wants, so a reader that resolved each field
+/// of a `field_id` but paired them wrongly fails on one byte compare.
+fn compose_field_signature(data: &[u8], index: u32) -> Option<Vec<u8>> {
+    let field = dex::field_id(data, index).ok()?;
+    let mut signature = Vec::new();
+    signature.extend_from_slice(dex::type_descriptor(data, field.class_idx).ok()?);
+    signature.push(b'.');
+    signature.extend_from_slice(dex::string(data, field.name_idx).ok()?);
+    signature.push(b':');
+    signature.extend_from_slice(dex::type_descriptor(data, field.type_idx).ok()?);
+    Some(signature)
+}
+
+/// The tables a FIELD lives in, and the body a METHOD carries: `field_ids`
+/// resolved to qualified names, `class_data`'s four member lists with their
+/// deltas accumulated, and the two `code_item`s the fixture's methods point at.
+///
+/// The three checks that make this more than a non-empty answer:
+///
+/// - the instance field's delta is 2 and must resolve to index 2 -- a reader
+///   that carried the static list's accumulator into the instance list would
+///   compute 1 + 2 = 3 and be refused;
+/// - the direct methods' deltas are 0, 1, 1 and must resolve to indices 0, 1, 2
+///   -- a reader that treated a delta as an index would report 0, 1, 1;
+/// - the two code_items' instruction words are compared to the exact encodings
+///   the generator wrote (`const/4 v0, #0` then `return v0` / `return-void`), so
+///   a reader that offset into the wrong bytes fails here.
+fn run_field_and_code_tables() -> bool {
+    let info = match dex::parse(FIELD_DEX) {
+        Ok(info) => info,
+        Err(e) => {
+            serial_println!(
+                "  experimental dex-demo: FAILED to parse classes_fields.dex: {:?}",
+                e
+            );
+            return false;
+        }
+    };
+    let integrity_ok = dex::verify(FIELD_DEX).is_ok();
+    let counts_ok = info.file_size == FIELD_DEX.len() as u32
+        && info.string_ids_count == 12
+        && info.type_ids_count == 5
+        && info.proto_ids_count == 2
+        && info.field_ids_count == 3
+        && info.method_ids_count == 3
+        && info.class_defs_count == 1;
+
+    let fields_ok = matches!(dex::field_id(FIELD_DEX, 0), Ok(f)
+            if f.class_idx == 0
+                && f.type_idx == FIELD_INT_TYPE
+                && f.name_idx == FIELD_COUNT_STRING)
+        && matches!(dex::string(FIELD_DEX, FIELD_COUNT_STRING), Ok(s) if s == b"COUNT")
+        && matches!(dex::field_id(FIELD_DEX, 1), Ok(f)
+            if f.name_idx == FIELD_DEPTH_STRING && f.type_idx == FIELD_INT_TYPE)
+        && matches!(dex::field_id(FIELD_DEX, 2), Ok(f)
+            if f.name_idx == FIELD_NAME_STRING && f.type_idx == FIELD_STRING_TYPE)
+        && matches!(dex::type_descriptor(FIELD_DEX, FIELD_STRING_TYPE), Ok(t) if t == EXPECTED_FIELD_STRING)
+        && matches!(compose_field_signature(FIELD_DEX, 2).as_deref(),
+            Some(sig) if sig == b"Lnyrqis/hello/Fields;.name:Ljava/lang/String;");
+
+    let (data_ok, indices_ok, code_ok) = match dex::class_data(FIELD_DEX, 0) {
+        Ok(Some(data)) => {
+            let indices = |members: &[dex::ClassMember]| -> Vec<u32> {
+                members.iter().map(|m| m.index).collect()
+            };
+            let static_flags: Vec<u32> = data.static_fields.iter().map(|m| m.access_flags).collect();
+            let direct: Vec<(u32, Option<u32>)> = data
+                .direct_methods
+                .iter()
+                .map(|m| (m.index, m.code_off))
+                .collect();
+            (
+                *indices(&data.static_fields) == [0, 1]
+                    && static_flags == [0x19, 0x1a]
+                    && *indices(&data.instance_fields) == [2]
+                    && data.instance_fields[0].access_flags == 0x2
+                    && data.virtual_methods.is_empty(),
+                *indices(&data.direct_methods) == [0, 1, 2]
+                    && direct[0].1 == Some(FIELD_SIZE_CODE_OFF as u32)
+                    && direct[1].1.is_none()
+                    && direct[2].1 == Some(FIELD_RUN_CODE_OFF as u32),
+                direct.len() == 3
+                    && data.direct_methods[1].access_flags == (0x1 | 0x8 | ACC_NATIVE),
+            )
+        }
+        _ => (false, false, false),
+    };
+
+    let size_code = dex::code_item(FIELD_DEX, FIELD_SIZE_CODE_OFF as u32);
+    let run_code = dex::code_item(FIELD_DEX, FIELD_RUN_CODE_OFF as u32);
+    let size_ok = matches!(&size_code, Ok(code)
+        if code.registers_size == 1
+            && code.ins_size == 0
+            && code.outs_size == 0
+            && code.tries_size == 0
+            && code.debug_info_off == 0
+            && code.insns == [0x0012, 0x000f]);
+    let run_ok = matches!(&run_code, Ok(code) if code.insns == [0x0012, 0x000e]);
+    let signature_ok = matches!(compose_method_signature(FIELD_DEX, 2).as_deref(), Some(sig) if sig == b"run()V");
+
+    let ok = integrity_ok
+        && counts_ok
+        && fields_ok
+        && data_ok
+        && indices_ok
+        && code_ok
+        && size_ok
+        && run_ok
+        && signature_ok;
+    serial_println!(
+        "  experimental dex-demo: field and code tables -- a {} byte DEX with {} field(s), {} method(s) and 2 code_item(s): field 2 composes to {}, class_data answers static field indices [0, 1], instance [2] (its own delta, not the static list's accumulator) and direct method indices [0, 1, 2], size()I carries a 2-word code_item at 0x194 reading [0x0012, 0x000f] (const/4 v0, #0; return v0) and run()V one at 0x1a8 writing and returning void, while make()V is ACC_NATIVE with code_off 0 -- {}",
+        info.file_size,
+        info.field_ids_count,
+        info.method_ids_count,
+        core::str::from_utf8(compose_field_signature(FIELD_DEX, 2).as_deref().unwrap_or(&[]))
+            .unwrap_or("?"),
+        verdict(ok)
+    );
+    ok
+}
+
+/// Appends a ULEB128, so the controls below can state a class_data the format's
+/// own way instead of patching bytes whose lengths they would have to know.
+fn push_uleb(out: &mut Vec<u8>, mut value: u32) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// A `class_data` for `classes_fields.dex` with every delta and `code_off`
+/// spelled out: counts (2 static, 1 instance, 3 direct, 0 virtual), then the
+/// static field deltas, the instance field delta, and the three direct methods'
+/// `(idx_diff, access_flags, code_off)`.
+///
+/// The canonical call is `fields_class_data([0, 1], 2, [(0, 0x9, 0x194),
+/// (1, 0x109, 0), (1, 0x9, 0x1a8)])` -- the fixture's own bytes. Each control
+/// changes exactly one of those numbers.
+fn fields_class_data(
+    static_deltas: [u32; 2],
+    instance_delta: u32,
+    methods: [(u32, u32, u32); 3],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    for count in [2u32, 1, 3, 0] {
+        push_uleb(&mut out, count);
+    }
+    push_uleb(&mut out, static_deltas[0]);
+    push_uleb(&mut out, 0x19);
+    push_uleb(&mut out, static_deltas[1]);
+    push_uleb(&mut out, 0x1a);
+    push_uleb(&mut out, instance_delta);
+    push_uleb(&mut out, 0x2);
+    for (delta, flags, code_off) in methods {
+        push_uleb(&mut out, delta);
+        push_uleb(&mut out, flags);
+        push_uleb(&mut out, code_off);
+    }
+    out
+}
+
+/// The fixture with its class_data replaced by `data`.
+///
+/// The fixture reserves [`FIELD_CLASS_DATA_LEN`] bytes for the item and the map
+/// follows immediately, so the span is zeroed and the replacement laid at its
+/// start rather than the file being resized -- moving the map would make every
+/// control test a different file. A variant whose ULEB128s are shorter than the
+/// canonical ones leaves trailing zeros, which the parser never reads because
+/// the four counts are already satisfied; a longer one would be a control this
+/// helper cannot express, and is truncated here so the control fails visibly
+/// instead of panicking in the boot.
+fn with_class_data(data: &[u8]) -> Vec<u8> {
+    let mut corrupted = FIELD_DEX.to_vec();
+    corrupted[FIELD_CLASS_DATA_OFF..FIELD_CLASS_DATA_OFF + FIELD_CLASS_DATA_LEN].fill(0);
+    let span = core::cmp::min(data.len(), FIELD_CLASS_DATA_LEN);
+    corrupted[FIELD_CLASS_DATA_OFF..FIELD_CLASS_DATA_OFF + span]
+        .copy_from_slice(&data[..span]);
+    corrupted
+}
+
+/// Every malformed member/code shape the new tables must refuse, each on a copy
+/// of the real fixture with one claim broken: a field index past its table, a
+/// static delta that lands past it, a native method carrying code, an ordinary
+/// method without any, a code_off past EOF, a method delta that lands past
+/// method_ids, a code_item whose words run past EOF, one whose argument window
+/// exceeds its frame, and one whose entry stops before its code_off.
+fn run_negative_member_refusals() -> bool {
+    let field_past = matches!(
+        dex::field_id(FIELD_DEX, 3),
+        Err(DexError::FieldIndexOutOfBounds)
+    );
+
+    let delta_past = {
+        let corrupted = with_class_data(&fields_class_data(
+            [0, 4],
+            2,
+            [(0, 0x9, FIELD_SIZE_CODE_OFF as u32), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+        ));
+        matches!(dex::class_data(&corrupted, 0), Err(DexError::FieldIndexOutOfBounds))
+    };
+
+    let native_with_code = {
+        let corrupted = with_class_data(&fields_class_data(
+            [0, 1],
+            2,
+            [
+                (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+                (1, 0x1 | 0x8 | ACC_NATIVE, FIELD_SIZE_CODE_OFF as u32),
+                (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+            ],
+        ));
+        matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
+    };
+
+    let ordinary_without_code = {
+        let corrupted = with_class_data(&fields_class_data(
+            [0, 1],
+            2,
+            [(0, 0x9, 0), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+        ));
+        matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
+    };
+
+    // ACC_ABSTRACT is the rule's other flag, and a body-less abstract method is
+    // the legal case: accepted, so the check is not just "is this native".
+    let abstract_without_code_ok = {
+        let corrupted = with_class_data(&fields_class_data(
+            [0, 1],
+            2,
+            [
+                (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+                (1, 0x1 | ACC_ABSTRACT, 0),
+                (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+            ],
+        ));
+        matches!(dex::class_data(&corrupted, 0), Ok(Some(_)))
+    };
+    let abstract_with_code = {
+        let corrupted = with_class_data(&fields_class_data(
+            [0, 1],
+            2,
+            [
+                (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+                (1, 0x1 | 0x8 | ACC_ABSTRACT, FIELD_RUN_CODE_OFF as u32),
+                (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+            ],
+        ));
+        matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
+    };
+
+    let code_past_eof = {
+        // 4080 is past the 604-byte file by any margin, and its ULEB128 is two
+        // bytes like the offsets it replaces -- so this control breaks the
+        // OFFSET and nothing about the item's shape.
+        let corrupted = with_class_data(&fields_class_data(
+            [0, 1],
+            2,
+            [(0, 0x9, 4080), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+        ));
+        matches!(dex::class_data(&corrupted, 0), Err(DexError::CodeItemOutOfBounds))
+    };
+
+    let method_delta_past = {
+        let corrupted = with_class_data(&fields_class_data(
+            [0, 1],
+            2,
+            [
+                (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+                (5, 0x109, 0),
+                (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+            ],
+        ));
+        matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodIndexOutOfBounds))
+    };
+
+    let insns_past_eof = {
+        let mut corrupted: Vec<u8> = FIELD_DEX.to_vec();
+        corrupted[FIELD_SIZE_CODE_OFF + 12..FIELD_SIZE_CODE_OFF + 16]
+            .copy_from_slice(&0xffffu32.to_le_bytes());
+        matches!(
+            dex::code_item(&corrupted, FIELD_SIZE_CODE_OFF as u32),
+            Err(DexError::CodeItemTruncated)
+        )
+    };
+
+    let args_beyond_frame = {
+        let mut corrupted: Vec<u8> = FIELD_DEX.to_vec();
+        corrupted[FIELD_SIZE_CODE_OFF + 2..FIELD_SIZE_CODE_OFF + 4]
+            .copy_from_slice(&2u16.to_le_bytes());
+        matches!(
+            dex::code_item(&corrupted, FIELD_SIZE_CODE_OFF as u32),
+            Err(DexError::CodeItemRegisterMismatch)
+        )
+    };
+
+    let entry_truncated = {
+        // The counts and both static fields are intact; the file stops after the
+        // first method's index and flags, before its code_off.
+        let cut = &FIELD_DEX[..FIELD_CLASS_DATA_OFF + 10];
+        matches!(dex::class_data(cut, 0), Err(DexError::ClassDataTruncated))
+    };
+
+    let code_at_zero = matches!(
+        dex::code_item(FIELD_DEX, 0),
+        Err(DexError::CodeItemOutOfBounds)
+    );
+
+    let ok = field_past
+        && delta_past
+        && native_with_code
+        && ordinary_without_code
+        && abstract_without_code_ok
+        && abstract_with_code
+        && code_past_eof
+        && method_delta_past
+        && insns_past_eof
+        && args_beyond_frame
+        && entry_truncated
+        && code_at_zero;
+    serial_println!(
+        "  experimental dex-demo: member refusals -- a field index past field_ids {}, a static delta landing past it {}, a native method carrying a code_item {}, an ordinary method with none {}, an ABSTRACT method carrying one {} (while a native method without one is accepted {}), a code_off past EOF {}, a method delta landing past method_ids {}, a code_item whose words run past EOF {}, one whose ins_size exceeds its registers {}, an entry that stops before its code_off {}, and code_item(0) {} -- {}",
+        if field_past { "refused FieldIndexOutOfBounds" } else { "ACCEPTED" },
+        if delta_past { "refused FieldIndexOutOfBounds" } else { "ACCEPTED" },
+        if native_with_code { "refused MethodCodeMismatch" } else { "ACCEPTED" },
+        if ordinary_without_code { "refused MethodCodeMismatch" } else { "ACCEPTED" },
+        if abstract_with_code { "refused MethodCodeMismatch" } else { "ACCEPTED" },
+        if abstract_without_code_ok { "OK" } else { "refused" },
+        if code_past_eof { "refused CodeItemOutOfBounds" } else { "ACCEPTED" },
+        if method_delta_past { "refused MethodIndexOutOfBounds" } else { "ACCEPTED" },
+        if insns_past_eof { "refused CodeItemTruncated" } else { "ACCEPTED" },
+        if args_beyond_frame { "refused CodeItemRegisterMismatch" } else { "ACCEPTED" },
+        if entry_truncated { "refused ClassDataTruncated" } else { "ACCEPTED" },
+        if code_at_zero { "refused CodeItemOutOfBounds" } else { "ACCEPTED" },
+        verdict(ok)
+    );
+    ok
 }
 
 /// Every malformed method-table shape the resolvers must refuse, each on a copy

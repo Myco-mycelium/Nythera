@@ -34,12 +34,34 @@
 //! shorty string is checked against the parameter list, so a proto whose
 //! string and types disagree is refused rather than reported.
 //!
-//! Still absent, and named rather than implied: field_ids (class_data
-//! carries field indices and refuses an out-of-range one, but does not
-//! resolve field names), `code_item` and therefore every byte of bytecode,
-//! annotations, encoded arrays, static values, and the string *pool*
-//! de-duplication rules. Those are the next tables, not a hidden part of
-//! these ones.
+//! `field_id` answers the same question for a class's FIELDS -- declaring
+//! class, type and name -- and `code_item` reads the header and the raw 16-bit
+//! code units of a method that has code, so a member table can say both what a
+//! field IS and whether a method has a body (and how many words it is).
+//!
+//! Two rules of the format are load-bearing here rather than incidental, and
+//! both are the kind a hand-written reader gets wrong on a small fixture:
+//!
+//! - `class_data` member indices are DIFFERENTIALS: each entry's
+//!   `field_idx_diff`/`method_idx_diff` is a delta from the previous entry in
+//!   the SAME list, and every list restarts from its own first delta. This
+//!   parser accumulates them per list ([`class_members`]) and validates the
+//!   resulting absolute index, so an index it reports is one the table can
+//!   answer rather than an offset a caller has to remember to add.
+//! - An `encoded_method` is THREE ULEB128s -- `method_idx_diff`,
+//!   `access_flags`, `code_off` -- while an `encoded_field` is two. The third
+//!   field is where a method's code lives, and its absence is what
+//!   `ACC_NATIVE`/`ACC_ABSTRACT` means; [`class_members`] refuses a method
+//!   whose flags and `code_off` disagree, and parses each non-zero `code_off`
+//!   through [`code_item`] so a class_data entry cannot carry a body nothing
+//!   checked.
+//!
+//! Still absent, and named rather than implied: the MEANING of the code units
+//! `code_item` returns (decoding, verifying and executing Dalvik instructions is
+//! an interpreter or an AOT compiler -- a different undertaking, not a table
+//! this module forgot), annotations, encoded arrays, static values, and the
+//! string *pool* de-duplication rules. Those are the next tables, not a hidden
+//! part of these ones.
 //!
 //! Like every other `experimental` parser, stays paranoid about
 //! untrusted input: every offset and size is bounds-checked against
@@ -69,6 +91,18 @@ const FIELD_ID_SIZE: u32 = 8;
 const CLASS_DEF_SIZE: u32 = 32;
 const TYPE_LIST_HEADER: u32 = 4;
 const TYPE_LIST_ENTRY: u32 = 2;
+/// `code_item`'s fixed header: registers_size, ins_size, outs_size,
+/// tries_size, debug_info_off, insns_size -- four `u2` then two `u4`.
+const CODE_ITEM_HEADER: u32 = 16;
+/// One `try_item` (start_addr, insn_count, handler_off), used only to bound the
+/// tries a code_item declares; this module does not decode handlers.
+const TRY_ITEM_SIZE: u32 = 8;
+
+/// `ACC_NATIVE`: a method whose body is outside the DEX file (JNI). It is the
+/// format's own reason for a `code_off` of zero.
+pub const ACC_NATIVE: u32 = 0x0000_0100;
+/// `ACC_ABSTRACT`: a method declared but not implemented, so again no code.
+pub const ACC_ABSTRACT: u32 = 0x0000_0400;
 
 use alloc::vec::Vec;
 
@@ -142,6 +176,24 @@ pub enum DexError {
     /// A shorty string containing a byte that is not a shorty descriptor
     /// (`V Z B S C I J F D L`, where arrays also shorten to `L`).
     BadShortyDescriptor,
+    /// A `code_off` outside the file (or zero, where a caller asked for a code
+    /// item directly -- zero is the format's "no code", not an offset).
+    CodeItemOutOfBounds,
+    /// A `code_item` whose header, code units or try items claim more bytes than
+    /// the file holds. Bounded against the file before any vector is allocated.
+    CodeItemTruncated,
+    /// An `encoded_method` whose `access_flags` and `code_off` disagree: a
+    /// native or abstract method must have no code (`code_off == 0`), and a
+    /// method that is neither must have one. The format states both directions,
+    /// and a reader that ignored either would report a body that does not exist
+    /// or hide one that does.
+    MethodCodeMismatch,
+    /// A `code_item` whose `ins_size` (the registers holding incoming
+    /// arguments) exceeds its `registers_size`. The format requires
+    /// `ins_size <= registers_size` because the arguments are the HIGH registers
+    /// of the frame, so a file that claims otherwise has no register window the
+    /// verifier could accept.
+    CodeItemRegisterMismatch,
 }
 
 #[derive(Debug)]
@@ -585,13 +637,27 @@ pub struct MethodId {
     pub name_idx: u32,
 }
 
-/// One encoded field or method entry inside a `class_data_item`: the table
-/// index and the access flags. Field indices are not resolved to names (that is
-/// `field_ids`, still absent); method indices are validated as methods.
+/// One resolved `field_id_item`: which class declares a field, the field's type,
+/// and its name. All three are checked (class and type through
+/// [`type_descriptor`], name through [`string`]) before this is returned, so a
+/// `FieldId` names a field the file's own tables answered for.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FieldId {
+    pub class_idx: u32,
+    pub type_idx: u32,
+    pub name_idx: u32,
+}
+
+/// One encoded field or method entry inside a `class_data_item`: the ABSOLUTE
+/// table index (the format's deltas already accumulated by [`class_members`])
+/// and the access flags. `code_off` is `Some` only for a method that carries a
+/// code_item; it is always `None` for a field, and `None` for a native or
+/// abstract method.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ClassMember {
     pub index: u32,
     pub access_flags: u32,
+    pub code_off: Option<u32>,
 }
 
 /// A class's parsed `class_data_item`: its fields and methods, in the format's
@@ -718,13 +784,48 @@ pub fn method_id(data: &[u8], index: u32) -> Result<MethodId, DexError> {
     })
 }
 
+/// Reads one `field_id_item`, resolving its class, type and name.
+///
+/// The record is `u2 class_idx, u2 type_idx, u4 name_idx` -- 8 bytes, the same
+/// mixed widths as `method_id_item`, and read at those widths rather than as
+/// two words for exactly that reason. All three indices are resolved here: a
+/// field whose class or type is not in the file's own tables (or whose name is
+/// not in its string pool) is refused instead of reported.
+pub fn field_id(data: &[u8], index: u32) -> Result<FieldId, DexError> {
+    if data.len() < HEADER_SIZE as usize {
+        return Err(DexError::TooShort);
+    }
+    let count = header_u32(data, 80)?;
+    let table_off = header_u32(data, 84)?;
+    if index >= count {
+        return Err(DexError::FieldIndexOutOfBounds);
+    }
+    let item_off = (table_off as usize)
+        .checked_add(index as usize * FIELD_ID_SIZE as usize)
+        .ok_or(DexError::FieldIndexOutOfBounds)?;
+    let class_idx = read_u16(data, item_off).ok_or(DexError::FieldIndexOutOfBounds)? as u32;
+    let type_idx = read_u16(data, item_off + 2).ok_or(DexError::FieldIndexOutOfBounds)? as u32;
+    let name_idx = read_u32(data, item_off + 4).ok_or(DexError::FieldIndexOutOfBounds)?;
+
+    type_descriptor(data, class_idx)?;
+    type_descriptor(data, type_idx)?;
+    string(data, name_idx)?;
+    Ok(FieldId {
+        class_idx,
+        type_idx,
+        name_idx,
+    })
+}
+
 /// Parses one `class_data_item`, in the format's order: static fields, instance
 /// fields, direct methods, virtual methods.
 ///
 /// Returns `None` when the class has no `class_data_item` (`class_data_off` is
 /// 0) and `Some` with empty vectors when it has one that declares nothing. Each
-/// method index is resolved through [`method_id`]; each field index is checked
-/// against `field_ids_size` (field names are not resolved yet).
+/// member's index is a DELTA in the file and an absolute table index in the
+/// returned struct -- [`class_members`] accumulates it per list -- so every
+/// method index is resolved through [`method_id`], every field index through
+/// [`field_id`], and every non-zero `code_off` through [`code_item`].
 pub fn class_data(data: &[u8], class_index: u32) -> Result<Option<ClassData>, DexError> {
     let def = class_def(data, class_index)?;
     if def.class_data_off == 0 {
@@ -746,36 +847,183 @@ pub fn class_data(data: &[u8], class_index: u32) -> Result<Option<ClassData>, De
     }))
 }
 
-/// Reads `count` encoded members from `*cursor`, validating each index.
+/// Reads `count` encoded members from `*cursor`, accumulating the format's
+/// per-list index deltas and validating each resulting member.
 ///
-/// The count is checked against the bytes actually left (two per member) BEFORE
-/// the vector is allocated: a `class_data` whose counts claim more entries than
-/// the file holds is refused as truncated rather than trusted and then run out
-/// of bytes.
+/// # Why the minimum-size check comes first
+///
+/// An `encoded_field` is at least two ULEB128s and an `encoded_method` at least
+/// three, so a `class_data` whose counts claim more entries than the remaining
+/// bytes could hold is a truncated FILE, not a long class. Checking that before
+/// the vector is allocated keeps a malformed count from reserving memory it
+/// cannot fill.
+///
+/// # Why the index is accumulated, and reset per list
+///
+/// `field_idx_diff`/`method_idx_diff` are deltas from the previous entry in the
+/// same list, and each of the four lists starts from its own first delta. A
+/// reader that treated the delta as an index is right only while every delta is
+/// zero or one and nothing follows; a reader that forgot to reset between lists
+/// adds one list's last index to the next list's first delta. Both mistakes
+/// produce plausible numbers, which is why the accumulation lives here, once,
+/// and the fixture the boot proof uses has three members per group.
+///
+/// # Why `code_off` is checked against the flags
+///
+/// A native or abstract method has no body (`code_off == 0`) and a method that
+/// is neither must have one. That is two directions of one rule, and both are
+/// refused: a body claimed by a native method is a code_item nothing could
+/// legitimately have produced, and a missing body on an ordinary method is a
+/// method that cannot run. A non-zero `code_off` is then parsed immediately, so
+/// a member entry cannot carry an offset that only fails when someone else
+/// dereferences it.
 fn class_members(
     data: &[u8],
     cursor: &mut usize,
     count: u32,
     methods: bool,
 ) -> Result<Vec<ClassMember>, DexError> {
-    let remaining = data.len().saturating_sub(*cursor);
-    if count as u64 * 2 > remaining as u64 {
+    let min_entry = if methods { 3u64 } else { 2u64 };
+    let remaining = data.len().saturating_sub(*cursor) as u64;
+    if count as u64 * min_entry > remaining {
         return Err(DexError::ClassDataTruncated);
     }
-    let field_count = header_u32(data, 80)?;
     let mut members = Vec::with_capacity(count as usize);
+    let mut index = 0u32;
     for _ in 0..count {
-        let index = read_uleb128(data, cursor)?;
-        let access_flags = read_uleb128(data, cursor)?;
+        let delta = member_uleb(data, cursor)?;
+        // A sum past `u32::MAX` cannot name a table entry, and saturating makes
+        // that a refusal from the table bound below rather than a wrap that
+        // could land back inside it.
+        index = index.saturating_add(delta);
+        let access_flags = member_uleb(data, cursor)?;
         if methods {
+            let code_off = member_uleb(data, cursor)?;
+            // The INDEX is answered before the flags/code rule, and the order is
+            // deliberate: an entry that names no method at all is malformed
+            // whatever its flags say, so an index past `method_ids` is reported
+            // as such rather than as a code mismatch the flags happened to
+            // imply. (The boot's older negative control found this the day the
+            // rule arrived: it corrupted the index and the flags together, and
+            // the flags check answered first with a different, true-but-less-
+            // useful refusal.)
             method_id(data, index)?;
-        } else if index >= field_count {
-            return Err(DexError::FieldIndexOutOfBounds);
+            let declared_no_code = access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0;
+            if declared_no_code != (code_off == 0) {
+                return Err(DexError::MethodCodeMismatch);
+            }
+            if code_off != 0 {
+                code_item(data, code_off)?;
+            }
+            members.push(ClassMember {
+                index,
+                access_flags,
+                code_off: if code_off == 0 { None } else { Some(code_off) },
+            });
+        } else {
+            field_id(data, index)?;
+            members.push(ClassMember {
+                index,
+                access_flags,
+                code_off: None,
+            });
         }
-        members.push(ClassMember {
-            index,
-            access_flags,
-        });
     }
     Ok(members)
+}
+
+/// One ULEB128 inside a `class_data_item`, with a missing byte reported as the
+/// truncation it is. `read_uleb128` cannot tell "the file ended here" from "this
+/// encoding is too long", and inside class_data those are different answers: a
+/// list that stops between entries is `ClassDataTruncated`, while bytes that are
+/// present but over-long remain `BadUleb128`.
+fn member_uleb(data: &[u8], cursor: &mut usize) -> Result<u32, DexError> {
+    if *cursor >= data.len() {
+        return Err(DexError::ClassDataTruncated);
+    }
+    read_uleb128(data, cursor)
+}
+
+/// One `code_item` as this module reads it: the register frame the method
+/// declares and the raw 16-bit instruction words.
+///
+/// The words are NOT decoded, and this struct deliberately carries no
+/// interpretation of them: instruction formats, verification and execution are
+/// an interpreter's job (see the module doc). What the struct makes true is that
+/// a method's body is *there*, how big its frame is, and which bytes belong to
+/// it -- facts a member table needs before anything can be said about running
+/// the code.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CodeItem {
+    pub registers_size: u16,
+    /// Registers holding incoming arguments, which the format places at the END
+    /// of the frame, so `ins_size <= registers_size`.
+    pub ins_size: u16,
+    pub outs_size: u16,
+    pub tries_size: u16,
+    pub debug_info_off: u32,
+    pub insns: Vec<u16>,
+}
+
+/// Reads the `code_item` at `off`, bounding every array it declares against the
+/// file before reading it.
+///
+/// `off == 0` is refused rather than treated as an empty body: zero is the
+/// format's "no code item", and a caller asking for one at zero is asking for
+/// something that does not exist. The try-item array is padded to a 4-byte
+/// boundary when it follows an odd number of code units, which is part of the
+/// layout (and part of the bound) even though this module does not decode
+/// handlers.
+pub fn code_item(data: &[u8], off: u32) -> Result<CodeItem, DexError> {
+    if off == 0 {
+        return Err(DexError::CodeItemOutOfBounds);
+    }
+    let start = off as usize;
+    let header = data
+        .get(start..start + CODE_ITEM_HEADER as usize)
+        .ok_or(DexError::CodeItemOutOfBounds)?;
+    let registers_size = u16::from_le_bytes([header[0], header[1]]);
+    let ins_size = u16::from_le_bytes([header[2], header[3]]);
+    let outs_size = u16::from_le_bytes([header[4], header[5]]);
+    let tries_size = u16::from_le_bytes([header[6], header[7]]);
+    let debug_info_off = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+    let insns_size = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+
+    let insns_end = (start as u64)
+        .checked_add(CODE_ITEM_HEADER as u64)
+        .and_then(|v| v.checked_add(insns_size as u64 * 2))
+        .ok_or(DexError::CodeItemTruncated)?;
+    let mut end = insns_end;
+    if tries_size != 0 {
+        let padding = if insns_size % 2 == 1 { 2u64 } else { 0 };
+        end = end
+            .checked_add(padding)
+            .and_then(|v| v.checked_add(tries_size as u64 * TRY_ITEM_SIZE as u64))
+            .ok_or(DexError::CodeItemTruncated)?;
+    }
+    if end > data.len() as u64 {
+        return Err(DexError::CodeItemTruncated);
+    }
+    if debug_info_off != 0 && debug_info_off as usize >= data.len() {
+        return Err(DexError::CodeItemOutOfBounds);
+    }
+    // `ins_size` counts the frame's HIGH registers, so it cannot exceed the
+    // frame. Checked before the code units are read: it is a claim about the
+    // method, and a false one makes every later reading of the words meaningless.
+    if ins_size > registers_size {
+        return Err(DexError::CodeItemRegisterMismatch);
+    }
+    let mut insns = Vec::with_capacity(insns_size as usize);
+    for i in 0..insns_size {
+        let at = start + CODE_ITEM_HEADER as usize + i as usize * 2;
+        insns.push(read_u16(data, at).ok_or(DexError::CodeItemTruncated)?);
+    }
+    Ok(CodeItem {
+        registers_size,
+        ins_size,
+        outs_size,
+        tries_size,
+        debug_info_off,
+        insns,
+    })
 }

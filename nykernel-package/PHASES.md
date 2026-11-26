@@ -28,7 +28,7 @@ yet -- noted here so it's not lost by the time Phase 9 starts.
 | 2 | Memory management | ✅ Done & verified | NPS-001 (Accepted) |
 | 3 | Scheduling / processes | ✅ Pre-normative proof done & verified; ✅ Policy increments landed 2026-10-11 (enforcing §5 lifecycle; §5.5/§5.6 termination walked live by task J) — conformance track open | NPS-002 (**Accepted** 2026-10-11, AG row I1) |
 | 4 | Kernel IPC | ✅ Pre-normative proof done & verified; ✅ Policy increments landed 2026-10-11 (§5.4 arbiter + §4.3 revocation + §3 blocking receive) — conformance track open | NPS-003 (**Accepted** 2026-10-11, AG row I2) |
-| 5 | Windows compatibility | 🚧 Prerequisites done; PE32+ loader + a 20-export Win32 API surface (files, modules, runtime loading, heap size/reallocation) landed | NPS-007 (Accepted; scope confirmation needed — see below) |
+| 5 | Windows compatibility | 🚧 Prerequisites done; PE32+ loader + a 22-export Win32 API surface (files with size and seek, modules, runtime loading, heap size/reallocation) landed | NPS-007 (Accepted; scope confirmation needed — see below) |
 | 6 | Android compatibility | 🚧 DEX format parser landed: header + map_list + Adler-32/SHA-1 integrity + the string/type/class tables | NPS-008 (Accepted) |
 | 7 | GPU / graphics kernel path | ⬜ Not started | NPS-001 §3, NPS-013 (Accepted) |
 | 8 | Storage integration | ⬜ Not started | NPS-004 (Accepted), NyVault (source/nyhal-linux-backend precedent) |
@@ -1200,6 +1200,38 @@ carries one declared method, `main([Ljava/lang/String;)V`, and nine malformed
 method-table shapes are permanent boot controls. Field indices are range-checked
 but not name-resolved (that is `field_ids`, still absent), and no `code_item` is
 parsed: this answers signatures, not bytecode.
+
+**2026-11-26: the field and code tables, and the deltas that make them
+reachable.** `field_id` resolves a declared field's class, type and name, and
+`code_item` reads a method's register frame plus its raw 16-bit code units
+(bounded against the file, `ins_size <= registers_size` checked, try-array
+padding included in the bound). Reading them required fixing two format rules
+the smaller fixture had masked: `class_data` member indices are DELTAS
+accumulated within each list (the new fixture's three-method group resolves
+0, 1, 2, and its instance field's delta of 2 resolves from its own list rather
+than from the static list's last index), and an `encoded_method` is THREE
+ULEB128s -- the third being `code_off` -- while an `encoded_field` is two, which
+is also what makes a method's body reachable at all. A native or abstract method
+must have no body and an ordinary method must have one, refused in both
+directions; eleven malformed member/code shapes join the permanent controls. A
+fourth real fixture (`userprog/classes_fields.dex`, 604 bytes) carries three
+fields and three methods, two with hand-checkable bodies (`const/4 v0, #0` then
+`return v0`/`return-void`). Instruction SEMANTICS remain out of scope -- this is
+still a parser, not an interpreter.
+
+**2026-11-26: the Windows surface's file cursor.** `GetFileSize` answers an open
+file's own byte count (writing the optional high dword), and `SetFilePointer`
+moves the very cursor `ReadFile` advances by a signed distance from the file's
+start, current position or end -- so the bytes a program reads depend on where
+it asked to read. The client seeks to 3 and reads there, asks the current
+position and gets the 7 its read left, seeks -4 from the end for the last four
+bytes, and pins both failure shapes: a seek before the first byte answers
+`INVALID_SET_FILE_POINTER` with `ERROR_NEGATIVE_SEEK` and leaves the cursor
+alone, an unknown move method is refused with `ERROR_INVALID_PARAMETER`, and a
+`GetFileSize` of the console handle is refused with `ERROR_INVALID_HANDLE`. Two
+latent bugs died with it: `read` would have faulted on a cursor past EOF, and
+the transcript's import list was hard-coded in the wrong order (the client's
+`.idata` is alphabetical), now built from the walk itself.
 
 ## Phase 7 -- GPU / graphics kernel path ⬜
 

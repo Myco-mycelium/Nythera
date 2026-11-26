@@ -8467,7 +8467,130 @@ Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
 signature and flags, three of the refusal clauses, and the self-test line's new
 tail, so a regression in any of them fails the gate instead of passing quietly.
 
-**Still absent, and named:** `field_ids` names, `code_item` (and therefore every
-byte of bytecode), annotations, encoded arrays, static values, and the string
-pool's de-duplication rules. `class_data` answers WHICH methods exist and what
+**Then absent, and named:** `field_ids` names and `code_item` -- both added the
+next day (below). Annotations, encoded arrays, static values and the string
+pool's de-duplication rules remain absent, and the MEANING of a code_item's
+words is still out of scope: `class_data` answers WHICH methods exist and what
 they look like, not what they do.
+
+## The Win32 file cursor: GetFileSize and SetFilePointer (2026-11-26)
+
+The read-only volume could stream a file but could not say how long it was or let
+a program choose where to read. Two exports close both gaps, and neither invents
+state: `GetFileSize(hFile, lpFileSizeHigh)` answers the byte count of the volume
+entry the handle is open on (writing the optional high dword, because a caller
+that passed a pointer reads it), and `SetFilePointer(hFile, lDistanceToMove,
+lpDistanceToMoveHigh, dwMoveMethod)` moves the VERY cursor `ReadFile` advances --
+by a signed distance from the file's start, the current position, or its end --
+and answers where it now is.
+
+The signed distance is the part a hand-written reader gets wrong first.
+`lDistanceToMove` is a `LONG`, so with `lpDistanceToMoveHigh == NULL` the low
+dword is read as an `i32` before widening; read as unsigned, `-4` from `FILE_END`
+would seek to 4294967292 instead of four bytes back. With a pointer, the two
+halves are reassembled as a signed 64-bit value and the new high dword is written
+back on success. The volume owns the arithmetic in `i128`, refuses a result
+before the first byte with `NegativeSeek` (Windows' `ERROR_NEGATIVE_SEEK`) and
+leaves the cursor UNTOUCHED, and allows a position past the end, where the next
+read answers zero bytes. That last case closed a latent panic in `read`, which
+used to slice `data[start..]` and would have faulted for `start > len`.
+
+What makes it a proof rather than two more arms is that the client's reads
+change with the cursor. `tools/qemu_boot_test.sh` pins:
+
+```
+  experimental win32-demo: resolved 22 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (CloseHandle, CreateFileA, ExitProcess, FreeLibrary, GetCommandLineA, GetFileSize, GetLastError, GetModuleFileNameA, GetModuleHandleA, GetProcAddress, GetProcessHeap, GetStdHandle, GetTickCount, HeapAlloc, HeapFree, HeapReAlloc, HeapSize, LoadLibraryA, ReadFile, SetFilePointer, SetLastError, WriteFile), every slot reading back its export address -- OK
+  experimental win32-demo: a file's size and cursor -- GetFileSize(hello.txt) answered 33 byte(s) with the high dword written as 0 (true), SetFilePointer(3, FILE_BEGIN) answered 3 and the read there answered 4 byte(s) reading "lo f" (true), a zero move from FILE_CURRENT answered 7 -- where the read left it (true), a MOVE OF -4 FROM FILE_END answered 29 and the read there answered "me..." (true), a seek to -100 answered 0xffffffff with ERROR_NEGATIVE_SEEK (131) leaving the cursor at 33 (true), an unknown move method answered 0xffffffff with ERROR_INVALID_PARAMETER (87), and GetFileSize of the console handle answered 0xffffffff with ERROR_INVALID_HANDLE (6) -- OK, a program can ask a file how big it is and read from a position it chose
+  experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true realloc=true cursor=true; ...
+```
+
+The three seek shapes are deliberately different questions: `FILE_BEGIN` places
+the cursor absolutely, `FILE_CURRENT` with a zero distance reads back where the
+PRECEDING READ left it (7), and `FILE_END` with `-4` counts backwards from the
+length -- so a cursor that only pretended to move changes what the program sees.
+The two failure shapes are Windows': a negative result is a VALUE
+(`INVALID_SET_FILE_POINTER`, `0xffffffff`) plus `ERROR_NEGATIVE_SEEK`, with the
+cursor still at 33, while a move method this volume does not implement is a
+typed refusal (`ERROR_INVALID_PARAMETER`) and `GetFileSize` of the console
+handle is refused as `ERROR_INVALID_HANDLE`. `EXPECTED_REFUSALS` therefore rose
+from 21 to 23, and every refusal still asserts the code it maps to.
+
+Three things the boot caught, each fixed at cause:
+
+- The existing "index 20 is not an export" control became false the moment
+  `GetFileSize` was the 21st export. The control now derives the index from
+  `EXPECTED_EXPORTS.len()`, so the next appended stub cannot make it wrong
+  again -- the same class of drift the gate has caught before.
+- `win32_console.exe`'s `SizeOfImage` grew from `0x4000` to `0x6000` (two
+  imports and their call sites), so `build.sh`'s pin and the demo's
+  `APP_IMAGE_SIZE` moved with it.
+- The import listing in the transcript was HARD-CODED in usage order, while the
+  client's `.idata` is alphabetical. Nothing compared the two, so the line was
+  quietly wrong. It is now built from the import walk itself, and the mismatch
+  showed up immediately (the gate's needle refused the old order).
+
+Stated limits: a successful seek to exactly `0xFFFFFFFF` is indistinguishable
+from the failure sentinel -- on Windows too, which is why `SetFilePointer` is
+always followed by a `GetLastError` check; this volume's files are far too small
+to reach it. `dwShareMode`, the security attributes, the flags/template of
+`CreateFileA` and `lpOverlapped` remain as stated before: accepted-and-ignored
+or refused, never pretended.
+
+## The DEX field and code tables: field_ids, code_item, and the deltas that make them reachable (2026-11-26)
+
+The method tables answered signatures but not FIELDS, and had no way to reach a
+method's body. This increment adds `field_id` (declaring class, type, name) and
+`code_item` (the register frame and the raw 16-bit code units), and in doing so
+fixes two format rules the earlier fixture was too small to expose:
+
+- **`class_data` indices are DELTAS.** Each `field_idx_diff`/`method_idx_diff` is
+  a delta from the previous entry in the SAME list, and every list restarts from
+  its own. `class_members` now accumulates them (saturating, so an overflow
+  lands outside the table and is refused) and reports ABSOLUTE indices. A
+  reader that treated a delta as an index is right only while the deltas are 0
+  or 1; a reader that forgot to reset between lists adds one list's last index
+  to the next list's first delta -- both produce plausible numbers, which is why
+  the new fixture has three members per group and an instance field whose delta
+  is 2 (the static list ends at 1, so a non-resetting reader computes 3 and is
+  refused).
+- **An `encoded_method` is THREE ULEB128s** -- `method_idx_diff`,
+  `access_flags`, `code_off` -- while an `encoded_field` is two. The earlier
+  fixture wrote two per method, which parsed only because nothing followed it.
+  The reader now takes all three, refuses a method whose flags and `code_off`
+  disagree (`MethodCodeMismatch`: a native or abstract method must have no body,
+  and an ordinary method must have one -- checked in BOTH directions), and parses
+  every non-zero `code_off` immediately so an entry cannot carry a body nothing
+  validated.
+
+A fourth real fixture, `userprog/classes_fields.dex` (604 bytes, sha256
+`e13618a9b08804f76110a852857f7b699bcd4761fc76207afd5d9d9ec8007a63`, built
+deterministically by `tools/make_dex_fixture.py`), declares three fields
+(`COUNT:I`, `DEPTH:I` static; `name:Ljava/lang/String;` instance), three direct
+methods (`size()I` and `run()V` with real `code_item`s, `make()V` native with
+`code_off` 0), and two code items whose words are hand-checkable: `0x0012` is
+`const/4 v0, #0` and `0x000f`/`0x000e` are `return v0`/`return-void`. The older
+`classes_methods.dex` is unchanged byte for byte (its added `code_off` zero
+replaced padding the map already needed), and `classes_hello.dex` keeps its
+pinned digest.
+
+Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
+
+```
+  experimental dex-demo: field and code tables -- a 604 byte DEX with 3 field(s), 3 method(s) and 2 code_item(s): field 2 composes to Lnyrqis/hello/Fields;.name:Ljava/lang/String;, class_data answers static field indices [0, 1], instance [2] (its own delta, not the static list's accumulator) and direct method indices [0, 1, 2], size()I carries a 2-word code_item at 0x194 reading [0x0012, 0x000f] (const/4 v0, #0; return v0) and run()V one at 0x1a8 writing and returning void, while make()V is ACC_NATIVE with code_off 0 -- OK
+  experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds, a static delta landing past it refused FieldIndexOutOfBounds, a native method carrying a code_item refused MethodCodeMismatch, an ordinary method with none refused MethodCodeMismatch, an ABSTRACT method carrying one refused MethodCodeMismatch (while a native method without one is accepted OK), a code_off past EOF refused CodeItemOutOfBounds, a method delta landing past method_ids refused MethodIndexOutOfBounds, a code_item whose words run past EOF refused CodeItemTruncated, one whose ins_size exceeds its registers refused CodeItemRegisterMismatch, an entry that stops before its code_off refused ClassDataTruncated, and code_item(0) refused CodeItemOutOfBounds -- OK
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK -- OK
+```
+
+The gate caught the ordering consequence of the new flag rule: the older control
+`method_index_past` corrupts an INDEX and leaves the flags alone, so with
+"flags and code_off disagree" checked first it answered `MethodCodeMismatch`
+instead of `MethodIndexOutOfBounds`. The index is the more fundamental question
+-- an entry that names no method is malformed whatever its flags say -- so
+`method_id` is now resolved BEFORE the flags/code rule, and the old control
+passes again for the reason it names.
+
+**Still absent, and named:** the MEANING of the code units `code_item` returns
+(decoding, verification and execution are an interpreter or an AOT compiler -- a
+different undertaking, not a table this module forgot), annotations, encoded
+arrays, static values, and the string pool's de-duplication rules. `class_data`
+and `code_item` answer what a method's body IS, not what it does.

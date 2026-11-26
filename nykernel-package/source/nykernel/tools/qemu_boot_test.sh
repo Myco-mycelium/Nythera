@@ -150,7 +150,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "and the caller resumed with 8 bytes reading 0x6b636162676e6f70" \
         "experimental win32-demo: kernel32.dll loaded at its own ImageBase 0x190000000000" \
         "experimental win32-demo: second provider nyrqis.dll loaded at its own ImageBase 0x190100000000" \
-        "experimental win32-demo: resolved 20 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (GetStdHandle, WriteFile, GetTickCount, ExitProcess, CreateFileA, ReadFile, CloseHandle, GetLastError, SetLastError, GetCommandLineA, GetModuleHandleA, GetProcAddress, LoadLibraryA, FreeLibrary, GetModuleFileNameA, GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc, HeapSize)" \
+        "experimental win32-demo: resolved 22 import(s) from the client's REAL .idata against kernel32.dll's REAL export directory (CloseHandle, CreateFileA, ExitProcess, FreeLibrary, GetCommandLineA, GetFileSize, GetLastError, GetModuleFileNameA, GetModuleHandleA, GetProcAddress, GetProcessHeap, GetStdHandle, GetTickCount, HeapAlloc, HeapFree, HeapReAlloc, HeapSize, LoadLibraryA, ReadFile, SetFilePointer, SetLastError, WriteFile), every slot reading back its export address -- OK" \
         "experimental win32-demo: negative control 6 -- the read-only volume refused a relative path" \
         "WriteFile returned 1 and wrote 33 byte(s)" \
         "bytes.bin read back byte-identically" \
@@ -179,7 +179,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "GetModuleFileNameA asked of that row answered the very path LoadLibraryA was given" \
         "asked WHICH FILE each handle came from, GetModuleFileNameA answered 27 bytes for the client's own row (its own byte-and-NUL compare 1 it), 22 for kernel32.dll and 24 for the runtime row while it was loaded" \
         "kernel32.dll, nyrqis.dll and win32_console.exe then registered as three rows" \
-        "all 20 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (20+2)" \
+        "all 22 kernel32 exports and both nyrqis exports resolved BY NAME from their OWN export directories (22+2)" \
         "kernel32.dll asked for NyrqisBuild answered ProcNotFound and nyrqis.dll asked for GetTickCount answered ProcNotFound (so the rows are per-module)" \
         "experimental elf-dyn-demo: the same .so linked WITHOUT -z relro loaded at" \
         "GNU_RELRO outcome absent (None), GLOB_DAT slot" \
@@ -209,10 +209,26 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "a class_data whose counts overrun the file refused ClassDataTruncated" \
         "a shorty disagreeing with its parameter count refused ShortyLengthMismatch" \
         "a class_data field index past field_ids refused FieldIndexOutOfBounds, and a class_data method index past method_ids refused MethodIndexOutOfBounds -- OK" \
-        "experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK -- OK" \
+        "experimental dex-demo: field and code tables -- a 604 byte DEX with 3 field(s), 3 method(s) and 2 code_item(s): field 2 composes to Lnyrqis/hello/Fields;.name:Ljava/lang/String;" \
+        "class_data answers static field indices [0, 1], instance [2] (its own delta, not the static list's accumulator) and direct method indices [0, 1, 2]" \
+        "size()I carries a 2-word code_item at 0x194 reading [0x0012, 0x000f] (const/4 v0, #0; return v0)" \
+        "while make()V is ACC_NATIVE with code_off 0" \
+        "experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds" \
+        "a native method carrying a code_item refused MethodCodeMismatch" \
+        "a code_item whose words run past EOF refused CodeItemTruncated" \
+        "one whose ins_size exceeds its registers refused CodeItemRegisterMismatch" \
+        "and code_item(0) refused CodeItemOutOfBounds -- OK" \
+        "experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK -- OK" \
         "the next 16-byte allocation answered" \
         "-- OK, a real Windows program can allocate and free its own memory through this kernel" \
-        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true realloc=true" \
+        "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true realloc=true cursor=true" \
+        "experimental win32-demo: a file's size and cursor -- GetFileSize(hello.txt) answered 33 byte(s) with the high dword written as 0" \
+        "SetFilePointer(3, FILE_BEGIN) answered 3 and the read there answered 4 byte(s) reading \"lo f\"" \
+        "a zero move from FILE_CURRENT answered 7" \
+        "a MOVE OF -4 FROM FILE_END answered 29 and the read there answered" \
+        "a seek to -100 answered 0xffffffff with ERROR_NEGATIVE_SEEK (131) leaving the cursor at 33" \
+        "an unknown move method answered 0xffffffff with ERROR_INVALID_PARAMETER (87)" \
+        "GetFileSize of the console handle answered 0xffffffff with ERROR_INVALID_HANDLE (6)" \
         "GetCommandLineA answered 0x4d00000002a0 on both calls with the client's own byte-and-NUL compare 1 it" \
         "GetModuleHandleA(NULL) answered the client's image base 0x1a0000000000 with the client's _start-inside-image test 1 it" \
         "GetModuleHandleA(\"kernel32.dll\") answered the provider's own base 0x190000000000 in either case" \

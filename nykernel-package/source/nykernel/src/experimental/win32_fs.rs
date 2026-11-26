@@ -108,7 +108,23 @@ pub enum FsError {
     NotAFileHandle,
     /// A value this module issued, then closed.
     ClosedHandle,
+    /// A seek that would put the cursor before the first byte. Windows names
+    /// this condition `ERROR_NEGATIVE_SEEK`, and the cursor stays where it was.
+    NegativeSeek,
+    /// A seek whose resulting position cannot be expressed as a `u64`. The
+    /// distance is signed and the position is not, so an extreme distance past
+    /// the end is a value this volume cannot store rather than a position.
+    SeekOutOfRange,
+    /// A move method (Windows' `FILE_BEGIN`/`FILE_CURRENT`/`FILE_END`) this
+    /// volume does not implement.
+    UnsupportedSeekOrigin,
 }
+
+/// `SetFilePointer`'s three move methods, as the `dwMoveMethod` DWORD names
+/// them. They are the format's values, not this kernel's invention.
+pub const FILE_BEGIN: u32 = 0;
+pub const FILE_CURRENT: u32 = 1;
+pub const FILE_END: u32 = 2;
 
 /// One open file: which volume file it is, and how far `ReadFile` has read.
 #[derive(Clone, Copy)]
@@ -162,14 +178,73 @@ pub unsafe fn read(handle: u64, dst: *mut u8, len: u64) -> Result<u64, FsError> 
         .ok_or(FsError::ClosedHandle)?;
     let data = FILES[open.file].data;
     let start = open.offset as usize;
-    // `offset` only ever advances by a count bounded by the remaining bytes,
-    // so `start <= data.len()` always holds; `saturating_sub` states that
-    // without a panic path in the kernel.
-    let remaining = data.len().saturating_sub(start);
+    // A seek may place the cursor PAST the end (Windows allows that, and the
+    // read that follows answers zero bytes). The cursor is then left alone, as
+    // it is on Windows, so the guard below is about the position rather than
+    // about `data[start..]` -- which would panic for `start > len`.
+    if start >= data.len() {
+        return Ok(0);
+    }
+    let remaining = data.len() - start;
     let count = core::cmp::min(len, remaining as u64);
     core::ptr::copy_nonoverlapping(data[start..].as_ptr(), dst, count as usize);
     open.offset += count;
     Ok(count)
+}
+
+/// The size of the file `handle` is open on, in bytes -- `GetFileSize`'s
+/// answer, read from the volume's own entry rather than remembered per handle.
+///
+/// # Safety
+/// Single-threaded kernel: no other task may touch [`OPEN`] concurrently.
+pub unsafe fn file_size(handle: u64) -> Result<u64, FsError> {
+    let slot = slot_of(handle)?;
+    let open = (*&raw const OPEN)[slot]
+        .as_ref()
+        .ok_or(FsError::ClosedHandle)?;
+    Ok(FILES[open.file].data.len() as u64)
+}
+
+/// Moves `handle`'s cursor to `distance` bytes from `origin`, and answers the
+/// new position -- `SetFilePointer`'s operation, and the reason a `ReadFile`
+/// cursor is worth keeping: it is the state the two calls share.
+///
+/// The three origins are Windows': the start of the file, the current cursor,
+/// and the END of the file. `distance` is signed in all three cases, so a
+/// negative value from `FILE_END` seeks backwards from the last byte, and one
+/// that leaves the file before its first byte is [`FsError::NegativeSeek`] with
+/// the cursor UNCHANGED -- a refused seek must not half-happen.
+///
+/// A position past the end (but not before the start) is legal and stored as
+/// given: Windows allows seeking past EOF, and the next read then answers zero
+/// bytes at that position rather than failing.
+///
+/// # Safety
+/// Single-threaded kernel: no other task may touch [`OPEN`] concurrently.
+pub unsafe fn seek(handle: u64, distance: i64, origin: u32) -> Result<u64, FsError> {
+    let slot = slot_of(handle)?;
+    let open = (*&mut OPEN)[slot]
+        .as_mut()
+        .ok_or(FsError::ClosedHandle)?;
+    let data = FILES[open.file].data;
+    // `i128` because the sum of a `u64`-range position and an `i64`-range
+    // distance does not fit `i64`, and wrapping there would turn a huge seek
+    // into a small one.
+    let base = match origin {
+        FILE_BEGIN => 0i128,
+        FILE_CURRENT => open.offset as i128,
+        FILE_END => data.len() as i128,
+        _ => return Err(FsError::UnsupportedSeekOrigin),
+    };
+    let next = base + distance as i128;
+    if next < 0 {
+        return Err(FsError::NegativeSeek);
+    }
+    if next > u64::MAX as i128 {
+        return Err(FsError::SeekOutOfRange);
+    }
+    open.offset = next as u64;
+    Ok(next as u64)
 }
 
 /// Closes `handle`, releasing its slot (and its read cursor).

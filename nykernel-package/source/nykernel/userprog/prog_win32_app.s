@@ -130,6 +130,27 @@
  *     HeapAlloc(h, 4, 16)                            // 0, ERROR_INVALID_PARAMETER
  *     HeapAlloc(h, 0, 1<<20)                         // 0, ERROR_NOT_ENOUGH_MEMORY
  *     HeapFree(h, 0, 0x1234)                         // 0, ERROR_INVALID_ADDRESS
+ *   tranche 13 -- a file's size, and seeking within it:
+ *     f7 = CreateFileA("C:\\nyrqis\\hello.txt", ...)  // a FRESH handle: its
+ *                                                      // cursor starts at 0
+ *     GetFileSize(f7, &high) == 33                    // from the volume's
+ *                                                     // entry; high written 0
+ *     SetFilePointer(f7, 3, NULL, FILE_BEGIN) == 3    // absolute
+ *     ReadFile(f7, a, 4, &n, NULL)                    // bytes 3..6: "lo f"
+ *     SetFilePointer(f7, 0, NULL, FILE_CURRENT) == 7  // the cursor the READ
+ *                                                     // advanced: shared state
+ *     SetFilePointer(f7, -4, NULL, FILE_END) == 29    // SIGNED, from the end
+ *     ReadFile(f7, b, 4, &n, NULL)                    // "me\r\n"
+ *     SetFilePointer(f7, -100, NULL, FILE_BEGIN)      // INVALID_SET_FILE_
+ *       -> GetLastError()                             // POINTER, then
+ *                                                     // ERROR_NEGATIVE_SEEK (131)
+ *     SetFilePointer(f7, 0, NULL, FILE_CURRENT) == 33 // the refused seek left
+ *                                                     // the cursor alone
+ *     SetFilePointer(f7, 0, NULL, 7)                  // refused: a move method
+ *       -> GetLastError()                             // that does not exist (87)
+ *     GetFileSize(STDOUT_HANDLE, NULL)                // refused: not a file (6)
+ *     CloseHandle(f7)
+ *
  *   tranche 12 -- the heap's size and reallocation:
  *     HeapSize(h, 0, p2) == 32                       // the block's size
  *     HeapReAlloc(h, 0, p2, 48) -> p4 != p2           // moved, byte kept
@@ -1180,6 +1201,124 @@ _start:
     mov (%rdi), %r8
     call *__imp_HeapFree(%rip)
 
+    /* ---- tranche 13: the file's size and its cursor ---- */
+
+    /* f7 = CreateFileA(hello.txt) -- a fresh handle, so its cursor is 0 and
+       every position below is the kernel's answer rather than a leftover. */
+    lea path_hello(%rip), %rcx
+    mov $0x80000000, %edx
+    mov $1, %r8d
+    xor %r9d, %r9d
+    movq $3, 0x20(%rsp)
+    call *__imp_CreateFileA(%rip)
+    mov %rax, %rbx
+    movabs $SLOT_FILE7, %rdi
+    mov %rax, (%rdi)
+
+    /* GetFileSize(f7, &high): 33 bytes. The high dword is an OUT parameter, so
+       the kernel writes it even though it is zero here. */
+    mov %rbx, %rcx
+    movabs $SLOT_SIZE_HIGH, %rdx
+    call *__imp_GetFileSize(%rip)
+    movabs $SLOT_FILE_SIZE, %rdi
+    mov %rax, (%rdi)
+
+    /* SetFilePointer(f7, 3, NULL, FILE_BEGIN) == 3 */
+    mov %rbx, %rcx
+    mov $3, %edx
+    xor %r8d, %r8d
+    xor %r9d, %r9d
+    call *__imp_SetFilePointer(%rip)
+    movabs $SLOT_SEEK_ABS, %rdi
+    mov %rax, (%rdi)
+
+    /* ReadFile(f7, seek_a, 4, &n7, NULL): the bytes AT that position. */
+    mov %rbx, %rcx
+    movabs $buf_seek_a, %rdx
+    mov $4, %r8d
+    movabs $SLOT_N7, %r9
+    movq $0, 0x20(%rsp)
+    call *__imp_ReadFile(%rip)
+
+    /* SetFilePointer(f7, 0, NULL, FILE_CURRENT) == 7: the position the READ
+       left the cursor at, which is what makes the two calls share state. */
+    mov %rbx, %rcx
+    xor %edx, %edx
+    xor %r8d, %r8d
+    mov $1, %r9d
+    call *__imp_SetFilePointer(%rip)
+    movabs $SLOT_SEEK_CUR, %rdi
+    mov %rax, (%rdi)
+
+    /* SetFilePointer(f7, -4, NULL, FILE_END) == 29: a NEGATIVE 32-bit
+       distance counted back from the end. */
+    mov %rbx, %rcx
+    mov $-4, %edx
+    xor %r8d, %r8d
+    mov $2, %r9d
+    call *__imp_SetFilePointer(%rip)
+    movabs $SLOT_SEEK_END, %rdi
+    mov %rax, (%rdi)
+
+    /* ReadFile(f7, seek_b, 4, &n8, NULL): the file's LAST four bytes. */
+    mov %rbx, %rcx
+    movabs $buf_seek_b, %rdx
+    mov $4, %r8d
+    movabs $SLOT_N8, %r9
+    movq $0, 0x20(%rsp)
+    call *__imp_ReadFile(%rip)
+
+    /* SetFilePointer(f7, -100, NULL, FILE_BEGIN): before the file's first
+       byte. Windows' failure VALUE (not a refusal): INVALID_SET_FILE_POINTER
+       with ERROR_NEGATIVE_SEEK. */
+    mov %rbx, %rcx
+    mov $-100, %edx
+    xor %r8d, %r8d
+    xor %r9d, %r9d
+    call *__imp_SetFilePointer(%rip)
+    movabs $SLOT_SEEK_NEG, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_SEEK_NEG_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* ... and the cursor is where the refused seek found it. */
+    mov %rbx, %rcx
+    xor %edx, %edx
+    xor %r8d, %r8d
+    mov $1, %r9d
+    call *__imp_SetFilePointer(%rip)
+    movabs $SLOT_SEEK_CUR_AFTER, %rdi
+    mov %rax, (%rdi)
+
+    /* SetFilePointer(f7, 0, NULL, 7): a move method that is not
+       FILE_BEGIN/CURRENT/END -- a typed refusal, ERROR_INVALID_PARAMETER. */
+    mov %rbx, %rcx
+    xor %edx, %edx
+    xor %r8d, %r8d
+    mov $7, %r9d
+    call *__imp_SetFilePointer(%rip)
+    movabs $SLOT_SEEK_BAD, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_SEEK_BAD_ERR, %rdi
+    mov %rax, (%rdi)
+
+    /* GetFileSize of the CONSOLE handle: it names the console, not a file. */
+    mov $0xb, %ecx
+    xor %edx, %edx
+    call *__imp_GetFileSize(%rip)
+    movabs $SLOT_SIZE_BAD, %rdi
+    mov %rax, (%rdi)
+    call *__imp_GetLastError(%rip)
+    movabs $SLOT_SIZE_BAD_ERR, %rdi
+    mov %rax, (%rdi)
+
+    mov %rbx, %rcx
+    call *__imp_CloseHandle(%rip)
+    movabs $SLOT_CLOSE7, %rdi
+    mov %rax, (%rdi)
+
     /* ---- tranche 1 again: the clock, then exit ---- */
 
     call *__imp_GetTickCount(%rip)
@@ -1270,7 +1409,7 @@ proc_dyn_value:
     .asciz "NyrqisDynValue"
 /* The SizeOfImage the link gives this executable (build.sh pins the same
    0x4000 from objdump -p), used by the module-handle test above. */
-    .set IMAGE_SIZE, 0x4000
+    .set IMAGE_SIZE, 0x6000
 
 /* The private report page, mapped USER_ACCESSIBLE|WRITABLE by the demo and
    zeroed before ring 3. Every field below is written by this program or by
@@ -1440,6 +1579,28 @@ proc_dyn_value:
     .set SLOT_HEAP_REALLOC_BADF_ERR, SLOT_BASE + 0xA40
     .set SLOT_HEAP_SIZE_BAD,         SLOT_BASE + 0xA48
     .set SLOT_HEAP_SIZE_BAD_ERR,     SLOT_BASE + 0xA50
+/* tranche 13: the file's size and cursor. `SLOT_SIZE_HIGH` is written by the
+   KERNEL through GetFileSize's out-parameter, which is why the client passes
+   its address rather than a local. `buf_seek_a`/`buf_seek_b` are the four
+   bytes read at two different positions of the same file. */
+    .set SLOT_FILE7,            SLOT_BASE + 0xB00
+    .set SLOT_FILE_SIZE,        SLOT_BASE + 0xB08
+    .set SLOT_SIZE_HIGH,        SLOT_BASE + 0xB10
+    .set SLOT_SIZE_BAD,         SLOT_BASE + 0xB18
+    .set SLOT_SIZE_BAD_ERR,     SLOT_BASE + 0xB20
+    .set SLOT_SEEK_ABS,         SLOT_BASE + 0xB28
+    .set SLOT_SEEK_CUR,         SLOT_BASE + 0xB30
+    .set SLOT_SEEK_END,         SLOT_BASE + 0xB38
+    .set SLOT_SEEK_NEG,         SLOT_BASE + 0xB40
+    .set SLOT_SEEK_NEG_ERR,     SLOT_BASE + 0xB48
+    .set SLOT_SEEK_CUR_AFTER,   SLOT_BASE + 0xB50
+    .set SLOT_SEEK_BAD,         SLOT_BASE + 0xB58
+    .set SLOT_SEEK_BAD_ERR,     SLOT_BASE + 0xB60
+    .set SLOT_CLOSE7,           SLOT_BASE + 0xB68
+    .set SLOT_N7,               SLOT_BASE + 0xB70
+    .set SLOT_N8,               SLOT_BASE + 0xB78
+    .set buf_seek_a,            SLOT_BASE + 0xB90
+    .set buf_seek_b,            SLOT_BASE + 0xB98
     .set SLOT_BUF,       SLOT_BASE + 0x100
     .set SLOT_EOFBUF,    SLOT_BASE + 0x140
     .set SLOT_BUF2,      SLOT_BASE + 0x180

@@ -2,7 +2,7 @@
  * prog_win32_kernel32.s -- the PROVIDER half of the Win32 API surface
  * proof: a genuine Windows-format PE32+ DLL (`ld -m i386pep --shared
  * --enable-auto-import --image-base=0x190000000000`) named
- * `kernel32.dll`, exporting twenty ordinary Win32 names:
+ * `kernel32.dll`, exporting twenty-two ordinary Win32 names:
  *
  *   tranche 1 (console):  GetStdHandle, WriteFile, GetTickCount, ExitProcess
  *   tranche 2 (files):    CreateFileA, ReadFile, CloseHandle
@@ -13,6 +13,7 @@
  *   tranche 10 (provenance): GetModuleFileNameA
  *   tranche 11 (memory):  GetProcessHeap, HeapAlloc, HeapFree
  *   tranche 12 (memory):  HeapSize, HeapReAlloc
+ *   tranche 13 (files):   GetFileSize, SetFilePointer
  *
  * Why GetProcAddress is the export that completes the startup pair: a CRT
  * (or any program that loads a library late) takes the HMODULE a name
@@ -332,6 +333,37 @@ HeapReAlloc:
     mov %r8,  nyr_call_block+24(%rip)
     mov %r9,  nyr_call_block+32(%rip)
     movq $19, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl GetFileSize
+GetFileSize:
+    /* HANDLE hFile in RCX, LPDWORD lpFileSizeHigh in RDX. The size is the
+       volume's answer for the FILE the handle is open on -- the same entry
+       ReadFile copies its bytes out of -- and the optional high dword is an
+       OUT parameter (four bytes, a DWORD) the kernel writes. */
+    mov %rcx, nyr_call_block+8(%rip)
+    mov %rdx, nyr_call_block+16(%rip)
+    movq $20, nyr_call_block+48(%rip)
+    int $0x90
+    mov nyr_call_block+40(%rip), %rax
+    ret
+
+    .globl SetFilePointer
+SetFilePointer:
+    /* HANDLE hFile in RCX, LONG lDistanceToMove in RDX, PLONG
+       lpDistanceToMoveHigh in R8, DWORD dwMoveMethod in R9.
+
+       The DISTANCE is signed: `SetFilePointer(f, -4, NULL, FILE_END)` seeks
+       four bytes back from the end, and the kernel reads the low half of RDX
+       as an i32 for exactly that reason. The high half, when a pointer is
+       given, is an in/out LONG. */
+    mov %rcx, nyr_call_block+8(%rip)
+    mov %rdx, nyr_call_block+16(%rip)
+    mov %r8,  nyr_call_block+24(%rip)
+    mov %r9,  nyr_call_block+32(%rip)
+    movq $21, nyr_call_block+48(%rip)
     int $0x90
     mov nyr_call_block+40(%rip), %rax
     ret
