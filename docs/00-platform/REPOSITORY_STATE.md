@@ -5,6 +5,37 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-27 -- **DEX reads its map as a table of contents, and the sections only
+it names.**
+
+Android: `parse` no longer scans the `map_list` for one entry; a `map_list`
+resolver returns typed `MapEntry`s and holds the list to the file -- every item
+type one the format defines (twenty of them), offsets strictly ascending,
+fixed-size sections inside the file, the header's own counts and offsets
+agreeing with the entries that describe them, the mandatory `header_item` at
+offset zero, and the map's own entry present at the map's offset. That reading
+is what makes three sections reachable at all, because `call_site_ids` and
+`method_handles` have no header field (they arrived in DEX version 038) and a
+parameter row's `annotation_set_ref_list` is a section in its own right.
+`method_handle_item`'s type decides which table its id indexes -- the four
+accessors name fields, the five invokers name methods -- and each handle is
+resolved accordingly; `call_site_id_item` names the format's three-element
+`(method handle, method name, method type)` encoded array, so
+`VALUE_METHOD_HANDLE` now resolves through the handle table instead of being
+carried raw; the directory's parameter row resolves through an
+`annotation_set_ref_list` (one annotation set per parameter, the level the
+reader had been missing) and is reported as
+`AnnotatedParameter { member_idx, parameter_sets }`; and `debug_info_item` is
+walked as its DWARF3-style state machine, from the header's line and `uleb128p1`
+parameter names through ULEB128/SLEB128 operands and special opcodes to
+`DBG_END_SEQUENCE`, yielding the positions emitted and the locals introduced.
+A sixth fixture, `userprog/classes_map.dex` (748 bytes), carries all of it; the
+minimal fixture was rebuilt at 140 bytes so its map describes the `header_item`
+the format requires, and the annotations fixture grew to 744 bytes for the
+parameter ref list. Twenty-three malformed-map controls run on every boot. Still
+absent and named: ART's private `hiddenapi_class_data_item` (recognised, not
+read) and the meaning of positions and annotations.
+
 2026-11-26 -- **DEX resolves the annotations tables and encoded arrays.**
 
 Android: the two item families a `class_def_item` names beyond its member table

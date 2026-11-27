@@ -51,6 +51,23 @@
 //! that says how many bytes to read, so an index cannot be assembled from the
 //! wrong number of them.
 //!
+//! The `map_list` is read as the file's table of contents rather than scanned
+//! for one entry: [`map_list`] returns typed [`MapEntry`]s and checks that every
+//! item type is one the format defines, that the entries' offsets strictly
+//! increase, that each fixed-size section fits inside the file, that the
+//! header's own counts and offsets agree with the entries describing them, and
+//! that the map contains its own entry. That reading is what makes three of the
+//! format's sections reachable at all: `method_handles` and `call_site_ids` have
+//! no header field (they arrived in version 038), and a parameter annotation's
+//! `annotation_set_ref_list` is a section in its own right. [`method_handle`]
+//! resolves a handle's target through the table its type implies (fields for the
+//! accessors, methods for the invokers); [`call_site`] enforces the
+//! three-element `(handle, name, method type)` array the format defines for a
+//! call site; [`annotation_set_ref_list`] gives a directory's parameter row the
+//! one-set-per-parameter level that the format says it names; and
+//! [`debug_info`] runs the `debug_info_item` state machine to
+//! `DBG_END_SEQUENCE`, which is the only way to find where that item ends.
+//!
 //! Two rules of the format are load-bearing here rather than incidental, and
 //! both are the kind a hand-written reader gets wrong on a small fixture:
 //!
@@ -72,10 +89,12 @@
 //! `code_item` returns (decoding, verifying and executing Dalvik instructions is
 //! an interpreter or an AOT compiler -- a different undertaking, not a table
 //! this module forgot), the MEANING of an annotation (a `VALUE_ENUM`'s field is
-//! resolved as a field, not proven to be an enum constant; `VALUE_METHOD_HANDLE`
-//! is carried raw because this module has no method-handle table to resolve it
-//! against; a parameter annotation's element count is not compared to a proto's
-//! parameter list), and the string *pool* de-duplication rules. Those are the
+//! resolved as a field, not proven to be an enum constant; a parameter
+//! annotation's set count is not compared to a proto's parameter list), the
+//! string *pool* de-duplication rules, and ART's private
+//! `hiddenapi_class_data_item`, which the map recognises as a known entry but
+//! does not read: its layout is outside the public format document this parser
+//! follows, so guessing it would be worse than leaving it named. Those are the
 //! next questions, not a hidden part of these tables.
 //!
 //! Like every other `experimental` parser, stays paranoid about
@@ -88,8 +107,50 @@
 const DEX_MAGIC_PREFIX: [u8; 4] = [b'd', b'e', b'x', b'\n'];
 const HEADER_SIZE: u32 = 0x70; // 112 -- fixed for every DEX version
 const ENDIAN_TAG_LE: u32 = 0x1234_5678; // this parser only supports little-endian DEX
+/// `map_item.type`, the format's whole table. The first nine are fixed-size id
+/// tables whose `size` is a count and whose extent is `size * item size`; the
+/// rest are data-area items whose `size` is a count of items and whose bytes are
+/// only known by parsing each one.
+const TYPE_HEADER_ITEM: u16 = 0x0000;
+const TYPE_STRING_ID_ITEM: u16 = 0x0001;
+const TYPE_TYPE_ID_ITEM: u16 = 0x0002;
+const TYPE_PROTO_ID_ITEM: u16 = 0x0003;
+const TYPE_FIELD_ID_ITEM: u16 = 0x0004;
+const TYPE_METHOD_ID_ITEM: u16 = 0x0005;
+const TYPE_CLASS_DEF_ITEM: u16 = 0x0006;
+const TYPE_CALL_SITE_ID_ITEM: u16 = 0x0007;
+const TYPE_METHOD_HANDLE_ITEM: u16 = 0x0008;
 const TYPE_MAP_LIST: u16 = 0x1000;
+const TYPE_TYPE_LIST: u16 = 0x1001;
+const TYPE_ANNOTATION_SET_REF_LIST: u16 = 0x1002;
+const TYPE_ANNOTATION_SET_ITEM: u16 = 0x1003;
+const TYPE_CLASS_DATA_ITEM: u16 = 0x2000;
+const TYPE_CODE_ITEM: u16 = 0x2001;
+const TYPE_STRING_DATA_ITEM: u16 = 0x2002;
+const TYPE_DEBUG_INFO_ITEM: u16 = 0x2003;
+const TYPE_ANNOTATION_ITEM: u16 = 0x2004;
+const TYPE_ENCODED_ARRAY_ITEM: u16 = 0x2005;
+const TYPE_ANNOTATIONS_DIRECTORY_ITEM: u16 = 0x2006;
+/// ART's private boot-class-path table: the map names it, but its layout is not
+/// part of the public `dex-format` document this parser follows, so the entry is
+/// recognised (a boot-class-path file is not refused as malformed) and left
+/// unread rather than guessed at.
+const TYPE_HIDDENAPI_CLASS_DATA_ITEM: u16 = 0xf000;
 const MAP_ITEM_SIZE: usize = 12; // ushort type, ushort unused, uint size, uint offset
+
+/// `call_site_id_item` and `method_handle_item` sizes. Both tables exist only in
+/// the `map_list` -- the DEX header has no fields for them (they arrived in
+/// version 038) -- which is why reading either one is a question about the map
+/// before it is a question about an item.
+const CALL_SITE_ID_SIZE: u32 = 4;
+const METHOD_HANDLE_ITEM_SIZE: u32 = 8;
+/// `method_handle_item.method_handle_type`: four field accessors, then five
+/// method invokers. The split is the rule that says which id table the item's
+/// `field_or_method_id` indexes.
+const HANDLE_TYPE_STATIC_PUT: u16 = 0x00;
+const HANDLE_TYPE_INSTANCE_GET: u16 = 0x03;
+const HANDLE_TYPE_INVOKE_STATIC: u16 = 0x04;
+const HANDLE_TYPE_INVOKE_INTERFACE: u16 = 0x08;
 
 /// The `class_def_item.superclass_idx`/`source_file_idx` sentinel for "this
 /// class has none": DEX's `NO_INDEX`, not a zero (zero is a real index).
@@ -296,6 +357,59 @@ pub enum DexError {
     /// encoded_array, not an offset), so depth is a property of the bytes and a
     /// reader that recursed without a bound could be driven off its stack.
     EncodedValueTooDeep,
+    /// A `map_item.type` outside the format's table: a map that names a section
+    /// kind the format does not define is describing something other than a DEX
+    /// file's contents.
+    UnknownMapItemType,
+    /// Two `map_item`s whose offsets do not strictly increase. The format
+    /// requires the list in ascending offset order (it is the file's table of
+    /// contents, laid out in the order the sections occupy), so a list that
+    /// steps backwards is not merely unsorted -- it makes "the section at this
+    /// offset" ambiguous.
+    MapNotSorted,
+    /// A map entry whose section does not fit inside the file: `offset + size *
+    /// fixed item size` past EOF for an id table, or the section header itself
+    /// past EOF for a variable-length one.
+    MapSectionOutOfBounds,
+    /// A map entry that contradicts a fact the file states elsewhere: one of the
+    /// header-declared tables described at another offset or with another count,
+    /// a `header_item` entry other than one item at offset zero, or a
+    /// `map_list` entry other than this one. The header and the map are two
+    /// descriptions of the same sections, and a file where they disagree has no
+    /// single answer to "where does this table start".
+    MapSectionMismatch,
+    /// A `method_handles` item was asked for in a file whose map names no such
+    /// section. Version-038 files may omit it entirely; a caller asking anyway is
+    /// asking about a table that does not exist.
+    MethodHandleSectionMissing,
+    /// A `method_handles` index at or past the section's size.
+    MethodHandleIndexOutOfBounds,
+    /// A `method_handle_item.method_handle_type` outside 0x00..=0x08.
+    BadMethodHandleType,
+    /// A `call_site_ids` index at or past the section's size, or a file whose map
+    /// names no such section.
+    CallSiteSectionMissing,
+    /// A `call_site_ids` index at or past the section's size.
+    CallSiteIndexOutOfBounds,
+    /// A call site's definition is not the three-element array the format says
+    /// it is: `(method handle, method name, method type)`. A call site whose
+    /// array has another shape names no invocable target, so it is refused rather
+    /// than reported as a shorter or longer tuple.
+    BadCallSiteShape,
+    /// An `annotation_set_ref_list` offset outside the file (or zero, which the
+    /// format reserves for "absent" in a place that requires a list).
+    AnnotationSetRefListOutOfBounds,
+    /// An `annotation_set_ref_list` whose size claims more entries than the bytes
+    /// left could hold.
+    AnnotationSetRefListTruncated,
+    /// A `debug_info_item` offset outside the file (or zero, where a caller asked
+    /// for one directly -- zero is the format's "no debug info").
+    DebugInfoOutOfBounds,
+    /// A `debug_info_item` that stops before its header or its bytecode does.
+    DebugInfoTruncated,
+    /// A `debug_info_item` opcode in 0x05..=0x08, the range the format leaves
+    /// undefined (0x0a..=0xff are the special opcodes).
+    BadDebugInfoOpcode,
 }
 
 #[derive(Debug)]
@@ -407,7 +521,6 @@ pub fn parse(data: &[u8]) -> Result<DexInfo, DexError> {
         return Err(DexError::FileSizeMismatch);
     }
 
-    let map_off = read_u32(data, 52).ok_or(DexError::TooShort)?;
     let string_ids_size = read_u32(data, 56).ok_or(DexError::TooShort)?;
     let string_ids_off = read_u32(data, 60).ok_or(DexError::TooShort)?;
     let type_ids_size = read_u32(data, 64).ok_or(DexError::TooShort)?;
@@ -431,35 +544,14 @@ pub fn parse(data: &[u8]) -> Result<DexInfo, DexError> {
     check_section_bounds(data.len(), method_ids_size, method_ids_off, 8)?;
     check_section_bounds(data.len(), class_defs_size, class_defs_off, 32)?;
 
-    if (map_off as usize) + 4 > data.len() {
-        return Err(DexError::MapOffOutOfBounds);
-    }
-    let map_entry_count = read_u32(data, map_off as usize).ok_or(DexError::MapListOutOfBounds)?;
-    let map_list_end = (map_off as u64)
-        .checked_add(4)
-        .and_then(|v| v.checked_add(map_entry_count as u64 * MAP_ITEM_SIZE as u64))
-        .ok_or(DexError::MapListOutOfBounds)?;
-    if map_list_end > data.len() as u64 {
-        return Err(DexError::MapListOutOfBounds);
-    }
-
-    // Confirm the map genuinely describes itself -- a real structural
-    // check, not just "the count field is nonzero": walk every map
-    // entry looking for a TYPE_MAP_LIST entry whose own offset matches
-    // map_off. A DEX file that claims entries but never actually
-    // describes its own map table is malformed, not just unusual.
-    let mut found_self_entry = false;
-    for i in 0..map_entry_count {
-        let item_off = map_off as usize + 4 + (i as usize) * MAP_ITEM_SIZE;
-        let item_type = read_u16(data, item_off).ok_or(DexError::MapListOutOfBounds)?;
-        let item_file_off = read_u32(data, item_off + 8).ok_or(DexError::MapListOutOfBounds)?;
-        if item_type == TYPE_MAP_LIST && item_file_off == map_off {
-            found_self_entry = true;
-        }
-    }
-    if !found_self_entry {
-        return Err(DexError::NoMapListEntry);
-    }
+    // The map is the file's own table of contents, and it is validated AS one:
+    // every entry's type must be one the format defines, the entries must be in
+    // ascending offset order, every fixed-size section must fit inside the file,
+    // the header's counts and offsets must agree with the entries describing
+    // them, and the list must contain its own entry. That last rule is why this
+    // is a real structural check rather than "the count field is nonzero": a DEX
+    // that claims entries but never describes its own map is malformed.
+    let map_entry_count = map_list(data)?.len() as u32;
 
     Ok(DexInfo {
         file_size,
@@ -471,6 +563,255 @@ pub fn parse(data: &[u8]) -> Result<DexInfo, DexError> {
         class_defs_count: class_defs_size,
         map_entry_count,
     })
+}
+
+/// One `map_item`: the kind of item, how many of them, and where they start.
+///
+/// The `size` field means two different things depending on `item_type`, and
+/// that is the format's rule rather than a simplification here: for the nine
+/// fixed-size id tables it is a count whose extent is `size * item size`, while
+/// for every data-area item it is a count of items whose bytes are only known by
+/// parsing each one. [`map_list`] states which reading it applies.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MapEntry {
+    pub item_type: u16,
+    pub size: u32,
+    pub offset: u32,
+}
+
+/// Reads the file's `map_list` as typed entries, validating the list as the
+/// file's table of contents.
+///
+/// # What is checked, and why each check is about the file rather than the list
+///
+/// - **Known type.** The item type must be one of the twenty the format defines
+///   (`UnknownMapItemType`). A map naming anything else is describing a file
+///   whose sections this parser cannot even name.
+/// - **Ascending offsets.** The format requires the entries in ascending offset
+///   order, so a list that steps backwards makes "the section at this offset"
+///   ambiguous (`MapNotSorted`).
+/// - **Extent inside the file.** For the fixed-size tables this is a real
+///   arithmetic check (`offset + size * item size`); for the data-area items it
+///   is the section header itself, because their per-item lengths are only
+///   discoverable by parsing (`MapSectionOutOfBounds`).
+/// - **Agreement with the header.** The header and the map both state where
+///   `string_ids`, `type_ids`, `proto_ids`, `field_ids`, `method_ids` and
+///   `class_defs` are and how many they hold; a file where the two disagree has
+///   no single answer, so it is refused (`MapSectionMismatch`). The same rule
+///   pins `header_item` to one item at offset zero -- the format's mandatory
+///   first entry -- and `map_list` to this one item.
+/// - **Self-description.** A map without a `map_list` entry is refused as
+///   `NoMapListEntry`: every valid DEX describes itself.
+///
+/// Sections are NOT required to be present when their header count is zero, and
+/// `hiddenapi_class_data_item` is accepted as a known entry without being read
+/// (see the constant's note).
+pub fn map_list(data: &[u8]) -> Result<Vec<MapEntry>, DexError> {
+    if data.len() < HEADER_SIZE as usize {
+        return Err(DexError::TooShort);
+    }
+    let (map_off, count) = map_list_position(data)?;
+    let mut entries = Vec::with_capacity(count as usize);
+    let mut previous: Option<u32> = None;
+    for i in 0..count {
+        let at = map_off as usize + 4 + i as usize * MAP_ITEM_SIZE;
+        let item_type = read_u16(data, at).ok_or(DexError::MapListOutOfBounds)?;
+        let size = read_u32(data, at + 4).ok_or(DexError::MapListOutOfBounds)?;
+        let offset = read_u32(data, at + 8).ok_or(DexError::MapListOutOfBounds)?;
+        if !known_map_item_type(item_type) {
+            return Err(DexError::UnknownMapItemType);
+        }
+        if let Some(previous) = previous {
+            if offset <= previous {
+                return Err(DexError::MapNotSorted);
+            }
+        }
+        previous = Some(offset);
+        check_map_extent(data, item_type, size, offset)?;
+        entries.push(MapEntry {
+            item_type,
+            size,
+            offset,
+        });
+    }
+    // Self-description comes FIRST, before the entry is held to its exact shape:
+    // "there is no map entry at all" and "the map entry names another offset"
+    // are different answers, and the format's own rule is the first one.
+    if !entries.iter().any(|entry| entry.item_type == TYPE_MAP_LIST) {
+        return Err(DexError::NoMapListEntry);
+    }
+    check_map_against_header(data, &entries)?;
+    Ok(entries)
+}
+
+/// The header's `map_off` and the entry count it points at, bounded against the
+/// file before any entry is read.
+fn map_list_position(data: &[u8]) -> Result<(u32, u32), DexError> {
+    let map_off = header_u32(data, 52)?;
+    let list_start = map_off as usize;
+    if list_start
+        .checked_add(4)
+        .map_or(true, |end| end > data.len())
+    {
+        return Err(DexError::MapOffOutOfBounds);
+    }
+    let count = read_u32(data, map_off as usize).ok_or(DexError::MapListOutOfBounds)?;
+    let end = (map_off as u64)
+        .checked_add(4)
+        .and_then(|v| v.checked_add(count as u64 * MAP_ITEM_SIZE as u64))
+        .ok_or(DexError::MapListOutOfBounds)?;
+    if end > data.len() as u64 {
+        return Err(DexError::MapListOutOfBounds);
+    }
+    Ok((map_off, count))
+}
+
+/// Whether `item_type` is one of the twenty types the format defines.
+fn known_map_item_type(item_type: u16) -> bool {
+    matches!(
+        item_type,
+        TYPE_HEADER_ITEM
+            | TYPE_STRING_ID_ITEM
+            | TYPE_TYPE_ID_ITEM
+            | TYPE_PROTO_ID_ITEM
+            | TYPE_FIELD_ID_ITEM
+            | TYPE_METHOD_ID_ITEM
+            | TYPE_CLASS_DEF_ITEM
+            | TYPE_CALL_SITE_ID_ITEM
+            | TYPE_METHOD_HANDLE_ITEM
+            | TYPE_MAP_LIST
+            | TYPE_TYPE_LIST
+            | TYPE_ANNOTATION_SET_REF_LIST
+            | TYPE_ANNOTATION_SET_ITEM
+            | TYPE_CLASS_DATA_ITEM
+            | TYPE_CODE_ITEM
+            | TYPE_STRING_DATA_ITEM
+            | TYPE_DEBUG_INFO_ITEM
+            | TYPE_ANNOTATION_ITEM
+            | TYPE_ENCODED_ARRAY_ITEM
+            | TYPE_ANNOTATIONS_DIRECTORY_ITEM
+            | TYPE_HIDDENAPI_CLASS_DATA_ITEM
+    )
+}
+
+/// Bounds one map entry's section against the file.
+///
+/// Only the fixed-size id tables have an extent the map states in bytes. Every
+/// data-area item (`class_data`, `code`, `string_data`, `debug_info`, the three
+/// annotation forms, `encoded_array`, `annotations_directory`) is variable, so
+/// its bytes are found by parsing it -- what the map can be held to is that the
+/// section starts inside the file, and that the four-byte size word a list-shaped
+/// item begins with is there too. (The format's "Item Size In Bytes" column
+/// gives `4 + size * n` for those lists, which is the extent of ONE list of
+/// `size` entries; a map entry counts ITEMS, so using that formula for a section
+/// of several small lists would refuse a legal file.)
+fn check_map_extent(
+    data: &[u8],
+    item_type: u16,
+    size: u32,
+    offset: u32,
+) -> Result<(), DexError> {
+    if size == 0 {
+        return if offset as usize <= data.len() {
+            Ok(())
+        } else {
+            Err(DexError::MapSectionOutOfBounds)
+        };
+    }
+    let fixed_item_size = match item_type {
+        TYPE_HEADER_ITEM => Some(HEADER_SIZE),
+        TYPE_STRING_ID_ITEM => Some(STRING_ID_SIZE),
+        TYPE_TYPE_ID_ITEM => Some(TYPE_ID_SIZE),
+        TYPE_PROTO_ID_ITEM => Some(PROTO_ID_SIZE),
+        TYPE_FIELD_ID_ITEM => Some(FIELD_ID_SIZE),
+        TYPE_METHOD_ID_ITEM => Some(METHOD_ID_SIZE),
+        TYPE_CLASS_DEF_ITEM => Some(CLASS_DEF_SIZE),
+        TYPE_CALL_SITE_ID_ITEM => Some(CALL_SITE_ID_SIZE),
+        TYPE_METHOD_HANDLE_ITEM => Some(METHOD_HANDLE_ITEM_SIZE),
+        _ => None,
+    };
+    let needed = match fixed_item_size {
+        Some(item_size) => size as u64 * item_size as u64,
+        None => {
+            let list_shaped = matches!(
+                item_type,
+                TYPE_MAP_LIST
+                    | TYPE_TYPE_LIST
+                    | TYPE_ANNOTATION_SET_REF_LIST
+                    | TYPE_ANNOTATION_SET_ITEM
+            );
+            if list_shaped {
+                TYPE_LIST_HEADER as u64
+            } else {
+                1
+            }
+        }
+    };
+    let end = (offset as u64)
+        .checked_add(needed)
+        .ok_or(DexError::MapSectionOutOfBounds)?;
+    if end > data.len() as u64 {
+        return Err(DexError::MapSectionOutOfBounds);
+    }
+    Ok(())
+}
+
+/// Holds the map to the sections the header also describes, and to the two
+/// entries the format fixes in place: `header_item` is one item at offset zero,
+/// and the map's own entry is this list.
+fn check_map_against_header(data: &[u8], entries: &[MapEntry]) -> Result<(), DexError> {
+    // (map type, header size field, header offset field), in header order.
+    let declared = [
+        (TYPE_STRING_ID_ITEM, 56, 60),
+        (TYPE_TYPE_ID_ITEM, 64, 68),
+        (TYPE_PROTO_ID_ITEM, 72, 76),
+        (TYPE_FIELD_ID_ITEM, 80, 84),
+        (TYPE_METHOD_ID_ITEM, 88, 92),
+        (TYPE_CLASS_DEF_ITEM, 96, 100),
+    ];
+    for (item_type, size_field, offset_field) in declared {
+        let count = header_u32(data, size_field)?;
+        let offset = header_u32(data, offset_field)?;
+        let entry = entries.iter().find(|entry| entry.item_type == item_type);
+        let agrees = match (count, entry) {
+            // A zero-count table may be omitted from the map. Describing a
+            // table that holds nothing is a contradiction, not a spare entry.
+            (0, None) => true,
+            (0, Some(_)) => false,
+            (_, Some(entry)) => entry.size == count && entry.offset == offset,
+            (_, None) => false,
+        };
+        if !agrees {
+            return Err(DexError::MapSectionMismatch);
+        }
+    }
+
+    let headers: Vec<&MapEntry> = entries
+        .iter()
+        .filter(|entry| entry.item_type == TYPE_HEADER_ITEM)
+        .collect();
+    if headers.len() != 1 || headers[0].offset != 0 || headers[0].size != 1 {
+        return Err(DexError::MapSectionMismatch);
+    }
+    let map_off = header_u32(data, 52)?;
+    let maps: Vec<&MapEntry> = entries
+        .iter()
+        .filter(|entry| entry.item_type == TYPE_MAP_LIST)
+        .collect();
+    if maps.len() != 1 || maps[0].offset != map_off || maps[0].size != 1 {
+        return Err(DexError::MapSectionMismatch);
+    }
+    Ok(())
+}
+
+/// The `(offset, size)` of the map entry naming `item_type`, when the file has
+/// one. The header has no fields for `call_site_ids` or `method_handles`, so the
+/// map is the only way to find either section.
+fn map_section(data: &[u8], item_type: u16) -> Result<Option<(u32, u32)>, DexError> {
+    Ok(map_list(data)?
+        .into_iter()
+        .find(|entry| entry.item_type == item_type)
+        .map(|entry| (entry.offset, entry.size)))
 }
 
 /// Verifies the DEX file's integrity fields -- the Adler-32 `checksum`
@@ -1170,7 +1511,9 @@ pub enum EncodedValue {
     DoubleBits(u64),
     /// A `proto_ids` index (`VALUE_METHOD_TYPE`).
     MethodType(u32),
-    /// A `method_handles` index, carried unresolved -- see the module doc.
+    /// A `method_handles` index (`VALUE_METHOD_HANDLE`), resolved through
+    /// [`method_handle`] -- so the index names a handle whose own target the
+    /// file's field or method table answered for.
     MethodHandle(u32),
     String(u32),
     Type(u32),
@@ -1218,18 +1561,33 @@ pub struct AnnotatedMember {
     pub annotations: Vec<AnnotationItem>,
 }
 
+/// One row of an `annotations_directory_item`'s PARAMETER list, resolved.
+///
+/// A parameter row is not the same shape as a field or method row: its
+/// `annotations_off` names an `annotation_set_ref_list`, one annotation SET per
+/// parameter, and each of those names an `annotation_set_item`. The extra level
+/// is the format's (a method has many parameters, and each may carry its own
+/// annotations), so it is a separate type here rather than a `Vec` of items that
+/// would silently mean "one set for the whole method".
+#[derive(Debug, PartialEq, Eq)]
+pub struct AnnotatedParameter {
+    pub member_idx: u32,
+    /// One entry per parameter, each the annotations on that parameter.
+    pub parameter_sets: Vec<Vec<AnnotationItem>>,
+}
+
 /// A class's resolved `annotations_directory_item`.
 ///
 /// `class_annotations` is empty when `class_annotations_off` is 0, which the
 /// format allows (a class with field/method annotations but none of its own).
-/// The three member lists are empty vectors, not `None`, for the same reason
+/// The member lists are empty vectors, not `None`, for the same reason
 /// [`ClassData`] uses them: "this class annotates no fields" is a fact.
 #[derive(Debug, PartialEq, Eq)]
 pub struct AnnotationsDirectory {
     pub class_annotations: Vec<AnnotationItem>,
     pub field_annotations: Vec<AnnotatedMember>,
     pub method_annotations: Vec<AnnotatedMember>,
-    pub parameter_annotations: Vec<AnnotatedMember>,
+    pub parameter_annotations: Vec<AnnotatedParameter>,
 }
 
 /// Reads one `encoded_value` from `*cursor`, `depth` arrays/annotations deep.
@@ -1306,9 +1664,9 @@ fn read_encoded_value(
         }
         VALUE_METHOD_HANDLE => {
             require_arg(arg, 3)?;
-            Ok(EncodedValue::MethodHandle(
-                value_bytes(data, cursor, arg as u32 + 1)? as u32,
-            ))
+            let index = value_bytes(data, cursor, arg as u32 + 1)? as u32;
+            method_handle(data, index)?;
+            Ok(EncodedValue::MethodHandle(index))
         }
         VALUE_STRING => {
             require_arg(arg, 3)?;
@@ -1576,11 +1934,12 @@ fn annotation_rows(
 /// Reads the `annotations_directory_item` a class's `annotations_off` names, or
 /// `None` when the class has no directory at all (`annotations_off == 0`).
 ///
-/// The directory is the one table the format splits across two levels: it names
-/// a `class_annotations_off` plus three counts, and every one of its rows names
-/// a set rather than carrying an annotation. Both levels are read here, so the
-/// answer is the annotations themselves -- a caller never holds an offset it
-/// would have to remember to resolve.
+/// The directory is the one table the format splits across levels: it names a
+/// `class_annotations_off` plus three counts, the field and method rows name `annotation_set_item`s,
+/// and the parameter rows name `annotation_set_ref_list`s -- one set per
+/// parameter, one level deeper. Every level is read here, so the answer is the
+/// annotations themselves: a caller never holds an offset it would have to
+/// remember to resolve.
 pub fn annotations_directory(
     data: &[u8],
     class_index: u32,
@@ -1622,11 +1981,338 @@ pub fn annotations_directory(
     let mut cursor = start + ANNOTATIONS_DIRECTORY_HEADER as usize;
     let field_annotations = annotation_rows(data, &mut cursor, fields_size as u32, false)?;
     let method_annotations = annotation_rows(data, &mut cursor, methods_size as u32, true)?;
-    let parameter_annotations = annotation_rows(data, &mut cursor, parameters_size as u32, true)?;
+    let parameter_annotations =
+        parameter_annotation_rows(data, &mut cursor, parameters_size as u32)?;
     Ok(Some(AnnotationsDirectory {
         class_annotations,
         field_annotations,
         method_annotations,
         parameter_annotations,
     }))
+}
+
+/// Reads a directory's parameter rows, resolving each row's member and the
+/// `annotation_set_ref_list` its offset names.
+///
+/// The row's `annotations_off` names a ref list, not a set: the format gives
+/// each PARAMETER its own annotation set, so a reader that treated the word as
+/// a set would take the list's size for a set size and its entries for item
+/// offsets. That was this module's own reading until the ref list arrived; the
+/// fixture carries the extra level now, and a parameter row that does not point
+/// at a well-formed list is refused by [`annotation_set_ref_list`].
+fn parameter_annotation_rows(
+    data: &[u8],
+    cursor: &mut usize,
+    count: u32,
+) -> Result<Vec<AnnotatedParameter>, DexError> {
+    let mut rows = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let member_idx = read_u32(data, *cursor).ok_or(DexError::AnnotationsDirectoryTruncated)?;
+        let annotations_off =
+            read_u32(data, *cursor + 4).ok_or(DexError::AnnotationsDirectoryTruncated)?;
+        *cursor += ANNOTATION_ROW as usize;
+        method_id(data, member_idx)?;
+        rows.push(AnnotatedParameter {
+            member_idx,
+            parameter_sets: annotation_set_ref_list(data, annotations_off)?,
+        });
+    }
+    Ok(rows)
+}
+
+/// Reads the `annotation_set_ref_list` at `off`: a count, then that many
+/// offsets, each resolved through [`annotation_set`].
+///
+/// This is the level a parameter row points at -- one annotation set per
+/// parameter -- and it is a section in its own right (`TYPE_ANNOTATION_SET_REF_LIST`),
+/// so a file that has one must be able to name it in its map. Zero is refused
+/// rather than read as an empty list: a row's `annotations_off` is required to
+/// name a list, and zero is this format's "nothing", which is not a list.
+///
+/// The count is bounded against the bytes left before anything is allocated, and
+/// every entry must resolve: a list this function returns holds annotation sets
+/// whose items, types, element names and values all resolved.
+pub fn annotation_set_ref_list(data: &[u8], off: u32) -> Result<Vec<Vec<AnnotationItem>>, DexError> {
+    if off == 0 || off as usize >= data.len() {
+        return Err(DexError::AnnotationSetRefListOutOfBounds);
+    }
+    let start = off as usize;
+    let size = read_u32(data, start).ok_or(DexError::AnnotationSetRefListOutOfBounds)?;
+    let end = (start as u64)
+        .checked_add(ANNOTATION_SET_HEADER as u64)
+        .and_then(|v| v.checked_add(size as u64 * ANNOTATION_SET_ENTRY as u64))
+        .ok_or(DexError::AnnotationSetRefListTruncated)?;
+    if end > data.len() as u64 {
+        return Err(DexError::AnnotationSetRefListTruncated);
+    }
+    let mut sets = Vec::with_capacity(size as usize);
+    for i in 0..size {
+        let entry = start + ANNOTATION_SET_HEADER as usize + i as usize * 4;
+        let set_off = read_u32(data, entry).ok_or(DexError::AnnotationSetRefListTruncated)?;
+        sets.push(annotation_set(data, set_off)?);
+    }
+    Ok(sets)
+}
+
+/// One `method_handle_item`: which kind of handle it is, and the field or method
+/// id it names.
+///
+/// The four accessor types (0x00..=0x03) name a FIELD and the five invoker types
+/// (0x04..=0x08) name a METHOD, so `target` is resolved against the table the
+/// handle type implies -- and the handle is refused if that table cannot answer.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MethodHandle {
+    pub handle_type: u16,
+    pub target: u32,
+}
+
+/// Reads one `method_handles` entry. The section has no header field: it is
+/// found through the map, which is the reason this table only became readable
+/// once the map itself was read as data.
+pub fn method_handle(data: &[u8], index: u32) -> Result<MethodHandle, DexError> {
+    let (offset, size) = map_section(data, TYPE_METHOD_HANDLE_ITEM)?
+        .ok_or(DexError::MethodHandleSectionMissing)?;
+    if index >= size {
+        return Err(DexError::MethodHandleIndexOutOfBounds);
+    }
+    let at = (offset as usize)
+        .checked_add(index as usize * METHOD_HANDLE_ITEM_SIZE as usize)
+        .ok_or(DexError::MethodHandleIndexOutOfBounds)?;
+    let handle_type = read_u16(data, at).ok_or(DexError::MethodHandleIndexOutOfBounds)?;
+    let target = read_u16(data, at + 4).ok_or(DexError::MethodHandleIndexOutOfBounds)? as u32;
+    match handle_type {
+        HANDLE_TYPE_STATIC_PUT..=HANDLE_TYPE_INSTANCE_GET => {
+            field_id(data, target)?;
+        }
+        HANDLE_TYPE_INVOKE_STATIC..=HANDLE_TYPE_INVOKE_INTERFACE => {
+            method_id(data, target)?;
+        }
+        _ => return Err(DexError::BadMethodHandleType),
+    }
+    Ok(MethodHandle {
+        handle_type,
+        target,
+    })
+}
+
+/// One resolved call site: the method handle it invokes, the method name it
+/// calls, and the method type (a `proto_ids` index) it calls through.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CallSite {
+    pub method_handle: u32,
+    pub name_idx: u32,
+    pub proto_idx: u32,
+}
+
+/// Reads one `call_site_ids` entry, i.e. the `encoded_array_item` its
+/// `call_site_off` names.
+///
+/// The format defines a call site as a THREE-element array -- a method handle, a
+/// method name and a method type -- so a file whose array has another shape is
+/// refused (`BadCallSiteShape`) rather than reported as a shorter or longer
+/// tuple. Each element is already resolved by [`encoded_array`]: the handle
+/// through [`method_handle`], the name through [`string`], the type through
+/// [`proto_id`].
+pub fn call_site(data: &[u8], index: u32) -> Result<CallSite, DexError> {
+    let (offset, size) = map_section(data, TYPE_CALL_SITE_ID_ITEM)?
+        .ok_or(DexError::CallSiteSectionMissing)?;
+    if index >= size {
+        return Err(DexError::CallSiteIndexOutOfBounds);
+    }
+    let at = (offset as usize)
+        .checked_add(index as usize * CALL_SITE_ID_SIZE as usize)
+        .ok_or(DexError::CallSiteIndexOutOfBounds)?;
+    let array_off = read_u32(data, at).ok_or(DexError::CallSiteIndexOutOfBounds)?;
+    let values = encoded_array(data, array_off)?;
+    match values.as_slice() {
+        [EncodedValue::MethodHandle(handle), EncodedValue::String(name), EncodedValue::MethodType(proto)] => {
+            Ok(CallSite {
+                method_handle: *handle,
+                name_idx: *name,
+                proto_idx: *proto,
+            })
+        }
+        _ => Err(DexError::BadCallSiteShape),
+    }
+}
+
+/// One emitted entry of a `debug_info_item`'s positions table: the address in
+/// the method's code units and the source line it maps to.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DebugPosition {
+    pub address: u32,
+    pub line: i32,
+}
+
+/// A `debug_info_item`, read as the facts it states rather than as a decoded
+/// listing: the starting line, the declared parameter names (each `None` when the
+/// file writes `NO_INDEX`), the positions the state machine emits, and how many
+/// locals it introduces.
+///
+/// The positions are produced by running the format's own state machine, which
+/// is the only way to know where the item ends -- there is no length field. The
+/// walk stops at `DBG_END_SEQUENCE`, and a missing one is a truncation, not a
+/// short listing.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DebugInfo {
+    pub line_start: u32,
+    pub parameter_names: Vec<Option<u32>>,
+    pub positions: Vec<DebugPosition>,
+    pub locals: u32,
+}
+
+/// Reads the `debug_info_item` at `off`.
+///
+/// # What is checked
+///
+/// The header's `line_start`, `parameters_size` and every parameter name (a
+/// `uleb128p1` string index, with 0 meaning `NO_INDEX`), then the bytecode: every
+/// operand is read at its own width (ULEB128, SLEB128 or `uleb128p1`), every
+/// string and type index is resolved, the undefined opcode range 0x05..=0x08 is
+/// refused, and the sequence must reach `DBG_END_SEQUENCE` inside the file. A
+/// file that stops first is `DebugInfoTruncated`.
+///
+/// # What is NOT checked
+///
+/// The format says there is one parameter name per method parameter; comparing
+/// that count to the proto would tie this item to the code_item that names it,
+/// and this resolver is asked about the item alone. The positions are returned as
+/// stated, not replayed against the code's instruction boundaries -- that is a
+/// verifier's question, not a parser's.
+pub fn debug_info(data: &[u8], off: u32) -> Result<DebugInfo, DexError> {
+    if off == 0 || off as usize >= data.len() {
+        return Err(DexError::DebugInfoOutOfBounds);
+    }
+    let mut cursor = off as usize;
+    let line_start = debug_uleb(data, &mut cursor)?;
+    let parameters_size = debug_uleb(data, &mut cursor)?;
+    let remaining = data.len().saturating_sub(cursor) as u64;
+    if parameters_size as u64 > remaining {
+        return Err(DexError::DebugInfoTruncated);
+    }
+    let mut parameter_names = Vec::with_capacity(parameters_size as usize);
+    for _ in 0..parameters_size {
+        let raw = debug_uleb(data, &mut cursor)?;
+        if raw == 0 {
+            parameter_names.push(None);
+        } else {
+            let index = raw - 1;
+            string(data, index)?;
+            parameter_names.push(Some(index));
+        }
+    }
+
+    let mut address = 0u32;
+    let mut line = line_start as i32;
+    let mut locals = 0u32;
+    let mut positions = Vec::new();
+    loop {
+        let opcode = *data.get(cursor).ok_or(DexError::DebugInfoTruncated)?;
+        cursor += 1;
+        match opcode {
+            0x00 => break, // DBG_END_SEQUENCE
+            0x01 => {
+                // DBG_ADVANCE_PC: one ULEB128 address delta.
+                let delta = debug_uleb(data, &mut cursor)?;
+                address = address.saturating_add(delta);
+            }
+            0x02 => {
+                // DBG_ADVANCE_LINE: one SLEB128 line delta. The line register
+                // is signed; the format's own line_start is unsigned.
+                let delta = read_sleb128(data, &mut cursor).map_err(|_| DexError::DebugInfoTruncated)?;
+                line = line.saturating_add(delta);
+            }
+            0x03 => {
+                // DBG_START_LOCAL: register, name (uleb128p1), type (uleb128p1).
+                debug_uleb(data, &mut cursor)?;
+                debug_optional_string(data, &mut cursor)?;
+                debug_optional_type(data, &mut cursor)?;
+                locals += 1;
+            }
+            0x04 => {
+                // DBG_START_LOCAL_EXTENDED: the same plus a signature string.
+                debug_uleb(data, &mut cursor)?;
+                debug_optional_string(data, &mut cursor)?;
+                debug_optional_type(data, &mut cursor)?;
+                debug_optional_string(data, &mut cursor)?;
+                locals += 1;
+            }
+            0x05..=0x08 => return Err(DexError::BadDebugInfoOpcode),
+            0x09 => {
+                // DBG_SET_FILE: a uleb128p1 source-file string index.
+                debug_optional_string(data, &mut cursor)?;
+            }
+            special => {
+                // Special opcode: address += (op - 0x0a) / 15, line += -4 +
+                // (op - 0x0a) % 15, and one positions entry is emitted.
+                let adjusted = (special - 0x0a) as u32;
+                address = address.saturating_add(adjusted / 15);
+                line = line.saturating_add(-4 + (adjusted % 15) as i32);
+                positions.push(DebugPosition { address, line });
+            }
+        }
+    }
+    Ok(DebugInfo {
+        line_start,
+        parameter_names,
+        positions,
+        locals,
+    })
+}
+
+/// One ULEB128 inside a `debug_info_item`, with a missing byte reported as the
+/// truncation it is rather than as an over-long encoding.
+fn debug_uleb(data: &[u8], cursor: &mut usize) -> Result<u32, DexError> {
+    if *cursor >= data.len() {
+        return Err(DexError::DebugInfoTruncated);
+    }
+    read_uleb128(data, cursor).map_err(|_| DexError::DebugInfoTruncated)
+}
+
+/// A `uleb128p1` string index: 0 is `NO_INDEX`, anything else is `value - 1` and
+/// must resolve in the string pool.
+fn debug_optional_string(data: &[u8], cursor: &mut usize) -> Result<Option<u32>, DexError> {
+    let raw = debug_uleb(data, cursor)?;
+    if raw == 0 {
+        return Ok(None);
+    }
+    let index = raw - 1;
+    string(data, index)?;
+    Ok(Some(index))
+}
+
+/// A `uleb128p1` TYPE index, with the same `NO_INDEX` sentinel and a resolution
+/// against the type table.
+fn debug_optional_type(data: &[u8], cursor: &mut usize) -> Result<Option<u32>, DexError> {
+    let raw = debug_uleb(data, cursor)?;
+    if raw == 0 {
+        return Ok(None);
+    }
+    let index = raw - 1;
+    type_descriptor(data, index)?;
+    Ok(Some(index))
+}
+
+/// Reads a signed LEB128 (the form `DBG_ADVANCE_LINE` uses), bounded like the
+/// unsigned reader: at most five bytes, and a value that fits an `i32`.
+fn read_sleb128(data: &[u8], offset: &mut usize) -> Result<i32, DexError> {
+    let mut value = 0i64;
+    let mut shift = 0u32;
+    for _ in 0..5 {
+        let byte = *data.get(*offset).ok_or(DexError::BadUleb128)?;
+        *offset += 1;
+        value |= ((byte & 0x7f) as i64) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            if shift < 64 && byte & 0x40 != 0 {
+                value |= -1i64 << shift;
+            }
+            let narrowed = value as i32;
+            if i64::from(narrowed) != value {
+                return Err(DexError::BadUleb128);
+            }
+            return Ok(narrowed);
+        }
+    }
+    Err(DexError::BadUleb128)
 }

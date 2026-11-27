@@ -115,7 +115,11 @@ const ANN_CLASS_SET_OFF: usize = 0x1dc;
 const ANN_FIELD_SET_OFF: usize = 0x1e4;
 const ANN_METHOD_SET_OFF: usize = 0x1ec;
 const ANN_PARAMETER_SET_OFF: usize = 0x1f4;
-const ANN_CLASS_ITEM_OFF: usize = 0x1fc;
+/// The `annotation_set_ref_list` the DIRECTORY's parameter row names. The row
+/// used to point straight at a set; the format says a parameter row names a
+/// list with one entry per parameter, and this is that level.
+const ANN_PARAMETER_REF_LIST_OFF: usize = 0x1fc;
+const ANN_CLASS_ITEM_OFF: usize = 0x204;
 /// Inside the class annotation item: its visibility byte, its type index, then
 /// the first element's `(name_idx, value header)` pair. The two controls that
 /// corrupt a value header need the header's own byte, not the item's.
@@ -138,6 +142,60 @@ const EXPECTED_ANN_CLASS: &[u8] = b"Lnyrqis/hello/Annotated;";
 const EXPECTED_MARKER: &[u8] = b"Lnyrqis/hello/Marker;";
 const EXPECTED_HELLO: &[u8] = b"hello";
 
+/// The sixth real fixture (`userprog/classes_map.dex`, built by the same
+/// script): the sections that exist ONLY in the map. `call_site_ids` and
+/// `method_handles` have no header field at all (they arrived in version 038),
+/// and a parameter row's `annotation_set_ref_list` is a section in its own
+/// right, so this file is the specimen for the last three tables the map can
+/// name -- plus a `debug_info_item`, the one remaining data section whose bytes
+/// are only found by running its state machine.
+static MAP_DEX: &[u8] = include_bytes!("../../userprog/classes_map.dex");
+
+/// `classes_map.dex`'s fixed layout, printed by the generator and repeated here
+/// for the same reason the other fixtures' constants are: every control patches
+/// a byte this file names, and a control that hit the wrong byte would pass for
+/// the wrong reason.
+const MAP_CLASS_DEFS_OFF: usize = 0xd4;
+const MAP_CALL_SITES_OFF: usize = 0xf4;
+const MAP_METHOD_HANDLES_OFF: usize = 0xf8;
+const MAP_TYPE_LIST_OFF: usize = 0x188;
+const MAP_CLASS_DATA_OFF: usize = 0x190;
+const MAP_CODE_ITEM_OFF: usize = 0x19c;
+const MAP_DEBUG_INFO_OFF: usize = 0x1b0;
+const MAP_ENCODED_ARRAY_OFF: usize = 0x1c0;
+const MAP_REF_LIST_OFF: usize = 0x1c8;
+const MAP_SET_OFF: usize = 0x1d0;
+const MAP_ITEM_OFF: usize = 0x1d8;
+const MAP_DIRECTORY_OFF: usize = 0x1e0;
+const MAP_MAP_OFF: usize = 0x1f8;
+/// Inside the debug_info_item: `line_start` (1), `parameters_size` (1), the one
+/// parameter's `uleb128p1` name, then the first opcode.
+const MAP_DEBUG_PARAM_NAME_OFF: usize = MAP_DEBUG_INFO_OFF + 2;
+const MAP_DEBUG_OPCODE_OFF: usize = MAP_DEBUG_INFO_OFF + 3;
+/// The directory's single row: `member_idx` then `annotations_off`.
+const MAP_DIRECTORY_ROW_OFF: usize = MAP_DIRECTORY_OFF + 16;
+const MAP_DIRECTORY_ROW_SET_OFF: usize = MAP_DIRECTORY_ROW_OFF + 4;
+/// A map entry: type (2), unused (2), size (4), offset (4) -- 12 bytes.
+const fn map_entry_off(index: usize) -> usize {
+    MAP_MAP_OFF + 4 + index * 12
+}
+const MAP_ENTRY_STRING_ID: usize = 1;
+const MAP_ENTRY_METHOD_HANDLE: usize = 8;
+const MAP_ENTRY_MAP_LIST: usize = 19;
+const MAP_CALL_SITE_COUNT_BYTE: usize = MAP_ENCODED_ARRAY_OFF;
+const MAP_HANDLE0_TYPE: usize = MAP_METHOD_HANDLES_OFF;
+const MAP_ENTRY_COUNT: usize = 20;
+const MAP_CLASS_TYPE: u32 = 0;
+const MAP_INT_TYPE: u32 = 2;
+const MAP_VOID_TYPE: u32 = 3;
+const MAP_TAG_TYPE: u32 = 4;
+const MAP_COUNT_STRING: u32 = 11;
+const MAP_LOCAL_STRING: u32 = 12;
+const MAP_NOTE_NAME: u32 = 9;
+const MAP_HANDLER_STRING: u32 = 8;
+const EXPECTED_MAP_CLASS: &[u8] = b"Lnyrqis/hello/Mapped;";
+const EXPECTED_TAG: &[u8] = b"Lnyrqis/hello/Tag;";
+
 /// Runs the header proof, the table proof and every permanent negative check.
 /// Returns `true` iff every part of the proof held.
 pub fn run() -> bool {
@@ -154,9 +212,11 @@ pub fn run() -> bool {
     let member_refusals_ok = run_negative_member_refusals();
     let annotations_ok = run_annotation_tables();
     let annotation_refusals_ok = run_negative_annotation_refusals();
+    let map_sections_ok = run_map_tables();
+    let map_refusals_ok = run_negative_map_refusals();
 
     serial_println!(
-        "  experimental dex-demo self-test: crypto known-answer {}, valid parse+integrity {}, bad-magic rejection {}, map-self-reference rejection {}, checksum rejection {}, class tables {}, table refusals {}, method tables {}, method refusals {}, field and code tables {}, member refusals {}, annotation tables {}, annotation refusals {} -- {}",
+        "  experimental dex-demo self-test: crypto known-answer {}, valid parse+integrity {}, bad-magic rejection {}, map-self-reference rejection {}, checksum rejection {}, class tables {}, table refusals {}, method tables {}, method refusals {}, field and code tables {}, member refusals {}, annotation tables {}, annotation refusals {}, map sections {}, map refusals {} -- {}",
         verdict(kats_ok),
         verdict(positive_ok),
         verdict(magic_check_ok),
@@ -170,7 +230,9 @@ pub fn run() -> bool {
         verdict(member_refusals_ok),
         verdict(annotations_ok),
         verdict(annotation_refusals_ok),
-        verdict(kats_ok && positive_ok && magic_check_ok && map_check_ok && checksum_check_ok && tables_ok && refusals_ok && methods_ok && method_refusals_ok && members_ok && member_refusals_ok && annotations_ok && annotation_refusals_ok)
+        verdict(map_sections_ok),
+        verdict(map_refusals_ok),
+        verdict(kats_ok && positive_ok && magic_check_ok && map_check_ok && checksum_check_ok && tables_ok && refusals_ok && methods_ok && method_refusals_ok && members_ok && member_refusals_ok && annotations_ok && annotation_refusals_ok && map_sections_ok && map_refusals_ok)
     );
 
     kats_ok
@@ -186,6 +248,8 @@ pub fn run() -> bool {
         && member_refusals_ok
         && annotations_ok
         && annotation_refusals_ok
+        && map_sections_ok
+        && map_refusals_ok
 }
 
 /// The fixture with the four bytes at `off` replaced by `value`, for the
@@ -295,9 +359,11 @@ fn run_annotation_tables() -> bool {
                 }],
             )],
         }],
-        parameter_annotations: vec![dex::AnnotatedMember {
+        // The parameter row resolves through an `annotation_set_ref_list`: one
+        // SET per parameter, each set holding that parameter's annotations.
+        parameter_annotations: vec![dex::AnnotatedParameter {
             member_idx: 0,
-            annotations: vec![marker_item(
+            parameter_sets: vec![vec![marker_item(
                 dex::VISIBILITY_RUNTIME,
                 vec![dex::AnnotationElement {
                     name_idx: ANN_NAME_NAME,
@@ -305,7 +371,7 @@ fn run_annotation_tables() -> bool {
                         ANN_HELLO_STRING,
                     )]),
                 }],
-            )],
+            )]],
         }],
     };
     let directory_ok =
@@ -328,6 +394,13 @@ fn run_annotation_tables() -> bool {
             Ok(ref s) if s.len() == 1 && s[0].visibility == dex::VISIBILITY_RUNTIME);
     // The `0` cases, on a real class: the fields fixture names no directory and
     // no static values, so both answer "none" rather than an error.
+    // The ref list read by its own offset: one entry (the method's one
+    // parameter), holding one RUNTIME item. The directory above proves the row
+    // reaches it; this proves the list is a section the map names.
+    let ref_list_ok = matches!(dex::annotation_set_ref_list(ANN_DEX, ANN_PARAMETER_REF_LIST_OFF as u32),
+        Ok(ref sets) if sets.len() == 1
+            && sets[0].len() == 1
+            && sets[0][0].visibility == dex::VISIBILITY_RUNTIME);
     let no_directory_ok = matches!(dex::annotations_directory(FIELD_DEX, 0), Ok(None));
     let no_values_ok = matches!(dex::static_values(FIELD_DEX, 0), Ok(ref v) if v.is_empty());
     let absent_array_ok = matches!(dex::encoded_array(ANN_DEX, 0), Ok(ref v) if v.is_empty());
@@ -340,6 +413,7 @@ fn run_annotation_tables() -> bool {
         && directory_ok
         && values_ok
         && sets_ok
+        && ref_list_ok
         && no_directory_ok
         && no_values_ok
         && absent_array_ok;
@@ -497,6 +571,346 @@ fn run_negative_annotation_refusals() -> bool {
     ok
 }
 
+/// `classes_map.dex` with the four bytes at `off` replaced, for the controls
+/// that patch a `map_item` field.
+fn map_u32_at(off: usize, value: u32) -> Vec<u8> {
+    let mut corrupted = MAP_DEX.to_vec();
+    corrupted[off..off + 4].copy_from_slice(&value.to_le_bytes());
+    corrupted
+}
+
+/// `classes_map.dex` with the two bytes at `off` replaced, for the control that
+/// retags a map entry.
+fn map_u16_at(off: usize, value: u16) -> Vec<u8> {
+    let mut corrupted = MAP_DEX.to_vec();
+    corrupted[off..off + 2].copy_from_slice(&value.to_le_bytes());
+    corrupted
+}
+
+/// `classes_map.dex` with the single byte at `off` replaced, for the controls
+/// that corrupt a handle type, an array count or a debug opcode.
+fn map_byte_at(off: usize, value: u8) -> Vec<u8> {
+    let mut corrupted = MAP_DEX.to_vec();
+    corrupted[off] = value;
+    corrupted
+}
+
+/// The sections that exist only in the map, read out of a real file.
+///
+/// The whole map is compared entry by entry -- type, size and offset -- because
+/// a resolver that answered "twenty entries" while swapping two offsets would
+/// otherwise pass. The positive side then exercises each table the map names and
+/// nothing in the header does: the two method handles (one field accessor, one
+/// method invoker, so the type-to-table rule is visible in the data), the call
+/// site whose three-element array resolves through them, the parameter row's
+/// `annotation_set_ref_list`, and the debug_info state machine, whose two
+/// positions and one local can only be found by running it.
+fn run_map_tables() -> bool {
+    let info = match dex::parse(MAP_DEX) {
+        Ok(info) => info,
+        Err(e) => {
+            serial_println!(
+                "  experimental dex-demo: FAILED to parse classes_map.dex: {:?}",
+                e
+            );
+            return false;
+        }
+    };
+    let integrity_ok = dex::verify(MAP_DEX).is_ok();
+    let expected = vec![
+        dex::MapEntry { item_type: 0x0000, size: 1, offset: 0 },
+        dex::MapEntry { item_type: 0x0001, size: 13, offset: 0x70 },
+        dex::MapEntry { item_type: 0x0002, size: 5, offset: 0xa4 },
+        dex::MapEntry { item_type: 0x0003, size: 1, offset: 0xb8 },
+        dex::MapEntry { item_type: 0x0004, size: 1, offset: 0xc4 },
+        dex::MapEntry { item_type: 0x0005, size: 1, offset: 0xcc },
+        dex::MapEntry { item_type: 0x0006, size: 1, offset: MAP_CLASS_DEFS_OFF as u32 },
+        dex::MapEntry { item_type: 0x0007, size: 1, offset: MAP_CALL_SITES_OFF as u32 },
+        dex::MapEntry { item_type: 0x0008, size: 2, offset: MAP_METHOD_HANDLES_OFF as u32 },
+        dex::MapEntry { item_type: 0x2002, size: 13, offset: 0x108 },
+        dex::MapEntry { item_type: 0x1001, size: 1, offset: MAP_TYPE_LIST_OFF as u32 },
+        dex::MapEntry { item_type: 0x2000, size: 1, offset: MAP_CLASS_DATA_OFF as u32 },
+        dex::MapEntry { item_type: 0x2001, size: 1, offset: MAP_CODE_ITEM_OFF as u32 },
+        dex::MapEntry { item_type: 0x2003, size: 1, offset: MAP_DEBUG_INFO_OFF as u32 },
+        dex::MapEntry { item_type: 0x2005, size: 1, offset: MAP_ENCODED_ARRAY_OFF as u32 },
+        dex::MapEntry { item_type: 0x1002, size: 1, offset: MAP_REF_LIST_OFF as u32 },
+        dex::MapEntry { item_type: 0x1003, size: 1, offset: MAP_SET_OFF as u32 },
+        dex::MapEntry { item_type: 0x2004, size: 1, offset: MAP_ITEM_OFF as u32 },
+        dex::MapEntry { item_type: 0x2006, size: 1, offset: MAP_DIRECTORY_OFF as u32 },
+        dex::MapEntry { item_type: 0x1000, size: 1, offset: MAP_MAP_OFF as u32 },
+    ];
+    let map_ok = matches!(dex::map_list(MAP_DEX), Ok(ref entries) if *entries == expected)
+        && info.map_entry_count == MAP_ENTRY_COUNT as u32;
+    // The same resolver on a different file: the class fixture's six entries, so
+    // the answer is a reading of the bytes rather than a number the fixture was
+    // built to match.
+    let hello_map_ok = matches!(dex::map_list(CLASS_DEX), Ok(ref entries)
+        if entries.len() == 6
+            && entries[0] == dex::MapEntry { item_type: 0x0000, size: 1, offset: 0 }
+            && entries[5] == dex::MapEntry { item_type: 0x1000, size: 1, offset: 0xda });
+
+    let handles_ok = matches!(dex::method_handle(MAP_DEX, 0), Ok(ref handle)
+            if handle.handle_type == 0x01 && handle.target == 0)
+        && matches!(dex::method_handle(MAP_DEX, 1), Ok(ref handle)
+            if handle.handle_type == 0x04 && handle.target == 0)
+        && matches!(dex::field_id(MAP_DEX, 0), Ok(ref field)
+            if field.class_idx == MAP_CLASS_TYPE && field.type_idx == MAP_INT_TYPE)
+        && matches!(dex::type_descriptor(MAP_DEX, MAP_INT_TYPE), Ok(t) if t == b"I");
+
+    let call_site_ok = matches!(dex::call_site(MAP_DEX, 0), Ok(ref site)
+            if site.method_handle == 1
+                && site.name_idx == MAP_HANDLER_STRING
+                && site.proto_idx == 0)
+        && matches!(dex::string(MAP_DEX, MAP_HANDLER_STRING), Ok(name) if name == b"handler")
+        && matches!(dex::proto_id(MAP_DEX, 0), Ok(ref proto)
+            if proto.return_type_idx == MAP_VOID_TYPE
+                && matches!(dex::type_list(MAP_DEX, proto.parameters_off), Ok(ref types)
+                    if *types == [MAP_INT_TYPE]));
+
+    let debug_ok = matches!(dex::debug_info(MAP_DEX, MAP_DEBUG_INFO_OFF as u32), Ok(ref debug)
+            if debug.line_start == 1
+                && debug.parameter_names.as_slice() == [Some(MAP_COUNT_STRING)]
+                && debug.positions.as_slice()
+                    == [
+                        dex::DebugPosition { address: 0, line: 1 },
+                        dex::DebugPosition { address: 1, line: 2 },
+                    ]
+                && debug.locals == 1)
+        && matches!(dex::string(MAP_DEX, MAP_COUNT_STRING), Ok(name) if name == b"count")
+        && matches!(dex::string(MAP_DEX, MAP_LOCAL_STRING), Ok(name) if name == b"local");
+
+    let directory_ok = matches!(dex::annotations_directory(MAP_DEX, 0), Ok(Some(ref directory))
+            if directory.class_annotations.is_empty()
+                && directory.field_annotations.is_empty()
+                && directory.method_annotations.is_empty()
+                && directory.parameter_annotations.len() == 1
+                && directory.parameter_annotations[0].member_idx == 0
+                && directory.parameter_annotations[0].parameter_sets.len() == 1);
+    let ref_list_ok = matches!(dex::annotation_set_ref_list(MAP_DEX, MAP_REF_LIST_OFF as u32),
+            Ok(ref sets) if sets.len() == 1
+                && sets[0].len() == 1
+                && sets[0][0].visibility == dex::VISIBILITY_RUNTIME
+                && sets[0][0].annotation.type_idx == MAP_TAG_TYPE
+                && sets[0][0].annotation.elements.len() == 1
+                && sets[0][0].annotation.elements[0].name_idx == MAP_NOTE_NAME
+                && sets[0][0].annotation.elements[0].value == dex::EncodedValue::Int(5))
+        && matches!(dex::annotation_set(MAP_DEX, MAP_SET_OFF as u32), Ok(ref set) if set.len() == 1)
+        && matches!(dex::annotation_item(MAP_DEX, MAP_ITEM_OFF as u32), Ok(ref item)
+            if item.visibility == dex::VISIBILITY_RUNTIME)
+        && matches!(dex::type_descriptor(MAP_DEX, MAP_TAG_TYPE), Ok(t) if t == EXPECTED_TAG)
+        && matches!(dex::class_descriptor(MAP_DEX, 0), Ok(c) if c == EXPECTED_MAP_CLASS);
+
+    let members_ok = matches!(dex::class_data(MAP_DEX, 0), Ok(Some(ref data))
+            if data.static_fields.len() == 1
+                && data.direct_methods.len() == 1
+                && data.direct_methods[0].code_off == Some(MAP_CODE_ITEM_OFF as u32))
+        && matches!(dex::code_item(MAP_DEX, MAP_CODE_ITEM_OFF as u32), Ok(ref code)
+            if code.debug_info_off as usize == MAP_DEBUG_INFO_OFF
+                && code.ins_size == 1
+                && code.insns == [0x000e]);
+
+    let ok = integrity_ok
+        && map_ok
+        && hello_map_ok
+        && handles_ok
+        && call_site_ok
+        && debug_ok
+        && directory_ok
+        && ref_list_ok
+        && members_ok;
+    serial_println!(
+        "  experimental dex-demo: map sections -- a {} byte DEX whose map lists {} entries in ascending offset order (header, the six header-declared tables, call_site_ids at 0x{:x}, method_handles at 0x{:x}, string_data, type_list, class_data, code_item, debug_info at 0x{:x}, encoded_array, annotation_set_ref_list at 0x{:x}, annotation_set, annotation_item, annotations_directory, map): handle 0 is a STATIC_GET of field 0 and handle 1 an INVOKE_STATIC of method 0, call site 0 reads the three-element array [handle 1, \"handler\", proto 0], the parameter row resolves through one ref-list entry to a RUNTIME Lnyrqis/hello/Tag; with note=5, and the debug_info item states line 1, one parameter \"count\", positions (0,1) and (1,2), and one local -- the class fixture's six-entry map reads back too -- {}",
+        info.file_size,
+        info.map_entry_count,
+        MAP_CALL_SITES_OFF,
+        MAP_METHOD_HANDLES_OFF,
+        MAP_DEBUG_INFO_OFF,
+        MAP_REF_LIST_OFF,
+        verdict(ok)
+    );
+    ok
+}
+
+/// Every malformed map-section shape the new resolvers must refuse, each on a
+/// copy of the real fixture with one claim broken: an unknown item type, an
+/// entry that steps backwards, a fixed-size section past EOF, three
+/// disagreements between the map and the header (a count, the header item, the
+/// map's own size), a map that stops describing itself, the two map-only
+/// sections asked for where a file has none, a handle index and type outside
+/// their domains, a call-site index and array shape, the ref list past EOF, past
+/// its own bytes and naming a set past EOF, the parameter row that must go
+/// THROUGH the list, and the debug item past EOF, with an undefined opcode, past
+/// its own bytes, and naming a string past the pool.
+fn run_negative_map_refusals() -> bool {
+    let unknown_type = matches!(
+        dex::map_list(&map_u16_at(map_entry_off(MAP_ENTRY_METHOD_HANDLE), 0x0009)),
+        Err(DexError::UnknownMapItemType)
+    );
+    let unsorted = matches!(
+        dex::map_list(&map_u32_at(
+            map_entry_off(MAP_ENTRY_METHOD_HANDLE) + 8,
+            0
+        )),
+        Err(DexError::MapNotSorted)
+    );
+    let section_past = matches!(
+        dex::map_list(&map_u32_at(map_entry_off(MAP_ENTRY_METHOD_HANDLE) + 4, 0x2000)),
+        Err(DexError::MapSectionOutOfBounds)
+    );
+    let count_mismatch = matches!(
+        dex::map_list(&map_u32_at(map_entry_off(MAP_ENTRY_STRING_ID) + 4, 12)),
+        Err(DexError::MapSectionMismatch)
+    );
+    let header_entry_mismatch = matches!(
+        dex::map_list(&map_u32_at(map_entry_off(0) + 4, 2)),
+        Err(DexError::MapSectionMismatch)
+    );
+    let map_size_mismatch = matches!(
+        dex::map_list(&map_u32_at(map_entry_off(MAP_ENTRY_MAP_LIST) + 4, 2)),
+        Err(DexError::MapSectionMismatch)
+    );
+    let no_self_entry = matches!(
+        dex::map_list(&map_u16_at(map_entry_off(MAP_ENTRY_MAP_LIST), 0x1001)),
+        Err(DexError::NoMapListEntry)
+    );
+    let handle_section_missing = matches!(
+        dex::method_handle(CLASS_DEX, 0),
+        Err(DexError::MethodHandleSectionMissing)
+    );
+    let handle_index_past = matches!(
+        dex::method_handle(MAP_DEX, 2),
+        Err(DexError::MethodHandleIndexOutOfBounds)
+    );
+    let bad_handle_type = matches!(
+        dex::method_handle(&map_u16_at(MAP_HANDLE0_TYPE, 0x09), 0),
+        Err(DexError::BadMethodHandleType)
+    );
+    let call_site_section_missing = matches!(
+        dex::call_site(CLASS_DEX, 0),
+        Err(DexError::CallSiteSectionMissing)
+    );
+    let call_site_index_past = matches!(
+        dex::call_site(MAP_DEX, 1),
+        Err(DexError::CallSiteIndexOutOfBounds)
+    );
+    // The call site's array count becomes 2, so the definition is a handle and a
+    // name with no method type: a shape the format does not define.
+    let bad_call_site_shape = matches!(
+        dex::call_site(&map_byte_at(MAP_CALL_SITE_COUNT_BYTE, 2), 0),
+        Err(DexError::BadCallSiteShape)
+    );
+    let ref_list_past = matches!(
+        dex::annotation_set_ref_list(MAP_DEX, 0x7f_fff0),
+        Err(DexError::AnnotationSetRefListOutOfBounds)
+    );
+    let ref_list_zero = matches!(
+        dex::annotation_set_ref_list(MAP_DEX, 0),
+        Err(DexError::AnnotationSetRefListOutOfBounds)
+    );
+    let ref_list_truncated = matches!(
+        dex::annotation_set_ref_list(
+            &map_u32_at(MAP_REF_LIST_OFF, 0x4000_0000),
+            MAP_REF_LIST_OFF as u32
+        ),
+        Err(DexError::AnnotationSetRefListTruncated)
+    );
+    let ref_list_set_past = matches!(
+        dex::annotation_set_ref_list(
+            &map_u32_at(MAP_REF_LIST_OFF + 4, 0x7f_fff0),
+            MAP_REF_LIST_OFF as u32
+        ),
+        Err(DexError::AnnotationSetOutOfBounds)
+    );
+    // The directory's parameter row, pointed at zero: the row must be read as a
+    // ref list, and zero is the format's "absent" in a place that requires a
+    // list. The OLD reading (a set straight from the row) would have refused with
+    // AnnotationSetOutOfBounds, so this control tells the two readings apart.
+    let parameter_row_is_ref_list = matches!(
+        dex::annotations_directory(
+            &map_u32_at(MAP_DIRECTORY_ROW_SET_OFF, 0),
+            0
+        ),
+        Err(DexError::AnnotationSetRefListOutOfBounds)
+    );
+    let debug_past = matches!(
+        dex::debug_info(MAP_DEX, 0x7f_fff0),
+        Err(DexError::DebugInfoOutOfBounds)
+    );
+    let debug_zero = matches!(
+        dex::debug_info(MAP_DEX, 0),
+        Err(DexError::DebugInfoOutOfBounds)
+    );
+    let bad_debug_opcode = matches!(
+        dex::debug_info(&map_byte_at(MAP_DEBUG_OPCODE_OFF, 0x05), MAP_DEBUG_INFO_OFF as u32),
+        Err(DexError::BadDebugInfoOpcode)
+    );
+    // The file ends right after the header's line and parameter count, before
+    // the parameter's name: a short slice is exactly that truncation.
+    let debug_truncated = matches!(
+        dex::debug_info(&MAP_DEX[..MAP_DEBUG_PARAM_NAME_OFF], MAP_DEBUG_INFO_OFF as u32),
+        Err(DexError::DebugInfoTruncated)
+    );
+    let debug_name_past = matches!(
+        dex::debug_info(
+            &map_byte_at(MAP_DEBUG_PARAM_NAME_OFF, 0x7f),
+            MAP_DEBUG_INFO_OFF as u32
+        ),
+        Err(DexError::StringIndexOutOfBounds)
+    );
+
+    let ok = unknown_type
+        && unsorted
+        && section_past
+        && count_mismatch
+        && header_entry_mismatch
+        && map_size_mismatch
+        && no_self_entry
+        && handle_section_missing
+        && handle_index_past
+        && bad_handle_type
+        && call_site_section_missing
+        && call_site_index_past
+        && bad_call_site_shape
+        && ref_list_past
+        && ref_list_zero
+        && ref_list_truncated
+        && ref_list_set_past
+        && parameter_row_is_ref_list
+        && debug_past
+        && debug_zero
+        && bad_debug_opcode
+        && debug_truncated
+        && debug_name_past;
+    serial_println!(
+        "  experimental dex-demo: map refusals -- a map item type 0x0009 {}, an entry stepping back to offset 0 {}, a method_handles section claiming 8192 items past EOF {}, a string_ids count of 12 against the header's 13 {}, a header_item of two items {}, a map_list entry of size 2 {}, a map whose entry is retagged so it no longer describes itself {}, a file with NO method_handles asked for one {}, handle index 2 past a two-handle section {}, handle type 0x09 {}, a file with NO call_site_ids asked for one {}, call-site index 1 {}, a call site whose array holds two values {}, a ref list past EOF {}, one asked at zero {}, one whose size overruns the file {}, one naming a set past EOF {}, a directory parameter row naming zero instead of a list {}, a debug_info past EOF {}, one asked at zero {}, an undefined debug opcode 0x05 {}, a debug item cut before its parameter name {}, and one naming string 126 {} -- {}",
+        if unknown_type { "refused UnknownMapItemType" } else { "ACCEPTED" },
+        if unsorted { "refused MapNotSorted" } else { "ACCEPTED" },
+        if section_past { "refused MapSectionOutOfBounds" } else { "ACCEPTED" },
+        if count_mismatch { "refused MapSectionMismatch" } else { "ACCEPTED" },
+        if header_entry_mismatch { "refused MapSectionMismatch" } else { "ACCEPTED" },
+        if map_size_mismatch { "refused MapSectionMismatch" } else { "ACCEPTED" },
+        if no_self_entry { "refused NoMapListEntry" } else { "ACCEPTED" },
+        if handle_section_missing { "refused MethodHandleSectionMissing" } else { "ACCEPTED" },
+        if handle_index_past { "refused MethodHandleIndexOutOfBounds" } else { "ACCEPTED" },
+        if bad_handle_type { "refused BadMethodHandleType" } else { "ACCEPTED" },
+        if call_site_section_missing { "refused CallSiteSectionMissing" } else { "ACCEPTED" },
+        if call_site_index_past { "refused CallSiteIndexOutOfBounds" } else { "ACCEPTED" },
+        if bad_call_site_shape { "refused BadCallSiteShape" } else { "ACCEPTED" },
+        if ref_list_past { "refused AnnotationSetRefListOutOfBounds" } else { "ACCEPTED" },
+        if ref_list_zero { "refused AnnotationSetRefListOutOfBounds" } else { "ACCEPTED" },
+        if ref_list_truncated { "refused AnnotationSetRefListTruncated" } else { "ACCEPTED" },
+        if ref_list_set_past { "refused AnnotationSetOutOfBounds" } else { "ACCEPTED" },
+        if parameter_row_is_ref_list { "refused AnnotationSetRefListOutOfBounds" } else { "ACCEPTED" },
+        if debug_past { "refused DebugInfoOutOfBounds" } else { "ACCEPTED" },
+        if debug_zero { "refused DebugInfoOutOfBounds" } else { "ACCEPTED" },
+        if bad_debug_opcode { "refused BadDebugInfoOpcode" } else { "ACCEPTED" },
+        if debug_truncated { "refused DebugInfoTruncated" } else { "ACCEPTED" },
+        if debug_name_past { "refused StringIndexOutOfBounds" } else { "ACCEPTED" },
+        verdict(ok)
+    );
+    ok
+}
+
 fn verdict(ok: bool) -> &'static str {
     if ok {
         "OK"
@@ -521,7 +935,7 @@ fn run_positive() -> bool {
         && info.field_ids_count == 0
         && info.method_ids_count == 0
         && info.class_defs_count == 0
-        && info.map_entry_count == 1;
+        && info.map_entry_count == 2;
 
     serial_println!(
         "  experimental dex-demo: parsed a real DEX file (file_size={}, map_entry_count={}, all section counts zero as constructed) -- {}",
@@ -691,16 +1105,20 @@ fn run_negative_bad_magic() -> bool {
     rejected_correctly
 }
 
-/// Corrupts the `map_list`'s single entry so it no longer describes
-/// itself (changes its recorded file offset to a bogus value) and
-/// confirms `dex::parse` rejects it with exactly `NoMapListEntry` --
-/// proving the self-reference check is a real structural validation,
-/// not just "is the count field nonzero."
+/// Retags the `map_list`'s own entry so it no longer describes itself (it is
+/// made a `type_list` entry at the map's own offset) and confirms `dex::parse`
+/// rejects it with exactly `NoMapListEntry` -- proving the self-reference check
+/// is a real structural validation, not just "is the count field nonzero".
+///
+/// The entry is retagged rather than moved: the minimal fixture's map is
+/// `[header_item, map_list]`, and pointing the map entry somewhere else would be
+/// caught by the offset/ordering rule first. A retag leaves a well-ordered,
+/// in-bounds entry that simply is not the map describing itself.
 fn run_negative_map_self_reference() -> bool {
     let mut corrupted: Vec<u8> = VALID_DEX.to_vec();
     let map_off = u32::from_le_bytes([corrupted[52], corrupted[53], corrupted[54], corrupted[55]]) as usize;
-    let item_offset_field = map_off + 4 + 8; // map_item: type(2) + unused(2) + size(4) + offset(4)
-    corrupted[item_offset_field..item_offset_field + 4].copy_from_slice(&999u32.to_le_bytes());
+    let map_entry_type = map_off + 4 + 12; // the SECOND map_item's type field
+    corrupted[map_entry_type..map_entry_type + 2].copy_from_slice(&0x1001u16.to_le_bytes());
     let result = dex::parse(&corrupted);
     let rejected_correctly = matches!(result, Err(DexError::NoMapListEntry));
     serial_println!(

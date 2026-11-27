@@ -566,7 +566,11 @@ ANNOTATION_METHODS = [(A_CLASS, 0, 7)]
 
 # map_list item types the earlier fixtures do not use.
 TYPE_ANNOTATION_SET_ITEM = 0x1003
+TYPE_ANNOTATION_SET_REF_LIST = 0x1002
 TYPE_ANNOTATION_ITEM = 0x2004
+TYPE_CALL_SITE_ID_ITEM = 0x0007
+TYPE_METHOD_HANDLE_ITEM = 0x0008
+TYPE_DEBUG_INFO_ITEM = 0x2003
 TYPE_ENCODED_ARRAY_ITEM = 0x2005
 TYPE_ANNOTATIONS_DIRECTORY_ITEM = 0x2006
 
@@ -691,6 +695,13 @@ def write_annotations_fixture() -> int:
     # The directory first (it names the sets), then the four SETS contiguously,
     # then the four ITEMS contiguously: the map_list names one offset and a
     # count per item type, so items of a type must be adjacent.
+    #
+    # The parameter ROW is one level deeper than the other rows: the format says
+    # its annotations_off names an `annotation_set_ref_list` (one entry per
+    # parameter), and each of THOSE names an `annotation_set_item`. The earlier
+    # version of this fixture pointed the row straight at the set, which is what
+    # the kernel read until the ref list arrived; the extra level is why the
+    # file grew by eight bytes and every item offset after the sets moved.
     directory_off = align4(static_values_off + len(static_values))
     directory_size = 16 + 8 * 3  # one field, one method, one parameter row
     class_set_off = align4(directory_off + directory_size)
@@ -698,13 +709,14 @@ def write_annotations_fixture() -> int:
     field_set_off = class_set_off + set_size
     method_set_off = field_set_off + set_size
     parameter_set_off = method_set_off + set_size
-    class_item_off = align4(parameter_set_off + set_size)
+    parameter_ref_list_off = align4(parameter_set_off + set_size)
+    class_item_off = align4(parameter_ref_list_off + 8)
     field_item_off = align4(class_item_off + len(class_item))
     method_item_off = align4(field_item_off + len(field_item))
     parameter_item_off = align4(method_item_off + len(method_item))
     map_off = align4(parameter_item_off + len(parameter_item))
 
-    map_item_count = 14
+    map_item_count = 15
     file_size = map_off + 4 + 12 * map_item_count
 
     header = bytearray(HEADER_SIZE)
@@ -748,7 +760,7 @@ def write_annotations_fixture() -> int:
     directory = struct.pack("<4I", class_set_off, 1, 1, 1)
     directory += struct.pack("<2I", 0, field_set_off)  # field 0 = SEED
     directory += struct.pack("<2I", 0, method_set_off)  # method 0 = run()V
-    directory += struct.pack("<2I", 0, parameter_set_off)
+    directory += struct.pack("<2I", 0, parameter_ref_list_off)
     assert len(directory) == directory_size
 
     def annotation_set(item_off: int) -> bytes:
@@ -768,6 +780,7 @@ def write_annotations_fixture() -> int:
     body += annotation_set(field_item_off)
     body += annotation_set(method_item_off)
     body += annotation_set(parameter_item_off)
+    body += struct.pack("<2I", 1, parameter_set_off)  # the parameter ref list
     body += b"\x00" * (class_item_off - len(body))
     body += class_item
     body += b"\x00" * (field_item_off - len(body))
@@ -791,6 +804,7 @@ def write_annotations_fixture() -> int:
         (TYPE_ENCODED_ARRAY_ITEM, 1, static_values_off),
         (TYPE_ANNOTATIONS_DIRECTORY_ITEM, 1, directory_off),
         (TYPE_ANNOTATION_SET_ITEM, 4, class_set_off),
+        (TYPE_ANNOTATION_SET_REF_LIST, 1, parameter_ref_list_off),
         (TYPE_ANNOTATION_ITEM, 4, class_item_off),
         (TYPE_MAP_LIST, 1, map_off),
     ]
@@ -816,11 +830,342 @@ def write_annotations_fixture() -> int:
     print("  values   static SEED=1000 (int, 2 bytes), label=\"hello\"")
     print(f"  layout   class_data=0x{class_data_off:x} static_values=0x{static_values_off:x} "
           f"directory=0x{directory_off:x} sets=0x{class_set_off:x}/0x{field_set_off:x}/"
-          f"0x{method_set_off:x}/0x{parameter_set_off:x} "
+          f"0x{method_set_off:x}/0x{parameter_set_off:x} ref_list=0x{parameter_ref_list_off:x} "
           f"items=0x{class_item_off:x}/0x{field_item_off:x}/0x{method_item_off:x}/"
           f"0x{parameter_item_off:x} map=0x{map_off:x}")
     print(f"  classes  class_defs=0x{class_defs_off:x}")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# `classes.dex` -- the smallest legal DEX, now written by this script too.
+#
+# It is a header and a `map_list`, with every section count zero. What changed
+# is that the map now lists the `header_item` the format requires every DEX to
+# describe: the hand-built 128-byte original listed only itself, so a parser
+# that checks the map's header entry (one item at offset zero) would refuse the
+# repository's own smallest fixture. Writing it here also makes the file
+# reproducible from the script like the other four.
+# ---------------------------------------------------------------------------
+
+
+def write_minimal_fixture() -> int:
+    map_off = HEADER_SIZE
+    map_item_count = 2
+    file_size = map_off + 4 + 12 * map_item_count
+
+    header = bytearray(HEADER_SIZE)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 32, file_size)
+    struct.pack_into("<I", header, 36, HEADER_SIZE)
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 52, map_off)
+    struct.pack_into("<I", header, 104, file_size - map_off)  # data_size
+    struct.pack_into("<I", header, 108, map_off)  # data_off
+
+    map_items = [(TYPE_HEADER_ITEM, 1, 0), (TYPE_MAP_LIST, 1, map_off)]
+    map_list = struct.pack("<I", len(map_items))
+    for item_type, size, off in map_items:
+        map_list += struct.pack("<HHI I", item_type, 0, size, off)
+
+    body = header + map_list
+    assert len(body) == file_size, (len(body), file_size)
+    write_integrity(body)
+
+    out = pathlib.Path(__file__).resolve().parent.parent / "userprog" / "classes.dex"
+    out.write_bytes(bytes(body))
+    print(f"wrote {out} ({len(body)} bytes)")
+    print(f"  checksum 0x{struct.unpack_from('<I', body, 8)[0]:08x}")
+    print(f"  sha1     {hashlib.sha1(bytes(body[32:])).hexdigest()}")
+    print(f"  sha256   {hashlib.sha256(bytes(body)).hexdigest()}")
+    print("  map      header_item + map_list (the two entries the format requires)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `classes_map.dex` -- the sections that exist only in the map.
+#
+# Three tables a DEX can name have no header field at all: `call_site_ids` and
+# `method_handles` (added in version 038, reachable only through the map) and
+# the `annotation_set_ref_list` a parameter row points at. This fixture carries
+# all three, plus a `debug_info_item` for its method, so every value the map can
+# describe has a real section here:
+#
+#   1. two `method_handle_item`s -- a static-field getter (type 0x01, naming
+#      FIELD 0) and a static-method invoker (type 0x04, naming METHOD 0). The
+#      handle type is what decides which table the id indexes, so one of each
+#      kind is the specimen that makes the rule visible.
+#   2. one `call_site_id_item`, whose `call_site_off` names an
+#      `encoded_array_item` of exactly three values: the method handle, the
+#      method name and the method type. Its array is read as VALUES, so the
+#      method-handle element resolves through the very table above.
+#   3. a parameter annotation: the directory's parameter row names a
+#      `annotation_set_ref_list` with one entry (one parameter), that entry names
+#      an `annotation_set_item`, and that names the `annotation_item`. Three
+#      levels, because a method's parameters each carry their own set.
+#   4. a `debug_info_item` with a real state machine: a line, a special opcode, a
+#      local variable, an advance by line and by address, a second position and
+#      the terminating DBG_END_SEQUENCE -- so the reader has to run the machine
+#      to find the item's end rather than trust a length.
+#
+# The class is `Lnyrqis/hello/Mapped;`, with one static int field SEED and one
+# method run(int)V carrying a one-word body.
+# ---------------------------------------------------------------------------
+
+MAP_STRINGS = [
+    b"Lnyrqis/hello/Mapped;",  # 0
+    b"Ljava/lang/Object;",  # 1
+    b"Mapped.java",  # 2
+    b"SEED",  # 3
+    b"I",  # 4
+    b"run",  # 5
+    b"V",  # 6
+    b"VI",  # 7
+    b"handler",  # 8
+    b"note",  # 9
+    b"Lnyrqis/hello/Tag;",  # 10
+    b"count",  # 11
+    b"local",  # 12
+]
+
+# type_ids name strings: the class, Object, int, void and the annotation type.
+MAP_TYPES = [0, 1, 4, 6, 10]
+M_CLASS = 0
+M_INT = 2
+M_VOID = 3
+M_TAG = 4
+M_SHORTY = 7
+
+VALUE_METHOD_TYPE = 0x15
+VALUE_METHOD_HANDLE = 0x16
+VALUE_STRING = 0x17
+
+METHOD_HANDLE_STATIC_GET = 0x01
+METHOD_HANDLE_INVOKE_STATIC = 0x04
+
+
+def write_map_fixture() -> int:
+    for s in MAP_STRINGS:
+        assert all(0x20 <= b < 0x7F for b in s), s
+
+    strings_blob = bytearray()
+    for s in MAP_STRINGS:
+        strings_blob += uleb128(len(s)) + s + b"\x00"
+
+    string_ids_off = HEADER_SIZE
+    type_ids_off = string_ids_off + 4 * len(MAP_STRINGS)
+    proto_ids_off = type_ids_off + 4 * len(MAP_TYPES)
+    field_ids_off = proto_ids_off + 12
+    method_ids_off = field_ids_off + 8
+    class_defs_off = method_ids_off + 8
+    # The two sections with no header field, in the order the map lists them.
+    call_site_ids_off = class_defs_off + 32
+    method_handles_off = call_site_ids_off + 4
+    string_data_off = method_handles_off + 16
+
+    type_list_off = align4(string_data_off + len(strings_blob))
+    type_list = struct.pack("<I", 1) + struct.pack("<H", M_INT) + b"\x00\x00"
+    class_data_off = align4(type_list_off + len(type_list))
+
+    # The class_data encodes the method's code_off, whose ULEB128 width depends
+    # on the offset -- and the offset depends on this item's length. The item is
+    # ten bytes for every code_item offset in this file's range (four counts, the
+    # field's two ULEB128s, the method's delta and flags, and a two-byte
+    # code_off), so the length is stated once and asserted below.
+    class_data_len = 10
+    code_item_off = align4(class_data_off + class_data_len)
+    assert code_item_off < 0x4000, hex(code_item_off)
+    class_data = bytearray([1, 0, 1, 0])
+    class_data += uleb128(0) + uleb128(ACC_PUBLIC | ACC_STATIC | ACC_FINAL)  # SEED
+    class_data += uleb128(0) + uleb128(ACC_PUBLIC | ACC_STATIC) + uleb128(code_item_off)
+    assert len(class_data) == class_data_len, len(class_data)
+
+    code_len = 16 + 2  # header plus one 16-bit instruction word
+    # `debug_info_item` is byte-aligned, so the format allows it anywhere; this
+    # fixture keeps every section 4-aligned so each map offset a control patches
+    # is a word, and the script's alignment assertion below stays meaningful.
+    debug_info_off = align4(code_item_off + code_len)
+    # `return-void` (0x0e, format 10x): this fixture is about the tables the body
+    # points at, not about instruction decoding.
+    code_item = struct.pack("<HHHHII", 1, 1, 0, 0, debug_info_off, 1) + struct.pack("<H", 0x000E)
+
+    # line_start 1, one parameter named `count` (string 11 -> uleb128p1 12), then:
+    #   special 0x0e   -> address 0, line 1 (+0, +0), one position emitted
+    #   DBG_START_LOCAL reg 1, name `local` (string 12 -> 13), type I (2)
+    #   DBG_ADVANCE_LINE +1
+    #   DBG_ADVANCE_PC +1
+    #   special 0x0e   -> address 1, line 2, a second position
+    #   DBG_END_SEQUENCE
+    debug = bytearray()
+    debug += uleb128(1)
+    debug += uleb128(1)
+    debug += uleb128(12)
+    debug += bytes([0x0E])
+    debug += bytes([0x03]) + uleb128(1) + uleb128(13) + uleb128(3)
+    debug += bytes([0x02]) + bytes([0x01])
+    debug += bytes([0x01]) + uleb128(1)
+    debug += bytes([0x0E])
+    debug += bytes([0x00])
+
+    # The call site's definition: [method handle 1, name "handler", method type 0].
+    call_site_array = (
+        uleb128(3)
+        + encoded_value_header(VALUE_METHOD_HANDLE, 0)
+        + bytes([1])
+        + encoded_value_header(VALUE_STRING, 0)
+        + bytes([8])
+        + encoded_value_header(VALUE_METHOD_TYPE, 0)
+        + bytes([0])
+    )
+
+    annotation_item = bytes([VISIBILITY_RUNTIME]) + encoded_annotation(
+        M_TAG, [(9, encoded_int(5))]  # note = 5
+    )
+
+    encoded_array_off = align4(debug_info_off + len(debug))
+    ref_list_off = align4(encoded_array_off + len(call_site_array))
+    set_off = ref_list_off + 8  # one ref-list entry, then one set entry
+    item_off = set_off + 8
+    directory_off = align4(item_off + len(annotation_item))
+    directory_size = 16 + 8  # one parameter row
+    map_off = align4(directory_off + directory_size)
+
+    map_item_count = 20
+    file_size = map_off + 4 + 12 * map_item_count
+
+    header = bytearray(HEADER_SIZE)
+    header[0:8] = b"dex\n038\x00"  # version 038: method handles and call sites exist
+    struct.pack_into("<I", header, 32, file_size)
+    struct.pack_into("<I", header, 36, HEADER_SIZE)
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 52, map_off)
+    struct.pack_into("<I", header, 56, len(MAP_STRINGS))
+    struct.pack_into("<I", header, 60, string_ids_off)
+    struct.pack_into("<I", header, 64, len(MAP_TYPES))
+    struct.pack_into("<I", header, 68, type_ids_off)
+    struct.pack_into("<I", header, 72, 1)
+    struct.pack_into("<I", header, 76, proto_ids_off)
+    struct.pack_into("<I", header, 80, 1)
+    struct.pack_into("<I", header, 84, field_ids_off)
+    struct.pack_into("<I", header, 88, 1)
+    struct.pack_into("<I", header, 92, method_ids_off)
+    struct.pack_into("<I", header, 96, 1)
+    struct.pack_into("<I", header, 100, class_defs_off)
+    struct.pack_into("<I", header, 104, file_size - string_data_off)
+    struct.pack_into("<I", header, 108, string_data_off)
+
+    string_ids = b"".join(struct.pack("<I", off) for off in _string_offsets(MAP_STRINGS, string_data_off))
+    type_ids = b"".join(struct.pack("<I", idx) for idx in MAP_TYPES)
+    proto_ids = struct.pack("<3I", M_SHORTY, M_VOID, type_list_off)
+    field_ids = struct.pack("<HHI", M_CLASS, M_INT, 3)
+    method_ids = struct.pack("<HHI", M_CLASS, 0, 5)
+    class_def = struct.pack(
+        "<8I",
+        M_CLASS,
+        ACC_PUBLIC,
+        1,  # superclass_idx -> Ljava/lang/Object;
+        0,  # interfaces_off
+        2,  # source_file_idx -> Mapped.java
+        directory_off,
+        class_data_off,
+        0,  # static_values_off: SEED takes its default 0
+    )
+    assert len(class_def) == 32
+
+    call_site_ids = struct.pack("<I", encoded_array_off)
+    method_handles = struct.pack("<HHHH", METHOD_HANDLE_STATIC_GET, 0, 0, 0) + struct.pack(
+        "<HHHH", METHOD_HANDLE_INVOKE_STATIC, 0, 0, 0
+    )
+    assert len(method_handles) == 16
+
+    body = bytearray()
+    body += header + string_ids + type_ids + proto_ids + field_ids + method_ids + class_def
+    body += call_site_ids + method_handles
+    assert len(body) == string_data_off, (len(body), string_data_off)
+    body += strings_blob
+    body += b"\x00" * (type_list_off - len(body))
+    body += type_list
+    body += b"\x00" * (class_data_off - len(body))
+    body += class_data
+    body += b"\x00" * (code_item_off - len(body))
+    body += code_item
+    body += b"\x00" * (debug_info_off - len(body))
+    body += debug
+    body += b"\x00" * (encoded_array_off - len(body))
+    body += call_site_array
+    body += b"\x00" * (ref_list_off - len(body))
+    body += struct.pack("<2I", 1, set_off)
+    assert len(body) == set_off, (len(body), set_off)
+    body += struct.pack("<2I", 1, item_off)
+    assert len(body) == item_off, (len(body), item_off)
+    body += annotation_item
+    body += b"\x00" * (directory_off - len(body))
+    body += struct.pack("<4I", 0, 0, 0, 1)  # no class/field/method rows, one parameter
+    body += struct.pack("<2I", 0, ref_list_off)
+    assert len(body) == directory_off + directory_size, (len(body), directory_off + directory_size)
+    body += b"\x00" * (map_off - len(body))
+
+    map_items = [
+        (TYPE_HEADER_ITEM, 1, 0),
+        (TYPE_STRING_ID_ITEM, len(MAP_STRINGS), string_ids_off),
+        (TYPE_TYPE_ID_ITEM, len(MAP_TYPES), type_ids_off),
+        (TYPE_PROTO_ID_ITEM, 1, proto_ids_off),
+        (TYPE_FIELD_ID_ITEM, 1, field_ids_off),
+        (TYPE_METHOD_ID_ITEM, 1, method_ids_off),
+        (TYPE_CLASS_DEF_ITEM, 1, class_defs_off),
+        (TYPE_CALL_SITE_ID_ITEM, 1, call_site_ids_off),
+        (TYPE_METHOD_HANDLE_ITEM, 2, method_handles_off),
+        (TYPE_STRING_DATA_ITEM, len(MAP_STRINGS), string_data_off),
+        (TYPE_TYPE_LIST, 1, type_list_off),
+        (TYPE_CLASS_DATA_ITEM, 1, class_data_off),
+        (TYPE_CODE_ITEM, 1, code_item_off),
+        (TYPE_DEBUG_INFO_ITEM, 1, debug_info_off),
+        (TYPE_ENCODED_ARRAY_ITEM, 1, encoded_array_off),
+        (TYPE_ANNOTATION_SET_REF_LIST, 1, ref_list_off),
+        (TYPE_ANNOTATION_SET_ITEM, 1, set_off),
+        (TYPE_ANNOTATION_ITEM, 1, item_off),
+        (TYPE_ANNOTATIONS_DIRECTORY_ITEM, 1, directory_off),
+        (TYPE_MAP_LIST, 1, map_off),
+    ]
+    assert len(map_items) == map_item_count, (len(map_items), map_item_count)
+    assert map_items == sorted(map_items, key=lambda item: item[2]), map_items
+    assert len({off for _, _, off in map_items}) == len(map_items)
+    map_list = struct.pack("<I", len(map_items))
+    for item_type, size, off in map_items:
+        assert off % 4 == 0, (hex(item_type), hex(off))
+        map_list += struct.pack("<HHI I", item_type, 0, size, off)
+    body += map_list
+    assert len(body) == file_size, (len(body), file_size)
+
+    write_integrity(body)
+
+    out = pathlib.Path(__file__).resolve().parent.parent / "userprog" / "classes_map.dex"
+    out.write_bytes(bytes(body))
+    print(f"wrote {out} ({len(body)} bytes)")
+    print(f"  checksum 0x{struct.unpack_from('<I', body, 8)[0]:08x}")
+    print(f"  sha1     {hashlib.sha1(bytes(body[32:])).hexdigest()}")
+    print(f"  sha256   {hashlib.sha256(bytes(body)).hexdigest()}")
+    print("  handles  0: STATIC_GET field 0, 1: INVOKE_STATIC method 0")
+    print("  callsite handler -> handle 1, name \"handler\", proto 0; debug: line 1,")
+    print("           parameter \"count\", 2 positions, 1 local")
+    print(f"  layout   class_defs=0x{class_defs_off:x} call_sites=0x{call_site_ids_off:x} "
+          f"method_handles=0x{method_handles_off:x} string_data=0x{string_data_off:x} "
+          f"type_list=0x{type_list_off:x} class_data=0x{class_data_off:x} "
+          f"code_item=0x{code_item_off:x} debug_info=0x{debug_info_off:x} "
+          f"encoded_array=0x{encoded_array_off:x} ref_list=0x{ref_list_off:x} "
+          f"set=0x{set_off:x} item=0x{item_off:x} directory=0x{directory_off:x} "
+          f"map=0x{map_off:x}")
+    return 0
+
+
+def _string_offsets(strings, base: int) -> list:
+    """The `string_ids` entries for a blob written in `strings` order."""
+    offsets = []
+    cursor = base
+    for s in strings:
+        offsets.append(cursor)
+        cursor += 1 + len(s) + 1
+    return offsets
 
 
 def main() -> int:
@@ -903,6 +1248,8 @@ def main() -> int:
     write_methods_fixture()
     write_fields_fixture()
     write_annotations_fixture()
+    write_map_fixture()
+    write_minimal_fixture()
     return 0
 
 

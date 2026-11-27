@@ -1284,6 +1284,42 @@ MEANING (an enum element's field is resolved, not proven to be an enum constant;
 `VALUE_METHOD_HANDLE` is carried raw for want of a method-handle table) and the
 string pool's de-duplication rules.
 
+Then the map itself became the specimen. A sixth real fixture
+(`userprog/classes_map.dex`, 748 bytes) is built so every section the
+`map_list` can name exists in it, because `parse` now reads the map as the
+file's table of contents instead of scanning it for one entry: every item type
+must be one the format defines, the entries' offsets must strictly increase,
+every fixed-size section must fit in the file, the header's own counts and
+offsets must agree with the entries describing them, and the map must contain
+its own entry. That reading is what makes the sections only the map names
+reachable. `method_handle_item` is `(handle_type, unused,
+field_or_method_id, unused)`, and the handle type is the rule that says which
+table the id indexes -- 0x00..=0x03 are field accessors, 0x04..=0x08 method
+invokers -- so a handle's target is resolved against the table its type
+implies. `call_site_id_item` names an `encoded_array_item` that must be the
+format's three-element `(method handle, method name, method type)` definition,
+so `VALUE_METHOD_HANDLE` is no longer carried raw: an encoded value naming a
+handle now resolves through that table. The directory's PARAMETER row is read
+through the `annotation_set_ref_list` the format actually specifies -- one
+annotation set per parameter -- a level the parser had been missing; the answer
+is `AnnotatedParameter { member_idx, parameter_sets }`, and a control pins the
+difference by pointing the row at zero (a ref-list refusal, where the old
+reading would have reported a set). `debug_info_item`, the last data section
+with no length field, is walked as the state machine it is: its header
+(`line_start`, `parameters_size`, `uleb128p1` parameter names) and then its
+bytecode, each operand at its own width (ULEB128, SLEB128, `uleb128p1`),
+every string and type index resolved, the undefined opcodes 0x05..=0x08
+refused, and the walk ending only at `DBG_END_SEQUENCE` -- yielding the
+positions the special opcodes emit and the locals `DBG_START_LOCAL`
+introduces. The minimal fixture was rebuilt (140 bytes) to list the
+`header_item` entry the format requires every map to describe, and the
+annotations fixture grew to 744 bytes for the parameter ref list and its
+shifted item offsets. Twenty-three malformed shapes are permanent boot
+controls, each the real fixture with one claim broken. Still absent and named:
+ART's private `hiddenapi_class_data_item` (recognised in the map, left unread
+because its layout is outside the public format document), the meaning of the
+positions and annotations, and the string pool's de-duplication rules.
+
 ## Phase 7 -- GPU / graphics kernel path ⬜
 
 NPS-001 §3 names the GPU command submission path as the one deliberate

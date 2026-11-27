@@ -8716,3 +8716,101 @@ resolved as a field, not proven to be an enum constant; `VALUE_METHOD_HANDLE` is
 carried raw for want of a method-handle table; a parameter annotation's element
 count is not compared to a proto's parameter list) and the string pool's
 de-duplication rules.
+
+*Superseded in part by the 2026-11-27 increment below: `VALUE_METHOD_HANDLE` now
+resolves through the method-handle table, the parameter row goes through an
+`annotation_set_ref_list`, and the annotations fixture is 744 bytes. The
+transcript above is the run it was taken from.*
+
+## The DEX map as a table of contents, and the three sections only it names (2026-11-27)
+
+`parse` used to walk the `map_list` only to find its own entry. The map is now
+read as DATA -- a `map_list` resolver returning typed `MapEntry`s -- and that
+reading is what makes three of the format's sections reachable at all:
+`call_site_ids` and `method_handles` have no header field (they arrived in
+version 038), and a parameter row's `annotation_set_ref_list` is a section in
+its own right.
+
+**Every entry is checked against the file, not just counted.** A type outside
+the format's twenty (`UnknownMapItemType`); offsets that do not strictly
+increase (`MapNotSorted`); a fixed-size section whose `size * item size` runs
+past EOF (`MapSectionOutOfBounds`); a `header_item` entry other than one item at
+offset zero, a `map_list` entry other than this one, or a header-declared table
+described at another offset or with another count (`MapSectionMismatch`); and a
+map that stops describing itself (`NoMapListEntry`). The formula in the format's
+"Item Size In Bytes" column is the extent of ONE list of `size` entries, so it
+is used ONLY for the nine fixed-size id tables; for the list-shaped data items
+(`type_list`, both annotation-set forms, `map_list`) a map entry counts ITEMS,
+and a section of four one-entry sets is legal -- applying the formula there
+would refuse a conformant file.
+
+**The two map-only id tables now resolve.** `method_handle_item` is
+`(handle_type, unused, field_or_method_id, unused)`, and the type is the rule:
+0x00..=0x03 are field accessors and 0x04..=0x08 method invokers, so the id is
+resolved through `field_ids` or `method_ids` accordingly. `call_site_id_item`
+names an `encoded_array_item`, which must be the three-element definition the
+format gives -- `(method handle, method name, method type)` -- and each element
+is resolved by the existing value reader, which means `VALUE_METHOD_HANDLE` is
+no longer carried raw: it now resolves through the method-handle table.
+
+**The parameter row was a level short.** `annotations_directory` read a
+parameter row's `annotations_off` as an `annotation_set_item`; the format says
+it names an `annotation_set_ref_list` -- one annotation SET per parameter -- so
+the row is now resolved through that level and the answer is
+`AnnotatedParameter { member_idx, parameter_sets }`. A control pins the
+difference: pointing the row at zero is refused as
+`AnnotationSetRefListOutOfBounds`, where the old reading would have answered
+`AnnotationSetOutOfBounds`.
+
+**`debug_info_item` has no length; it has a state machine.** The reader walks
+the header (`line_start`, `parameters_size`, `uleb128p1` parameter names) and
+then the bytecode to `DBG_END_SEQUENCE`, reading each operand at its own width
+(ULEB128, SLEB128, `uleb128p1`), resolving every string and type index,
+refusing the undefined opcodes 0x05..=0x08, and producing the positions the
+special opcodes emit and the locals `DBG_START_LOCAL` introduces. A sequence
+that stops before its terminator is `DebugInfoTruncated`, not a short listing.
+
+A sixth real fixture, `userprog/classes_map.dex` (748 bytes, sha256
+`4a3641f01dfaeb4c709e6ceba52d57085f09695a49d0cd959e09f279d72d237f`), carries all
+of it: `Lnyrqis/hello/Mapped;` with a static int `SEED` and one method
+`run(int)V`, two method handles (a `STATIC_GET` of FIELD 0 and an `INVOKE_STATIC`
+of METHOD 0), one call site `[handle 1, "handler", proto 0]`, a parameter row
+through a one-entry ref list to a RUNTIME `Tag` annotation with `note = 5`, and
+a `debug_info_item` stating line 1, the parameter `count`, positions (0,1) and
+(1,2) and one local. Its map lists 20 entries in ascending offset order and is
+compared entry by entry in the boot.
+
+The minimal fixture was rebuilt to be conformant and reproducible: the
+hand-built 128-byte `classes.dex` listed only its `map_list`, but the format
+requires every DEX's map to describe its `header_item`, so the new map check
+would have refused the repository's own smallest file. It is now written by
+`tools/make_dex_fixture.py` as 140 bytes with `[header_item, map_list]` (and the
+positive proof expects the two entries). The annotations fixture grew from 724
+to 744 bytes for the parameter ref list and its item offsets moved; its earlier
+transcript above is the run it was taken from.
+
+Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
+
+```
+  experimental dex-demo: annotation tables -- a 744 byte DEX whose class Lnyrqis/hello/Annotated; names an annotations directory with 1 class, 1 field, 1 method and 1 parameter row(s): its class annotation is VISIBILITY_RUNTIME on Lnyrqis/hello/Marker; with elements count=7 (an int), name="hello" (a string) and flags=[true, false, ["hello"]] (nested arrays two deep), its field/method/parameter rows resolve to a BUILD item, a SYSTEM item and a RUNTIME item on member 0, and its static_values encoded array reads SEED=1000 -- the two-byte VALUE_INT whose width field a reader that ignored it would have read as 232 -- then label="hello"; classes_fields.dex, whose class names no directory and no static values, answers None and an empty array -- OK
+  experimental dex-demo: map sections -- a 748 byte DEX whose map lists 20 entries in ascending offset order (header, the six header-declared tables, call_site_ids at 0xf4, method_handles at 0xf8, string_data, type_list, class_data, code_item, debug_info at 0x1b0, encoded_array, annotation_set_ref_list at 0x1c8, annotation_set, annotation_item, annotations_directory, map): handle 0 is a STATIC_GET of field 0 and handle 1 an INVOKE_STATIC of method 0, call site 0 reads the three-element array [handle 1, "handler", proto 0], the parameter row resolves through one ref-list entry to a RUNTIME Lnyrqis/hello/Tag; with note=5, and the debug_info item states line 1, one parameter "count", positions (0,1) and (1,2), and one local -- the class fixture's six-entry map reads back too -- OK
+  experimental dex-demo: map refusals -- a map item type 0x0009 refused UnknownMapItemType, an entry stepping back to offset 0 refused MapNotSorted, a method_handles section claiming 8192 items past EOF refused MapSectionOutOfBounds, a string_ids count of 12 against the header's 13 refused MapSectionMismatch, a header_item of two items refused MapSectionMismatch, a map_list entry of size 2 refused MapSectionMismatch, a map whose entry is retagged so it no longer describes itself refused NoMapListEntry, a file with NO method_handles asked for one refused MethodHandleSectionMissing, handle index 2 past a two-handle section refused MethodHandleIndexOutOfBounds, handle type 0x09 refused BadMethodHandleType, a file with NO call_site_ids asked for one refused CallSiteSectionMissing, call-site index 1 refused CallSiteIndexOutOfBounds, a call site whose array holds two values refused BadCallSiteShape, a ref list past EOF refused AnnotationSetRefListOutOfBounds, one asked at zero refused AnnotationSetRefListOutOfBounds, one whose size overruns the file refused AnnotationSetRefListTruncated, one naming a set past EOF refused AnnotationSetOutOfBounds, a directory parameter row naming zero instead of a list refused AnnotationSetRefListOutOfBounds, a debug_info past EOF refused DebugInfoOutOfBounds, one asked at zero refused DebugInfoOutOfBounds, an undefined debug opcode 0x05 refused BadDebugInfoOpcode, a debug item cut before its parameter name refused DebugInfoTruncated, and one naming string 126 refused StringIndexOutOfBounds -- OK
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK, map sections OK, map refusals OK -- OK
+```
+
+**What the fixture work caught before the boot.** The host harness
+(`nykernel-package/target/dexhost`, gitignored, which `#[path]`-includes the real
+`dex.rs` AND `dex_demo.rs` with only Adler-32/SHA-1 implemented locally) ran the
+whole demo in seconds. Two mistakes were found there rather than in QEMU: the
+map fixture's `debug_info_item` first sat at an unaligned offset, which failed
+the generator's own 4-alignment assertion for every map entry (real DEX files
+put debug info wherever it lands, but the fixture keeps sections word-aligned so
+a control's patch is a word); and the minimal fixture's map had to grow its
+`header_item` entry before the new check could accept it, which is the check
+working rather than a workaround.
+
+**Still absent, and named:** ART's private `hiddenapi_class_data_item` is
+recognised as a known map entry and left unread -- its layout is outside the
+public `dex-format` document, so guessing it would be worse than naming it; the
+MEANING of the emitted positions and of annotations is still not checked; and
+the string pool's de-duplication rules remain unread.
