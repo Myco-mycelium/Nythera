@@ -172,6 +172,9 @@ const MAP_MAP_OFF: usize = 0x1f8;
 /// parameter's `uleb128p1` name, then the first opcode.
 const MAP_DEBUG_PARAM_NAME_OFF: usize = MAP_DEBUG_INFO_OFF + 2;
 const MAP_DEBUG_OPCODE_OFF: usize = MAP_DEBUG_INFO_OFF + 3;
+/// The `DBG_ADVANCE_LINE` opcode (0x02) and its one-byte SLEB128 delta: after
+/// the special opcode, the `DBG_START_LOCAL` and its three operands.
+const MAP_DEBUG_ADVANCE_LINE_OFF: usize = MAP_DEBUG_INFO_OFF + 9;
 /// The directory's single row: `member_idx` then `annotations_off`.
 const MAP_DIRECTORY_ROW_OFF: usize = MAP_DIRECTORY_OFF + 16;
 const MAP_DIRECTORY_ROW_SET_OFF: usize = MAP_DIRECTORY_ROW_OFF + 4;
@@ -595,6 +598,17 @@ fn map_byte_at(off: usize, value: u8) -> Vec<u8> {
     corrupted
 }
 
+/// `classes_map.dex` with each `(offset, byte)` pair applied, for the controls
+/// that must corrupt several adjacent bytes at once: an over-long LEB128 needs
+/// five continuation bytes in a row, which no single-byte patch can make.
+fn map_bytes_at(patches: &[(usize, u8)]) -> Vec<u8> {
+    let mut corrupted = MAP_DEX.to_vec();
+    for &(off, value) in patches {
+        corrupted[off] = value;
+    }
+    corrupted
+}
+
 /// The sections that exist only in the map, read out of a real file.
 ///
 /// The whole map is compared entry by entry -- type, size and offset -- because
@@ -857,6 +871,37 @@ fn run_negative_map_refusals() -> bool {
         ),
         Err(DexError::StringIndexOutOfBounds)
     );
+    // The other malformed operand a reader can meet: bytes present, encoding
+    // too long. Five continuation bytes in a row is `BadUleb128`, NOT the
+    // truncation above -- the file did not stop, the encoding is over-long.
+    // One control per operand width: the parameter's `uleb128p1` name and the
+    // `DBG_ADVANCE_LINE` SLEB128 delta.
+    let debug_overlong_uleb = matches!(
+        dex::debug_info(
+            &map_bytes_at(&[
+                (MAP_DEBUG_PARAM_NAME_OFF, 0x80),
+                (MAP_DEBUG_PARAM_NAME_OFF + 1, 0x80),
+                (MAP_DEBUG_PARAM_NAME_OFF + 2, 0x80),
+                (MAP_DEBUG_PARAM_NAME_OFF + 3, 0x80),
+                (MAP_DEBUG_PARAM_NAME_OFF + 4, 0x80),
+            ]),
+            MAP_DEBUG_INFO_OFF as u32
+        ),
+        Err(DexError::BadUleb128)
+    );
+    let debug_overlong_sleb = matches!(
+        dex::debug_info(
+            &map_bytes_at(&[
+                (MAP_DEBUG_ADVANCE_LINE_OFF, 0x80),
+                (MAP_DEBUG_ADVANCE_LINE_OFF + 1, 0x80),
+                (MAP_DEBUG_ADVANCE_LINE_OFF + 2, 0x80),
+                (MAP_DEBUG_ADVANCE_LINE_OFF + 3, 0x80),
+                (MAP_DEBUG_ADVANCE_LINE_OFF + 4, 0x80),
+            ]),
+            MAP_DEBUG_INFO_OFF as u32
+        ),
+        Err(DexError::BadUleb128)
+    );
 
     let ok = unknown_type
         && unsorted
@@ -880,9 +925,11 @@ fn run_negative_map_refusals() -> bool {
         && debug_zero
         && bad_debug_opcode
         && debug_truncated
+        && debug_overlong_uleb
+        && debug_overlong_sleb
         && debug_name_past;
     serial_println!(
-        "  experimental dex-demo: map refusals -- a map item type 0x0009 {}, an entry stepping back to offset 0 {}, a method_handles section claiming 8192 items past EOF {}, a string_ids count of 12 against the header's 13 {}, a header_item of two items {}, a map_list entry of size 2 {}, a map whose entry is retagged so it no longer describes itself {}, a file with NO method_handles asked for one {}, handle index 2 past a two-handle section {}, handle type 0x09 {}, a file with NO call_site_ids asked for one {}, call-site index 1 {}, a call site whose array holds two values {}, a ref list past EOF {}, one asked at zero {}, one whose size overruns the file {}, one naming a set past EOF {}, a directory parameter row naming zero instead of a list {}, a debug_info past EOF {}, one asked at zero {}, an undefined debug opcode 0x05 {}, a debug item cut before its parameter name {}, and one naming string 126 {} -- {}",
+        "  experimental dex-demo: map refusals -- a map item type 0x0009 {}, an entry stepping back to offset 0 {}, a method_handles section claiming 8192 items past EOF {}, a string_ids count of 12 against the header's 13 {}, a header_item of two items {}, a map_list entry of size 2 {}, a map whose entry is retagged so it no longer describes itself {}, a file with NO method_handles asked for one {}, handle index 2 past a two-handle section {}, handle type 0x09 {}, a file with NO call_site_ids asked for one {}, call-site index 1 {}, a call site whose array holds two values {}, a ref list past EOF {}, one asked at zero {}, one whose size overruns the file {}, one naming a set past EOF {}, a directory parameter row naming zero instead of a list {}, a debug_info past EOF {}, one asked at zero {}, an undefined debug opcode 0x05 {}, a debug item cut before its parameter name {}, one whose parameter name is an over-long ULEB128 {}, one whose advance-line delta is an over-long SLEB128 {}, and one naming string 126 {} -- {}",
         if unknown_type { "refused UnknownMapItemType" } else { "ACCEPTED" },
         if unsorted { "refused MapNotSorted" } else { "ACCEPTED" },
         if section_past { "refused MapSectionOutOfBounds" } else { "ACCEPTED" },
@@ -905,6 +952,8 @@ fn run_negative_map_refusals() -> bool {
         if debug_zero { "refused DebugInfoOutOfBounds" } else { "ACCEPTED" },
         if bad_debug_opcode { "refused BadDebugInfoOpcode" } else { "ACCEPTED" },
         if debug_truncated { "refused DebugInfoTruncated" } else { "ACCEPTED" },
+        if debug_overlong_uleb { "refused BadUleb128" } else { "ACCEPTED" },
+        if debug_overlong_sleb { "refused BadUleb128" } else { "ACCEPTED" },
         if debug_name_past { "refused StringIndexOutOfBounds" } else { "ACCEPTED" },
         verdict(ok)
     );

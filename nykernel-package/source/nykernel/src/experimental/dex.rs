@@ -2170,7 +2170,9 @@ pub struct DebugInfo {
 /// operand is read at its own width (ULEB128, SLEB128 or `uleb128p1`), every
 /// string and type index is resolved, the undefined opcode range 0x05..=0x08 is
 /// refused, and the sequence must reach `DBG_END_SEQUENCE` inside the file. A
-/// file that stops first is `DebugInfoTruncated`.
+/// file that stops first is `DebugInfoTruncated`; an operand whose bytes are
+/// present but encoded over-long is `BadUleb128`, because there the encoding is
+/// wrong rather than the item short.
 ///
 /// # What is NOT checked
 ///
@@ -2219,7 +2221,7 @@ pub fn debug_info(data: &[u8], off: u32) -> Result<DebugInfo, DexError> {
             0x02 => {
                 // DBG_ADVANCE_LINE: one SLEB128 line delta. The line register
                 // is signed; the format's own line_start is unsigned.
-                let delta = read_sleb128(data, &mut cursor).map_err(|_| DexError::DebugInfoTruncated)?;
+                let delta = debug_sleb(data, &mut cursor)?;
                 line = line.saturating_add(delta);
             }
             0x03 => {
@@ -2261,12 +2263,25 @@ pub fn debug_info(data: &[u8], off: u32) -> Result<DebugInfo, DexError> {
 }
 
 /// One ULEB128 inside a `debug_info_item`, with a missing byte reported as the
-/// truncation it is rather than as an over-long encoding.
+/// truncation it is and an over-long encoding left as `BadUleb128` -- the same
+/// distinction [`member_uleb`] draws for class_data. Collapsing the two would
+/// call a five-byte continuation run a short file, which it is not: the bytes
+/// are there and the encoding is what is wrong.
 fn debug_uleb(data: &[u8], cursor: &mut usize) -> Result<u32, DexError> {
     if *cursor >= data.len() {
         return Err(DexError::DebugInfoTruncated);
     }
-    read_uleb128(data, cursor).map_err(|_| DexError::DebugInfoTruncated)
+    read_uleb128(data, cursor)
+}
+
+/// One SLEB128 inside a `debug_info_item` (the `DBG_ADVANCE_LINE` operand),
+/// split the same way [`debug_uleb`] splits the unsigned reads: a missing byte
+/// is `DebugInfoTruncated`, an over-long encoding stays `BadUleb128`.
+fn debug_sleb(data: &[u8], cursor: &mut usize) -> Result<i32, DexError> {
+    if *cursor >= data.len() {
+        return Err(DexError::DebugInfoTruncated);
+    }
+    read_sleb128(data, cursor)
 }
 
 /// A `uleb128p1` string index: 0 is `NO_INDEX`, anything else is `value - 1` and

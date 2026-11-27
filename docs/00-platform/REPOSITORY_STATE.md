@@ -32,7 +32,10 @@ parameter names through ULEB128/SLEB128 operands and special opcodes to
 A sixth fixture, `userprog/classes_map.dex` (748 bytes), carries all of it; the
 minimal fixture was rebuilt at 140 bytes so its map describes the `header_item`
 the format requires, and the annotations fixture grew to 744 bytes for the
-parameter ref list. Twenty-three malformed-map controls run on every boot. Still
+parameter ref list. Twenty-five malformed-map controls run on every boot, two of
+which keep a `debug_info_item`'s two malformed-operand answers apart: a file that
+stops before its terminator is `DebugInfoTruncated`, while an operand whose bytes
+are present but encode over-long is `BadUleb128`. Still
 absent and named: ART's private `hiddenapi_class_data_item` (recognised, not
 read) and the meaning of positions and annotations.
 

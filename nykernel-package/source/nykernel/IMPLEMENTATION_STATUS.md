@@ -8768,7 +8768,10 @@ then the bytecode to `DBG_END_SEQUENCE`, reading each operand at its own width
 (ULEB128, SLEB128, `uleb128p1`), resolving every string and type index,
 refusing the undefined opcodes 0x05..=0x08, and producing the positions the
 special opcodes emit and the locals `DBG_START_LOCAL` introduces. A sequence
-that stops before its terminator is `DebugInfoTruncated`, not a short listing.
+that stops before its terminator is `DebugInfoTruncated`, not a short listing --
+and an operand that is present but encoded over-long is `BadUleb128`, because
+there the bytes are there and the encoding is what is wrong (see the note at the
+end of this section).
 
 A sixth real fixture, `userprog/classes_map.dex` (748 bytes, sha256
 `4a3641f01dfaeb4c709e6ceba52d57085f09695a49d0cd959e09f279d72d237f`), carries all
@@ -8814,3 +8817,26 @@ recognised as a known map entry and left unread -- its layout is outside the
 public `dex-format` document, so guessing it would be worse than naming it; the
 MEANING of the emitted positions and of annotations is still not checked; and
 the string pool's de-duplication rules remain unread.
+
+**A truncated `debug_info_item` and an over-long one are different answers.**
+The item's operand readers mapped EVERY `read_uleb128`/`read_sleb128` failure
+to `DebugInfoTruncated`, so five continuation bytes in a row -- bytes that are
+present, but not a legal encoding -- were reported as a file that ended early.
+The other LEB helpers in the module already split that case (`member_uleb`,
+`annotation_uleb`): check that a byte is there, then let `BadUleb128` through.
+`debug_uleb` now does exactly that, and the new `debug_sleb` does it for the
+`DBG_ADVANCE_LINE` operand, which had the same collapse at its call site.
+
+Two permanent boot controls pin the difference, five continuation bytes patched
+into the fixture's real operands -- the parameter's `uleb128p1` name and the
+`DBG_ADVANCE_LINE` delta -- each required to be refused as `BadUleb128`. Both
+were `DebugInfoTruncated` before the change, so neither control can pass for the
+truncation control's reason. No fixture byte changed; the two controls patch the
+748-byte file at run time like every other map control.
+
+Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
+
+```
+  experimental dex-demo: map refusals -- a map item type 0x0009 refused UnknownMapItemType, an entry stepping back to offset 0 refused MapNotSorted, a method_handles section claiming 8192 items past EOF refused MapSectionOutOfBounds, a string_ids count of 12 against the header's 13 refused MapSectionMismatch, a header_item of two items refused MapSectionMismatch, a map_list entry of size 2 refused MapSectionMismatch, a map whose entry is retagged so it no longer describes itself refused NoMapListEntry, a file with NO method_handles asked for one refused MethodHandleSectionMissing, handle index 2 past a two-handle section refused MethodHandleIndexOutOfBounds, handle type 0x09 refused BadMethodHandleType, a file with NO call_site_ids asked for one refused CallSiteSectionMissing, call-site index 1 refused CallSiteIndexOutOfBounds, a call site whose array holds two values refused BadCallSiteShape, a ref list past EOF refused AnnotationSetRefListOutOfBounds, one asked at zero refused AnnotationSetRefListOutOfBounds, one whose size overruns the file refused AnnotationSetRefListTruncated, one naming a set past EOF refused AnnotationSetOutOfBounds, a directory parameter row naming zero instead of a list refused AnnotationSetRefListOutOfBounds, a debug_info past EOF refused DebugInfoOutOfBounds, one asked at zero refused DebugInfoOutOfBounds, an undefined debug opcode 0x05 refused BadDebugInfoOpcode, a debug item cut before its parameter name refused DebugInfoTruncated, one whose parameter name is an over-long ULEB128 refused BadUleb128, one whose advance-line delta is an over-long SLEB128 refused BadUleb128, and one naming string 126 refused StringIndexOutOfBounds -- OK
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK, map sections OK, map refusals OK -- OK
+```

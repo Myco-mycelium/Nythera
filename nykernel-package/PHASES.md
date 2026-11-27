@@ -1314,7 +1314,7 @@ positions the special opcodes emit and the locals `DBG_START_LOCAL`
 introduces. The minimal fixture was rebuilt (140 bytes) to list the
 `header_item` entry the format requires every map to describe, and the
 annotations fixture grew to 744 bytes for the parameter ref list and its
-shifted item offsets. Twenty-three malformed shapes are permanent boot
+shifted item offsets. Twenty-five malformed shapes are permanent boot
 controls, each the real fixture with one claim broken. Still absent and named:
 ART's private `hiddenapi_class_data_item` (recognised in the map, left unread
 because its layout is outside the public format document), the meaning of the
