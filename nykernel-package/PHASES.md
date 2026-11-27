@@ -1251,6 +1251,39 @@ latent bugs died with it: `read` would have faulted on a cursor past EOF, and
 the transcript's import list was hard-coded in the wrong order (the client's
 `.idata` is alphabetical), now built from the walk itself.
 
+**2026-11-26: the annotation tables and encoded arrays.** `class_def.annotations_off`
+now resolves through `annotations_directory_item` -- a `class_annotations_off`
+plus three counts, whose class set and whose field/method/parameter rows each
+resolve through an `annotation_set_item` to `annotation_item`s (a visibility
+byte of BUILD/RUNTIME/SYSTEM plus an encoded_annotation whose type index and
+element names are checked against the file's own tables) -- and
+`class_def.static_values_off` resolves through `encoded_array_item`, a ULEB128
+count plus that many `encoded_value`s. Every value form the format defines is
+decoded: the integer widths (byte, short, char, int, long), both floating widths,
+the string/type/field/method/enum/method-type indices (each resolved through the
+table it names), nested arrays, nested annotations, null and boolean. The one
+byte that matters most is the value header, which packs the type in its low five
+bits and `width - 1` in its top three: the width is checked against the type's
+own maximum before it decides how many bytes to read, which is what makes the
+fixture's two-byte `int` 1000 read as 1000 rather than as 232. A fifth real
+fixture (`userprog/classes_annotations.dex`, 724 bytes) carries a class
+annotation with an int, a string and an array two levels deep around another
+array, one annotation each on a field, a method and that method's parameters
+(covering all three visibilities), and a static-values array for its two static
+fields; its four annotation sets and four annotation items are laid out
+contiguously because the map names ONE offset and a count per type. Fifteen
+malformed shapes are permanent boot controls: an offset past EOF for the
+directory, a set, an item and the static values; a directory, set or array count
+that overruns the file; a visibility byte outside the format's three; a value
+type the format does not define; a width its type cannot have; an annotation
+type and a string element index past their tables; a directory row naming a
+field past `field_ids`; a set asked at offset zero; and arrays nested past the
+parser's own depth bound (inline nesting is unbounded in the format, so the
+bound is the parser's, stated as such). Still absent and named: an annotation's
+MEANING (an enum element's field is resolved, not proven to be an enum constant;
+`VALUE_METHOD_HANDLE` is carried raw for want of a method-handle table) and the
+string pool's de-duplication rules.
+
 ## Phase 7 -- GPU / graphics kernel path ⬜
 
 NPS-001 §3 names the GPU command submission path as the one deliberate

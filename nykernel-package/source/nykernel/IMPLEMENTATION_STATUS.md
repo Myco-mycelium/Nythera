@@ -8619,3 +8619,100 @@ re-expressed at the right width.
 different undertaking, not a table this module forgot), annotations, encoded
 arrays, static values, and the string pool's de-duplication rules. `class_data`
 and `code_item` answer what a method's body IS, not what it does.
+
+## The DEX annotations tables and encoded arrays: two item families, one header byte (2026-11-26)
+
+A `class_def_item` names two more item families beyond its member table, and both
+were still at zero in every fixture: `annotations_off` and `static_values_off`.
+They are now resolved.
+
+**The annotation tables are three levels deep, and the parser reads all of them.**
+`class_def.annotations_off` names an `annotations_directory_item` -- a
+`class_annotations_off` plus three counts (fields, methods, parameters) and then
+that many `(member_idx, annotations_off)` rows. Each of those names an
+`annotation_set_item` (a count plus item offsets), and each of THOSE names an
+`annotation_item`: a visibility byte plus an `encoded_annotation` (type index,
+element count, then `(name_idx, encoded_value)` pairs). `annotations_directory`
+returns the annotations themselves, so no caller ever holds an offset it must
+remember to resolve; along the way the visibility byte is checked against the
+format's three values (BUILD/RUNTIME/SYSTEM), the annotation's type index through
+`type_ids`, every element name through the string pool, and a field row's index
+through `field_ids` and a method or parameter row's through `method_ids` -- so a
+directory cannot annotate a member the file's own tables do not have.
+
+**`encoded_array_item` is a count plus `encoded_value`s, and every value form the
+format defines is decoded**: `byte`, `short`, `char`, `int`, `long`, `float`,
+`double`, `method_type`, `method_handle`, `string`, `type`, `field`, `method`,
+`enum`, `array`, `annotation`, `null` and `boolean`. The index forms are resolved
+through the table they name before the value is returned. Two are deliberately
+raw: floats keep their bit pattern (a parser has no business rounding a value it
+only validates, and it keeps `Eq`), and `method_handle` keeps its index because
+this module has no method-handle table to check it against.
+
+**The byte that matters is the value header**, which packs the value type in its
+low five bits and `width - 1` in its top three -- and the width is what says how
+many bytes to read, so it is checked against the type's own maximum before it is
+used. Two types do not follow `width - 1`, and both are stated in their own
+match arms: `byte` is fixed at one byte, and `VALUE_BOOLEAN`'s header field IS
+its byte count (0 = false, 1 = a byte holding true).
+
+**Nesting is inline, so depth is a property of the bytes.** A `VALUE_ARRAY`'s
+value is an `encoded_array` written in place, not an offset, so a reader that
+recursed without a bound could be driven off its stack by a small file. The
+format states no limit; this parser states its own (`MAX_ENCODED_VALUE_DEPTH = 8`)
+and refuses past it, the same kind of decision as refusing a ULEB128 longer than
+five bytes.
+
+A fifth real fixture, `userprog/classes_annotations.dex` (724 bytes, sha256
+`179acbcc538503b55845b520cbc4d7609c4356f3420a5d1b325355e51d51ae12`, built
+deterministically by `tools/make_dex_fixture.py`), carries one class whose
+annotation is `VISIBILITY_RUNTIME` on `Lnyrqis/hello/Marker;` with three elements
+-- `count` = 7 (an `int`), `name` = `"hello"` (a `string`), and `flags` =
+`[true, false, ["hello"]]` (two levels of nested array) -- plus one annotation
+each on a field (BUILD), a method (SYSTEM) and that method's parameters
+(RUNTIME), and a `static_values` array giving the class's two static fields their
+initial values (`SEED` = 1000, stored as a TWO-byte `VALUE_INT`, and `label` =
+`"hello"`). Its four annotation sets and four annotation items are laid out
+contiguously, because a `map_list` names ONE offset and a count per item type --
+interleaving them would make the file non-conformant in a way the map check does
+not catch. The four earlier fixtures regenerate byte for byte.
+
+Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
+
+```
+  experimental dex-demo: annotation tables -- a 724 byte DEX whose class Lnyrqis/hello/Annotated; names an annotations directory with 1 class, 1 field, 1 method and 1 parameter row(s): its class annotation is VISIBILITY_RUNTIME on Lnyrqis/hello/Marker; with elements count=7 (an int), name="hello" (a string) and flags=[true, false, ["hello"]] (nested arrays two deep), its field/method/parameter rows resolve to a BUILD item, a SYSTEM item and a RUNTIME item on member 0, and its static_values encoded array reads SEED=1000 -- the two-byte VALUE_INT whose width field a reader that ignored it would have read as 232 -- then label="hello"; classes_fields.dex, whose class names no directory and no static values, answers None and an empty array -- OK
+  experimental dex-demo: annotation refusals -- a class_def annotations_off past EOF refused AnnotationsDirectoryOutOfBounds, a directory whose field count overruns the file refused AnnotationsDirectoryTruncated, a class_annotations_off past EOF refused AnnotationSetOutOfBounds, a set asked at offset zero refused AnnotationSetOutOfBounds, a set whose size overruns the file refused AnnotationSetTruncated, an annotation item past EOF refused AnnotationItemOutOfBounds, a visibility byte of 3 refused BadAnnotationVisibility, a value type 0x07 refused BadEncodedValueType, an int value claiming seven bytes refused BadEncodedValueArg, an annotation type index past type_ids refused TypeIndexOutOfBounds, a string value naming string 127 refused StringIndexOutOfBounds, a directory row naming field 5 refused FieldIndexOutOfBounds, a static_values_off past EOF refused EncodedArrayOutOfBounds, an array whose count overruns the file refused EncodedArrayTruncated, and arrays nested nine deep refused EncodedValueTooDeep -- OK
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK -- OK
+```
+
+**What the first run caught, and why it is recorded here.** The increment's first
+boot printed `annotation tables -- ... -- FAILED` and `3` clauses of the refusal
+line as `ACCEPTED`, and the kernel panicked on the failing self-test. One real
+parser bug and two mis-built controls were behind it:
+
+- The `VALUE_BOOLEAN` arm read `width + 1` bytes instead of `width`, so a
+  `[true, false, ...]` array consumed the NEXT value's header as a payload byte
+  and then hit `0x05` -- an undefined type -- a few bytes later. The refusal that
+  fired was `BadEncodedValueType`, naming the wrong table entirely. Fixed by
+  reading `width` bytes for booleans, which is the format's own rule, and stated
+  in the module doc as the exception it is.
+- "an array whose count overruns the file" claimed 64 values where 551 bytes were
+  left. A count of 64 is one the file CAN hold, so the parse went on and failed
+  later for a different reason. The control now claims 639 (`0xff 0x04`) against
+  those 551 bytes.
+- "arrays nested nine deep" was passed offset 0, and `encoded_array(0)` is the
+  format's "no static values" -- it answers an empty array. The control was
+  measuring the absent case. It now reads at offset 1 behind a pad byte.
+
+Because a boot is the expensive way to find that out, the parser was also built
+against a host harness (`nykernel-package/target/dexhost`, a throwaway binary that
+`#[path]`-includes the same `src/experimental/dex.rs` and stubs the two crypto
+calls), which reproduced all three failures in seconds and then confirmed all 21
+positive and control cases before the next boot. It is in a gitignored `target/`
+directory and is not part of the build.
+
+**Still absent, and named:** an annotation's MEANING (a `VALUE_ENUM`'s field is
+resolved as a field, not proven to be an enum constant; `VALUE_METHOD_HANDLE` is
+carried raw for want of a method-handle table; a parameter annotation's element
+count is not compared to a proto's parameter list) and the string pool's
+de-duplication rules.

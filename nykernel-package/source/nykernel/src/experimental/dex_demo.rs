@@ -13,6 +13,7 @@
 //! permanent, shipped code -- they run on every boot, not just once
 //! during development.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::experimental::dex::{self, DexError};
@@ -96,6 +97,47 @@ const EXPECTED_FIELD_CLASS: &[u8] = b"Lnyrqis/hello/Fields;";
 const EXPECTED_FIELD_INT: &[u8] = b"I";
 const EXPECTED_FIELD_STRING: &[u8] = b"Ljava/lang/String;";
 
+/// The fifth real fixture (`userprog/classes_annotations.dex`, built by the same
+/// script): the fields fixture's tables the annotations and encoded arrays need,
+/// with one class whose `annotations_off` names a directory and whose
+/// `static_values_off` names an `encoded_array_item`. It is the specimen for the
+/// two item families the earlier four files leave at zero.
+static ANN_DEX: &[u8] = include_bytes!("../../userprog/classes_annotations.dex");
+
+/// `classes_annotations.dex`'s fixed layout, repeated so each control patches a
+/// byte this file names rather than an offset it guessed. The script asserts
+/// every one of these before it writes the file, and prints them.
+const ANN_CLASS_DEFS_OFF: usize = 0xe4;
+const ANN_CLASS_DATA_OFF: usize = 0x1a0;
+const ANN_STATIC_VALUES_OFF: usize = 0x1ac;
+const ANN_DIRECTORY_OFF: usize = 0x1b4;
+const ANN_CLASS_SET_OFF: usize = 0x1dc;
+const ANN_FIELD_SET_OFF: usize = 0x1e4;
+const ANN_METHOD_SET_OFF: usize = 0x1ec;
+const ANN_PARAMETER_SET_OFF: usize = 0x1f4;
+const ANN_CLASS_ITEM_OFF: usize = 0x1fc;
+/// Inside the class annotation item: its visibility byte, its type index, then
+/// the first element's `(name_idx, value header)` pair. The two controls that
+/// corrupt a value header need the header's own byte, not the item's.
+const ANN_CLASS_ITEM_TYPE_IDX_OFF: usize = ANN_CLASS_ITEM_OFF + 1;
+const ANN_CLASS_ITEM_COUNT_VALUE_OFF: usize = ANN_CLASS_ITEM_OFF + 4;
+/// The static values array: its count, then `SEED`'s two-byte int header and
+/// `label`'s string index.
+const ANN_STATIC_VALUES_STRING_OFF: usize = ANN_STATIC_VALUES_OFF + 5;
+/// `class_def_item`'s own fields, which the controls that point the class at a
+/// directory or an array outside the file patch.
+const ANN_CLASS_DEF_ANNOTATIONS_OFF: usize = ANN_CLASS_DEFS_OFF + 20;
+const ANN_CLASS_DEF_STATIC_VALUES_OFF: usize = ANN_CLASS_DEFS_OFF + 28;
+const ANN_MARKER_STRING: u32 = 9;
+const ANN_MARKER_TYPE: u32 = 5;
+const ANN_HELLO_STRING: u32 = 12;
+const ANN_COUNT_NAME: u32 = 10;
+const ANN_NAME_NAME: u32 = 11;
+const ANN_FLAGS_NAME: u32 = 13;
+const EXPECTED_ANN_CLASS: &[u8] = b"Lnyrqis/hello/Annotated;";
+const EXPECTED_MARKER: &[u8] = b"Lnyrqis/hello/Marker;";
+const EXPECTED_HELLO: &[u8] = b"hello";
+
 /// Runs the header proof, the table proof and every permanent negative check.
 /// Returns `true` iff every part of the proof held.
 pub fn run() -> bool {
@@ -110,9 +152,11 @@ pub fn run() -> bool {
     let method_refusals_ok = run_negative_method_refusals();
     let members_ok = run_field_and_code_tables();
     let member_refusals_ok = run_negative_member_refusals();
+    let annotations_ok = run_annotation_tables();
+    let annotation_refusals_ok = run_negative_annotation_refusals();
 
     serial_println!(
-        "  experimental dex-demo self-test: crypto known-answer {}, valid parse+integrity {}, bad-magic rejection {}, map-self-reference rejection {}, checksum rejection {}, class tables {}, table refusals {}, method tables {}, method refusals {}, field and code tables {}, member refusals {} -- {}",
+        "  experimental dex-demo self-test: crypto known-answer {}, valid parse+integrity {}, bad-magic rejection {}, map-self-reference rejection {}, checksum rejection {}, class tables {}, table refusals {}, method tables {}, method refusals {}, field and code tables {}, member refusals {}, annotation tables {}, annotation refusals {} -- {}",
         verdict(kats_ok),
         verdict(positive_ok),
         verdict(magic_check_ok),
@@ -124,7 +168,9 @@ pub fn run() -> bool {
         verdict(method_refusals_ok),
         verdict(members_ok),
         verdict(member_refusals_ok),
-        verdict(kats_ok && positive_ok && magic_check_ok && map_check_ok && checksum_check_ok && tables_ok && refusals_ok && methods_ok && method_refusals_ok && members_ok && member_refusals_ok)
+        verdict(annotations_ok),
+        verdict(annotation_refusals_ok),
+        verdict(kats_ok && positive_ok && magic_check_ok && map_check_ok && checksum_check_ok && tables_ok && refusals_ok && methods_ok && method_refusals_ok && members_ok && member_refusals_ok && annotations_ok && annotation_refusals_ok)
     );
 
     kats_ok
@@ -138,6 +184,317 @@ pub fn run() -> bool {
         && method_refusals_ok
         && members_ok
         && member_refusals_ok
+        && annotations_ok
+        && annotation_refusals_ok
+}
+
+/// The fixture with the four bytes at `off` replaced by `value`, for the
+/// controls that point a `u4` offset at a place the file does not have.
+fn with_u32_at(off: usize, value: u32) -> Vec<u8> {
+    let mut corrupted = ANN_DEX.to_vec();
+    corrupted[off..off + 4].copy_from_slice(&value.to_le_bytes());
+    corrupted
+}
+
+/// The fixture with the single byte at `off` replaced, for the controls that
+/// corrupt a visibility byte, an `encoded_value` header or a ULEB128 index.
+fn with_byte_at(off: usize, value: u8) -> Vec<u8> {
+    let mut corrupted = ANN_DEX.to_vec();
+    corrupted[off] = value;
+    corrupted
+}
+
+/// The fixture with the bytes at `off` replaced, for the control whose count
+/// must be a MULTI-byte ULEB128 to claim more values than the file can hold.
+fn with_bytes_at(off: usize, bytes: &[u8]) -> Vec<u8> {
+    let mut corrupted = ANN_DEX.to_vec();
+    corrupted[off..off + bytes.len()].copy_from_slice(bytes);
+    corrupted
+}
+
+/// The annotations tables and the encoded array, read out of a real file.
+///
+/// Every part of the answer is compared against a structure built here by hand
+/// from the fixture's own bytes: the directory's four parts, each annotation
+/// item's visibility/type/elements, the nested-array element two levels down,
+/// and the static values array. The two things a reader can get wrong without
+/// any refusal firing are both pinned: the int 1000 is stored two bytes wide
+/// (a reader that ignored the header's width field would read 232), and the
+/// nested array's inner array is reached by reading INLINE bytes rather than an
+/// offset.
+fn run_annotation_tables() -> bool {
+    let info = match dex::parse(ANN_DEX) {
+        Ok(info) => info,
+        Err(e) => {
+            serial_println!(
+                "  experimental dex-demo: FAILED to parse classes_annotations.dex: {:?}",
+                e
+            );
+            return false;
+        }
+    };
+    let integrity_ok = dex::verify(ANN_DEX).is_ok();
+    let class_ok = matches!(dex::class_descriptor(ANN_DEX, 0), Ok(d) if d == EXPECTED_ANN_CLASS);
+    let marker_ok = matches!(dex::type_descriptor(ANN_DEX, ANN_MARKER_TYPE), Ok(t) if t == EXPECTED_MARKER);
+    let hello_ok = matches!(dex::string(ANN_DEX, ANN_HELLO_STRING), Ok(s) if s == EXPECTED_HELLO);
+    // The fixture's class_data is unchanged from the fields fixture's shape: two
+    // static fields (the ones the encoded array gives values to) and one native
+    // method with no code. Checked so the annotations are being read out of a
+    // class whose own member tables are sound.
+    let members_ok = matches!(dex::class_data(ANN_DEX, 0), Ok(Some(ref d))
+        if d.static_fields.len() == 2
+            && d.direct_methods.len() == 1
+            && d.direct_methods[0].code_off.is_none());
+
+    let marker_item = |visibility: u8, elements: Vec<dex::AnnotationElement>| dex::AnnotationItem {
+        visibility,
+        annotation: dex::EncodedAnnotation {
+            type_idx: ANN_MARKER_TYPE,
+            elements,
+        },
+    };
+    let expected = dex::AnnotationsDirectory {
+        class_annotations: vec![marker_item(
+            dex::VISIBILITY_RUNTIME,
+            vec![
+                dex::AnnotationElement {
+                    name_idx: ANN_COUNT_NAME,
+                    value: dex::EncodedValue::Int(7),
+                },
+                dex::AnnotationElement {
+                    name_idx: ANN_NAME_NAME,
+                    value: dex::EncodedValue::String(ANN_HELLO_STRING),
+                },
+                dex::AnnotationElement {
+                    name_idx: ANN_FLAGS_NAME,
+                    value: dex::EncodedValue::Array(vec![
+                        dex::EncodedValue::Boolean(true),
+                        dex::EncodedValue::Boolean(false),
+                        dex::EncodedValue::Array(vec![dex::EncodedValue::String(ANN_HELLO_STRING)]),
+                    ]),
+                },
+            ],
+        )],
+        field_annotations: vec![dex::AnnotatedMember {
+            member_idx: 0,
+            annotations: vec![marker_item(
+                dex::VISIBILITY_BUILD,
+                vec![dex::AnnotationElement {
+                    name_idx: ANN_COUNT_NAME,
+                    value: dex::EncodedValue::Int(1),
+                }],
+            )],
+        }],
+        method_annotations: vec![dex::AnnotatedMember {
+            member_idx: 0,
+            annotations: vec![marker_item(
+                dex::VISIBILITY_SYSTEM,
+                vec![dex::AnnotationElement {
+                    name_idx: ANN_NAME_NAME,
+                    value: dex::EncodedValue::String(ANN_HELLO_STRING),
+                }],
+            )],
+        }],
+        parameter_annotations: vec![dex::AnnotatedMember {
+            member_idx: 0,
+            annotations: vec![marker_item(
+                dex::VISIBILITY_RUNTIME,
+                vec![dex::AnnotationElement {
+                    name_idx: ANN_NAME_NAME,
+                    value: dex::EncodedValue::Array(vec![dex::EncodedValue::String(
+                        ANN_HELLO_STRING,
+                    )]),
+                }],
+            )],
+        }],
+    };
+    let directory_ok =
+        matches!(dex::annotations_directory(ANN_DEX, 0), Ok(Some(ref d)) if *d == expected);
+    let values_ok = matches!(dex::static_values(ANN_DEX, 0), Ok(ref v)
+        if matches!(
+            v.as_slice(),
+            [dex::EncodedValue::Int(1000), dex::EncodedValue::String(ANN_HELLO_STRING)]
+        ));
+    // Each of the four sets read by its own offset: the directory proved they are
+    // REACHABLE, and this proves the map's four offsets are the four distinct
+    // sets the fixture laid down, each with its own visibility.
+    let sets_ok = matches!(dex::annotation_set(ANN_DEX, ANN_CLASS_SET_OFF as u32),
+            Ok(ref s) if s.len() == 1 && s[0].visibility == dex::VISIBILITY_RUNTIME)
+        && matches!(dex::annotation_set(ANN_DEX, ANN_FIELD_SET_OFF as u32),
+            Ok(ref s) if s.len() == 1 && s[0].visibility == dex::VISIBILITY_BUILD)
+        && matches!(dex::annotation_set(ANN_DEX, ANN_METHOD_SET_OFF as u32),
+            Ok(ref s) if s.len() == 1 && s[0].visibility == dex::VISIBILITY_SYSTEM)
+        && matches!(dex::annotation_set(ANN_DEX, ANN_PARAMETER_SET_OFF as u32),
+            Ok(ref s) if s.len() == 1 && s[0].visibility == dex::VISIBILITY_RUNTIME);
+    // The `0` cases, on a real class: the fields fixture names no directory and
+    // no static values, so both answer "none" rather than an error.
+    let no_directory_ok = matches!(dex::annotations_directory(FIELD_DEX, 0), Ok(None));
+    let no_values_ok = matches!(dex::static_values(FIELD_DEX, 0), Ok(ref v) if v.is_empty());
+    let absent_array_ok = matches!(dex::encoded_array(ANN_DEX, 0), Ok(ref v) if v.is_empty());
+
+    let ok = integrity_ok
+        && class_ok
+        && marker_ok
+        && hello_ok
+        && members_ok
+        && directory_ok
+        && values_ok
+        && sets_ok
+        && no_directory_ok
+        && no_values_ok
+        && absent_array_ok;
+    serial_println!(
+        "  experimental dex-demo: annotation tables -- a {} byte DEX whose class Lnyrqis/hello/Annotated; names an annotations directory with 1 class, 1 field, 1 method and 1 parameter row(s): its class annotation is VISIBILITY_RUNTIME on Lnyrqis/hello/Marker; with elements count=7 (an int), name=\"hello\" (a string) and flags=[true, false, [\"hello\"]] (nested arrays two deep), its field/method/parameter rows resolve to a BUILD item, a SYSTEM item and a RUNTIME item on member 0, and its static_values encoded array reads SEED=1000 -- the two-byte VALUE_INT whose width field a reader that ignored it would have read as 232 -- then label=\"hello\"; classes_fields.dex, whose class names no directory and no static values, answers None and an empty array -- {}",
+        info.file_size,
+        verdict(ok)
+    );
+    ok
+}
+
+/// Every malformed annotations/encoded-array shape the new resolvers must
+/// refuse, each on a copy of the real fixture with one claim broken: an offset
+/// past EOF for the directory, a set, an item and the static values; a directory
+/// count and a set count that overrun the file; an array count that overruns it;
+/// a visibility byte outside the format's three; an `encoded_value` type the
+/// format does not define and a width its type cannot have; an annotation type
+/// index and a string element index past their tables; a directory row naming a
+/// field past `field_ids`; a set asked at offset zero (the format's "nothing" in
+/// a place that requires a set); and nesting past the parser's depth bound.
+fn run_negative_annotation_refusals() -> bool {
+    let directory_past = matches!(
+        dex::annotations_directory(&with_u32_at(ANN_CLASS_DEF_ANNOTATIONS_OFF, 0x7f_fff0), 0),
+        Err(DexError::AnnotationsDirectoryOutOfBounds)
+    );
+    let directory_truncated = matches!(
+        dex::annotations_directory(&with_u32_at(ANN_DIRECTORY_OFF + 4, 0x7fff), 0),
+        Err(DexError::AnnotationsDirectoryTruncated)
+    );
+    let set_past = matches!(
+        dex::annotations_directory(&with_u32_at(ANN_DIRECTORY_OFF, 0x7f_fff0), 0),
+        Err(DexError::AnnotationSetOutOfBounds)
+    );
+    let set_zero = matches!(
+        dex::annotation_set(ANN_DEX, 0),
+        Err(DexError::AnnotationSetOutOfBounds)
+    );
+    let set_truncated = matches!(
+        dex::annotation_set(
+            &with_u32_at(ANN_CLASS_SET_OFF, 0x4000_0000),
+            ANN_CLASS_SET_OFF as u32
+        ),
+        Err(DexError::AnnotationSetTruncated)
+    );
+    let item_past = matches!(
+        dex::annotation_item(ANN_DEX, 0x7f_fff0),
+        Err(DexError::AnnotationItemOutOfBounds)
+    );
+    let bad_visibility = matches!(
+        dex::annotation_item(&with_byte_at(ANN_CLASS_ITEM_OFF, 3), ANN_CLASS_ITEM_OFF as u32),
+        Err(DexError::BadAnnotationVisibility)
+    );
+    // 0x07 is not a value type (the format has 0x00, 0x02..0x04, 0x06, 0x10,
+    // 0x11, 0x15..0x1f), and it is what the first element's int header becomes.
+    let bad_type = matches!(
+        dex::annotation_item(
+            &with_byte_at(ANN_CLASS_ITEM_COUNT_VALUE_OFF, 0x07),
+            ANN_CLASS_ITEM_OFF as u32
+        ),
+        Err(DexError::BadEncodedValueType)
+    );
+    // The same int header, but claiming a seven-byte value: an int has at most
+    // four, so the width field itself is the malformed claim.
+    let bad_arg = matches!(
+        dex::annotation_item(
+            &with_byte_at(ANN_CLASS_ITEM_COUNT_VALUE_OFF, 0x04 | (7 << 5)),
+            ANN_CLASS_ITEM_OFF as u32
+        ),
+        Err(DexError::BadEncodedValueArg)
+    );
+    let type_past = matches!(
+        dex::annotation_item(
+            &with_byte_at(ANN_CLASS_ITEM_TYPE_IDX_OFF, 0x7f),
+            ANN_CLASS_ITEM_OFF as u32
+        ),
+        Err(DexError::TypeIndexOutOfBounds)
+    );
+    let string_past = matches!(
+        dex::static_values(&with_byte_at(ANN_STATIC_VALUES_STRING_OFF, 0x7f), 0),
+        Err(DexError::StringIndexOutOfBounds)
+    );
+    let field_row_past = matches!(
+        dex::annotations_directory(&with_u32_at(ANN_DIRECTORY_OFF + 16, 5), 0),
+        Err(DexError::FieldIndexOutOfBounds)
+    );
+    let values_past = matches!(
+        dex::static_values(&with_u32_at(ANN_CLASS_DEF_STATIC_VALUES_OFF, 0x7f_fff0), 0),
+        Err(DexError::EncodedArrayOutOfBounds)
+    );
+    // A count is legal for any value the bytes left could hold (each value is at
+    // least its header byte), so the control has to claim more than the file
+    // has: 0xff 0x04 is the ULEB128 639 against 551 bytes left. A one-byte 0x40
+    // (64) would be a count the file CAN hold and would be refused later, for a
+    // different reason -- the first run of this control proved that.
+    let array_truncated = matches!(
+        dex::encoded_array(
+            &with_bytes_at(ANN_STATIC_VALUES_OFF, &[0xff, 0x04]),
+            ANN_STATIC_VALUES_OFF as u32
+        ),
+        Err(DexError::EncodedArrayTruncated)
+    );
+    // Nesting is INLINE in this format, so depth is a property of the bytes: a
+    // buffer of the bound's own levels plus one, each a one-element array, then
+    // a null leaf. The bound must stop it, and the fixture's two-deep array
+    // above is the proof it does not stop ordinary nesting.
+    //
+    // Offset 1, not 0: `encoded_array(0)` is the format's "no static values" and
+    // answers an empty array, so a control that read at 0 would be measuring that
+    // case instead of nesting (the first run of this control did exactly that).
+    let mut deep = vec![0u8];
+    for _ in 0..=dex::MAX_ENCODED_VALUE_DEPTH {
+        deep.push(1);
+        deep.push(0x1c);
+    }
+    deep.push(0x1e);
+    let too_deep = matches!(
+        dex::encoded_array(&deep, 1),
+        Err(DexError::EncodedValueTooDeep)
+    );
+
+    let ok = directory_past
+        && directory_truncated
+        && set_past
+        && set_zero
+        && set_truncated
+        && item_past
+        && bad_visibility
+        && bad_type
+        && bad_arg
+        && type_past
+        && string_past
+        && field_row_past
+        && values_past
+        && array_truncated
+        && too_deep;
+    serial_println!(
+        "  experimental dex-demo: annotation refusals -- a class_def annotations_off past EOF {}, a directory whose field count overruns the file {}, a class_annotations_off past EOF {}, a set asked at offset zero {}, a set whose size overruns the file {}, an annotation item past EOF {}, a visibility byte of 3 {}, a value type 0x07 {}, an int value claiming seven bytes {}, an annotation type index past type_ids {}, a string value naming string 127 {}, a directory row naming field 5 {}, a static_values_off past EOF {}, an array whose count overruns the file {}, and arrays nested nine deep {} -- {}",
+        if directory_past { "refused AnnotationsDirectoryOutOfBounds" } else { "ACCEPTED" },
+        if directory_truncated { "refused AnnotationsDirectoryTruncated" } else { "ACCEPTED" },
+        if set_past { "refused AnnotationSetOutOfBounds" } else { "ACCEPTED" },
+        if set_zero { "refused AnnotationSetOutOfBounds" } else { "ACCEPTED" },
+        if set_truncated { "refused AnnotationSetTruncated" } else { "ACCEPTED" },
+        if item_past { "refused AnnotationItemOutOfBounds" } else { "ACCEPTED" },
+        if bad_visibility { "refused BadAnnotationVisibility" } else { "ACCEPTED" },
+        if bad_type { "refused BadEncodedValueType" } else { "ACCEPTED" },
+        if bad_arg { "refused BadEncodedValueArg" } else { "ACCEPTED" },
+        if type_past { "refused TypeIndexOutOfBounds" } else { "ACCEPTED" },
+        if string_past { "refused StringIndexOutOfBounds" } else { "ACCEPTED" },
+        if field_row_past { "refused FieldIndexOutOfBounds" } else { "ACCEPTED" },
+        if values_past { "refused EncodedArrayOutOfBounds" } else { "ACCEPTED" },
+        if array_truncated { "refused EncodedArrayTruncated" } else { "ACCEPTED" },
+        if too_deep { "refused EncodedValueTooDeep" } else { "ACCEPTED" },
+        verdict(ok)
+    );
+    ok
 }
 
 fn verdict(ok: bool) -> &'static str {

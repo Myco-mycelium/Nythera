@@ -39,6 +39,18 @@
 //! code units of a method that has code, so a member table can say both what a
 //! field IS and whether a method has a body (and how many words it is).
 //!
+//! `annotations_directory` answers a class's annotations (the directory's class,
+//! field, method and parameter rows, each resolved through its
+//! `annotation_set_item` to `annotation_item`s), and `encoded_array` /
+//! `static_values` read the `encoded_array_item` format: a ULEB128 count plus
+//! that many `encoded_value`s, whose one header byte packs the value TYPE in its
+//! low five bits and a `width - 1` in its top three. Every value form the
+//! format defines is decoded -- the integer and floating widths, string, type,
+//! field, method, enum and method-type indices, nested arrays and nested
+//! annotations, null and boolean -- and each one's declared width is the check
+//! that says how many bytes to read, so an index cannot be assembled from the
+//! wrong number of them.
+//!
 //! Two rules of the format are load-bearing here rather than incidental, and
 //! both are the kind a hand-written reader gets wrong on a small fixture:
 //!
@@ -59,9 +71,12 @@
 //! Still absent, and named rather than implied: the MEANING of the code units
 //! `code_item` returns (decoding, verifying and executing Dalvik instructions is
 //! an interpreter or an AOT compiler -- a different undertaking, not a table
-//! this module forgot), annotations, encoded arrays, static values, and the
-//! string *pool* de-duplication rules. Those are the next tables, not a hidden
-//! part of these ones.
+//! this module forgot), the MEANING of an annotation (a `VALUE_ENUM`'s field is
+//! resolved as a field, not proven to be an enum constant; `VALUE_METHOD_HANDLE`
+//! is carried raw because this module has no method-handle table to resolve it
+//! against; a parameter annotation's element count is not compared to a proto's
+//! parameter list), and the string *pool* de-duplication rules. Those are the
+//! next questions, not a hidden part of these tables.
 //!
 //! Like every other `experimental` parser, stays paranoid about
 //! untrusted input: every offset and size is bounds-checked against
@@ -97,6 +112,47 @@ const CODE_ITEM_HEADER: u32 = 16;
 /// One `try_item` (start_addr, insn_count, handler_off), used only to bound the
 /// tries a code_item declares; this module does not decode handlers.
 const TRY_ITEM_SIZE: u32 = 8;
+
+/// `annotations_directory_item`'s fixed header: `class_annotations_off` then
+/// three counts -- four `u4`s. Each row after it is `member_idx` + `annotations_off`.
+const ANNOTATIONS_DIRECTORY_HEADER: u32 = 16;
+const ANNOTATION_ROW: u32 = 8;
+/// `annotation_set_item`: a `u4` size then that many `u4` item offsets.
+const ANNOTATION_SET_HEADER: u32 = 4;
+const ANNOTATION_SET_ENTRY: u32 = 4;
+
+/// How deep nested `VALUE_ARRAY`/`VALUE_ANNOTATION` values may go. The format
+/// states no limit, so this is this parser's own bound -- the same kind of
+/// decision as refusing a ULEB128 longer than five bytes: real files nest a
+/// handful of levels, and a bound is what keeps a cyclic-looking file from
+/// consuming the stack before any check can run.
+pub const MAX_ENCODED_VALUE_DEPTH: u32 = 8;
+
+/// `annotation_item.visibility`: compiled-out, runtime-visible, or visible to
+/// the system only. The three values are the whole domain.
+pub const VISIBILITY_BUILD: u8 = 0;
+pub const VISIBILITY_RUNTIME: u8 = 1;
+pub const VISIBILITY_SYSTEM: u8 = 2;
+
+/// `encoded_value` header types (`header & 0x1f`).
+const VALUE_BYTE: u8 = 0x00;
+const VALUE_SHORT: u8 = 0x02;
+const VALUE_CHAR: u8 = 0x03;
+const VALUE_INT: u8 = 0x04;
+const VALUE_LONG: u8 = 0x06;
+const VALUE_FLOAT: u8 = 0x10;
+const VALUE_DOUBLE: u8 = 0x11;
+const VALUE_METHOD_TYPE: u8 = 0x15;
+const VALUE_METHOD_HANDLE: u8 = 0x16;
+const VALUE_STRING: u8 = 0x17;
+const VALUE_TYPE: u8 = 0x18;
+const VALUE_FIELD: u8 = 0x19;
+const VALUE_METHOD: u8 = 0x1a;
+const VALUE_ENUM: u8 = 0x1b;
+const VALUE_ARRAY: u8 = 0x1c;
+const VALUE_ANNOTATION: u8 = 0x1d;
+const VALUE_NULL: u8 = 0x1e;
+const VALUE_BOOLEAN: u8 = 0x1f;
 
 /// `ACC_NATIVE`: a method whose body is outside the DEX file (JNI). It is the
 /// format's own reason for a `code_off` of zero.
@@ -194,6 +250,52 @@ pub enum DexError {
     /// of the frame, so a file that claims otherwise has no register window the
     /// verifier could accept.
     CodeItemRegisterMismatch,
+    /// A `class_def.annotations_off` (or an annotations directory's
+    /// `class_annotations_off`) that does not land inside the file. Both are
+    /// dereferenced, so both are checked where they are read.
+    AnnotationsDirectoryOutOfBounds,
+    /// An `annotations_directory_item` whose three counts claim more rows than
+    /// the bytes left could hold. Each row is eight bytes, so a count past that
+    /// bound is a truncated file, not a large directory.
+    AnnotationsDirectoryTruncated,
+    /// An `annotation_set_item` offset outside the file. Zero is included: a
+    /// row's `annotations_off` is required to name a set, so a zero there is
+    /// the format's "nothing" used where nothing is not allowed.
+    AnnotationSetOutOfBounds,
+    /// An `annotation_set_item` whose size claims more item offsets than the
+    /// bytes left could hold.
+    AnnotationSetTruncated,
+    /// An `annotation_item` offset outside the file (or zero, for the same
+    /// reason an `annotation_set_item` of zero is refused).
+    AnnotationItemOutOfBounds,
+    /// An `annotation_item` that stops before its encoded annotation does -- its
+    /// type index, element count, or an element's name index runs past EOF.
+    AnnotationItemTruncated,
+    /// A visibility byte other than BUILD (0), RUNTIME (1) or SYSTEM (2).
+    BadAnnotationVisibility,
+    /// An `encoded_value` whose header names a type this format does not define
+    /// (0x01, 0x05, 0x07..0x0f, 0x12..0x14 and every value above 0x1f are not
+    /// value types).
+    BadEncodedValueType,
+    /// An `encoded_value` whose header's width field is impossible for its type:
+    /// wider than the type's own maximum, or non-zero for a type that has no
+    /// width at all (null, array, annotation). The byte that says how many bytes
+    /// to read is the whole reason this field exists, so a nonsensical one is
+    /// refused rather than clamped.
+    BadEncodedValueArg,
+    /// An `encoded_array_item` offset outside the file.
+    EncodedArrayOutOfBounds,
+    /// An `encoded_array_item` whose count claims more values than the bytes
+    /// left could hold (every value is at least its one header byte).
+    EncodedArrayTruncated,
+    /// An `encoded_value` that stops before its own bytes do: the header was
+    /// read, and the width it declared runs past EOF.
+    EncodedValueTruncated,
+    /// Nested arrays or annotations deeper than [`MAX_ENCODED_VALUE_DEPTH`].
+    /// Nesting is INLINE in this format (a `VALUE_ARRAY`'s value is an
+    /// encoded_array, not an offset), so depth is a property of the bytes and a
+    /// reader that recursed without a bound could be driven off its stack.
+    EncodedValueTooDeep,
 }
 
 #[derive(Debug)]
@@ -225,6 +327,12 @@ pub struct ClassDef {
     /// methods (a legal, empty class), otherwise the offset [`class_data`]
     /// parses.
     pub class_data_off: u32,
+    /// The class's `annotations_off`: 0 when the class has no annotations
+    /// directory at all, otherwise the offset [`annotations_directory`] reads.
+    pub annotations_off: u32,
+    /// The class's `static_values_off`: 0 when the class declares no static
+    /// initialisers, otherwise the `encoded_array_item` [`static_values`] reads.
+    pub static_values_off: u32,
 }
 
 fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
@@ -560,7 +668,9 @@ pub fn class_def(data: &[u8], index: u32) -> Result<ClassDef, DexError> {
     let access_flags = read_u32(data, item_off + 4).ok_or(DexError::ClassIndexOutOfBounds)?;
     let superclass = read_u32(data, item_off + 8).ok_or(DexError::ClassIndexOutOfBounds)?;
     let source_file = read_u32(data, item_off + 16).ok_or(DexError::ClassIndexOutOfBounds)?;
+    let annotations_off = read_u32(data, item_off + 20).ok_or(DexError::ClassIndexOutOfBounds)?;
     let class_data_off = read_u32(data, item_off + 24).ok_or(DexError::ClassIndexOutOfBounds)?;
+    let static_values_off = read_u32(data, item_off + 28).ok_or(DexError::ClassIndexOutOfBounds)?;
 
     // Resolve both type indices now: the struct then only ever carries indices
     // that the file's own type table answered for.
@@ -581,9 +691,19 @@ pub fn class_def(data: &[u8], index: u32) -> Result<ClassDef, DexError> {
         Some(source_file)
     };
     // A non-zero class_data_off is dereferenced by `class_data`, so it is
-    // checked here, where the class itself is already being validated.
+    // checked here, where the class itself is already being validated. The same
+    // rule covers the two offsets added with the annotation tables: each one is
+    // read by exactly one resolver, and a class that names a place outside the
+    // file should be refused as a class, before that resolver allocates
+    // anything.
     if class_data_off != 0 && class_data_off as usize >= data.len() {
         return Err(DexError::ClassDataOutOfBounds);
+    }
+    if annotations_off != 0 && annotations_off as usize >= data.len() {
+        return Err(DexError::AnnotationsDirectoryOutOfBounds);
+    }
+    if static_values_off != 0 && static_values_off as usize >= data.len() {
+        return Err(DexError::EncodedArrayOutOfBounds);
     }
     Ok(ClassDef {
         class_idx,
@@ -591,6 +711,8 @@ pub fn class_def(data: &[u8], index: u32) -> Result<ClassDef, DexError> {
         superclass_idx,
         source_file_idx,
         class_data_off,
+        annotations_off,
+        static_values_off,
     })
 }
 
@@ -1026,4 +1148,485 @@ pub fn code_item(data: &[u8], off: u32) -> Result<CodeItem, DexError> {
         debug_info_off,
         insns,
     })
+}
+
+/// One `encoded_value`, with whatever the format says to resolve about it.
+///
+/// The integer and floating forms carry their value; the index forms carry the
+/// table index AFTER it has been resolved (so a `String` variant names a string
+/// the file's own pool answered for); the two recursive forms carry their
+/// nested values. Two are deliberately raw: `FloatBits`/`DoubleBits` keep the
+/// bit pattern rather than an `f32`/`f64` (a parser has no business rounding a
+/// value it is only validating, and it keeps `Eq`), and `MethodHandle` keeps the
+/// index because this module has no method-handle table to check it against.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EncodedValue {
+    Byte(i8),
+    Short(i16),
+    Char(u16),
+    Int(i32),
+    Long(i64),
+    FloatBits(u32),
+    DoubleBits(u64),
+    /// A `proto_ids` index (`VALUE_METHOD_TYPE`).
+    MethodType(u32),
+    /// A `method_handles` index, carried unresolved -- see the module doc.
+    MethodHandle(u32),
+    String(u32),
+    Type(u32),
+    Field(u32),
+    Method(u32),
+    /// A `field_ids` index declared to be an enum constant. The field is
+    /// resolved; that it really is an enum constant is not checked.
+    Enum(u32),
+    Array(Vec<EncodedValue>),
+    Annotation(EncodedAnnotation),
+    Null,
+    Boolean(bool),
+}
+
+/// One `encoded_annotation`: a type index, an element count, then
+/// `(name_idx, encoded_value)` pairs.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EncodedAnnotation {
+    pub type_idx: u32,
+    pub elements: Vec<AnnotationElement>,
+}
+
+/// One `annotation_element`: the element's NAME (a `string_ids` index) and its
+/// value. The name is resolved through [`string`] before this is returned.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AnnotationElement {
+    pub name_idx: u32,
+    pub value: EncodedValue,
+}
+
+/// One `annotation_item`: the visibility byte and the annotation it carries.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AnnotationItem {
+    pub visibility: u8,
+    pub annotation: EncodedAnnotation,
+}
+
+/// One row of an `annotations_directory_item` with its set already resolved.
+/// Fields, methods and parameters share this shape in the format -- each row is
+/// `member_idx` + `annotations_off` -- so they share it here too.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AnnotatedMember {
+    /// A `field_ids` index for a field row, a `method_ids` index otherwise.
+    pub member_idx: u32,
+    pub annotations: Vec<AnnotationItem>,
+}
+
+/// A class's resolved `annotations_directory_item`.
+///
+/// `class_annotations` is empty when `class_annotations_off` is 0, which the
+/// format allows (a class with field/method annotations but none of its own).
+/// The three member lists are empty vectors, not `None`, for the same reason
+/// [`ClassData`] uses them: "this class annotates no fields" is a fact.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AnnotationsDirectory {
+    pub class_annotations: Vec<AnnotationItem>,
+    pub field_annotations: Vec<AnnotatedMember>,
+    pub method_annotations: Vec<AnnotatedMember>,
+    pub parameter_annotations: Vec<AnnotatedMember>,
+}
+
+/// Reads one `encoded_value` from `*cursor`, `depth` arrays/annotations deep.
+///
+/// # Why the width field is checked before it is used
+///
+/// A value's header byte is `type | (width - 1) << 5`, and the width is what
+/// says how many bytes to read. Every type has a maximum width in the format
+/// (`byte` 1, `short`/`char` 2, `int`/`float` 4, `long`/`double` 8, indices 4),
+/// and `null`, `array` and `annotation` have no width at all -- their value is
+/// not bytes but structure. A header claiming a wider value than the type
+/// allows, or any width for one of those three, is refused rather than trusted:
+/// the same byte that would otherwise silently decide a read length.
+///
+/// # The two exceptions to `width - 1`
+///
+/// `VALUE_BOOLEAN`'s header field IS its byte count (0 = false, 1 = one byte
+/// holding true), and `VALUE_BYTE`'s is fixed at one -- both stated in their own
+/// arms below.
+///
+/// # `byte` is the one type whose width is fixed at one
+///
+/// `VALUE_BYTE` exists so a small signed number costs two bytes total, so its
+/// header must say width 1 (arg 0) -- there is no range of widths to choose
+/// from. The integer types that share this space (`short`, `int`, `long`) are
+/// the ones whose width is the value's own size, and their sign extension is
+/// why [`signed_value`] exists.
+fn read_encoded_value(
+    data: &[u8],
+    cursor: &mut usize,
+    depth: u32,
+) -> Result<EncodedValue, DexError> {
+    if depth > MAX_ENCODED_VALUE_DEPTH {
+        return Err(DexError::EncodedValueTooDeep);
+    }
+    let header = *data.get(*cursor).ok_or(DexError::EncodedValueTruncated)?;
+    *cursor += 1;
+    let value_type = header & 0x1f;
+    let arg = header >> 5;
+    match value_type {
+        VALUE_BYTE => {
+            require_arg(arg, 0)?;
+            Ok(EncodedValue::Byte(signed_value(value_bytes(data, cursor, 1)?, 1) as i8))
+        }
+        VALUE_SHORT => {
+            require_arg(arg, 1)?;
+            Ok(EncodedValue::Short(signed_value(value_bytes(data, cursor, arg as u32 + 1)?, arg as u32 + 1) as i16))
+        }
+        VALUE_CHAR => {
+            require_arg(arg, 1)?;
+            Ok(EncodedValue::Char(value_bytes(data, cursor, arg as u32 + 1)? as u16))
+        }
+        VALUE_INT => {
+            require_arg(arg, 3)?;
+            Ok(EncodedValue::Int(signed_value(value_bytes(data, cursor, arg as u32 + 1)?, arg as u32 + 1) as i32))
+        }
+        VALUE_LONG => {
+            require_arg(arg, 7)?;
+            Ok(EncodedValue::Long(signed_value(value_bytes(data, cursor, arg as u32 + 1)?, arg as u32 + 1)))
+        }
+        VALUE_FLOAT => {
+            require_arg(arg, 3)?;
+            Ok(EncodedValue::FloatBits(value_bytes(data, cursor, arg as u32 + 1)? as u32))
+        }
+        VALUE_DOUBLE => {
+            require_arg(arg, 7)?;
+            Ok(EncodedValue::DoubleBits(value_bytes(data, cursor, arg as u32 + 1)?))
+        }
+        VALUE_METHOD_TYPE => {
+            require_arg(arg, 3)?;
+            let index = value_bytes(data, cursor, arg as u32 + 1)? as u32;
+            proto_id(data, index)?;
+            Ok(EncodedValue::MethodType(index))
+        }
+        VALUE_METHOD_HANDLE => {
+            require_arg(arg, 3)?;
+            Ok(EncodedValue::MethodHandle(
+                value_bytes(data, cursor, arg as u32 + 1)? as u32,
+            ))
+        }
+        VALUE_STRING => {
+            require_arg(arg, 3)?;
+            let index = value_bytes(data, cursor, arg as u32 + 1)? as u32;
+            string(data, index)?;
+            Ok(EncodedValue::String(index))
+        }
+        VALUE_TYPE => {
+            require_arg(arg, 3)?;
+            let index = value_bytes(data, cursor, arg as u32 + 1)? as u32;
+            type_descriptor(data, index)?;
+            Ok(EncodedValue::Type(index))
+        }
+        VALUE_FIELD => {
+            require_arg(arg, 3)?;
+            let index = value_bytes(data, cursor, arg as u32 + 1)? as u32;
+            field_id(data, index)?;
+            Ok(EncodedValue::Field(index))
+        }
+        VALUE_METHOD => {
+            require_arg(arg, 3)?;
+            let index = value_bytes(data, cursor, arg as u32 + 1)? as u32;
+            method_id(data, index)?;
+            Ok(EncodedValue::Method(index))
+        }
+        VALUE_ENUM => {
+            require_arg(arg, 3)?;
+            let index = value_bytes(data, cursor, arg as u32 + 1)? as u32;
+            field_id(data, index)?;
+            Ok(EncodedValue::Enum(index))
+        }
+        VALUE_ARRAY => {
+            require_arg(arg, 0)?;
+            Ok(EncodedValue::Array(read_encoded_array(data, cursor, depth + 1)?))
+        }
+        VALUE_ANNOTATION => {
+            require_arg(arg, 0)?;
+            Ok(EncodedValue::Annotation(read_encoded_annotation(data, cursor, depth + 1)?))
+        }
+        VALUE_NULL => {
+            require_arg(arg, 0)?;
+            Ok(EncodedValue::Null)
+        }
+        VALUE_BOOLEAN => {
+            require_arg(arg, 1)?;
+            // The one type where the header's width field is NOT `size - 1`: for
+            // a boolean, arg IS the number of value bytes (0 for false, 1 for
+            // true), so the byte count is `arg`, not `arg + 1`. Getting this
+            // backwards is not a small error -- it reads the NEXT value's header
+            // as this value's payload, which turns a well-formed file into one
+            // with an undefined value type a few bytes later. The boot gate
+            // caught exactly that on this increment's first run.
+            let raw = value_bytes(data, cursor, arg as u32)?;
+            // arg 0 is false with no value byte; when a byte is present the
+            // format writes 0x01, and any non-zero byte reads as true.
+            Ok(EncodedValue::Boolean(raw != 0))
+        }
+        _ => Err(DexError::BadEncodedValueType),
+    }
+}
+
+/// Refuses a value whose declared width is impossible for its type.
+fn require_arg(arg: u8, max: u8) -> Result<(), DexError> {
+    if arg > max {
+        return Err(DexError::BadEncodedValueArg);
+    }
+    Ok(())
+}
+
+/// Reads `size` little-endian bytes of a value, zero-extended into a `u64`.
+/// Bounded one byte at a time so a value that stops early is reported as its
+/// own truncation, not as the array's.
+fn value_bytes(data: &[u8], cursor: &mut usize, size: u32) -> Result<u64, DexError> {
+    let mut raw = 0u64;
+    for i in 0..size {
+        let byte = *data.get(*cursor).ok_or(DexError::EncodedValueTruncated)?;
+        *cursor += 1;
+        raw |= (byte as u64) << (8 * i);
+    }
+    Ok(raw)
+}
+
+/// Sign-extends a `size`-byte little-endian value. `size` is 1..=8, so the
+/// shift is at most 56.
+fn signed_value(raw: u64, size: u32) -> i64 {
+    let shift = 64 - 8 * size;
+    ((raw << shift) as i64) >> shift
+}
+
+/// Reads one `encoded_annotation` from `*cursor`: a type index, an element
+/// count, then that many `(name_idx, value)` pairs.
+///
+/// The count is bounded against the bytes left BEFORE the vector is allocated:
+/// every element needs at least two bytes (a one-byte name index and a one-byte
+/// value header), so a count past that bound is a truncated file.
+fn read_encoded_annotation(
+    data: &[u8],
+    cursor: &mut usize,
+    depth: u32,
+) -> Result<EncodedAnnotation, DexError> {
+    if depth > MAX_ENCODED_VALUE_DEPTH {
+        return Err(DexError::EncodedValueTooDeep);
+    }
+    let type_idx = annotation_uleb(data, cursor)?;
+    let size = annotation_uleb(data, cursor)?;
+    let remaining = data.len().saturating_sub(*cursor) as u64;
+    if size as u64 * 2 > remaining {
+        return Err(DexError::AnnotationItemTruncated);
+    }
+    type_descriptor(data, type_idx)?;
+    let mut elements = Vec::with_capacity(size as usize);
+    for _ in 0..size {
+        let name_idx = annotation_uleb(data, cursor)?;
+        string(data, name_idx)?;
+        let value = read_encoded_value(data, cursor, depth)?;
+        elements.push(AnnotationElement { name_idx, value });
+    }
+    Ok(EncodedAnnotation { type_idx, elements })
+}
+
+/// One ULEB128 inside an annotation item, with a missing byte reported as the
+/// truncation it is (the same distinction [`member_uleb`] draws for class_data).
+fn annotation_uleb(data: &[u8], cursor: &mut usize) -> Result<u32, DexError> {
+    if *cursor >= data.len() {
+        return Err(DexError::AnnotationItemTruncated);
+    }
+    read_uleb128(data, cursor)
+}
+
+/// Reads one `encoded_array_item` at `*cursor`: a ULEB128 count then that many
+/// values.
+///
+/// `off == 0` is the format's "no static values" and answers an empty vector;
+/// every other offset must land in the file. The count is bounded against the
+/// bytes left before allocating -- a value is at least one header byte -- so a
+/// malformed count cannot reserve memory it cannot fill.
+fn read_encoded_array(
+    data: &[u8],
+    cursor: &mut usize,
+    depth: u32,
+) -> Result<Vec<EncodedValue>, DexError> {
+    if depth > MAX_ENCODED_VALUE_DEPTH {
+        return Err(DexError::EncodedValueTooDeep);
+    }
+    if *cursor >= data.len() {
+        return Err(DexError::EncodedArrayTruncated);
+    }
+    let size = read_uleb128(data, cursor)?;
+    let remaining = data.len().saturating_sub(*cursor) as u64;
+    if size as u64 > remaining {
+        return Err(DexError::EncodedArrayTruncated);
+    }
+    let mut values = Vec::with_capacity(size as usize);
+    for _ in 0..size {
+        values.push(read_encoded_value(data, cursor, depth)?);
+    }
+    Ok(values)
+}
+
+/// Reads the `encoded_array_item` at `off`.
+///
+/// Zero is the format's "absent" and answers an empty array, because that is
+/// what `class_def.static_values_off` of 0 means for a class with static fields
+/// that have no initialisers.
+pub fn encoded_array(data: &[u8], off: u32) -> Result<Vec<EncodedValue>, DexError> {
+    if off == 0 {
+        return Ok(Vec::new());
+    }
+    let mut cursor = off as usize;
+    if cursor >= data.len() {
+        return Err(DexError::EncodedArrayOutOfBounds);
+    }
+    read_encoded_array(data, &mut cursor, 0)
+}
+
+/// A class's static field initial values, i.e. the `encoded_array_item` its
+/// `static_values_off` names. Empty when the class names none.
+pub fn static_values(data: &[u8], class_index: u32) -> Result<Vec<EncodedValue>, DexError> {
+    let def = class_def(data, class_index)?;
+    encoded_array(data, def.static_values_off)
+}
+
+/// Reads one `annotation_item` at `off`: a visibility byte, then an
+/// encoded_annotation.
+///
+/// Zero is refused rather than treated as "no annotation": an
+/// `annotation_set_item` entry and every directory row name a real item, so a
+/// zero there is a file that says "this offset" and means nothing.
+pub fn annotation_item(data: &[u8], off: u32) -> Result<AnnotationItem, DexError> {
+    if off == 0 || off as usize >= data.len() {
+        return Err(DexError::AnnotationItemOutOfBounds);
+    }
+    let mut cursor = off as usize;
+    let visibility = data[cursor];
+    cursor += 1;
+    if visibility > VISIBILITY_SYSTEM {
+        return Err(DexError::BadAnnotationVisibility);
+    }
+    let annotation = read_encoded_annotation(data, &mut cursor, 0)?;
+    Ok(AnnotationItem {
+        visibility,
+        annotation,
+    })
+}
+
+/// Reads the `annotation_set_item` at `off`: a count then that many
+/// `annotation_item` offsets, each resolved.
+///
+/// The count is bounded against the bytes left before allocating, and every
+/// entry is parsed rather than merely range-checked: a set this function returns
+/// contains annotations whose type, element names and values all resolved.
+pub fn annotation_set(data: &[u8], off: u32) -> Result<Vec<AnnotationItem>, DexError> {
+    if off == 0 {
+        return Err(DexError::AnnotationSetOutOfBounds);
+    }
+    let start = off as usize;
+    let size = read_u32(data, start).ok_or(DexError::AnnotationSetOutOfBounds)?;
+    let entries_end = (start as u64)
+        .checked_add(ANNOTATION_SET_HEADER as u64)
+        .and_then(|v| v.checked_add(size as u64 * ANNOTATION_SET_ENTRY as u64))
+        .ok_or(DexError::AnnotationSetTruncated)?;
+    if entries_end > data.len() as u64 {
+        return Err(DexError::AnnotationSetTruncated);
+    }
+    let mut items = Vec::with_capacity(size as usize);
+    for i in 0..size {
+        let entry = start + ANNOTATION_SET_HEADER as usize + i as usize * ANNOTATION_SET_ENTRY as usize;
+        let item_off = read_u32(data, entry).ok_or(DexError::AnnotationSetTruncated)?;
+        items.push(annotation_item(data, item_off)?);
+    }
+    Ok(items)
+}
+
+/// Reads a directory's three member lists, resolving each row's member and its
+/// annotation set.
+///
+/// A field row's index is resolved through [`field_id`] and a method or
+/// parameter row's through [`method_id`], so a directory cannot name a member
+/// the file's own tables do not have; each row's set is then read in full.
+fn annotation_rows(
+    data: &[u8],
+    cursor: &mut usize,
+    count: u32,
+    methods: bool,
+) -> Result<Vec<AnnotatedMember>, DexError> {
+    let mut rows = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let member_idx = read_u32(data, *cursor).ok_or(DexError::AnnotationsDirectoryTruncated)?;
+        let annotations_off =
+            read_u32(data, *cursor + 4).ok_or(DexError::AnnotationsDirectoryTruncated)?;
+        *cursor += ANNOTATION_ROW as usize;
+        if methods {
+            method_id(data, member_idx)?;
+        } else {
+            field_id(data, member_idx)?;
+        }
+        rows.push(AnnotatedMember {
+            member_idx,
+            annotations: annotation_set(data, annotations_off)?,
+        });
+    }
+    Ok(rows)
+}
+
+/// Reads the `annotations_directory_item` a class's `annotations_off` names, or
+/// `None` when the class has no directory at all (`annotations_off == 0`).
+///
+/// The directory is the one table the format splits across two levels: it names
+/// a `class_annotations_off` plus three counts, and every one of its rows names
+/// a set rather than carrying an annotation. Both levels are read here, so the
+/// answer is the annotations themselves -- a caller never holds an offset it
+/// would have to remember to resolve.
+pub fn annotations_directory(
+    data: &[u8],
+    class_index: u32,
+) -> Result<Option<AnnotationsDirectory>, DexError> {
+    let def = class_def(data, class_index)?;
+    if def.annotations_off == 0 {
+        return Ok(None);
+    }
+    let start = def.annotations_off as usize;
+    if start >= data.len() {
+        return Err(DexError::AnnotationsDirectoryOutOfBounds);
+    }
+    let class_annotations_off =
+        read_u32(data, start).ok_or(DexError::AnnotationsDirectoryOutOfBounds)?;
+    let fields_size =
+        read_u32(data, start + 4).ok_or(DexError::AnnotationsDirectoryOutOfBounds)? as u64;
+    let methods_size =
+        read_u32(data, start + 8).ok_or(DexError::AnnotationsDirectoryOutOfBounds)? as u64;
+    let parameters_size =
+        read_u32(data, start + 12).ok_or(DexError::AnnotationsDirectoryOutOfBounds)? as u64;
+
+    // Every row is eight bytes, so the three counts are bounded against the
+    // bytes left BEFORE any vector is allocated: a directory whose counts claim
+    // more rows than the file could hold is truncated, not large.
+    let rows = fields_size + methods_size + parameters_size;
+    let rows_end = (start as u64)
+        .checked_add(ANNOTATIONS_DIRECTORY_HEADER as u64)
+        .and_then(|v| v.checked_add(rows.checked_mul(ANNOTATION_ROW as u64)?))
+        .ok_or(DexError::AnnotationsDirectoryTruncated)?;
+    if rows_end > data.len() as u64 {
+        return Err(DexError::AnnotationsDirectoryTruncated);
+    }
+
+    let class_annotations = if class_annotations_off == 0 {
+        Vec::new()
+    } else {
+        annotation_set(data, class_annotations_off)?
+    };
+    let mut cursor = start + ANNOTATIONS_DIRECTORY_HEADER as usize;
+    let field_annotations = annotation_rows(data, &mut cursor, fields_size as u32, false)?;
+    let method_annotations = annotation_rows(data, &mut cursor, methods_size as u32, true)?;
+    let parameter_annotations = annotation_rows(data, &mut cursor, parameters_size as u32, true)?;
+    Ok(Some(AnnotationsDirectory {
+        class_annotations,
+        field_annotations,
+        method_annotations,
+        parameter_annotations,
+    }))
 }

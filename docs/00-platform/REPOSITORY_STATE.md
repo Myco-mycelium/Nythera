@@ -5,6 +5,39 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-26 -- **DEX resolves the annotations tables and encoded arrays.**
+
+Android: the two item families a `class_def_item` names beyond its member table
+are now read. `class_def.annotations_off` resolves through
+`annotations_directory_item` -- a `class_annotations_off` plus three counts whose
+class set and whose field/method/parameter rows each resolve through an
+`annotation_set_item` to `annotation_item`s -- so a class's annotations arrive as
+values rather than offsets: the visibility byte is checked against the format's
+three (BUILD/RUNTIME/SYSTEM), the annotation's type index through `type_ids`,
+and every element's name through the string pool. `class_def.static_values_off`
+resolves through `encoded_array_item`, a ULEB128 count plus that many
+`encoded_value`s, and every value form the format defines is decoded: the five
+integer widths, float and double (as bit patterns), the string/type/field/
+method/enum/method-type indices, nested arrays, nested annotations, null and
+boolean. The load-bearing byte is the value header -- `type | (width - 1) << 5`
+-- whose width is checked against the type's own maximum BEFORE it decides how
+many bytes to read, which is why the fixture's two-byte `int` 1000 is 1000 and
+not 232. Inline nesting is unbounded in the format, so the parser states its own
+depth bound instead of leaving that to the stack. A fifth real fixture,
+`userprog/classes_annotations.dex` (724 bytes, sha256 `179acbcc...`), carries a
+class annotation with an int, a string and an array two levels deep, one
+annotation each on a field, a method and that method's parameters across all
+three visibilities, and a static-values array for its two static fields; its
+four sets and four items are contiguous because the map names one offset and a
+count per item type. Fifteen malformed shapes run as permanent boot controls
+(offsets past EOF, overrunning counts, a bad visibility, an undefined value
+type, an impossible width, indices past their tables, a set asked at offset
+zero, nesting past the bound). Still absent and named: an annotation's MEANING
+(an enum element's field is resolved, not proven an enum constant;
+`VALUE_METHOD_HANDLE` is carried raw for want of a method-handle table) and the
+string pool's de-duplication rules. The first four fixtures regenerate
+byte-identically.
+
 2026-11-26 -- **DEX resolves fields and code, and the Win32 surface can size and
 seek a file.**
 

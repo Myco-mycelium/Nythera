@@ -507,6 +507,322 @@ def write_fields_fixture() -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# `classes_annotations.dex` -- the annotations tables and an encoded array.
+#
+# The fields fixture above proves members and code. It cannot show the two
+# remaining item families the class_def already names:
+#
+#   1. `annotations_off` -> `annotations_directory_item`, which is four counts
+#      plus a set of `field_idx`/`method_idx` rows, each pointing at an
+#      `annotation_set_item` (a size plus item offsets), each of those pointing
+#      at an `annotation_item` (a visibility byte plus an encoded_annotation).
+#   2. `static_values_off` -> `encoded_array_item`, which is a ULEB128 count
+#      plus that many `encoded_value`s -- the form whose header byte packs a
+#      value TYPE in its low five bits and a WIDTH-1 in its top three.
+#
+# The file is laid out so every one of those is reachable and unambiguous: one
+# class, two static fields whose initial values are the encoded array (an int
+# that needs two bytes, 1000, and a string index), a class annotation with an
+# int, a string and a NESTED ARRAY of booleans around a nested array, and one
+# annotation each on a field, a method and that method's parameters. The four
+# annotation sets are contiguous and so are the four items, because the map_list
+# names ONE offset and a count per type -- interleaving them would make the file
+# non-conformant in a way the kernel's map check does not catch.
+#
+# Nothing here is executed, and the parser does not check an annotation's
+# MEANING (an enum element's field is resolved as a field, not proven to be an
+# enum constant); it checks that every byte is a well-formed member of the item
+# it claims to be.
+# ---------------------------------------------------------------------------
+
+ANNOTATION_STRINGS = [
+    b"Lnyrqis/hello/Annotated;",  # 0
+    b"Ljava/lang/Object;",  # 1
+    b"Annotated.java",  # 2
+    b"SEED",  # 3
+    b"label",  # 4
+    b"I",  # 5
+    b"Ljava/lang/String;",  # 6
+    b"run",  # 7
+    b"V",  # 8
+    b"Lnyrqis/hello/Marker;",  # 9
+    b"count",  # 10
+    b"name",  # 11
+    b"hello",  # 12
+    b"flags",  # 13
+]
+
+ANNOTATION_TYPES = [0, 1, 5, 6, 8, 9]
+A_CLASS = 0
+A_INT = 2
+A_STRING = 3
+A_VOID = 4
+A_MARKER = 5
+A_SHORTY_V = 8
+
+ANNOTATION_FIELDS = [(A_CLASS, A_INT, 3), (A_CLASS, A_STRING, 4)]
+ANNOTATION_METHODS = [(A_CLASS, 0, 7)]
+
+# map_list item types the earlier fixtures do not use.
+TYPE_ANNOTATION_SET_ITEM = 0x1003
+TYPE_ANNOTATION_ITEM = 0x2004
+TYPE_ENCODED_ARRAY_ITEM = 0x2005
+TYPE_ANNOTATIONS_DIRECTORY_ITEM = 0x2006
+
+# encoded_value types (the header byte's low five bits) and the visibilities.
+VALUE_INT = 0x04
+VALUE_STRING = 0x17
+VALUE_ARRAY = 0x1C
+VALUE_NULL = 0x1E
+VALUE_BOOLEAN = 0x1F
+
+VISIBILITY_BUILD = 0
+VISIBILITY_RUNTIME = 1
+VISIBILITY_SYSTEM = 2
+
+
+def encoded_value_header(value_type: int, arg: int) -> bytes:
+    """The header byte: type in the low five bits, `width - 1` in the top three."""
+    assert 0 <= value_type <= 0x1F, value_type
+    assert 0 <= arg <= 7, arg
+    return bytes([value_type | (arg << 5)])
+
+
+def encoded_int(value: int) -> bytes:
+    """A VALUE_INT with the FEWEST bytes that hold it, as the format wants.
+
+    1000 needs two bytes (0xE8 0x03) and therefore arg 1 -- the case that makes
+    the header's width field observable, and the one a reader that ignored arg
+    would read as 0xE8 = 232 sign-extended.
+    """
+    if -0x80 <= value <= 0x7F:
+        return encoded_value_header(VALUE_INT, 0) + struct.pack("<b", value)
+    assert -0x8000 <= value <= 0x7FFF, value
+    return encoded_value_header(VALUE_INT, 1) + struct.pack("<h", value)
+
+
+def encoded_string(string_index: int) -> bytes:
+    assert 0 <= string_index <= 0xFF
+    return encoded_value_header(VALUE_STRING, 0) + bytes([string_index])
+
+
+def encoded_boolean(value: bool) -> bytes:
+    """arg 0 is the value 0 (one byte fewer); arg 1 carries a 0x01 byte."""
+    return encoded_value_header(VALUE_BOOLEAN, 1) + bytes([1 if value else 0])
+
+
+def encoded_annotation(type_idx: int, elements: list) -> bytes:
+    out = uleb128(type_idx) + uleb128(len(elements))
+    for name_idx, value in elements:
+        out += uleb128(name_idx) + value
+    return out
+
+
+def write_annotations_fixture() -> int:
+    for s in ANNOTATION_STRINGS:
+        assert all(0x20 <= b < 0x7F for b in s), s
+
+    strings_blob = bytearray()
+    for s in ANNOTATION_STRINGS:
+        strings_blob += uleb128(len(s)) + s + b"\x00"
+
+    string_ids_off = HEADER_SIZE
+    type_ids_off = string_ids_off + 4 * len(ANNOTATION_STRINGS)
+    proto_ids_off = type_ids_off + 4 * len(ANNOTATION_TYPES)
+    field_ids_off = proto_ids_off + 12
+    method_ids_off = field_ids_off + 8 * len(ANNOTATION_FIELDS)
+    class_defs_off = method_ids_off + 8 * len(ANNOTATION_METHODS)
+    string_data_off = class_defs_off + 32
+
+    string_offsets = []
+    base = string_data_off
+    for s in ANNOTATION_STRINGS:
+        string_offsets.append(base)
+        base += 1 + len(s) + 1
+
+    # class_data: two static fields (SEED, label), no instance fields, one
+    # direct method (run, native so its code_off is legitimately 0).
+    class_data = bytearray([2, 0, 1, 0])
+    class_data += uleb128(0) + uleb128(ACC_PUBLIC | ACC_STATIC | ACC_FINAL)
+    class_data += uleb128(1) + uleb128(ACC_PUBLIC | ACC_STATIC | ACC_FINAL)
+    class_data += uleb128(0) + uleb128(ACC_PUBLIC | ACC_STATIC | ACC_NATIVE) + uleb128(0)
+    class_data_off = align4(base)
+
+    # The static field values, in field order: SEED = 1000 (arg 1), label = the
+    # string "hello" (index 12).
+    static_values = uleb128(2) + encoded_int(1000) + encoded_string(12)
+    static_values_off = align4(class_data_off + len(class_data))
+
+    # The four annotation items, each a visibility byte plus an encoded
+    # annotation. The class one carries an int, a string and a nested array.
+    class_item = bytes([VISIBILITY_RUNTIME]) + encoded_annotation(
+        A_MARKER,
+        [
+            (10, encoded_int(7)),  # count = 7
+            (11, encoded_string(12)),  # name = "hello"
+            (
+                13,
+                encoded_value_header(VALUE_ARRAY, 0)
+                + uleb128(3)
+                + encoded_boolean(True)
+                + encoded_boolean(False)
+                + encoded_value_header(VALUE_ARRAY, 0)
+                + uleb128(1)
+                + encoded_string(12),
+            ),  # flags = [true, false, ["hello"]]
+        ],
+    )
+    field_item = bytes([VISIBILITY_BUILD]) + encoded_annotation(
+        A_MARKER, [(10, encoded_int(1))]
+    )
+    method_item = bytes([VISIBILITY_SYSTEM]) + encoded_annotation(
+        A_MARKER, [(11, encoded_string(12))]
+    )
+    # A parameter annotation is, by the format's shape, an annotation whose
+    # elements are arrays -- one per parameter. This method takes none, so the
+    # element is a one-element array; the kernel checks the item is well formed,
+    # not that the count matches a proto's parameter list.
+    parameter_item = bytes([VISIBILITY_RUNTIME]) + encoded_annotation(
+        A_MARKER,
+        [(11, encoded_value_header(VALUE_ARRAY, 0) + uleb128(1) + encoded_string(12))],
+    )
+
+    # The directory first (it names the sets), then the four SETS contiguously,
+    # then the four ITEMS contiguously: the map_list names one offset and a
+    # count per item type, so items of a type must be adjacent.
+    directory_off = align4(static_values_off + len(static_values))
+    directory_size = 16 + 8 * 3  # one field, one method, one parameter row
+    class_set_off = align4(directory_off + directory_size)
+    set_size = 4 + 4  # one item each
+    field_set_off = class_set_off + set_size
+    method_set_off = field_set_off + set_size
+    parameter_set_off = method_set_off + set_size
+    class_item_off = align4(parameter_set_off + set_size)
+    field_item_off = align4(class_item_off + len(class_item))
+    method_item_off = align4(field_item_off + len(field_item))
+    parameter_item_off = align4(method_item_off + len(method_item))
+    map_off = align4(parameter_item_off + len(parameter_item))
+
+    map_item_count = 14
+    file_size = map_off + 4 + 12 * map_item_count
+
+    header = bytearray(HEADER_SIZE)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 32, file_size)
+    struct.pack_into("<I", header, 36, HEADER_SIZE)
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 52, map_off)
+    struct.pack_into("<I", header, 56, len(ANNOTATION_STRINGS))
+    struct.pack_into("<I", header, 60, string_ids_off)
+    struct.pack_into("<I", header, 64, len(ANNOTATION_TYPES))
+    struct.pack_into("<I", header, 68, type_ids_off)
+    struct.pack_into("<I", header, 72, 1)
+    struct.pack_into("<I", header, 76, proto_ids_off)
+    struct.pack_into("<I", header, 80, len(ANNOTATION_FIELDS))
+    struct.pack_into("<I", header, 84, field_ids_off)
+    struct.pack_into("<I", header, 88, len(ANNOTATION_METHODS))
+    struct.pack_into("<I", header, 92, method_ids_off)
+    struct.pack_into("<I", header, 96, 1)
+    struct.pack_into("<I", header, 100, class_defs_off)
+    struct.pack_into("<I", header, 104, file_size - string_data_off)
+    struct.pack_into("<I", header, 108, string_data_off)
+
+    string_ids = b"".join(struct.pack("<I", off) for off in string_offsets)
+    type_ids = b"".join(struct.pack("<I", idx) for idx in ANNOTATION_TYPES)
+    proto_ids = struct.pack("<3I", A_SHORTY_V, A_VOID, 0)
+    field_ids = b"".join(struct.pack("<HHI", c, t, n) for c, t, n in ANNOTATION_FIELDS)
+    method_ids = b"".join(struct.pack("<HHI", c, p, n) for c, p, n in ANNOTATION_METHODS)
+    class_def = struct.pack(
+        "<8I",
+        A_CLASS,
+        ACC_PUBLIC,
+        1,  # superclass_idx
+        0,  # interfaces_off
+        2,  # source_file_idx
+        directory_off,  # annotations_off
+        class_data_off,
+        static_values_off,  # static_values_off
+    )
+
+    directory = struct.pack("<4I", class_set_off, 1, 1, 1)
+    directory += struct.pack("<2I", 0, field_set_off)  # field 0 = SEED
+    directory += struct.pack("<2I", 0, method_set_off)  # method 0 = run()V
+    directory += struct.pack("<2I", 0, parameter_set_off)
+    assert len(directory) == directory_size
+
+    def annotation_set(item_off: int) -> bytes:
+        return struct.pack("<2I", 1, item_off)
+
+    body = bytearray()
+    body += header + string_ids + type_ids + proto_ids + field_ids + method_ids + class_def
+    assert len(body) == string_data_off, (len(body), string_data_off)
+    body += strings_blob
+    body += b"\x00" * (class_data_off - len(body))
+    body += class_data
+    body += b"\x00" * (static_values_off - len(body))
+    body += static_values
+    body += b"\x00" * (directory_off - len(body))
+    body += directory
+    body += annotation_set(class_item_off)
+    body += annotation_set(field_item_off)
+    body += annotation_set(method_item_off)
+    body += annotation_set(parameter_item_off)
+    body += b"\x00" * (class_item_off - len(body))
+    body += class_item
+    body += b"\x00" * (field_item_off - len(body))
+    body += field_item
+    body += b"\x00" * (method_item_off - len(body))
+    body += method_item
+    body += b"\x00" * (parameter_item_off - len(body))
+    body += parameter_item
+    body += b"\x00" * (map_off - len(body))
+
+    map_items = [
+        (TYPE_HEADER_ITEM, 1, 0),
+        (TYPE_STRING_ID_ITEM, len(ANNOTATION_STRINGS), string_ids_off),
+        (TYPE_TYPE_ID_ITEM, len(ANNOTATION_TYPES), type_ids_off),
+        (TYPE_PROTO_ID_ITEM, 1, proto_ids_off),
+        (TYPE_FIELD_ID_ITEM, len(ANNOTATION_FIELDS), field_ids_off),
+        (TYPE_METHOD_ID_ITEM, len(ANNOTATION_METHODS), method_ids_off),
+        (TYPE_CLASS_DEF_ITEM, 1, class_defs_off),
+        (TYPE_STRING_DATA_ITEM, len(ANNOTATION_STRINGS), string_data_off),
+        (TYPE_CLASS_DATA_ITEM, 1, class_data_off),
+        (TYPE_ENCODED_ARRAY_ITEM, 1, static_values_off),
+        (TYPE_ANNOTATIONS_DIRECTORY_ITEM, 1, directory_off),
+        (TYPE_ANNOTATION_SET_ITEM, 4, class_set_off),
+        (TYPE_ANNOTATION_ITEM, 4, class_item_off),
+        (TYPE_MAP_LIST, 1, map_off),
+    ]
+    assert len(map_items) == map_item_count, (len(map_items), map_item_count)
+    assert map_items == sorted(map_items, key=lambda item: item[2]), map_items
+    map_list = struct.pack("<I", len(map_items))
+    for item_type, size, off in map_items:
+        assert off % 4 == 0, (item_type, off)
+        map_list += struct.pack("<HHI I", item_type, 0, size, off)
+    body += map_list
+    assert len(body) == file_size, (len(body), file_size)
+
+    write_integrity(body)
+
+    out = pathlib.Path(__file__).resolve().parent.parent / "userprog" / "classes_annotations.dex"
+    out.write_bytes(bytes(body))
+    print(f"wrote {out} ({len(body)} bytes)")
+    print(f"  checksum 0x{struct.unpack_from('<I', body, 8)[0]:08x}")
+    print(f"  sha1     {hashlib.sha1(bytes(body[32:])).hexdigest()}")
+    print(f"  sha256   {hashlib.sha256(bytes(body)).hexdigest()}")
+    print("  annots   1 class (runtime: count=7, name=\"hello\", flags=[true,false,[\"hello\"]])")
+    print("           1 field (build), 1 method (system), 1 parameter (runtime)")
+    print("  values   static SEED=1000 (int, 2 bytes), label=\"hello\"")
+    print(f"  layout   class_data=0x{class_data_off:x} static_values=0x{static_values_off:x} "
+          f"directory=0x{directory_off:x} sets=0x{class_set_off:x}/0x{field_set_off:x}/"
+          f"0x{method_set_off:x}/0x{parameter_set_off:x} "
+          f"items=0x{class_item_off:x}/0x{field_item_off:x}/0x{method_item_off:x}/"
+          f"0x{parameter_item_off:x} map=0x{map_off:x}")
+    print(f"  classes  class_defs=0x{class_defs_off:x}")
+    return 0
+
+
 def main() -> int:
     for s in STRINGS:
         # ASCII descriptors: one byte, one UTF-16 code unit (the premise the
@@ -586,6 +902,7 @@ def main() -> int:
     print(f"  class    {CLASS.decode()} : {SUPER.decode()}")
     write_methods_fixture()
     write_fields_fixture()
+    write_annotations_fixture()
     return 0
 
 
