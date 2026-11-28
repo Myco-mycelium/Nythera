@@ -76,7 +76,13 @@
 //!   the SAME list, and every list restarts from its own first delta. This
 //!   parser accumulates them per list ([`class_members`]) and validates the
 //!   resulting absolute index, so an index it reports is one the table can
-//!   answer rather than an offset a caller has to remember to add.
+//!   answer rather than an offset a caller has to remember to add. The same
+//!   rule makes a list's "sorted, no duplicates" requirement checkable: a
+//!   delta is unsigned, so a list cannot step backwards, and the one
+//!   representable violation -- a zero delta after the first entry, repeating
+//!   the previous member -- is refused as [`DexError::ClassDataDuplicateMember`].
+//!   The first entry is exempt because its delta is its absolute index, which
+//!   may legally be zero.
 //! - An `encoded_method` is THREE ULEB128s -- `method_idx_diff`,
 //!   `access_flags`, `code_off` -- while an `encoded_field` is two. The third
 //!   field is where a method's code lives, and its absence is what
@@ -286,6 +292,12 @@ pub enum DexError {
     /// and flags), so a count past that bound is a truncated file, not a long
     /// class.
     ClassDataTruncated,
+    /// A `class_data` member list whose index did not advance: a delta of zero
+    /// after the first entry names the same member twice. The format requires
+    /// each list sorted by index with no duplicates, and because deltas are
+    /// UNSIGNED a backwards step cannot be encoded -- a repeat is the only way
+    /// a list can break that rule, so it is the one this reader can refuse.
+    ClassDataDuplicateMember,
     /// A proto's shorty string does not have one character per return value
     /// plus one per parameter -- the format's own definition of a shorty, and
     /// the check that ties a proto's string to its type list.
@@ -1331,6 +1343,16 @@ pub fn class_data(data: &[u8], class_index: u32) -> Result<Option<ClassData>, De
 /// produce plausible numbers, which is why the accumulation lives here, once,
 /// and the fixture the boot proof uses has three members per group.
 ///
+/// # Why a zero delta is refused after the first entry
+///
+/// The format requires each of the four lists sorted by member index and free
+/// of duplicates. Deltas are unsigned, so no entry can name an index BELOW the
+/// previous one; the only representable way to break the rule is a delta of
+/// zero, which names the previous member again. The first entry is exempt
+/// because its delta is its absolute index (0 is a legal first index), and the
+/// check sits before the index is resolved so a repeat is reported as the
+/// list-shape error it is rather than passing a table lookup that succeeds.
+///
 /// # Why `code_off` is checked against the flags
 ///
 /// A native or abstract method has no body (`code_off == 0`) and a method that
@@ -1355,6 +1377,16 @@ fn class_members(
     let mut index = 0u32;
     for _ in 0..count {
         let delta = member_uleb(data, cursor)?;
+        // The format requires each list sorted by index with no duplicates.
+        // Deltas are unsigned, so a backwards step cannot be encoded at all:
+        // the one representable violation is a zero delta after the first
+        // entry, which repeats the previous member. Refused HERE, before the
+        // repeated index is resolved, because the list's SHAPE is what is
+        // wrong -- the index it repeats is otherwise a perfectly valid one, so
+        // a later check would accept the entry.
+        if delta == 0 && !members.is_empty() {
+            return Err(DexError::ClassDataDuplicateMember);
+        }
         // A sum past `u32::MAX` cannot name a table entry, and saturating makes
         // that a refusal from the table bound below rather than a wrap that
         // could land back inside it.

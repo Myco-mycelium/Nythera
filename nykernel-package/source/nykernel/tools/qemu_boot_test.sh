@@ -215,6 +215,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "while make()V is ACC_NATIVE with code_off 0" \
         "experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds" \
         "a native method carrying a non-zero code_off refused MethodCodeMismatch before the offset was resolved" \
+        "a static list that repeats its field refused ClassDataDuplicateMember and a direct list that repeats its method refused ClassDataDuplicateMember" \
         "a code_item whose words run past EOF refused CodeItemTruncated" \
         "one whose ins_size exceeds its registers refused CodeItemRegisterMismatch" \
         "a class_data replacement one byte short, one byte long or an encoding grown past the span refused by the span rule" \

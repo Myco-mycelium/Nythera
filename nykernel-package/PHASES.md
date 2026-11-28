@@ -1320,6 +1320,21 @@ ART's private `hiddenapi_class_data_item` (recognised in the map, left unread
 because its layout is outside the public format document), the meaning of the
 positions and annotations, and the string pool's de-duplication rules.
 
+**2026-11-28: a member list cannot repeat a member.** `class_data_item`'s four
+lists must each be sorted by member index with no duplicates, and the format's
+deltas are UNSIGNED -- so no entry can name an index below its predecessor, and
+the only representable violation is a delta of zero after the first entry,
+which names the previous member again. `class_members` now refuses that as
+`ClassDataDuplicateMember`, checked immediately after the delta is read and
+BEFORE the repeated index is resolved: the index a repeat names is a valid one
+the table will happily answer, so a reader that validated the member first
+accepted the file. The first entry is exempt because its delta is its absolute
+index, which may legally be zero. Two permanent boot controls pin it -- a static
+list repeating field 0 and a direct list repeating method 1, each entry
+otherwise well-formed (valid flags, valid `code_off`, valid index) -- built by
+the fixture's own `class_data` builder and spliced into its 22-byte span, so no
+fixture byte changed.
+
 ## Phase 7 -- GPU / graphics kernel path ⬜
 
 NPS-001 §3 names the GPU command submission path as the one deliberate

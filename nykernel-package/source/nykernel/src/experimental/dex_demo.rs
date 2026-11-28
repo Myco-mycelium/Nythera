@@ -1658,6 +1658,41 @@ fn run_negative_member_refusals() -> bool {
         None => false,
     };
 
+    // The format requires each member list sorted by index with no duplicates.
+    // Deltas are unsigned, so no entry can name a LOWER index than its
+    // predecessor; the one representable violation is a delta of zero after the
+    // first entry, which repeats the previous member. Both lists go through the
+    // same `class_members`, so both are checked: a second static field at index
+    // 0 again, and a second direct method at index 1 again. Each repeated entry
+    // carries valid flags, a valid code_off and a valid index on its own, so
+    // only the delta is broken -- a reader that resolved the member first would
+    // accept a file this rule refuses.
+    let repeated_field = match fields_variant(
+        [0, 0],
+        2,
+        [(0, 0x9, FIELD_SIZE_CODE_OFF as u32), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+    ) {
+        Some(corrupted) => {
+            matches!(dex::class_data(&corrupted, 0), Err(DexError::ClassDataDuplicateMember))
+        }
+        None => false,
+    };
+
+    let repeated_method = match fields_variant(
+        [0, 1],
+        2,
+        [
+            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
+            (1, 0x109, 0),
+            (0, 0x9, FIELD_RUN_CODE_OFF as u32),
+        ],
+    ) {
+        Some(corrupted) => {
+            matches!(dex::class_data(&corrupted, 0), Err(DexError::ClassDataDuplicateMember))
+        }
+        None => false,
+    };
+
     let method_delta_past = match fields_variant(
         [0, 1],
         2,
@@ -1731,6 +1766,8 @@ fn run_negative_member_refusals() -> bool {
 
     let ok = field_past
         && delta_past
+        && repeated_field
+        && repeated_method
         && native_with_code
         && ordinary_without_code
         && abstract_without_code_ok
@@ -1743,7 +1780,7 @@ fn run_negative_member_refusals() -> bool {
         && span_guard
         && code_at_zero;
     serial_println!(
-        "  experimental dex-demo: member refusals -- a field index past field_ids {}, a static delta landing past it {}, a native method carrying a non-zero code_off {}, an ordinary method with none {}, an ABSTRACT method carrying one {} (while a native method without one is accepted {}), a code_off past EOF {}, a method delta landing past method_ids {}, a code_item whose words run past EOF {}, one whose ins_size exceeds its registers {}, an entry that stops before its code_off {}, a class_data replacement one byte short, one byte long or an encoding grown past the span {}, and code_item(0) {} -- {}",
+        "  experimental dex-demo: member refusals -- a field index past field_ids {}, a static delta landing past it {}, a native method carrying a non-zero code_off {}, an ordinary method with none {}, an ABSTRACT method carrying one {} (while a native method without one is accepted {}), a code_off past EOF {}, a method delta landing past method_ids {}, a static list that repeats its field {} and a direct list that repeats its method {}, a code_item whose words run past EOF {}, one whose ins_size exceeds its registers {}, an entry that stops before its code_off {}, a class_data replacement one byte short, one byte long or an encoding grown past the span {}, and code_item(0) {} -- {}",
         if field_past { "refused FieldIndexOutOfBounds" } else { NOT_REFUSED },
         if delta_past { "refused FieldIndexOutOfBounds" } else { NOT_REFUSED },
         if native_with_code { "refused MethodCodeMismatch before the offset was resolved" } else { NOT_REFUSED },
@@ -1752,6 +1789,8 @@ fn run_negative_member_refusals() -> bool {
         if abstract_without_code_ok { "OK" } else { "refused" },
         if code_past_eof { "refused CodeItemOutOfBounds" } else { NOT_REFUSED },
         if method_delta_past { "refused MethodIndexOutOfBounds" } else { NOT_REFUSED },
+        if repeated_field { "refused ClassDataDuplicateMember" } else { NOT_REFUSED },
+        if repeated_method { "refused ClassDataDuplicateMember" } else { NOT_REFUSED },
         if insns_past_eof { "refused CodeItemTruncated" } else { NOT_REFUSED },
         if args_beyond_frame { "refused CodeItemRegisterMismatch" } else { NOT_REFUSED },
         if entry_truncated { "refused ClassDataTruncated" } else { NOT_REFUSED },

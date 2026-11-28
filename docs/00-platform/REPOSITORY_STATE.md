@@ -5,6 +5,24 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-28 -- **DEX's member lists refuse a repeated member.**
+
+Android: the format requires each of `class_data_item`'s four lists sorted by
+member index with no duplicates. Its deltas are unsigned, so no entry can name
+an index below its predecessor; the only representable violation is a delta of
+zero after the first entry, which names the previous member again. `class_data`
+now refuses that as `ClassDataDuplicateMember`, and the check sits immediately
+after the delta, BEFORE the repeated index is resolved -- the index it repeats
+is a valid one `field_id`/`method_id` would answer, so a reader that validated
+the member first accepted the file. The first entry is exempt because its delta
+is its absolute index (0 is legal). Two permanent boot controls pin it: a static
+list repeating field 0 and a direct list repeating method 1, each entry
+otherwise well-formed, both built by the fixture's own `class_data` builder and
+spliced into its 22-byte span, so no fixture byte changed. The minimal fixture
+and `classes_methods.dex`, whose lists hold one member each, still parse. Still
+absent and named: the string pool's de-duplication rules and ART's
+`hiddenapi_class_data_item`.
+
 2026-11-27 -- **DEX reads its map as a table of contents, and the sections only
 it names.**
 

@@ -8840,3 +8840,37 @@ Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
   experimental dex-demo: map refusals -- a map item type 0x0009 refused UnknownMapItemType, an entry stepping back to offset 0 refused MapNotSorted, a method_handles section claiming 8192 items past EOF refused MapSectionOutOfBounds, a string_ids count of 12 against the header's 13 refused MapSectionMismatch, a header_item of two items refused MapSectionMismatch, a map_list entry of size 2 refused MapSectionMismatch, a map whose entry is retagged so it no longer describes itself refused NoMapListEntry, a file with NO method_handles asked for one refused MethodHandleSectionMissing, handle index 2 past a two-handle section refused MethodHandleIndexOutOfBounds, handle type 0x09 refused BadMethodHandleType, a file with NO call_site_ids asked for one refused CallSiteSectionMissing, call-site index 1 refused CallSiteIndexOutOfBounds, a call site whose array holds two values refused BadCallSiteShape, a ref list past EOF refused AnnotationSetRefListOutOfBounds, one asked at zero refused AnnotationSetRefListOutOfBounds, one whose size overruns the file refused AnnotationSetRefListTruncated, one naming a set past EOF refused AnnotationSetOutOfBounds, a directory parameter row naming zero instead of a list refused AnnotationSetRefListOutOfBounds, a debug_info past EOF refused DebugInfoOutOfBounds, one asked at zero refused DebugInfoOutOfBounds, an undefined debug opcode 0x05 refused BadDebugInfoOpcode, a debug item cut before its parameter name refused DebugInfoTruncated, one whose parameter name is an over-long ULEB128 refused BadUleb128, one whose advance-line delta is an over-long SLEB128 refused BadUleb128, and one naming string 126 refused StringIndexOutOfBounds -- OK
   experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK, map sections OK, map refusals OK -- OK
 ```
+## The DEX member lists: a repeat is not a member (2026-11-28)
+
+`class_data_item` states four counts and then four lists, and the format
+requires each list sorted by member index with no duplicates. Every entry
+carries an unsigned `field_idx_diff`/`method_idx_diff`, so no entry can name an
+index BELOW its predecessor: a backwards step is not encodable at all. The one
+way a list can break the rule is a delta of zero after the first entry, which
+names the previous member again, and the reader now refuses that as
+`ClassDataDuplicateMember`.
+
+The check sits immediately after the delta is read and BEFORE the repeated
+index is resolved, and that order is the finding: the index a repeat names is a
+perfectly valid one that `field_id`/`method_id` will happily answer, so a reader
+that validated the member first accepted the file. The first entry is exempt
+because its delta is its absolute index, which may legally be zero -- which is
+also why the fixture with a one-member method list still parses.
+
+Two permanent boot controls pin the rule, both built by the fixture's own
+`class_data` builder and spliced into its 22-byte span: a static list whose
+second field delta is zero (index 0 twice) and a direct list whose third method
+delta is zero (index 1 twice). Each repeated entry carries valid flags, a valid
+`code_off` and a valid table index on its own, so only the delta is broken. No
+fixture byte changed.
+
+The host harness (`nykernel-package/target/dexhost`) found nothing to correct
+this time; the boot gate below is the confirmation that the same two refusals
+reach a real boot.
+
+Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
+
+```
+  experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds, a static delta landing past it refused FieldIndexOutOfBounds, a native method carrying a non-zero code_off refused MethodCodeMismatch before the offset was resolved, an ordinary method with none refused MethodCodeMismatch, an ABSTRACT method carrying one refused MethodCodeMismatch (while a native method without one is accepted OK), a code_off past EOF refused CodeItemOutOfBounds, a method delta landing past method_ids refused MethodIndexOutOfBounds, a static list that repeats its field refused ClassDataDuplicateMember and a direct list that repeats its method refused ClassDataDuplicateMember, a code_item whose words run past EOF refused CodeItemTruncated, one whose ins_size exceeds its registers refused CodeItemRegisterMismatch, an entry that stops before its code_off refused ClassDataTruncated, a class_data replacement one byte short, one byte long or an encoding grown past the span refused by the span rule, and code_item(0) refused CodeItemOutOfBounds -- OK
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK, map sections OK, map refusals OK -- OK
+```
