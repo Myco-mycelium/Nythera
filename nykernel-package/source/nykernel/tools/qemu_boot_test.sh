@@ -198,7 +198,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "an in-place-only grow to 4096 answered 0x0 with ERROR_NOT_ENOUGH_MEMORY (8)" \
         "a CRT's malloc/realloc/free triple now runs through this kernel" \
         "experimental dex-demo: class tables -- a 294 byte DEX with 3 string(s), 2 type(s), 1 class(es)" \
-        "string 0/1/2 answer \"Lnyrqis/hello/Hello;\"/\"Ljava/lang/Object;\"/\"Hello.java\"" \
+        "string 0/1/2 answer \"Hello.java\"/\"Ljava/lang/Object;\"/\"Lnyrqis/hello/Hello;\" (sorted by content)" \
         "experimental dex-demo: table refusals -- a string_data offset past EOF refused StringDataOutOfBounds" \
         "a declared UTF-16 length of 19 for 20 units refused StringLengthMismatch" \
         "a class descriptor that does not start with L refused BadTypeDescriptor -- OK" \
@@ -213,6 +213,10 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "class_data answers static field indices [0, 1], instance [2] (its own delta, not the static list's accumulator) and direct method indices [0, 1, 2]" \
         "size()I carries a 2-word code_item at 0x194 reading [0x0012, 0x000f] (const/4 v0, #0; return v0)" \
         "while make()V is ACC_NATIVE with code_off 0" \
+        "experimental dex-demo: table order -- all six fixtures satisfy the format's rules" \
+        "classes_methods.dex shows the order is not declaration order, its class descriptor being type 1 because \"Ljava/lang/Object;\" sorts first" \
+        "experimental dex-demo: order refusals -- a swapped string pair refused StringIdsNotSorted, a duplicated string refused StringIdsDuplicate" \
+        "a swapped field pair refused FieldIdsNotSorted, a duplicated field refused FieldIdsDuplicate, a swapped method pair refused MethodIdsNotSorted, and a duplicated method refused MethodIdsDuplicate -- OK" \
         "experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds" \
         "a native method carrying a non-zero code_off refused MethodCodeMismatch before the offset was resolved" \
         "a static list that repeats its field refused ClassDataDuplicateMember and a direct list that repeats its method refused ClassDataDuplicateMember" \
@@ -236,7 +240,7 @@ if [[ "$QEMU_STATUS" -eq 33 ]]; then
         "a file with NO call_site_ids asked for one refused CallSiteSectionMissing, call-site index 1 refused CallSiteIndexOutOfBounds, a call site whose array holds two values refused BadCallSiteShape" \
         "a ref list past EOF refused AnnotationSetRefListOutOfBounds, one asked at zero refused AnnotationSetRefListOutOfBounds, one whose size overruns the file refused AnnotationSetRefListTruncated, one naming a set past EOF refused AnnotationSetOutOfBounds, a directory parameter row naming zero instead of a list refused AnnotationSetRefListOutOfBounds" \
         "a debug_info past EOF refused DebugInfoOutOfBounds, one asked at zero refused DebugInfoOutOfBounds, an undefined debug opcode 0x05 refused BadDebugInfoOpcode, a debug item cut before its parameter name refused DebugInfoTruncated, one whose parameter name is an over-long ULEB128 refused BadUleb128, one whose advance-line delta is an over-long SLEB128 refused BadUleb128, and one naming string 126 refused StringIndexOutOfBounds -- OK" \
-        "experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK, map sections OK, map refusals OK -- OK" \
+        "experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, table order OK, order refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK, map sections OK, map refusals OK -- OK" \
         "the next 16-byte allocation answered" \
         "-- OK, a real Windows program can allocate and free its own memory through this kernel" \
         "experimental win32-demo self-test checks: console=true hello=true bytes=true empty=true closed=true miss=true errors=true monotonic=true exit=true handles=true refusals=true handle_test=1 startup=true bindings=true modules=true ordinals=true forwarders=true dynamic=true files=true heap=true realloc=true cursor=true" \

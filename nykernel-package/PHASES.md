@@ -1335,6 +1335,29 @@ otherwise well-formed (valid flags, valid `code_off`, valid index) -- built by
 the fixture's own `class_data` builder and spliced into its 22-byte span, so no
 fixture byte changed.
 
+**2026-11-28 (second): the id tables are held to their ordering and uniqueness
+rules -- and the fixtures were not valid DEX files.** `string_ids` must be
+sorted by UTF-16 code point values with no duplicates, `type_ids` by string
+index, `proto_ids` by (return type, parameter list), `field_ids` by (class,
+name, type) and `method_ids` by (class, name, proto). None of those is visible
+from a single lookup, and the parser had never checked one: every fixture's
+string pool was in DECLARATION order ("Lnyrqis/hello/Hello;" first,
+"Hello.java" last) and `classes_methods.dex` also had its class type before its
+superclass. `dex::table_order` now decides each rule by adjacent pairs (an equal
+pair is the duplicate case) and `parse` calls it, so a file with out-of-order or
+repeated ids is refused as `StringIdsNotSorted`/`StringIdsDuplicate`,
+`TypeIdsNotSorted`/`TypeIdsDuplicate`, `ProtoIdsNotSorted`/`ProtoIdsDuplicate`,
+`FieldIdsNotSorted`/`FieldIdsDuplicate`, `MethodIdsNotSorted`/`MethodIdsDuplicate`.
+`tools/make_dex_fixture.py` now computes the canonical order and looks indices
+up by content rather than writing numbers the rule would contradict; only the
+`string_ids` table is permuted (the string_data blob keeps its order), so every
+pinned offset survived and all six sizes are unchanged. What changed is what the
+format decides: the class descriptor is type 1 in the methods fixture, `I` is
+type 0 in the fields fixture, and its methods are make/run/size because names
+sort by index. Ten permanent boot controls -- a swapped pair and a copied entry
+per table -- require each named refusal, and every entry in all ten files still
+resolves, so a reader that validated entries one at a time would accept them.
+
 ## Phase 7 -- GPU / graphics kernel path ⬜
 
 NPS-001 §3 names the GPU command submission path as the one deliberate

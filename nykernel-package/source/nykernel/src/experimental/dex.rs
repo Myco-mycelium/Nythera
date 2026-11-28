@@ -298,6 +298,33 @@ pub enum DexError {
     /// UNSIGNED a backwards step cannot be encoded -- a repeat is the only way
     /// a list can break that rule, so it is the one this reader can refuse.
     ClassDataDuplicateMember,
+    /// A `string_ids` table that is not in the order the format requires: the
+    /// table must be sorted by UTF-16 code point values, and this entry sorts
+    /// before the one in front of it.
+    StringIdsNotSorted,
+    /// Two adjacent `string_ids` entries name the same string. The format
+    /// requires a de-duplicated pool, so a repeat is refused even though both
+    /// entries resolve.
+    StringIdsDuplicate,
+    /// A `type_ids` entry whose `string_id` index is below its predecessor's.
+    /// The table must be sorted by string index.
+    TypeIdsNotSorted,
+    /// Two adjacent `type_ids` entries name the same string index.
+    TypeIdsDuplicate,
+    /// A `proto_id` that sorts before its predecessor by (return type, then
+    /// parameter list), the order the format requires.
+    ProtoIdsNotSorted,
+    /// Two adjacent `proto_id` entries with the same return type and the same
+    /// parameter list.
+    ProtoIdsDuplicate,
+    /// A `field_id` that sorts before its predecessor by (class, name, type).
+    FieldIdsNotSorted,
+    /// Two adjacent `field_id` entries naming the same class, name and type.
+    FieldIdsDuplicate,
+    /// A `method_id` that sorts before its predecessor by (class, name, proto).
+    MethodIdsNotSorted,
+    /// Two adjacent `method_id` entries naming the same class, name and proto.
+    MethodIdsDuplicate,
     /// A proto's shorty string does not have one character per return value
     /// plus one per parameter -- the format's own definition of a shorty, and
     /// the check that ties a proto's string to its type list.
@@ -564,6 +591,12 @@ pub fn parse(data: &[u8]) -> Result<DexInfo, DexError> {
     // is a real structural check rather than "the count field is nonzero": a DEX
     // that claims entries but never describes its own map is malformed.
     let map_entry_count = map_list(data)?.len() as u32;
+
+    // The five id tables' ordering and uniqueness rules are properties of the
+    // tables themselves, and a DEX whose ids are unsorted or duplicated is one
+    // the platform's verifier rejects. Refused here so every later resolver is
+    // only ever handed a file that can be valid.
+    let _ = table_order(data)?;
 
     Ok(DexInfo {
         file_size,
@@ -1437,6 +1470,153 @@ fn member_uleb(data: &[u8], cursor: &mut usize) -> Result<u32, DexError> {
         return Err(DexError::ClassDataTruncated);
     }
     read_uleb128(data, cursor)
+}
+
+/// How many entries [`table_order`] checked in each of the five id tables.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TableOrder {
+    pub string_ids: u32,
+    pub type_ids: u32,
+    pub proto_ids: u32,
+    pub field_ids: u32,
+    pub method_ids: u32,
+}
+
+/// Checks the five id tables against the format's ordering and uniqueness rules.
+///
+/// Each rule is a property of the TABLE, not of any single lookup, so resolving
+/// entries one at a time can never prove one:
+///
+/// - `string_ids` sorted by UTF-16 code point values, with no duplicates.
+/// - `type_ids` sorted by `string_id` index, with no duplicates.
+/// - `proto_ids` sorted by return type and then by the parameter list (both as
+///   type indices), with no duplicates.
+/// - `field_ids` sorted by declaring class, then name, then type, with no
+///   duplicates.
+/// - `method_ids` sorted by declaring class, then name, then prototype, with no
+///   duplicates.
+///
+/// Sortedness is decided by ADJACENT pairs: a sequence is nondecreasing exactly
+/// when every neighbour is, and the first pair that fails names both the rule
+/// and the entry. An equal pair is the duplicate case, so "out of order" and
+/// "repeats an entry" remain different answers -- the same distinction this
+/// module draws between a truncated item and an over-long encoding.
+///
+/// Strings compare by their MUTF-8 bytes. For well-formed MUTF-8 that IS UTF-16
+/// code unit order: the encoding has no four-byte form (supplementary
+/// characters are surrogate PAIRS of three-byte sequences), and both the two-
+/// and three-byte forms order their leading bytes by code unit value. [`string`]
+/// validates each entry's encoding and declared length before this comparison
+/// uses it, so the premise is checked rather than assumed.
+///
+/// Every table is bounded against the file first: this is a public entry point,
+/// and `parse` calls it on input no other resolver has looked at yet.
+pub fn table_order(data: &[u8]) -> Result<TableOrder, DexError> {
+    if data.len() < HEADER_SIZE as usize {
+        return Err(DexError::TooShort);
+    }
+    let strings = header_u32(data, 56)?;
+    let string_off = header_u32(data, 60)?;
+    let types = header_u32(data, 64)?;
+    let type_off = header_u32(data, 68)?;
+    let protos = header_u32(data, 72)?;
+    let proto_off = header_u32(data, 76)?;
+    let fields = header_u32(data, 80)?;
+    let field_off = header_u32(data, 84)?;
+    let methods = header_u32(data, 88)?;
+    let method_off = header_u32(data, 92)?;
+    check_section_bounds(data.len(), strings, string_off, STRING_ID_SIZE)?;
+    check_section_bounds(data.len(), types, type_off, TYPE_ID_SIZE)?;
+    check_section_bounds(data.len(), protos, proto_off, PROTO_ID_SIZE)?;
+    check_section_bounds(data.len(), fields, field_off, FIELD_ID_SIZE)?;
+    check_section_bounds(data.len(), methods, method_off, METHOD_ID_SIZE)?;
+
+    for index in 1..strings {
+        let previous = string(data, index - 1)?;
+        let current = string(data, index)?;
+        match current.cmp(previous) {
+            core::cmp::Ordering::Less => return Err(DexError::StringIdsNotSorted),
+            core::cmp::Ordering::Equal => return Err(DexError::StringIdsDuplicate),
+            core::cmp::Ordering::Greater => {}
+        }
+    }
+
+    let mut previous = 0u32;
+    for index in 0..types {
+        let at = type_off as usize + index as usize * TYPE_ID_SIZE as usize;
+        let current = read_u32(data, at).ok_or(DexError::SectionOutOfBounds)?;
+        if index != 0 {
+            if current < previous {
+                return Err(DexError::TypeIdsNotSorted);
+            }
+            if current == previous {
+                return Err(DexError::TypeIdsDuplicate);
+            }
+        }
+        previous = current;
+    }
+
+    let mut previous_return = 0u32;
+    let mut previous_params: Vec<u32> = Vec::new();
+    for index in 0..protos {
+        let at = proto_off as usize + index as usize * PROTO_ID_SIZE as usize;
+        let return_type = read_u32(data, at + 4).ok_or(DexError::SectionOutOfBounds)?;
+        let parameters_off = read_u32(data, at + 8).ok_or(DexError::SectionOutOfBounds)?;
+        let params = type_list(data, parameters_off)?;
+        if index != 0 {
+            match (return_type, &params).cmp(&(previous_return, &previous_params)) {
+                core::cmp::Ordering::Less => return Err(DexError::ProtoIdsNotSorted),
+                core::cmp::Ordering::Equal => return Err(DexError::ProtoIdsDuplicate),
+                core::cmp::Ordering::Greater => {}
+            }
+        }
+        previous_return = return_type;
+        previous_params = params;
+    }
+
+    let mut previous_field = (0u32, 0u32, 0u32);
+    for index in 0..fields {
+        let at = field_off as usize + index as usize * FIELD_ID_SIZE as usize;
+        let class_idx = read_u16(data, at).ok_or(DexError::SectionOutOfBounds)? as u32;
+        let type_idx = read_u16(data, at + 2).ok_or(DexError::SectionOutOfBounds)? as u32;
+        let name_idx = read_u32(data, at + 4).ok_or(DexError::SectionOutOfBounds)?;
+        let current = (class_idx, name_idx, type_idx);
+        if index != 0 {
+            if current < previous_field {
+                return Err(DexError::FieldIdsNotSorted);
+            }
+            if current == previous_field {
+                return Err(DexError::FieldIdsDuplicate);
+            }
+        }
+        previous_field = current;
+    }
+
+    let mut previous_method = (0u32, 0u32, 0u32);
+    for index in 0..methods {
+        let at = method_off as usize + index as usize * METHOD_ID_SIZE as usize;
+        let class_idx = read_u16(data, at).ok_or(DexError::SectionOutOfBounds)? as u32;
+        let proto_idx = read_u16(data, at + 2).ok_or(DexError::SectionOutOfBounds)? as u32;
+        let name_idx = read_u32(data, at + 4).ok_or(DexError::SectionOutOfBounds)?;
+        let current = (class_idx, name_idx, proto_idx);
+        if index != 0 {
+            if current < previous_method {
+                return Err(DexError::MethodIdsNotSorted);
+            }
+            if current == previous_method {
+                return Err(DexError::MethodIdsDuplicate);
+            }
+        }
+        previous_method = current;
+    }
+
+    Ok(TableOrder {
+        string_ids: strings,
+        type_ids: types,
+        proto_ids: protos,
+        field_ids: fields,
+        method_ids: methods,
+    })
 }
 
 /// One `code_item` as this module reads it: the register frame the method

@@ -5,6 +5,40 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
+2026-11-28 (second) -- **DEX's five id tables are held to the format's ordering
+and uniqueness rules -- and the fixtures were not valid DEX files.**
+
+Android: `string_ids` must be sorted by UTF-16 code point values and
+de-duplicated, `type_ids` by string index, `proto_ids` by (return type, then
+parameter list), `field_ids` by (class, name, type) and `method_ids` by (class,
+name, proto). None of those is a property of any single lookup, and none had
+been checked. The check found that every fixture's pool was in DECLARATION
+order -- "Lnyrqis/hello/Hello;" first and "Hello.java" last -- and
+`classes_methods.dex` also numbered its class type before its superclass: files
+this parser accepted and Android's verifier would not. `dex::table_order` now
+decides each rule by adjacent pairs (an equal pair is the duplicate case), and
+`parse` calls it, so out-of-order and repeated ids are refused as
+`StringIdsNotSorted`/`StringIdsDuplicate`, `TypeIdsNotSorted`/`TypeIdsDuplicate`,
+`ProtoIdsNotSorted`/`ProtoIdsDuplicate`, `FieldIdsNotSorted`/`FieldIdsDuplicate`
+and `MethodIdsNotSorted`/`MethodIdsDuplicate`. Strings compare as MUTF-8 bytes,
+which for well-formed MUTF-8 is UTF-16 code unit order; `string` validates each
+entry first, so that premise is checked rather than assumed.
+
+`tools/make_dex_fixture.py` now canonicalizes instead of hand-numbering: it
+computes each pool's sorted order and the type order that follows, and looks
+indices up by content. Only the `string_ids` TABLE is permuted -- the string_data
+blob keeps its declaration order -- so every offset the demo pins stayed put and
+all six file sizes are unchanged. The format's rules now decide the numbers: the
+class descriptor is type 1 in the methods fixture ("Ljava/lang/Object;" sorts
+first), `I` is type 0 in the fields fixture, and its direct methods are
+make/run/size because method_ids sorts by name. Ten permanent boot controls -- a
+swapped adjacent pair and a copied entry for each of the five tables -- require
+the named refusal, and every entry in all ten files still resolves, so a reader
+that validated entries one at a time would accept all ten. Regenerated fixture
+digests: hello 294 bytes `1b1c2acf...`, methods 436 `29841a53...`, fields 604
+`f383404e...`, annotations 744 `13dd4b45...`, map 748 `efcb355a...`; the minimal
+140-byte file is unchanged.
+
 2026-11-28 -- **DEX's member lists refuse a repeated member.**
 
 Android: the format requires each of `class_data_item`'s four lists sorted by

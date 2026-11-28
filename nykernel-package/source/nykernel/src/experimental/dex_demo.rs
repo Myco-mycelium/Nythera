@@ -39,6 +39,7 @@ static CLASS_DEX: &[u8] = include_bytes!("../../userprog/classes_hello.dex");
 /// pass for the wrong reason. `tools/make_dex_fixture.py` asserts every one of
 /// these before it writes the file.
 const STRING_IDS_OFF: usize = 0x70;
+const TYPE_IDS_OFF: usize = 0x7c;
 const FIRST_STRING_DATA_OFF: usize = 164;
 /// The index of the last string’s terminating NUL -- i.e. where a file
 /// that ends before its terminator stops. Used by the truncation control.
@@ -64,8 +65,12 @@ const METHOD_CLASS_DEFS_OFF: usize = 0xb0;
 const METHOD_TYPE_LIST_OFF: usize = 0x128;
 const METHOD_CLASS_DATA_OFF: usize = 0x130;
 const METHOD_SHORTY_STRING_INDEX: u32 = 4;
-const METHOD_VOID_TYPE: u32 = 3;
-const METHOD_PARAMETER_TYPE: u32 = 2;
+/// The type index the format's ordering rule assigns `V`: `type_ids` is sorted
+/// by string index, so the class is not type 0 -- "Ljava/lang/Object;" sorts
+/// before "Lnyrqis/hello/Hello;".
+const METHOD_VOID_TYPE: u32 = 2;
+const METHOD_PARAMETER_TYPE: u32 = 3;
+const METHOD_CLASS_TYPE: u32 = 1;
 const ACC_NATIVE: u32 = 0x100;
 const EXPECTED_PARAM: &[u8] = b"[Ljava/lang/String;";
 
@@ -80,6 +85,8 @@ static FIELD_DEX: &[u8] = include_bytes!("../../userprog/classes_fields.dex");
 /// `classes_fields.dex`'s fixed layout, repeated so each negative control
 /// patches a byte this file names rather than an offset it guessed.
 const FIELD_FIELD_IDS_OFF: usize = 0xcc;
+const FIELD_PROTO_IDS_OFF: usize = 0xb4;
+const FIELD_METHOD_IDS_OFF: usize = 0xe4;
 const FIELD_CLASS_DEFS_OFF: usize = 0xfc;
 const FIELD_SIZE_CODE_OFF: usize = 0x194;
 const FIELD_RUN_CODE_OFF: usize = 0x1a8;
@@ -87,11 +94,15 @@ const FIELD_CLASS_DATA_OFF: usize = 0x1bc;
 /// The fixture's class_data is this long; the controls below replace exactly
 /// this span, so a replacement cannot silently move the map_list after it.
 const FIELD_CLASS_DATA_LEN: usize = 22;
-const FIELD_INT_TYPE: u32 = 2;
-const FIELD_STRING_TYPE: u32 = 3;
-const FIELD_COUNT_STRING: u32 = 3;
-const FIELD_DEPTH_STRING: u32 = 4;
-const FIELD_NAME_STRING: u32 = 5;
+/// The type indices the format's ordering rule assigns: `type_ids` is sorted by
+/// string index, so "I" is 0, "Ljava/lang/String;" 2 and the class descriptor 3.
+const FIELD_CLASS_TYPE: u32 = 3;
+const FIELD_INT_TYPE: u32 = 0;
+const FIELD_STRING_TYPE: u32 = 2;
+/// The field NAMES sort by string index too: COUNT 0, DEPTH 1, name 9.
+const FIELD_COUNT_STRING: u32 = 0;
+const FIELD_DEPTH_STRING: u32 = 1;
+const FIELD_NAME_STRING: u32 = 9;
 const ACC_ABSTRACT: u32 = 0x400;
 const EXPECTED_FIELD_CLASS: &[u8] = b"Lnyrqis/hello/Fields;";
 const EXPECTED_FIELD_INT: &[u8] = b"I";
@@ -132,12 +143,12 @@ const ANN_STATIC_VALUES_STRING_OFF: usize = ANN_STATIC_VALUES_OFF + 5;
 /// directory or an array outside the file patch.
 const ANN_CLASS_DEF_ANNOTATIONS_OFF: usize = ANN_CLASS_DEFS_OFF + 20;
 const ANN_CLASS_DEF_STATIC_VALUES_OFF: usize = ANN_CLASS_DEFS_OFF + 28;
-const ANN_MARKER_STRING: u32 = 9;
-const ANN_MARKER_TYPE: u32 = 5;
-const ANN_HELLO_STRING: u32 = 12;
-const ANN_COUNT_NAME: u32 = 10;
-const ANN_NAME_NAME: u32 = 11;
-const ANN_FLAGS_NAME: u32 = 13;
+const ANN_MARKER_STRING: u32 = 5;
+const ANN_MARKER_TYPE: u32 = 4;
+const ANN_HELLO_STRING: u32 = 10;
+const ANN_COUNT_NAME: u32 = 8;
+const ANN_NAME_NAME: u32 = 12;
+const ANN_FLAGS_NAME: u32 = 9;
 const EXPECTED_ANN_CLASS: &[u8] = b"Lnyrqis/hello/Annotated;";
 const EXPECTED_MARKER: &[u8] = b"Lnyrqis/hello/Marker;";
 const EXPECTED_HELLO: &[u8] = b"hello";
@@ -188,14 +199,14 @@ const MAP_ENTRY_MAP_LIST: usize = 19;
 const MAP_CALL_SITE_COUNT_BYTE: usize = MAP_ENCODED_ARRAY_OFF;
 const MAP_HANDLE0_TYPE: usize = MAP_METHOD_HANDLES_OFF;
 const MAP_ENTRY_COUNT: usize = 20;
-const MAP_CLASS_TYPE: u32 = 0;
-const MAP_INT_TYPE: u32 = 2;
-const MAP_VOID_TYPE: u32 = 3;
-const MAP_TAG_TYPE: u32 = 4;
-const MAP_COUNT_STRING: u32 = 11;
-const MAP_LOCAL_STRING: u32 = 12;
-const MAP_NOTE_NAME: u32 = 9;
-const MAP_HANDLER_STRING: u32 = 8;
+const MAP_CLASS_TYPE: u32 = 2;
+const MAP_INT_TYPE: u32 = 0;
+const MAP_VOID_TYPE: u32 = 4;
+const MAP_TAG_TYPE: u32 = 3;
+const MAP_COUNT_STRING: u32 = 8;
+const MAP_LOCAL_STRING: u32 = 10;
+const MAP_NOTE_NAME: u32 = 11;
+const MAP_HANDLER_STRING: u32 = 9;
 const EXPECTED_MAP_CLASS: &[u8] = b"Lnyrqis/hello/Mapped;";
 const EXPECTED_TAG: &[u8] = b"Lnyrqis/hello/Tag;";
 
@@ -209,6 +220,8 @@ pub fn run() -> bool {
     let checksum_check_ok = run_negative_bad_checksum();
     let tables_ok = run_class_tables();
     let refusals_ok = run_negative_table_refusals();
+    let order_ok = run_table_order();
+    let order_refusals_ok = run_negative_order_refusals();
     let methods_ok = run_method_tables();
     let method_refusals_ok = run_negative_method_refusals();
     let members_ok = run_field_and_code_tables();
@@ -219,7 +232,7 @@ pub fn run() -> bool {
     let map_refusals_ok = run_negative_map_refusals();
 
     serial_println!(
-        "  experimental dex-demo self-test: crypto known-answer {}, valid parse+integrity {}, bad-magic rejection {}, map-self-reference rejection {}, checksum rejection {}, class tables {}, table refusals {}, method tables {}, method refusals {}, field and code tables {}, member refusals {}, annotation tables {}, annotation refusals {}, map sections {}, map refusals {} -- {}",
+        "  experimental dex-demo self-test: crypto known-answer {}, valid parse+integrity {}, bad-magic rejection {}, map-self-reference rejection {}, checksum rejection {}, class tables {}, table refusals {}, table order {}, order refusals {}, method tables {}, method refusals {}, field and code tables {}, member refusals {}, annotation tables {}, annotation refusals {}, map sections {}, map refusals {} -- {}",
         verdict(kats_ok),
         verdict(positive_ok),
         verdict(magic_check_ok),
@@ -227,6 +240,8 @@ pub fn run() -> bool {
         verdict(checksum_check_ok),
         verdict(tables_ok),
         verdict(refusals_ok),
+        verdict(order_ok),
+        verdict(order_refusals_ok),
         verdict(methods_ok),
         verdict(method_refusals_ok),
         verdict(members_ok),
@@ -235,7 +250,7 @@ pub fn run() -> bool {
         verdict(annotation_refusals_ok),
         verdict(map_sections_ok),
         verdict(map_refusals_ok),
-        verdict(kats_ok && positive_ok && magic_check_ok && map_check_ok && checksum_check_ok && tables_ok && refusals_ok && methods_ok && method_refusals_ok && members_ok && member_refusals_ok && annotations_ok && annotation_refusals_ok && map_sections_ok && map_refusals_ok)
+        verdict(kats_ok && positive_ok && magic_check_ok && map_check_ok && checksum_check_ok && tables_ok && refusals_ok && order_ok && order_refusals_ok && methods_ok && method_refusals_ok && members_ok && member_refusals_ok && annotations_ok && annotation_refusals_ok && map_sections_ok && map_refusals_ok)
     );
 
     kats_ok
@@ -245,6 +260,8 @@ pub fn run() -> bool {
         && checksum_check_ok
         && tables_ok
         && refusals_ok
+        && order_ok
+        && order_refusals_ok
         && methods_ok
         && method_refusals_ok
         && members_ok
@@ -1023,18 +1040,22 @@ fn run_class_tables() -> bool {
         && info.string_ids_count == 3
         && info.type_ids_count == 2
         && info.class_defs_count == 1;
-    let strings_ok = matches!(dex::string(CLASS_DEX, 0), Ok(s) if s == EXPECTED_CLASS)
+    // The indices are the FORMAT's, not the declaration order: `string_ids` is
+    // sorted by content, so "Hello.java" is 0, the superclass descriptor 1 and
+    // the class descriptor 2; `type_ids` is sorted by string index, so the
+    // superclass is type 0 and the class type 1.
+    let strings_ok = matches!(dex::string(CLASS_DEX, 0), Ok(s) if s == EXPECTED_SOURCE)
         && matches!(dex::string(CLASS_DEX, 1), Ok(s) if s == EXPECTED_SUPER)
-        && matches!(dex::string(CLASS_DEX, 2), Ok(s) if s == EXPECTED_SOURCE);
-    let types_ok = matches!(dex::type_descriptor(CLASS_DEX, 0), Ok(s) if s == EXPECTED_CLASS)
-        && matches!(dex::type_descriptor(CLASS_DEX, 1), Ok(s) if s == EXPECTED_SUPER);
+        && matches!(dex::string(CLASS_DEX, 2), Ok(s) if s == EXPECTED_CLASS);
+    let types_ok = matches!(dex::type_descriptor(CLASS_DEX, 0), Ok(s) if s == EXPECTED_SUPER)
+        && matches!(dex::type_descriptor(CLASS_DEX, 1), Ok(s) if s == EXPECTED_CLASS);
     let def = dex::class_def(CLASS_DEX, 0);
     let class_ok = match def {
         Ok(def) => {
-            def.class_idx == 0
+            def.class_idx == 1
                 && def.access_flags == 0x1
-                && def.superclass_idx == Some(1)
-                && def.source_file_idx == Some(2)
+                && def.superclass_idx == Some(0)
+                && def.source_file_idx == Some(0)
         }
         Err(_) => false,
     };
@@ -1045,18 +1066,19 @@ fn run_class_tables() -> bool {
 
     let ok = integrity_ok && counts_ok && strings_ok && types_ok && class_ok && descriptor_ok;
     serial_println!(
-        "  experimental dex-demo: class tables -- a {} byte DEX with {} string(s), {} type(s), {} class(es): string 0/1/2 answer \"{}\"/\"{}\"/\"{}\", type 0/1 resolve them as descriptors, and class 0 is {} (public, flags {:#x}) extending {} with source file {} -- {}",
+        "  experimental dex-demo: class tables -- a {} byte DEX with {} string(s), {} type(s), {} class(es): string 0/1/2 answer \"{}\"/\"{}\"/\"{}\" (sorted by content), type 0/1 resolve {} and {} (sorted by string index), and class 0 is {} (public, flags {:#x}) extending {} -- {}",
         info.file_size,
         info.string_ids_count,
         info.type_ids_count,
         info.class_defs_count,
+        "Hello.java",
+        "Ljava/lang/Object;",
         "Lnyrqis/hello/Hello;",
         "Ljava/lang/Object;",
-        "Hello.java",
+        "Lnyrqis/hello/Hello;",
         "Lnyrqis/hello/Hello;",
         0x1,
         "Ljava/lang/Object;",
-        "Hello.java",
         if ok { "OK" } else { "MISMATCH" }
     );
     ok
@@ -1079,14 +1101,16 @@ fn run_negative_table_refusals() -> bool {
         for i in 0..5 {
             corrupted[FIRST_STRING_DATA_OFF + i] = 0x80;
         }
-        matches!(dex::string(&corrupted, 0), Err(DexError::BadUleb128))
+        // 164 is the blob's first item, the class descriptor, whose table entry
+        // is index 2 after the format's sort.
+        matches!(dex::string(&corrupted, 2), Err(DexError::BadUleb128))
     };
 
     let length_mismatch = {
         let mut corrupted: Vec<u8> = CLASS_DEX.to_vec();
         // The class descriptor is 20 bytes, i.e. 20 UTF-16 units; declare 19.
         corrupted[FIRST_STRING_DATA_OFF] = 19;
-        matches!(dex::string(&corrupted, 0), Err(DexError::StringLengthMismatch))
+        matches!(dex::string(&corrupted, 2), Err(DexError::StringLengthMismatch))
     };
 
     let unterminated = {
@@ -1097,8 +1121,10 @@ fn run_negative_table_refusals() -> bool {
         // is truncated at the last string's bytes. (`string` reads only the
         // header and the offsets it needs, so a short slice is exactly the
         // malformed file this check is about.)
+        // The blob's LAST item is "Hello.java"; sorted-first is its table
+        // index, 0.
         let truncated: Vec<u8> = CLASS_DEX[..LAST_STRING_TERMINATOR_OFF].to_vec();
-        matches!(dex::string(&truncated, 2), Err(DexError::StringNotTerminated))
+        matches!(dex::string(&truncated, 0), Err(DexError::StringNotTerminated))
     };
 
     let type_past_end = matches!(
@@ -1134,6 +1160,133 @@ fn run_negative_table_refusals() -> bool {
         if type_past_end { "refused TypeIndexOutOfBounds" } else { "ACCEPTED" },
         if class_past_end { "refused ClassIndexOutOfBounds" } else { "ACCEPTED" },
         if bad_descriptor { "refused BadTypeDescriptor" } else { "ACCEPTED" },
+        verdict(ok)
+    );
+    ok
+}
+
+/// The five id tables' ordering and uniqueness rules, read out of every
+/// fixture. This is the same [`dex::table_order`] `parse` runs, and the counts
+/// are the fixtures' own, so the line answers "is this a file whose tables are
+/// in the format's order" rather than "did a parser accept something".
+fn run_table_order() -> bool {
+    let hello = dex::table_order(CLASS_DEX);
+    let methods = dex::table_order(METHOD_DEX);
+    let fields = dex::table_order(FIELD_DEX);
+    let minimal = dex::table_order(VALID_DEX);
+    let order_ok = matches!(&hello, Ok(o)
+            if o.string_ids == 3 && o.type_ids == 2 && o.proto_ids == 0
+                && o.field_ids == 0 && o.method_ids == 0)
+        && matches!(&methods, Ok(o)
+            if o.string_ids == 7 && o.type_ids == 4 && o.proto_ids == 1
+                && o.field_ids == 0 && o.method_ids == 1)
+        && matches!(&fields, Ok(o)
+            if o.string_ids == 12 && o.type_ids == 5 && o.proto_ids == 2
+                && o.field_ids == 3 && o.method_ids == 3)
+        && matches!(dex::table_order(ANN_DEX), Ok(_))
+        && matches!(dex::table_order(MAP_DEX), Ok(_))
+        && matches!(&minimal, Ok(o) if o.string_ids == 0 && o.type_ids == 0);
+    serial_println!(
+        "  experimental dex-demo: table order -- all six fixtures satisfy the format's rules: classes_fields.dex's 12 strings are sorted by content and unique, its 5 types sorted by string index, its 2 protos by (return type, param list), its 3 fields by (class, name, type) and its 3 methods by (class, name, proto) -- classes_methods.dex shows the order is not declaration order, its class descriptor being type 1 because \"Ljava/lang/Object;\" sorts first -- and the minimal file's empty tables pass too -- {}",
+        verdict(order_ok)
+    );
+    order_ok
+}
+
+/// `data` with two fixed-size table entries exchanged. The span is the caller's
+/// fixture constant, so a wrong offset or width would disturb the wrong bytes --
+/// which is why each control's expected error, not just `is_err`, is asserted.
+fn swapped(data: &[u8], off: usize, first: usize, second: usize, size: usize) -> Vec<u8> {
+    let mut out = data.to_vec();
+    let a = off + first * size;
+    let b = off + second * size;
+    let first_bytes: Vec<u8> = out[a..a + size].to_vec();
+    let second_bytes: Vec<u8> = out[b..b + size].to_vec();
+    out[a..a + size].copy_from_slice(&second_bytes);
+    out[b..b + size].copy_from_slice(&first_bytes);
+    out
+}
+
+/// `data` with one table entry replaced by a COPY of another: the equal-pair
+/// shape the uniqueness rule forbids, at the table's own width.
+fn copied_entry(data: &[u8], off: usize, from: usize, to: usize, size: usize) -> Vec<u8> {
+    let mut out = data.to_vec();
+    let a = off + from * size;
+    let b = off + to * size;
+    let held: Vec<u8> = out[a..a + size].to_vec();
+    out[b..b + size].copy_from_slice(&held);
+    out
+}
+
+/// One control per table per rule: a swapped adjacent pair is `...NotSorted`,
+/// a duplicated entry is `...Duplicate`. Ten controls, each the real fixture
+/// with exactly one table's bytes disturbed -- every string, type, prototype,
+/// field and method in them still resolves, so a reader that answered entries
+/// one at a time would accept all ten.
+fn run_negative_order_refusals() -> bool {
+    let strings_unsorted = matches!(
+        dex::table_order(&swapped(CLASS_DEX, STRING_IDS_OFF, 0, 1, 4)),
+        Err(DexError::StringIdsNotSorted)
+    );
+    let strings_duplicate = matches!(
+        dex::table_order(&copied_entry(CLASS_DEX, STRING_IDS_OFF, 0, 1, 4)),
+        Err(DexError::StringIdsDuplicate)
+    );
+    let types_unsorted = matches!(
+        dex::table_order(&swapped(CLASS_DEX, TYPE_IDS_OFF, 0, 1, 4)),
+        Err(DexError::TypeIdsNotSorted)
+    );
+    let types_duplicate = matches!(
+        dex::table_order(&copied_entry(CLASS_DEX, TYPE_IDS_OFF, 0, 1, 4)),
+        Err(DexError::TypeIdsDuplicate)
+    );
+    let protos_unsorted = matches!(
+        dex::table_order(&swapped(FIELD_DEX, FIELD_PROTO_IDS_OFF, 0, 1, 12)),
+        Err(DexError::ProtoIdsNotSorted)
+    );
+    let protos_duplicate = matches!(
+        dex::table_order(&copied_entry(FIELD_DEX, FIELD_PROTO_IDS_OFF, 0, 1, 12)),
+        Err(DexError::ProtoIdsDuplicate)
+    );
+    let fields_unsorted = matches!(
+        dex::table_order(&swapped(FIELD_DEX, FIELD_FIELD_IDS_OFF, 0, 1, 8)),
+        Err(DexError::FieldIdsNotSorted)
+    );
+    let fields_duplicate = matches!(
+        dex::table_order(&copied_entry(FIELD_DEX, FIELD_FIELD_IDS_OFF, 0, 1, 8)),
+        Err(DexError::FieldIdsDuplicate)
+    );
+    let methods_unsorted = matches!(
+        dex::table_order(&swapped(FIELD_DEX, FIELD_METHOD_IDS_OFF, 0, 1, 8)),
+        Err(DexError::MethodIdsNotSorted)
+    );
+    let methods_duplicate = matches!(
+        dex::table_order(&copied_entry(FIELD_DEX, FIELD_METHOD_IDS_OFF, 0, 1, 8)),
+        Err(DexError::MethodIdsDuplicate)
+    );
+
+    let ok = strings_unsorted
+        && strings_duplicate
+        && types_unsorted
+        && types_duplicate
+        && protos_unsorted
+        && protos_duplicate
+        && fields_unsorted
+        && fields_duplicate
+        && methods_unsorted
+        && methods_duplicate;
+    serial_println!(
+        "  experimental dex-demo: order refusals -- a swapped string pair {}, a duplicated string {}, a swapped type pair {}, a duplicated type {}, a swapped proto pair {}, a duplicated proto {}, a swapped field pair {}, a duplicated field {}, a swapped method pair {}, and a duplicated method {} -- {}",
+        if strings_unsorted { "refused StringIdsNotSorted" } else { "ACCEPTED" },
+        if strings_duplicate { "refused StringIdsDuplicate" } else { "ACCEPTED" },
+        if types_unsorted { "refused TypeIdsNotSorted" } else { "ACCEPTED" },
+        if types_duplicate { "refused TypeIdsDuplicate" } else { "ACCEPTED" },
+        if protos_unsorted { "refused ProtoIdsNotSorted" } else { "ACCEPTED" },
+        if protos_duplicate { "refused ProtoIdsDuplicate" } else { "ACCEPTED" },
+        if fields_unsorted { "refused FieldIdsNotSorted" } else { "ACCEPTED" },
+        if fields_duplicate { "refused FieldIdsDuplicate" } else { "ACCEPTED" },
+        if methods_unsorted { "refused MethodIdsNotSorted" } else { "ACCEPTED" },
+        if methods_duplicate { "refused MethodIdsDuplicate" } else { "ACCEPTED" },
         verdict(ok)
     );
     ok
@@ -1263,7 +1416,7 @@ fn run_method_tables() -> bool {
     let signature = compose_method_signature(METHOD_DEX, 0);
     let method_ok = match dex::method_id(METHOD_DEX, 0) {
         Ok(method) => {
-            method.class_idx == 0
+            method.class_idx == METHOD_CLASS_TYPE
                 && method.proto_idx == 0
                 && matches!(dex::string(METHOD_DEX, method.name_idx), Ok(name) if name == b"main")
                 && matches!(signature.as_deref(), Some(sig) if sig == b"main([Ljava/lang/String;)V")
@@ -1382,7 +1535,7 @@ fn run_field_and_code_tables() -> bool {
         && info.class_defs_count == 1;
 
     let fields_ok = matches!(dex::field_id(FIELD_DEX, 0), Ok(f)
-            if f.class_idx == 0
+            if f.class_idx == FIELD_CLASS_TYPE
                 && f.type_idx == FIELD_INT_TYPE
                 && f.name_idx == FIELD_COUNT_STRING)
         && matches!(dex::string(FIELD_DEX, FIELD_COUNT_STRING), Ok(s) if s == b"COUNT")
@@ -1411,12 +1564,14 @@ fn run_field_and_code_tables() -> bool {
                     && *indices(&data.instance_fields) == [2]
                     && data.instance_fields[0].access_flags == 0x2
                     && data.virtual_methods.is_empty(),
+                // method_ids is sorted by (class, name, proto), so the direct
+                // list is make (0, native), run (1), size (2).
                 *indices(&data.direct_methods) == [0, 1, 2]
-                    && direct[0].1 == Some(FIELD_SIZE_CODE_OFF as u32)
-                    && direct[1].1.is_none()
-                    && direct[2].1 == Some(FIELD_RUN_CODE_OFF as u32),
+                    && direct[0].1.is_none()
+                    && direct[1].1 == Some(FIELD_RUN_CODE_OFF as u32)
+                    && direct[2].1 == Some(FIELD_SIZE_CODE_OFF as u32),
                 direct.len() == 3
-                    && data.direct_methods[1].access_flags == (0x1 | 0x8 | ACC_NATIVE),
+                    && data.direct_methods[0].access_flags == (0x1 | 0x8 | ACC_NATIVE),
             )
         }
         _ => (false, false, false),
@@ -1432,7 +1587,7 @@ fn run_field_and_code_tables() -> bool {
             && code.debug_info_off == 0
             && code.insns == [0x0012, 0x000f]);
     let run_ok = matches!(&run_code, Ok(code) if code.insns == [0x0012, 0x000e]);
-    let signature_ok = matches!(compose_method_signature(FIELD_DEX, 2).as_deref(), Some(sig) if sig == b"run()V");
+    let signature_ok = matches!(compose_method_signature(FIELD_DEX, 2).as_deref(), Some(sig) if sig == b"size()I");
 
     let ok = integrity_ok
         && counts_ok
@@ -1474,9 +1629,10 @@ fn push_uleb(out: &mut Vec<u8>, mut value: u32) {
 /// static field deltas, the instance field delta, and the three direct methods'
 /// `(idx_diff, access_flags, code_off)`.
 ///
-/// The canonical call is `fields_class_data([0, 1], 2, [(0, 0x9, 0x194),
-/// (1, 0x109, 0), (1, 0x9, 0x1a8)])` -- the fixture's own bytes. Each control
-/// changes exactly one of those numbers.
+/// The canonical call is `fields_class_data([0, 1], 2, [(0, 0x109, 0),
+/// (1, 0x9, 0x1a8), (1, 0x9, 0x194)])` -- the fixture's own bytes, in
+/// `method_ids` order (sorted by name: make, run, size). Each control changes
+/// exactly one of those numbers.
 ///
 /// The result is exactly [`FIELD_CLASS_DATA_LEN`] bytes, or `None` when the
 /// encoding would not fit. Both halves matter: a control exists to break one
@@ -1572,7 +1728,7 @@ fn run_negative_member_refusals() -> bool {
     let delta_past = match fields_variant(
         [0, 4],
         2,
-        [(0, 0x9, FIELD_SIZE_CODE_OFF as u32), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+        [(0, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32), (1, 0x9, FIELD_SIZE_CODE_OFF as u32)],
     ) {
         Some(corrupted) => {
             matches!(dex::class_data(&corrupted, 0), Err(DexError::FieldIndexOutOfBounds))
@@ -1591,9 +1747,9 @@ fn run_negative_member_refusals() -> bool {
         [0, 1],
         2,
         [
-            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-            (1, 0x1 | 0x8 | ACC_NATIVE, 1),
+            (0, 0x1 | 0x8 | ACC_NATIVE, 1),
             (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+            (1, 0x9, FIELD_SIZE_CODE_OFF as u32),
         ],
     ) {
         Some(corrupted) => {
@@ -1605,7 +1761,7 @@ fn run_negative_member_refusals() -> bool {
     let ordinary_without_code = match fields_variant(
         [0, 1],
         2,
-        [(0, 0x9, 0), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+        [(0, 0x9, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32), (1, 0x9, FIELD_SIZE_CODE_OFF as u32)],
     ) {
         Some(corrupted) => {
             matches!(dex::class_data(&corrupted, 0), Err(DexError::MethodCodeMismatch))
@@ -1619,9 +1775,9 @@ fn run_negative_member_refusals() -> bool {
         [0, 1],
         2,
         [
-            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-            (1, 0x1 | ACC_ABSTRACT, 0),
+            (0, 0x1 | ACC_ABSTRACT, 0),
             (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+            (1, 0x9, FIELD_SIZE_CODE_OFF as u32),
         ],
     ) {
         Some(corrupted) => matches!(dex::class_data(&corrupted, 0), Ok(Some(_))),
@@ -1633,9 +1789,9 @@ fn run_negative_member_refusals() -> bool {
         [0, 1],
         2,
         [
-            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-            (1, 0x1 | 0x8 | ACC_ABSTRACT, 1),
+            (0, 0x1 | 0x8 | ACC_ABSTRACT, 1),
             (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+            (1, 0x9, FIELD_SIZE_CODE_OFF as u32),
         ],
     ) {
         Some(corrupted) => {
@@ -1650,7 +1806,7 @@ fn run_negative_member_refusals() -> bool {
     let code_past_eof = match fields_variant(
         [0, 1],
         2,
-        [(0, 0x9, 4080), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+        [(0, 0x109, 0), (1, 0x9, 4080), (1, 0x9, FIELD_SIZE_CODE_OFF as u32)],
     ) {
         Some(corrupted) => {
             matches!(dex::class_data(&corrupted, 0), Err(DexError::CodeItemOutOfBounds))
@@ -1682,9 +1838,9 @@ fn run_negative_member_refusals() -> bool {
         [0, 1],
         2,
         [
+            (0, 0x109, 0),
+            (1, 0x9, FIELD_RUN_CODE_OFF as u32),
             (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-            (1, 0x109, 0),
-            (0, 0x9, FIELD_RUN_CODE_OFF as u32),
         ],
     ) {
         Some(corrupted) => {
@@ -1697,9 +1853,9 @@ fn run_negative_member_refusals() -> bool {
         [0, 1],
         2,
         [
-            (0, 0x9, FIELD_SIZE_CODE_OFF as u32),
-            (5, 0x109, 0),
-            (1, 0x9, FIELD_RUN_CODE_OFF as u32),
+            (0, 0x109, 0),
+            (5, 0x9, FIELD_RUN_CODE_OFF as u32),
+            (1, 0x9, FIELD_SIZE_CODE_OFF as u32),
         ],
     ) {
         Some(corrupted) => {
@@ -1744,14 +1900,14 @@ fn run_negative_member_refusals() -> bool {
         fields_class_data(
             [0, 1],
             2,
-            [(0, 0x9, FIELD_SIZE_CODE_OFF as u32), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+            [(0, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32), (1, 0x9, FIELD_SIZE_CODE_OFF as u32)],
         ),
         Some(bytes) if bytes.len() == FIELD_CLASS_DATA_LEN
     );
     let grown_past_span = fields_class_data(
         [0, 1],
         2,
-        [(0, 0x9, u32::MAX), (1, 0x109, 0), (1, 0x9, FIELD_RUN_CODE_OFF as u32)],
+        [(0, 0x109, 0), (1, 0x9, u32::MAX), (1, 0x9, FIELD_SIZE_CODE_OFF as u32)],
     )
     .is_none();
     let span_guard = canonical_fits

@@ -8874,3 +8874,69 @@ Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
   experimental dex-demo: member refusals -- a field index past field_ids refused FieldIndexOutOfBounds, a static delta landing past it refused FieldIndexOutOfBounds, a native method carrying a non-zero code_off refused MethodCodeMismatch before the offset was resolved, an ordinary method with none refused MethodCodeMismatch, an ABSTRACT method carrying one refused MethodCodeMismatch (while a native method without one is accepted OK), a code_off past EOF refused CodeItemOutOfBounds, a method delta landing past method_ids refused MethodIndexOutOfBounds, a static list that repeats its field refused ClassDataDuplicateMember and a direct list that repeats its method refused ClassDataDuplicateMember, a code_item whose words run past EOF refused CodeItemTruncated, one whose ins_size exceeds its registers refused CodeItemRegisterMismatch, an entry that stops before its code_off refused ClassDataTruncated, a class_data replacement one byte short, one byte long or an encoding grown past the span refused by the span rule, and code_item(0) refused CodeItemOutOfBounds -- OK
   experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK, map sections OK, map refusals OK -- OK
 ```
+## The DEX id tables are held to their ordering and uniqueness rules (2026-11-28)
+
+The five id tables are not bags. `string_ids` must be sorted by UTF-16 code
+point values with no duplicates, `type_ids` by string index, `proto_ids` by
+(return type, then parameter list), `field_ids` by (class, name, type) and
+`method_ids` by (class, name, proto). None of those is a property of any single
+lookup, and the parser had never checked one. That mattered more than a missing
+check usually does: the repository's own fixtures were not valid DEX files.
+Every pool was in DECLARATION order -- "Lnyrqis/hello/Hello;" first and
+"Hello.java" last -- and `classes_methods.dex` additionally numbered its class
+type before its superclass, so its `type_ids` was out of order too. A reader
+that resolves entries one at a time accepts all of that; the platform's
+verifier does not.
+
+`dex::table_order` now checks all five rules, and `parse` calls it, so no
+resolver is ever handed a file whose tables cannot be valid. Sortedness is
+decided by ADJACENT pairs -- a sequence is nondecreasing exactly when every
+neighbour is -- and an equal pair is reported as the duplicate it is, so "out of
+order" and "repeats an entry" stay different typed refusals:
+`StringIdsNotSorted`/`StringIdsDuplicate`, `TypeIdsNotSorted`/`TypeIdsDuplicate`,
+`ProtoIdsNotSorted`/`ProtoIdsDuplicate`, `FieldIdsNotSorted`/`FieldIdsDuplicate`
+and `MethodIdsNotSorted`/`MethodIdsDuplicate`. Strings compare as MUTF-8 bytes,
+which for well-formed MUTF-8 IS UTF-16 code unit order: the encoding has no
+four-byte form, and both smaller forms order their leading bytes by value --
+and `string` has already validated the encoding and the declared length before
+the comparison uses it.
+
+**The fixtures were canonicalized, not worked around.**
+`tools/make_dex_fixture.py` now computes each pool's canonical order and the
+type order it implies, and looks indices up by content (`H_S`, `M_S`, `F_S`,
+`A_S`, `MP_S`) instead of writing numbers the format's rule would contradict.
+Only the `string_ids` TABLE is permuted: the `string_data` blob keeps its
+declaration order, so every offset the demo pins stayed exactly where it was and
+all six files kept their sizes. What changed is what the format decides. In
+`classes_fields.dex` the class descriptor is type 3 and `I` type 0; in
+`classes_methods.dex` the class is type 1 because "Ljava/lang/Object;" sorts
+before "Lnyrqis/hello/Hello;"; and `method_ids` sorts by name, so the fields
+fixture's direct methods are make (0, native), run (1) and size (2) instead of
+the order the file used to declare them. The demo and its controls follow the
+files' own numbering, and the class_data builder's canonical call changed with
+them.
+
+Ten permanent boot controls, one per table per rule: a swapped adjacent pair
+must be refused as `...NotSorted`, a copied entry as `...Duplicate`. Every entry
+in all ten files still resolves -- the offsets, type indices, prototypes, field
+and method records are all individually valid -- so a reader that answered
+entries one at a time would accept all ten.
+
+Verified boot transcript (`tools/qemu_boot_test.sh`, passing, GATE_RC=0):
+
+```
+  experimental dex-demo: table order -- all six fixtures satisfy the format's rules: classes_fields.dex's 12 strings are sorted by content and unique, its 5 types sorted by string index, its 2 protos by (return type, param list), its 3 fields by (class, name, type) and its 3 methods by (class, name, proto) -- classes_methods.dex shows the order is not declaration order, its class descriptor being type 1 because "Ljava/lang/Object;" sorts first -- and the minimal file's empty tables pass too -- OK
+  experimental dex-demo: order refusals -- a swapped string pair refused StringIdsNotSorted, a duplicated string refused StringIdsDuplicate, a swapped type pair refused TypeIdsNotSorted, a duplicated type refused TypeIdsDuplicate, a swapped proto pair refused ProtoIdsNotSorted, a duplicated proto refused ProtoIdsDuplicate, a swapped field pair refused FieldIdsNotSorted, a duplicated field refused FieldIdsDuplicate, a swapped method pair refused MethodIdsNotSorted, and a duplicated method refused MethodIdsDuplicate -- OK
+  experimental dex-demo self-test: crypto known-answer OK, valid parse+integrity OK, bad-magic rejection OK, map-self-reference rejection OK, checksum rejection OK, class tables OK, table refusals OK, table order OK, order refusals OK, method tables OK, method refusals OK, field and code tables OK, member refusals OK, annotation tables OK, annotation refusals OK, map sections OK, map refusals OK -- OK
+```
+
+The regenerated fixtures, same sizes, new digests: `classes_hello.dex` 294
+bytes `1b1c2acf331ca7b688912b51e32fd366a5f93e917e2077553b62fa70917bf439`,
+`classes_methods.dex` 436 `29841a535c4d9d7a7877dc4e1b1b49aa5a2bc1d60cd4af0d1f4bdc1a9bab6491`,
+`classes_fields.dex` 604 `f383404edfffd3d8ab44c2a61a1a7a9cfbd7b440f5899dccb44ba75713340def`,
+`classes_annotations.dex` 744 `13dd4b450d6902c4af7614a5dbd8de6abaefbf0abbf182e3174dfde8274c8cf9`,
+`classes_map.dex` 748 `efcb355a44b1ceffe53e928dfc724d096f5ec013460b199b0ce552797886b073`;
+the minimal `classes.dex` is byte-identical to before, since it has no ids to
+order. Still absent and named: the string pool's de-duplication ACROSS different
+files (this is one file's own pool), ART's `hiddenapi_class_data_item`, and the
+meaning of positions and annotations.

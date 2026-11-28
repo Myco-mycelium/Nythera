@@ -40,15 +40,46 @@ import pathlib
 import struct
 import zlib
 
+
+def canonical_string_order(strings: list) -> tuple:
+    """The `string_ids` order the format requires, plus content -> index.
+
+    The DEX format requires `string_ids` sorted by UTF-16 code point values with
+    no duplicates. These fixtures declare their pools in SEMANTIC order (class,
+    superclass, source file, ...), which is not sorted order, so the ids table is
+    permuted to match. Only the table's entries move: the `string_data` blob is
+    still written in declaration order, so every offset in the file stays where
+    this script's layout says it is.
+    """
+    decoded = [s.decode("utf-8") for s in strings]
+    assert len(set(decoded)) == len(decoded), "the format forbids duplicate strings"
+    order = sorted(range(len(strings)), key=lambda i: decoded[i])
+    return order, {strings[i]: index for index, i in enumerate(order)}
+
+
+def canonical_type_order(descriptors: list, string_index: dict) -> tuple:
+    """`type_ids` sorted by string index, de-duplicated: (entries, desc -> index)."""
+    ordered = sorted(descriptors, key=string_index.__getitem__)
+    assert len(set(ordered)) == len(ordered), "the format forbids duplicate types"
+    return [string_index[d] for d in ordered], {d: i for i, d in enumerate(ordered)}
+
+
 CLASS = b"Lnyrqis/hello/Hello;"
 SUPER = b"Ljava/lang/Object;"
 SOURCE = b"Hello.java"
 
 STRINGS = [CLASS, SUPER, SOURCE]
 
-# type_ids: the class type, then its superclass type. Both name strings by
-# index, which is what makes `type_descriptor` a two-hop read.
-TYPES = [0, 1]
+# The format requires `string_ids` sorted by UTF-16 code point order and
+# de-duplicated, and `type_ids` sorted by string index. "Hello.java" sorts
+# before both "L..." descriptors, so the ids table is not in declaration order.
+STRING_IDS_ORDER, H_S = canonical_string_order(STRINGS)
+
+# type_ids: the class type and its superclass type, each naming a string by
+# index -- which is what makes `type_descriptor` a two-hop read. Ordered by
+# string index, the superclass precedes the class ("Ljava/..." < "Lnyrqis/..."),
+# so the class is type 1, not type 0: the file's own ordering rule decides it.
+TYPES, H_TYPE = canonical_type_order([CLASS, SUPER], H_S)
 
 HEADER_SIZE = 0x70
 STRING_IDS_OFF = HEADER_SIZE
@@ -112,16 +143,22 @@ def write_integrity(body: bytearray) -> None:
 
 METHOD_STRINGS = [CLASS, SUPER, SOURCE, b"main", b"VL", b"V", b"[Ljava/lang/String;"]
 
+METHOD_STRING_IDS_ORDER, M_S = canonical_string_order(METHOD_STRINGS)
+
 # type_ids name strings: the class, its superclass, the parameter type, and the
 # void return type. `proto_id.return_type_idx` and the type_list entries below
-# both index this table.
-METHOD_TYPES = [0, 1, 6, 5]
+# both index this table, and the table is ordered by string index -- so the
+# class is NOT type 0: "Ljava/lang/Object;" sorts before "Lnyrqis/hello/Hello;"
+# and the array descriptor sorts after both. These names are looked up, not
+# written as numbers, because the format's ordering rule decides the numbers.
+METHOD_TYPE_DESCS = [CLASS, SUPER, b"[Ljava/lang/String;", b"V"]
+METHOD_TYPES, M_TYPE = canonical_type_order(METHOD_TYPE_DESCS, M_S)
 
-CLASS_TYPE = 0
-VOID_TYPE = 3
-PARAM_TYPE = 2
-SHORTY_STRING = 4
-RETURN_STRING = 5
+CLASS_TYPE = M_TYPE[CLASS]
+VOID_TYPE = M_TYPE[b"V"]
+PARAM_TYPE = M_TYPE[b"[Ljava/lang/String;"]
+SHORTY_STRING = M_S[b"VL"]
+RETURN_STRING = M_S[b"V"]
 
 TYPE_PROTO_ID_ITEM = 0x0003
 TYPE_FIELD_ID_ITEM = 0x0004
@@ -198,20 +235,22 @@ def write_methods_fixture() -> int:
     struct.pack_into("<I", header, 104, file_size - string_data_off)
     struct.pack_into("<I", header, 108, string_data_off)
 
-    string_ids = b"".join(struct.pack("<I", off) for off in string_offsets)
+    string_ids = b"".join(
+        struct.pack("<I", string_offsets[i]) for i in METHOD_STRING_IDS_ORDER
+    )
     type_ids = b"".join(struct.pack("<I", idx) for idx in METHOD_TYPES)
     # shorty_idx, return_type_idx, parameters_off
     proto_id = struct.pack("<3I", SHORTY_STRING, VOID_TYPE, type_list_off)
     # class_idx (u2), proto_idx (u2), name_idx (u4) -- 8 bytes, not three u32.
-    method_id = struct.pack("<HHI", CLASS_TYPE, 0, 3)
+    method_id = struct.pack("<HHI", CLASS_TYPE, 0, M_S[b"main"])
     assert len(method_id) == 8
     class_def = struct.pack(
         "<8I",
         CLASS_TYPE,  # class_idx
         0x1,  # ACC_PUBLIC
-        1,  # superclass_idx
+        M_TYPE[SUPER],  # superclass_idx
         0,  # interfaces_off
-        2,  # source_file_idx
+        M_S[SOURCE],  # source_file_idx
         0,  # annotations_off
         class_data_off,
         0,  # static_values_off
@@ -311,22 +350,42 @@ FIELD_STRINGS = [
     b"V",
 ]
 
-# type_ids name strings: class, superclass, int, String, void.
-FIELD_TYPES = [0, 1, 6, 7, 11]
-F_CLASS = 0
-F_INT = 2
-F_STRING = 3
-F_VOID = 4
-F_SHORTY_I = 6
-F_SHORTY_V = 11
+FIELD_STRING_IDS_ORDER, F_S = canonical_string_order(FIELD_STRINGS)
+FIELD_CLASS = FIELD_STRINGS[0]
+FIELD_SUPER = FIELD_STRINGS[1]
 
-# field_ids are (class_idx u2, type_idx u2, name_idx u4), sorted by name index
-# as the format requires: COUNT (3), DEPTH (4), name (5).
-FIELD_FIELDS = [(F_CLASS, F_INT, 3), (F_CLASS, F_INT, 4), (F_CLASS, F_STRING, 5)]
+# type_ids name strings: class, superclass, int, String, void -- ordered by
+# string index, which puts "I" first and the class descriptor fourth.
+FIELD_TYPE_DESCS = [FIELD_CLASS, FIELD_SUPER, b"I", b"Ljava/lang/String;", b"V"]
+FIELD_TYPES, F_TYPE = canonical_type_order(FIELD_TYPE_DESCS, F_S)
+F_CLASS = F_TYPE[FIELD_CLASS]
+F_INT = F_TYPE[b"I"]
+F_STRING = F_TYPE[b"Ljava/lang/String;"]
+F_VOID = F_TYPE[b"V"]
+F_SHORTY_I = F_S[b"I"]
+F_SHORTY_V = F_S[b"V"]
 
-# method_ids are (class_idx u2, proto_idx u2, name_idx u4), sorted by name
-# index: size (8), make (9), run (10).
-FIELD_METHODS = [(F_CLASS, 0, 8), (F_CLASS, 1, 9), (F_CLASS, 1, 10)]
+# field_ids are (class_idx u2, type_idx u2, name_idx u4), sorted by
+# (class, name, type) as the format requires: COUNT, DEPTH, name.
+FIELD_ROWS = sorted(
+    [
+        (FIELD_CLASS, b"COUNT", b"I"),
+        (FIELD_CLASS, b"DEPTH", b"I"),
+        (FIELD_CLASS, b"name", b"Ljava/lang/String;"),
+    ],
+    key=lambda row: (F_TYPE[row[0]], F_S[row[1]], F_TYPE[row[2]]),
+)
+FIELD_FIELDS = [(F_TYPE[c], F_TYPE[t], F_S[n]) for c, n, t in FIELD_ROWS]
+
+# method_ids are (class_idx u2, proto_idx u2, name_idx u4), sorted by
+# (class, name, proto). The names sort by string index, so the order is make,
+# run, size -- NOT the declaration order, and not the order the earlier fixture
+# assumed. class_data below follows this numbering.
+FIELD_METHOD_ROWS = sorted(
+    [(FIELD_CLASS, b"size", 0), (FIELD_CLASS, b"make", 1), (FIELD_CLASS, b"run", 1)],
+    key=lambda row: (F_TYPE[row[0]], F_S[row[1]], row[2]),
+)
+FIELD_METHODS = [(F_TYPE[c], p, F_S[n]) for c, n, p in FIELD_METHOD_ROWS]
 
 TYPE_CODE_ITEM = 0x2001
 
@@ -405,9 +464,11 @@ def write_fields_fixture() -> int:
     # The instance list restarts at its own delta, so this is index 2 -- not
     # 1 + 2, which is what an accumulator that was not reset would read.
     class_data += uleb128(2) + uleb128(ACC_PRIVATE)  # name, index 2
-    class_data += uleb128(0) + uleb128(ACC_PUBLIC | ACC_STATIC) + uleb128(size_code_off)
-    class_data += uleb128(1) + uleb128(ACC_PUBLIC | ACC_STATIC | ACC_NATIVE) + uleb128(0)
+    # Direct methods in method_ids order: make (index 0, native, no code),
+    # run (index 1, code), size (index 2, code).
+    class_data += uleb128(0) + uleb128(ACC_PUBLIC | ACC_STATIC | ACC_NATIVE) + uleb128(0)
     class_data += uleb128(1) + uleb128(ACC_PUBLIC | ACC_STATIC) + uleb128(run_code_off)
+    class_data += uleb128(1) + uleb128(ACC_PUBLIC | ACC_STATIC) + uleb128(size_code_off)
     assert class_data_off + len(class_data) <= align4(class_data_off + len(class_data))
 
     map_off = align4(class_data_off + len(class_data))
@@ -437,7 +498,9 @@ def write_fields_fixture() -> int:
     struct.pack_into("<I", header, 104, file_size - string_data_off)
     struct.pack_into("<I", header, 108, string_data_off)
 
-    string_ids = b"".join(struct.pack("<I", off) for off in string_offsets)
+    string_ids = b"".join(
+        struct.pack("<I", string_offsets[i]) for i in FIELD_STRING_IDS_ORDER
+    )
     type_ids = b"".join(struct.pack("<I", idx) for idx in FIELD_TYPES)
     proto_ids = struct.pack("<3I", F_SHORTY_I, F_INT, 0) + struct.pack("<3I", F_SHORTY_V, F_VOID, 0)
     field_ids = b"".join(struct.pack("<HHI", c, t, n) for c, t, n in FIELD_FIELDS)
@@ -447,9 +510,9 @@ def write_fields_fixture() -> int:
         "<8I",
         F_CLASS,
         ACC_PUBLIC,
-        1,  # superclass_idx
+        F_TYPE[FIELD_SUPER],  # superclass_idx
         0,  # interfaces_off
-        2,  # source_file_idx
+        F_S[b"Fields.java"],  # source_file_idx
         0,  # annotations_off
         class_data_off,
         0,  # static_values_off
@@ -553,16 +616,28 @@ ANNOTATION_STRINGS = [
     b"flags",  # 13
 ]
 
-ANNOTATION_TYPES = [0, 1, 5, 6, 8, 9]
-A_CLASS = 0
-A_INT = 2
-A_STRING = 3
-A_VOID = 4
-A_MARKER = 5
-A_SHORTY_V = 8
+ANNOTATION_STRING_IDS_ORDER, A_S = canonical_string_order(ANNOTATION_STRINGS)
+ANNOTATION_CLASS = ANNOTATION_STRINGS[0]
+ANNOTATION_SUPER = ANNOTATION_STRINGS[1]
 
-ANNOTATION_FIELDS = [(A_CLASS, A_INT, 3), (A_CLASS, A_STRING, 4)]
-ANNOTATION_METHODS = [(A_CLASS, 0, 7)]
+ANNOTATION_TYPE_DESCS = [
+    ANNOTATION_CLASS,
+    ANNOTATION_SUPER,
+    b"I",
+    b"Ljava/lang/String;",
+    b"V",
+    b"Lnyrqis/hello/Marker;",
+]
+ANNOTATION_TYPES, A_TYPE = canonical_type_order(ANNOTATION_TYPE_DESCS, A_S)
+A_CLASS = A_TYPE[ANNOTATION_CLASS]
+A_INT = A_TYPE[b"I"]
+A_STRING = A_TYPE[b"Ljava/lang/String;"]
+A_VOID = A_TYPE[b"V"]
+A_MARKER = A_TYPE[b"Lnyrqis/hello/Marker;"]
+A_SHORTY_V = A_S[b"V"]
+
+ANNOTATION_FIELDS = [(A_CLASS, A_INT, A_S[b"SEED"]), (A_CLASS, A_STRING, A_S[b"label"])]
+ANNOTATION_METHODS = [(A_CLASS, 0, A_S[b"run"])]
 
 # map_list item types the earlier fixtures do not use.
 TYPE_ANNOTATION_SET_ITEM = 0x1003
@@ -654,8 +729,8 @@ def write_annotations_fixture() -> int:
     class_data_off = align4(base)
 
     # The static field values, in field order: SEED = 1000 (arg 1), label = the
-    # string "hello" (index 12).
-    static_values = uleb128(2) + encoded_int(1000) + encoded_string(12)
+    # string "hello" (its index in the canonical string table).
+    static_values = uleb128(2) + encoded_int(1000) + encoded_string(A_S[b"hello"])
     static_values_off = align4(class_data_off + len(class_data))
 
     # The four annotation items, each a visibility byte plus an encoded
@@ -663,25 +738,25 @@ def write_annotations_fixture() -> int:
     class_item = bytes([VISIBILITY_RUNTIME]) + encoded_annotation(
         A_MARKER,
         [
-            (10, encoded_int(7)),  # count = 7
-            (11, encoded_string(12)),  # name = "hello"
+            (A_S[b"count"], encoded_int(7)),  # count = 7
+            (A_S[b"name"], encoded_string(A_S[b"hello"])),  # name = "hello"
             (
-                13,
+                A_S[b"flags"],
                 encoded_value_header(VALUE_ARRAY, 0)
                 + uleb128(3)
                 + encoded_boolean(True)
                 + encoded_boolean(False)
                 + encoded_value_header(VALUE_ARRAY, 0)
                 + uleb128(1)
-                + encoded_string(12),
+                + encoded_string(A_S[b"hello"]),
             ),  # flags = [true, false, ["hello"]]
         ],
     )
     field_item = bytes([VISIBILITY_BUILD]) + encoded_annotation(
-        A_MARKER, [(10, encoded_int(1))]
+        A_MARKER, [(A_S[b"count"], encoded_int(1))]
     )
     method_item = bytes([VISIBILITY_SYSTEM]) + encoded_annotation(
-        A_MARKER, [(11, encoded_string(12))]
+        A_MARKER, [(A_S[b"name"], encoded_string(A_S[b"hello"]))]
     )
     # A parameter annotation is, by the format's shape, an annotation whose
     # elements are arrays -- one per parameter. This method takes none, so the
@@ -689,7 +764,7 @@ def write_annotations_fixture() -> int:
     # not that the count matches a proto's parameter list.
     parameter_item = bytes([VISIBILITY_RUNTIME]) + encoded_annotation(
         A_MARKER,
-        [(11, encoded_value_header(VALUE_ARRAY, 0) + uleb128(1) + encoded_string(12))],
+        [(A_S[b"name"], encoded_value_header(VALUE_ARRAY, 0) + uleb128(1) + encoded_string(A_S[b"hello"]))],
     )
 
     # The directory first (it names the sets), then the four SETS contiguously,
@@ -740,7 +815,9 @@ def write_annotations_fixture() -> int:
     struct.pack_into("<I", header, 104, file_size - string_data_off)
     struct.pack_into("<I", header, 108, string_data_off)
 
-    string_ids = b"".join(struct.pack("<I", off) for off in string_offsets)
+    string_ids = b"".join(
+        struct.pack("<I", string_offsets[i]) for i in ANNOTATION_STRING_IDS_ORDER
+    )
     type_ids = b"".join(struct.pack("<I", idx) for idx in ANNOTATION_TYPES)
     proto_ids = struct.pack("<3I", A_SHORTY_V, A_VOID, 0)
     field_ids = b"".join(struct.pack("<HHI", c, t, n) for c, t, n in ANNOTATION_FIELDS)
@@ -749,9 +826,9 @@ def write_annotations_fixture() -> int:
         "<8I",
         A_CLASS,
         ACC_PUBLIC,
-        1,  # superclass_idx
+        A_TYPE[ANNOTATION_SUPER],  # superclass_idx
         0,  # interfaces_off
-        2,  # source_file_idx
+        A_S[ANNOTATION_STRINGS[2]],  # source_file_idx -> Annotated.java
         directory_off,  # annotations_off
         class_data_off,
         static_values_off,  # static_values_off
@@ -928,13 +1005,19 @@ MAP_STRINGS = [
     b"local",  # 12
 ]
 
-# type_ids name strings: the class, Object, int, void and the annotation type.
-MAP_TYPES = [0, 1, 4, 6, 10]
-M_CLASS = 0
-M_INT = 2
-M_VOID = 3
-M_TAG = 4
-M_SHORTY = 7
+MAP_STRING_IDS_ORDER, MP_S = canonical_string_order(MAP_STRINGS)
+MAP_CLASS = MAP_STRINGS[0]
+MAP_SUPER = MAP_STRINGS[1]
+
+# type_ids name strings: the class, Object, int, void and the annotation type --
+# ordered by string index, so "I" is type 0 and the class descriptor is type 2.
+MAP_TYPE_DESCS = [MAP_CLASS, MAP_SUPER, b"I", b"V", b"Lnyrqis/hello/Tag;"]
+MAP_TYPES, MP_TYPE = canonical_type_order(MAP_TYPE_DESCS, MP_S)
+M_CLASS = MP_TYPE[MAP_CLASS]
+M_INT = MP_TYPE[b"I"]
+M_VOID = MP_TYPE[b"V"]
+M_TAG = MP_TYPE[b"Lnyrqis/hello/Tag;"]
+M_SHORTY = MP_S[b"VI"]
 
 VALUE_METHOD_TYPE = 0x15
 VALUE_METHOD_HANDLE = 0x16
@@ -989,9 +1072,10 @@ def write_map_fixture() -> int:
     # points at, not about instruction decoding.
     code_item = struct.pack("<HHHHII", 1, 1, 0, 0, debug_info_off, 1) + struct.pack("<H", 0x000E)
 
-    # line_start 1, one parameter named `count` (string 11 -> uleb128p1 12), then:
+    # line_start 1, one parameter named `count` (its canonical string index,
+    # uleb128p1-encoded), then:
     #   special 0x0e   -> address 0, line 1 (+0, +0), one position emitted
-    #   DBG_START_LOCAL reg 1, name `local` (string 12 -> 13), type I (2)
+    #   DBG_START_LOCAL reg 1, name `local` (uleb128p1), type V
     #   DBG_ADVANCE_LINE +1
     #   DBG_ADVANCE_PC +1
     #   special 0x0e   -> address 1, line 2, a second position
@@ -999,9 +1083,9 @@ def write_map_fixture() -> int:
     debug = bytearray()
     debug += uleb128(1)
     debug += uleb128(1)
-    debug += uleb128(12)
+    debug += uleb128(MP_S[b"count"] + 1)
     debug += bytes([0x0E])
-    debug += bytes([0x03]) + uleb128(1) + uleb128(13) + uleb128(3)
+    debug += bytes([0x03]) + uleb128(1) + uleb128(MP_S[b"local"] + 1) + uleb128(MP_TYPE[b"V"])
     debug += bytes([0x02]) + bytes([0x01])
     debug += bytes([0x01]) + uleb128(1)
     debug += bytes([0x0E])
@@ -1013,13 +1097,13 @@ def write_map_fixture() -> int:
         + encoded_value_header(VALUE_METHOD_HANDLE, 0)
         + bytes([1])
         + encoded_value_header(VALUE_STRING, 0)
-        + bytes([8])
+        + bytes([MP_S[b"handler"]])
         + encoded_value_header(VALUE_METHOD_TYPE, 0)
         + bytes([0])
     )
 
     annotation_item = bytes([VISIBILITY_RUNTIME]) + encoded_annotation(
-        M_TAG, [(9, encoded_int(5))]  # note = 5
+        M_TAG, [(MP_S[b"note"], encoded_int(5))]  # note = 5
     )
 
     encoded_array_off = align4(debug_info_off + len(debug))
@@ -1054,18 +1138,21 @@ def write_map_fixture() -> int:
     struct.pack_into("<I", header, 104, file_size - string_data_off)
     struct.pack_into("<I", header, 108, string_data_off)
 
-    string_ids = b"".join(struct.pack("<I", off) for off in _string_offsets(MAP_STRINGS, string_data_off))
+    map_string_offsets = _string_offsets(MAP_STRINGS, string_data_off)
+    string_ids = b"".join(
+        struct.pack("<I", map_string_offsets[i]) for i in MAP_STRING_IDS_ORDER
+    )
     type_ids = b"".join(struct.pack("<I", idx) for idx in MAP_TYPES)
     proto_ids = struct.pack("<3I", M_SHORTY, M_VOID, type_list_off)
-    field_ids = struct.pack("<HHI", M_CLASS, M_INT, 3)
-    method_ids = struct.pack("<HHI", M_CLASS, 0, 5)
+    field_ids = struct.pack("<HHI", M_CLASS, M_INT, MP_S[b"SEED"])
+    method_ids = struct.pack("<HHI", M_CLASS, 0, MP_S[b"run"])
     class_def = struct.pack(
         "<8I",
         M_CLASS,
         ACC_PUBLIC,
-        1,  # superclass_idx -> Ljava/lang/Object;
+        MP_TYPE[MAP_SUPER],  # superclass_idx -> Ljava/lang/Object;
         0,  # interfaces_off
-        2,  # source_file_idx -> Mapped.java
+        MP_S[b"Mapped.java"],  # source_file_idx
         directory_off,
         class_data_off,
         0,  # static_values_off: SEED takes its default 0
@@ -1198,15 +1285,17 @@ def main() -> int:
     struct.pack_into("<I", header, 104, FILE_SIZE - STRING_DATA_OFF)
     struct.pack_into("<I", header, 108, STRING_DATA_OFF)
 
-    string_ids = b"".join(struct.pack("<I", off) for off in string_offsets)
+    string_ids = b"".join(
+        struct.pack("<I", string_offsets[i]) for i in STRING_IDS_ORDER
+    )
     type_ids = b"".join(struct.pack("<I", idx) for idx in TYPES)
     class_def = struct.pack(
         "<8I",
-        0,  # class_idx -> TYPES[0] -> "Lnyrqis/hello/Hello;"
+        H_TYPE[CLASS],  # class_idx -> "Lnyrqis/hello/Hello;"
         0x1,  # ACC_PUBLIC
-        1,  # superclass_idx -> TYPES[1] -> "Ljava/lang/Object;"
+        H_TYPE[SUPER],  # superclass_idx -> "Ljava/lang/Object;"
         0,  # interfaces_off
-        2,  # source_file_idx -> STRINGS[2]
+        H_S[SOURCE],  # source_file_idx -> "Hello.java"
         0,  # annotations_off
         0,  # class_data_off (no methods or fields)
         0,  # static_values_off
